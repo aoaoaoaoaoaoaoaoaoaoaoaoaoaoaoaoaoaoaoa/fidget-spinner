@@ -1,7 +1,7 @@
 use libmcp::ReplayContract;
 use serde_json::{Value, json};
 
-use crate::mcp::output::with_render_property;
+use crate::mcp::output::with_common_presentation;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum DispatchTarget {
@@ -64,6 +64,18 @@ pub(crate) fn tool_spec(name: &str) -> Option<ToolSpec> {
         "project.schema" => Some(ToolSpec {
             name: "project.schema",
             description: "Read the project-local payload schema and field validation tiers.",
+            dispatch: DispatchTarget::Worker,
+            replay: ReplayContract::Convergent,
+        }),
+        "tag.add" => Some(ToolSpec {
+            name: "tag.add",
+            description: "Register one repo-local tag with a required description. Notes may only reference tags from this registry.",
+            dispatch: DispatchTarget::Worker,
+            replay: ReplayContract::NeverReplay,
+        }),
+        "tag.list" => Some(ToolSpec {
+            name: "tag.list",
+            description: "List repo-local tags available for note and node tagging.",
             dispatch: DispatchTarget::Worker,
             replay: ReplayContract::Convergent,
         }),
@@ -200,6 +212,8 @@ pub(crate) fn tool_definitions() -> Vec<Value> {
         "project.bind",
         "project.status",
         "project.schema",
+        "tag.add",
+        "tag.list",
         "frontier.list",
         "frontier.status",
         "frontier.init",
@@ -223,7 +237,7 @@ pub(crate) fn tool_definitions() -> Vec<Value> {
         json!({
             "name": spec.name,
             "description": spec.description,
-            "inputSchema": with_render_property(input_schema(spec.name)),
+            "inputSchema": with_common_presentation(input_schema(spec.name)),
             "annotations": spec.annotation_json(),
         })
     })
@@ -262,7 +276,7 @@ pub(crate) fn list_resources() -> Vec<Value> {
 
 fn input_schema(name: &str) -> Value {
     match name {
-        "project.status" | "project.schema" | "skill.list" | "system.health"
+        "project.status" | "project.schema" | "tag.list" | "skill.list" | "system.health"
         | "system.telemetry" => json!({"type":"object","additionalProperties":false}),
         "project.bind" => json!({
             "type": "object",
@@ -270,6 +284,15 @@ fn input_schema(name: &str) -> Value {
                 "path": { "type": "string", "description": "Project root or any nested path inside a project with .fidget_spinner state." }
             },
             "required": ["path"],
+            "additionalProperties": false
+        }),
+        "tag.add" => json!({
+            "type": "object",
+            "properties": {
+                "name": { "type": "string", "description": "Lowercase repo-local tag name." },
+                "description": { "type": "string", "description": "Human-facing tag description." }
+            },
+            "required": ["name", "description"],
             "additionalProperties": false
         }),
         "skill.show" => json!({
@@ -311,6 +334,7 @@ fn input_schema(name: &str) -> Value {
                 "frontier_id": { "type": "string" },
                 "title": { "type": "string" },
                 "summary": { "type": "string" },
+                "tags": { "type": "array", "items": tag_name_schema() },
                 "payload": { "type": "object" },
                 "annotations": { "type": "array", "items": annotation_schema() },
                 "parents": { "type": "array", "items": { "type": "string" } }
@@ -339,6 +363,7 @@ fn input_schema(name: &str) -> Value {
             "properties": {
                 "frontier_id": { "type": "string" },
                 "class": node_class_schema(),
+                "tags": { "type": "array", "items": tag_name_schema() },
                 "include_archived": { "type": "boolean" },
                 "limit": { "type": "integer", "minimum": 1, "maximum": 500 }
             },
@@ -369,10 +394,11 @@ fn input_schema(name: &str) -> Value {
                 "frontier_id": { "type": "string" },
                 "title": { "type": "string" },
                 "body": { "type": "string" },
+                "tags": { "type": "array", "items": tag_name_schema() },
                 "annotations": { "type": "array", "items": annotation_schema() },
                 "parents": { "type": "array", "items": { "type": "string" } }
             },
-            "required": ["title", "body"],
+            "required": ["title", "body", "tags"],
             "additionalProperties": false
         }),
         "research.record" => json!({
@@ -459,6 +485,13 @@ fn annotation_schema() -> Value {
         },
         "required": ["body"],
         "additionalProperties": false
+    })
+}
+
+fn tag_name_schema() -> Value {
+    json!({
+        "type": "string",
+        "pattern": "^[a-z0-9]+(?:[-_/][a-z0-9]+)*$"
     })
 }
 

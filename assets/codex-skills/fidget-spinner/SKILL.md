@@ -13,12 +13,19 @@ Start every session by reading `system.health`.
 If the session is unbound, or bound to the wrong repo, call `project.bind`
 with the target project root or any nested path inside that project.
 
+If the target root exists and is empty, `project.bind` will bootstrap the local
+store automatically.
+
 Then read:
 
 - `project.status`
-- `project.schema`
+- `tag.list`
 - `frontier.list`
 - `frontier.status` for the active frontier
+
+Read `project.schema` only when payload authoring, validation rules, or local
+field vocabulary are actually relevant. When in doubt, start with
+`detail=concise` and widen to `detail=full` only if the summary is insufficient.
 
 If you need more context, pull it from:
 
@@ -34,8 +41,10 @@ If you need more context, pull it from:
 
 ## Choose The Cheapest Tool
 
+- `tag.add` when a new note taxonomy token is genuinely needed; every tag must carry a description
+- `tag.list` before inventing note tags by memory
 - `research.record` for exploratory work, design notes, dead ends, and enabling ideas
-- `note.quick` for terse state pushes
+- `note.quick` for terse state pushes, always with an explicit `tags` list; use `[]` only when no registered tag applies
 - `node.annotate` for scratch text that should stay off the main path
 - `change.record` before core-path work
 - `experiment.close` only when you have checkpoint, measured result, note, and verdict

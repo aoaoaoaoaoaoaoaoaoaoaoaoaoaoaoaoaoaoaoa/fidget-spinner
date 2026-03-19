@@ -1,22 +1,25 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 
 use camino::{Utf8Path, Utf8PathBuf};
 use fidget_spinner_core::{
-    AnnotationVisibility, CodeSnapshotRef, CommandRecipe, ExecutionBackend, FrontierContract,
-    FrontierNote, FrontierVerdict, MetricObservation, MetricSpec, MetricUnit, NodeAnnotation,
-    NodeClass, NodePayload, NonEmptyText,
+    AdmissionState, AnnotationVisibility, CodeSnapshotRef, CommandRecipe, ExecutionBackend,
+    FrontierContract, FrontierNote, FrontierProjection, FrontierRecord, FrontierVerdict,
+    MetricObservation, MetricSpec, MetricUnit, NodeAnnotation, NodeClass, NodePayload,
+    NonEmptyText, ProjectSchema, TagName, TagRecord,
 };
 use fidget_spinner_store_sqlite::{
     CloseExperimentRequest, CreateFrontierRequest, CreateNodeRequest, EdgeAttachment,
-    EdgeAttachmentDirection, ListNodesQuery, ProjectStore, StoreError,
+    EdgeAttachmentDirection, ExperimentReceipt, ListNodesQuery, NodeSummary, ProjectStore,
+    StoreError,
 };
-use libmcp::RenderMode;
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
 
 use crate::mcp::fault::{FaultKind, FaultRecord, FaultStage};
-use crate::mcp::output::split_render_mode;
+use crate::mcp::output::{
+    ToolOutput, detailed_tool_output, split_presentation, tool_output, tool_success,
+};
 use crate::mcp::protocol::{TRANSIENT_ONCE_ENV, TRANSIENT_ONCE_MARKER_ENV, WorkerOperation};
 
 pub(crate) struct WorkerService {
@@ -45,10 +48,11 @@ impl WorkerService {
 
     fn call_tool(&mut self, name: &str, arguments: Value) -> Result<Value, FaultRecord> {
         let operation = format!("tools/call:{name}");
-        let (render, arguments) = split_render_mode(arguments, &operation, FaultStage::Worker)?;
+        let (presentation, arguments) =
+            split_presentation(arguments, &operation, FaultStage::Worker)?;
         match name {
-            "project.status" => tool_success(
-                &json!({
+            "project.status" => {
+                let status = json!({
                     "project_root": self.store.project_root(),
                     "state_root": self.store.state_root(),
                     "display_name": self.store.config().display_name,
@@ -56,28 +60,75 @@ impl WorkerService {
                     "git_repo_detected": crate::run_git(self.store.project_root(), &["rev-parse", "--show-toplevel"])
                         .map_err(store_fault("tools/call:project.status"))?
                         .is_some(),
-                }),
-                render,
+                });
+                tool_success(
+                    project_status_output(&status, self.store.schema()),
+                    presentation,
+                    FaultStage::Worker,
+                    "tools/call:project.status",
+                )
+            }
+            "project.schema" => tool_success(
+                project_schema_output(self.store.schema())?,
+                presentation,
+                FaultStage::Worker,
+                "tools/call:project.schema",
             ),
-            "project.schema" => tool_success(self.store.schema(), render),
-            "frontier.list" => tool_success(
-                &self
+            "tag.add" => {
+                let args = deserialize::<TagAddToolArgs>(arguments)?;
+                let tag = self
+                    .store
+                    .add_tag(
+                        TagName::new(args.name).map_err(store_fault("tools/call:tag.add"))?,
+                        NonEmptyText::new(args.description)
+                            .map_err(store_fault("tools/call:tag.add"))?,
+                    )
+                    .map_err(store_fault("tools/call:tag.add"))?;
+                tool_success(
+                    tag_add_output(&tag)?,
+                    presentation,
+                    FaultStage::Worker,
+                    "tools/call:tag.add",
+                )
+            }
+            "tag.list" => {
+                let tags = self
+                    .store
+                    .list_tags()
+                    .map_err(store_fault("tools/call:tag.list"))?;
+                tool_success(
+                    tag_list_output(tags.as_slice())?,
+                    presentation,
+                    FaultStage::Worker,
+                    "tools/call:tag.list",
+                )
+            }
+            "frontier.list" => {
+                let frontiers = self
                     .store
                     .list_frontiers()
-                    .map_err(store_fault("tools/call:frontier.list"))?,
-                render,
-            ),
+                    .map_err(store_fault("tools/call:frontier.list"))?;
+                tool_success(
+                    frontier_list_output(frontiers.as_slice())?,
+                    presentation,
+                    FaultStage::Worker,
+                    "tools/call:frontier.list",
+                )
+            }
             "frontier.status" => {
                 let args = deserialize::<FrontierStatusToolArgs>(arguments)?;
+                let projection = self
+                    .store
+                    .frontier_projection(
+                        crate::parse_frontier_id(&args.frontier_id)
+                            .map_err(store_fault("tools/call:frontier.status"))?,
+                    )
+                    .map_err(store_fault("tools/call:frontier.status"))?;
                 tool_success(
-                    &self
-                        .store
-                        .frontier_projection(
-                            crate::parse_frontier_id(&args.frontier_id)
-                                .map_err(store_fault("tools/call:frontier.status"))?,
-                        )
-                        .map_err(store_fault("tools/call:frontier.status"))?,
-                    render,
+                    frontier_status_output(&projection)?,
+                    presentation,
+                    FaultStage::Worker,
+                    "tools/call:frontier.status",
                 )
             }
             "frontier.init" => {
@@ -133,7 +184,12 @@ impl WorkerService {
                         initial_checkpoint,
                     })
                     .map_err(store_fault("tools/call:frontier.init"))?;
-                tool_success(&projection, render)
+                tool_success(
+                    frontier_created_output(&projection)?,
+                    presentation,
+                    FaultStage::Worker,
+                    "tools/call:frontier.init",
+                )
             }
             "node.create" => {
                 let args = deserialize::<NodeCreateToolArgs>(arguments)?;
@@ -155,6 +211,11 @@ impl WorkerService {
                             .map(NonEmptyText::new)
                             .transpose()
                             .map_err(store_fault("tools/call:node.create"))?,
+                        tags: args
+                            .tags
+                            .map(parse_tag_set)
+                            .transpose()
+                            .map_err(store_fault("tools/call:node.create"))?,
                         payload: NodePayload::with_schema(
                             self.store.schema().schema_ref(),
                             args.payload.unwrap_or_default(),
@@ -165,7 +226,12 @@ impl WorkerService {
                             .map_err(store_fault("tools/call:node.create"))?,
                     })
                     .map_err(store_fault("tools/call:node.create"))?;
-                tool_success(&node, render)
+                tool_success(
+                    created_node_output("created node", &node, "tools/call:node.create")?,
+                    presentation,
+                    FaultStage::Worker,
+                    "tools/call:node.create",
+                )
             }
             "change.record" => {
                 let args = deserialize::<ChangeRecordToolArgs>(arguments)?;
@@ -199,6 +265,7 @@ impl WorkerService {
                             .map(NonEmptyText::new)
                             .transpose()
                             .map_err(store_fault("tools/call:change.record"))?,
+                        tags: None,
                         payload: NodePayload::with_schema(self.store.schema().schema_ref(), fields),
                         annotations: tool_annotations(args.annotations)
                             .map_err(store_fault("tools/call:change.record"))?,
@@ -206,7 +273,12 @@ impl WorkerService {
                             .map_err(store_fault("tools/call:change.record"))?,
                     })
                     .map_err(store_fault("tools/call:change.record"))?;
-                tool_success(&node, render)
+                tool_success(
+                    created_node_output("recorded change", &node, "tools/call:change.record")?,
+                    presentation,
+                    FaultStage::Worker,
+                    "tools/call:change.record",
+                )
             }
             "node.list" => {
                 let args = deserialize::<NodeListToolArgs>(arguments)?;
@@ -225,11 +297,18 @@ impl WorkerService {
                             .map(parse_node_class_name)
                             .transpose()
                             .map_err(store_fault("tools/call:node.list"))?,
+                        tags: parse_tag_set(args.tags)
+                            .map_err(store_fault("tools/call:node.list"))?,
                         include_archived: args.include_archived,
                         limit: args.limit.unwrap_or(20),
                     })
                     .map_err(store_fault("tools/call:node.list"))?;
-                tool_success(&nodes, render)
+                tool_success(
+                    node_list_output(nodes.as_slice())?,
+                    presentation,
+                    FaultStage::Worker,
+                    "tools/call:node.list",
+                )
             }
             "node.read" => {
                 let args = deserialize::<NodeReadToolArgs>(arguments)?;
@@ -247,7 +326,12 @@ impl WorkerService {
                             format!("node {node_id} was not found"),
                         )
                     })?;
-                tool_success(&node, render)
+                tool_success(
+                    node_read_output(&node)?,
+                    presentation,
+                    FaultStage::Worker,
+                    "tools/call:node.read",
+                )
             }
             "node.annotate" => {
                 let args = deserialize::<NodeAnnotateToolArgs>(arguments)?;
@@ -274,7 +358,16 @@ impl WorkerService {
                         annotation,
                     )
                     .map_err(store_fault("tools/call:node.annotate"))?;
-                tool_success(&json!({"annotated": args.node_id}), render)
+                tool_success(
+                    tool_output(
+                        &json!({"annotated": args.node_id}),
+                        FaultStage::Worker,
+                        "tools/call:node.annotate",
+                    )?,
+                    presentation,
+                    FaultStage::Worker,
+                    "tools/call:node.annotate",
+                )
             }
             "node.archive" => {
                 let args = deserialize::<NodeArchiveToolArgs>(arguments)?;
@@ -284,7 +377,16 @@ impl WorkerService {
                             .map_err(store_fault("tools/call:node.archive"))?,
                     )
                     .map_err(store_fault("tools/call:node.archive"))?;
-                tool_success(&json!({"archived": args.node_id}), render)
+                tool_success(
+                    tool_output(
+                        &json!({"archived": args.node_id}),
+                        FaultStage::Worker,
+                        "tools/call:node.archive",
+                    )?,
+                    presentation,
+                    FaultStage::Worker,
+                    "tools/call:node.archive",
+                )
             }
             "note.quick" => {
                 let args = deserialize::<QuickNoteToolArgs>(arguments)?;
@@ -301,6 +403,10 @@ impl WorkerService {
                         title: NonEmptyText::new(args.title)
                             .map_err(store_fault("tools/call:note.quick"))?,
                         summary: None,
+                        tags: Some(
+                            parse_tag_set(args.tags)
+                                .map_err(store_fault("tools/call:note.quick"))?,
+                        ),
                         payload: NodePayload::with_schema(
                             self.store.schema().schema_ref(),
                             crate::json_object(json!({ "body": args.body }))
@@ -312,7 +418,12 @@ impl WorkerService {
                             .map_err(store_fault("tools/call:note.quick"))?,
                     })
                     .map_err(store_fault("tools/call:note.quick"))?;
-                tool_success(&node, render)
+                tool_success(
+                    created_node_output("recorded note", &node, "tools/call:note.quick")?,
+                    presentation,
+                    FaultStage::Worker,
+                    "tools/call:note.quick",
+                )
             }
             "research.record" => {
                 let args = deserialize::<ResearchRecordToolArgs>(arguments)?;
@@ -333,6 +444,7 @@ impl WorkerService {
                             .map(NonEmptyText::new)
                             .transpose()
                             .map_err(store_fault("tools/call:research.record"))?,
+                        tags: None,
                         payload: NodePayload::with_schema(
                             self.store.schema().schema_ref(),
                             crate::json_object(json!({ "body": args.body }))
@@ -344,7 +456,12 @@ impl WorkerService {
                             .map_err(store_fault("tools/call:research.record"))?,
                     })
                     .map_err(store_fault("tools/call:research.record"))?;
-                tool_success(&node, render)
+                tool_success(
+                    created_node_output("recorded research", &node, "tools/call:research.record")?,
+                    presentation,
+                    FaultStage::Worker,
+                    "tools/call:research.record",
+                )
             }
             "experiment.close" => {
                 let args = deserialize::<ExperimentCloseToolArgs>(arguments)?;
@@ -429,7 +546,12 @@ impl WorkerService {
                             .map_err(store_fault("tools/call:experiment.close"))?,
                     })
                     .map_err(store_fault("tools/call:experiment.close"))?;
-                tool_success(&receipt, render)
+                tool_success(
+                    experiment_close_output(&receipt)?,
+                    presentation,
+                    FaultStage::Worker,
+                    "tools/call:experiment.close",
+                )
             }
             other => Err(FaultRecord::new(
                 FaultKind::InvalidInput,
@@ -510,8 +632,711 @@ fn deserialize<T: for<'de> Deserialize<'de>>(value: Value) -> Result<T, FaultRec
     })
 }
 
-fn tool_success(value: &impl serde::Serialize, render: RenderMode) -> Result<Value, FaultRecord> {
-    crate::mcp::output::tool_success(value, render, FaultStage::Worker, "worker.tool_success")
+fn project_status_output(full: &Value, schema: &ProjectSchema) -> ToolOutput {
+    let concise = json!({
+        "display_name": full["display_name"],
+        "project_root": full["project_root"],
+        "state_root": full["state_root"],
+        "schema": schema_label(schema),
+        "git_repo_detected": full["git_repo_detected"],
+    });
+    let git = if full["git_repo_detected"].as_bool().unwrap_or(false) {
+        "detected"
+    } else {
+        "not detected"
+    };
+    ToolOutput::from_values(
+        concise,
+        full.clone(),
+        [
+            format!("project {}", value_summary(&full["display_name"])),
+            format!("root: {}", value_summary(&full["project_root"])),
+            format!("state: {}", value_summary(&full["state_root"])),
+            format!("schema: {}", schema_label(schema)),
+            format!("git: {git}"),
+        ]
+        .join("\n"),
+        None,
+    )
+}
+
+fn project_schema_output(schema: &ProjectSchema) -> Result<ToolOutput, FaultRecord> {
+    let field_previews = schema
+        .fields
+        .iter()
+        .take(8)
+        .map(project_schema_field_value)
+        .collect::<Vec<_>>();
+    let concise = json!({
+        "namespace": schema.namespace,
+        "version": schema.version,
+        "field_count": schema.fields.len(),
+        "fields": field_previews,
+        "truncated": schema.fields.len() > 8,
+    });
+    let mut lines = vec![
+        format!("schema {}", schema_label(schema)),
+        format!("{} field(s)", schema.fields.len()),
+    ];
+    for field in schema.fields.iter().take(8) {
+        lines.push(format!(
+            "{} [{}] {} {}",
+            field.name,
+            if field.node_classes.is_empty() {
+                "any".to_owned()
+            } else {
+                field
+                    .node_classes
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join(",")
+            },
+            format!("{:?}", field.presence).to_ascii_lowercase(),
+            format!("{:?}", field.role).to_ascii_lowercase(),
+        ));
+    }
+    if schema.fields.len() > 8 {
+        lines.push(format!("... +{} more field(s)", schema.fields.len() - 8));
+    }
+    detailed_tool_output(
+        &concise,
+        schema,
+        lines.join("\n"),
+        None,
+        FaultStage::Worker,
+        "tools/call:project.schema",
+    )
+}
+
+fn tag_add_output(tag: &TagRecord) -> Result<ToolOutput, FaultRecord> {
+    let concise = json!({
+        "name": tag.name,
+        "description": tag.description,
+    });
+    detailed_tool_output(
+        &concise,
+        tag,
+        format!("registered tag {}\n{}", tag.name, tag.description),
+        None,
+        FaultStage::Worker,
+        "tools/call:tag.add",
+    )
+}
+
+fn tag_list_output(tags: &[TagRecord]) -> Result<ToolOutput, FaultRecord> {
+    let concise = tags
+        .iter()
+        .map(|tag| {
+            json!({
+                "name": tag.name,
+                "description": tag.description,
+            })
+        })
+        .collect::<Vec<_>>();
+    let mut lines = vec![format!("{} tag(s)", tags.len())];
+    lines.extend(
+        tags.iter()
+            .map(|tag| format!("{}: {}", tag.name, tag.description)),
+    );
+    detailed_tool_output(
+        &concise,
+        &tags,
+        lines.join("\n"),
+        None,
+        FaultStage::Worker,
+        "tools/call:tag.list",
+    )
+}
+
+fn frontier_list_output(frontiers: &[FrontierRecord]) -> Result<ToolOutput, FaultRecord> {
+    let concise = frontiers
+        .iter()
+        .map(|frontier| {
+            json!({
+                "frontier_id": frontier.id,
+                "label": frontier.label,
+                "status": format!("{:?}", frontier.status).to_ascii_lowercase(),
+            })
+        })
+        .collect::<Vec<_>>();
+    let mut lines = vec![format!("{} frontier(s)", frontiers.len())];
+    lines.extend(frontiers.iter().map(|frontier| {
+        format!(
+            "{} {} {}",
+            frontier.id,
+            format!("{:?}", frontier.status).to_ascii_lowercase(),
+            frontier.label,
+        )
+    }));
+    detailed_tool_output(
+        &concise,
+        &frontiers,
+        lines.join("\n"),
+        None,
+        FaultStage::Worker,
+        "tools/call:frontier.list",
+    )
+}
+
+fn frontier_status_output(projection: &FrontierProjection) -> Result<ToolOutput, FaultRecord> {
+    let concise = frontier_projection_summary_value(projection);
+    detailed_tool_output(
+        &concise,
+        projection,
+        frontier_projection_text("frontier", projection),
+        None,
+        FaultStage::Worker,
+        "tools/call:frontier.status",
+    )
+}
+
+fn frontier_created_output(projection: &FrontierProjection) -> Result<ToolOutput, FaultRecord> {
+    let concise = frontier_projection_summary_value(projection);
+    detailed_tool_output(
+        &concise,
+        projection,
+        frontier_projection_text("created frontier", projection),
+        None,
+        FaultStage::Worker,
+        "tools/call:frontier.init",
+    )
+}
+
+fn created_node_output(
+    action: &str,
+    node: &fidget_spinner_core::DagNode,
+    operation: &'static str,
+) -> Result<ToolOutput, FaultRecord> {
+    let concise = node_brief_value(node);
+    let mut lines = vec![format!("{action}: {} {}", node.class, node.id)];
+    lines.push(format!("title: {}", node.title));
+    if let Some(summary) = node.summary.as_ref() {
+        lines.push(format!("summary: {summary}"));
+    }
+    if !node.tags.is_empty() {
+        lines.push(format!("tags: {}", format_tags(&node.tags)));
+    }
+    if let Some(frontier_id) = node.frontier_id {
+        lines.push(format!("frontier: {frontier_id}"));
+    }
+    if !node.diagnostics.items.is_empty() {
+        lines.push(format!(
+            "diagnostics: {}",
+            diagnostic_summary_text(&node.diagnostics)
+        ));
+    }
+    detailed_tool_output(
+        &concise,
+        node,
+        lines.join("\n"),
+        None,
+        FaultStage::Worker,
+        operation,
+    )
+}
+
+fn node_list_output(nodes: &[NodeSummary]) -> Result<ToolOutput, FaultRecord> {
+    let concise = nodes.iter().map(node_summary_value).collect::<Vec<_>>();
+    let mut lines = vec![format!("{} node(s)", nodes.len())];
+    lines.extend(nodes.iter().map(render_node_summary_line));
+    detailed_tool_output(
+        &concise,
+        &nodes,
+        lines.join("\n"),
+        None,
+        FaultStage::Worker,
+        "tools/call:node.list",
+    )
+}
+
+fn node_read_output(node: &fidget_spinner_core::DagNode) -> Result<ToolOutput, FaultRecord> {
+    let visible_annotations = node
+        .annotations
+        .iter()
+        .filter(|annotation| annotation.visibility == AnnotationVisibility::Visible)
+        .map(|annotation| {
+            let mut value = Map::new();
+            if let Some(label) = annotation.label.as_ref() {
+                let _ = value.insert("label".to_owned(), json!(label));
+            }
+            let _ = value.insert("body".to_owned(), json!(annotation.body));
+            Value::Object(value)
+        })
+        .collect::<Vec<_>>();
+    let visible_annotation_count = visible_annotations.len();
+    let hidden_annotation_count = node
+        .annotations
+        .iter()
+        .filter(|annotation| annotation.visibility == AnnotationVisibility::HiddenByDefault)
+        .count();
+    let mut concise = Map::new();
+    let _ = concise.insert("id".to_owned(), json!(node.id));
+    let _ = concise.insert("class".to_owned(), json!(node.class.as_str()));
+    let _ = concise.insert("title".to_owned(), json!(node.title));
+    if let Some(summary) = node.summary.as_ref() {
+        let _ = concise.insert("summary".to_owned(), json!(summary));
+    }
+    if let Some(frontier_id) = node.frontier_id {
+        let _ = concise.insert("frontier_id".to_owned(), json!(frontier_id));
+    }
+    if !node.tags.is_empty() {
+        let _ = concise.insert(
+            "tags".to_owned(),
+            json!(
+                node.tags
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+            ),
+        );
+    }
+    if !node.payload.fields.is_empty() {
+        let _ = concise.insert(
+            "payload_field_count".to_owned(),
+            json!(node.payload.fields.len()),
+        );
+        let _ = concise.insert(
+            "payload_preview".to_owned(),
+            payload_preview_value(&node.payload.fields),
+        );
+    }
+    if !node.diagnostics.items.is_empty() {
+        let _ = concise.insert(
+            "diagnostics".to_owned(),
+            diagnostic_summary_value(&node.diagnostics),
+        );
+    }
+    if visible_annotation_count > 0 {
+        let _ = concise.insert(
+            "visible_annotations".to_owned(),
+            Value::Array(visible_annotations),
+        );
+    }
+    if hidden_annotation_count > 0 {
+        let _ = concise.insert(
+            "hidden_annotation_count".to_owned(),
+            json!(hidden_annotation_count),
+        );
+    }
+
+    let mut lines = vec![format!("{} {} {}", node.class, node.id, node.title)];
+    if let Some(summary) = node.summary.as_ref() {
+        lines.push(format!("summary: {summary}"));
+    }
+    if let Some(frontier_id) = node.frontier_id {
+        lines.push(format!("frontier: {frontier_id}"));
+    }
+    if !node.tags.is_empty() {
+        lines.push(format!("tags: {}", format_tags(&node.tags)));
+    }
+    lines.extend(payload_preview_lines(&node.payload.fields));
+    if !node.diagnostics.items.is_empty() {
+        lines.push(format!(
+            "diagnostics: {}",
+            diagnostic_summary_text(&node.diagnostics)
+        ));
+    }
+    if visible_annotation_count > 0 {
+        lines.push(format!("visible annotations: {}", visible_annotation_count));
+        for annotation in node
+            .annotations
+            .iter()
+            .filter(|annotation| annotation.visibility == AnnotationVisibility::Visible)
+            .take(4)
+        {
+            let label = annotation
+                .label
+                .as_ref()
+                .map(|label| format!("{label}: "))
+                .unwrap_or_default();
+            lines.push(format!("annotation: {label}{}", annotation.body));
+        }
+        if visible_annotation_count > 4 {
+            lines.push(format!(
+                "... +{} more visible annotation(s)",
+                visible_annotation_count - 4
+            ));
+        }
+    }
+    if hidden_annotation_count > 0 {
+        lines.push(format!("hidden annotations: {hidden_annotation_count}"));
+    }
+    detailed_tool_output(
+        &Value::Object(concise),
+        node,
+        lines.join("\n"),
+        None,
+        FaultStage::Worker,
+        "tools/call:node.read",
+    )
+}
+
+fn experiment_close_output(receipt: &ExperimentReceipt) -> Result<ToolOutput, FaultRecord> {
+    let concise = json!({
+        "experiment_id": receipt.experiment.id,
+        "frontier_id": receipt.experiment.frontier_id,
+        "candidate_checkpoint_id": receipt.experiment.candidate_checkpoint_id,
+        "verdict": format!("{:?}", receipt.experiment.verdict).to_ascii_lowercase(),
+        "run_id": receipt.run.run_id,
+        "decision_node_id": receipt.decision_node.id,
+        "primary_metric": metric_value(&receipt.experiment.result.primary_metric),
+    });
+    detailed_tool_output(
+        &concise,
+        receipt,
+        [
+            format!(
+                "closed experiment {} on frontier {}",
+                receipt.experiment.id, receipt.experiment.frontier_id
+            ),
+            format!("candidate: {}", receipt.experiment.candidate_checkpoint_id),
+            format!(
+                "verdict: {}",
+                format!("{:?}", receipt.experiment.verdict).to_ascii_lowercase()
+            ),
+            format!(
+                "primary metric: {}",
+                metric_text(&receipt.experiment.result.primary_metric)
+            ),
+            format!("run: {}", receipt.run.run_id),
+        ]
+        .join("\n"),
+        None,
+        FaultStage::Worker,
+        "tools/call:experiment.close",
+    )
+}
+
+fn project_schema_field_value(field: &fidget_spinner_core::ProjectFieldSpec) -> Value {
+    let mut value = Map::new();
+    let _ = value.insert("name".to_owned(), json!(field.name));
+    if !field.node_classes.is_empty() {
+        let _ = value.insert(
+            "node_classes".to_owned(),
+            json!(
+                field
+                    .node_classes
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+            ),
+        );
+    }
+    let _ = value.insert(
+        "presence".to_owned(),
+        json!(format!("{:?}", field.presence).to_ascii_lowercase()),
+    );
+    let _ = value.insert(
+        "severity".to_owned(),
+        json!(format!("{:?}", field.severity).to_ascii_lowercase()),
+    );
+    let _ = value.insert(
+        "role".to_owned(),
+        json!(format!("{:?}", field.role).to_ascii_lowercase()),
+    );
+    let _ = value.insert(
+        "inference_policy".to_owned(),
+        json!(format!("{:?}", field.inference_policy).to_ascii_lowercase()),
+    );
+    if let Some(value_type) = field.value_type {
+        let _ = value.insert("value_type".to_owned(), json!(value_type.as_str()));
+    }
+    Value::Object(value)
+}
+
+fn frontier_projection_summary_value(projection: &FrontierProjection) -> Value {
+    json!({
+        "frontier_id": projection.frontier.id,
+        "label": projection.frontier.label,
+        "status": format!("{:?}", projection.frontier.status).to_ascii_lowercase(),
+        "champion_checkpoint_id": projection.champion_checkpoint_id,
+        "candidate_checkpoint_ids": projection.candidate_checkpoint_ids,
+        "experiment_count": projection.experiment_count,
+    })
+}
+
+fn frontier_projection_text(prefix: &str, projection: &FrontierProjection) -> String {
+    let champion = projection
+        .champion_checkpoint_id
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| "none".to_owned());
+    [
+        format!(
+            "{prefix} {} {}",
+            projection.frontier.id, projection.frontier.label
+        ),
+        format!(
+            "status: {}",
+            format!("{:?}", projection.frontier.status).to_ascii_lowercase()
+        ),
+        format!("champion: {champion}"),
+        format!("candidates: {}", projection.candidate_checkpoint_ids.len()),
+        format!("experiments: {}", projection.experiment_count),
+    ]
+    .join("\n")
+}
+
+fn node_summary_value(node: &NodeSummary) -> Value {
+    let mut value = Map::new();
+    let _ = value.insert("id".to_owned(), json!(node.id));
+    let _ = value.insert("class".to_owned(), json!(node.class.as_str()));
+    let _ = value.insert("title".to_owned(), json!(node.title));
+    if let Some(summary) = node.summary.as_ref() {
+        let _ = value.insert("summary".to_owned(), json!(summary));
+    }
+    if let Some(frontier_id) = node.frontier_id {
+        let _ = value.insert("frontier_id".to_owned(), json!(frontier_id));
+    }
+    if !node.tags.is_empty() {
+        let _ = value.insert(
+            "tags".to_owned(),
+            json!(
+                node.tags
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+            ),
+        );
+    }
+    if node.archived {
+        let _ = value.insert("archived".to_owned(), json!(true));
+    }
+    if node.diagnostic_count > 0 {
+        let _ = value.insert("diagnostic_count".to_owned(), json!(node.diagnostic_count));
+    }
+    if node.hidden_annotation_count > 0 {
+        let _ = value.insert(
+            "hidden_annotation_count".to_owned(),
+            json!(node.hidden_annotation_count),
+        );
+    }
+    Value::Object(value)
+}
+
+fn node_brief_value(node: &fidget_spinner_core::DagNode) -> Value {
+    let mut value = Map::new();
+    let _ = value.insert("id".to_owned(), json!(node.id));
+    let _ = value.insert("class".to_owned(), json!(node.class.as_str()));
+    let _ = value.insert("title".to_owned(), json!(node.title));
+    if let Some(summary) = node.summary.as_ref() {
+        let _ = value.insert("summary".to_owned(), json!(summary));
+    }
+    if let Some(frontier_id) = node.frontier_id {
+        let _ = value.insert("frontier_id".to_owned(), json!(frontier_id));
+    }
+    if !node.tags.is_empty() {
+        let _ = value.insert(
+            "tags".to_owned(),
+            json!(
+                node.tags
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+            ),
+        );
+    }
+    if !node.diagnostics.items.is_empty() {
+        let _ = value.insert(
+            "diagnostics".to_owned(),
+            diagnostic_summary_value(&node.diagnostics),
+        );
+    }
+    Value::Object(value)
+}
+
+fn render_node_summary_line(node: &NodeSummary) -> String {
+    let mut line = format!("{} {} {}", node.class, node.id, node.title);
+    if let Some(summary) = node.summary.as_ref() {
+        line.push_str(format!(" | {summary}").as_str());
+    }
+    if let Some(frontier_id) = node.frontier_id {
+        line.push_str(format!(" | frontier={frontier_id}").as_str());
+    }
+    if !node.tags.is_empty() {
+        line.push_str(format!(" | tags={}", format_tags(&node.tags)).as_str());
+    }
+    if node.diagnostic_count > 0 {
+        line.push_str(format!(" | diag={}", node.diagnostic_count).as_str());
+    }
+    if node.hidden_annotation_count > 0 {
+        line.push_str(format!(" | hidden-ann={}", node.hidden_annotation_count).as_str());
+    }
+    if node.archived {
+        line.push_str(" | archived");
+    }
+    line
+}
+
+fn diagnostic_summary_value(diagnostics: &fidget_spinner_core::NodeDiagnostics) -> Value {
+    let tally = diagnostic_tally(diagnostics);
+    json!({
+        "admission": match diagnostics.admission {
+            AdmissionState::Admitted => "admitted",
+            AdmissionState::Rejected => "rejected",
+        },
+        "count": tally.total,
+        "error_count": tally.errors,
+        "warning_count": tally.warnings,
+        "info_count": tally.infos,
+    })
+}
+
+fn diagnostic_summary_text(diagnostics: &fidget_spinner_core::NodeDiagnostics) -> String {
+    let tally = diagnostic_tally(diagnostics);
+    let mut parts = vec![format!("{}", tally.total)];
+    if tally.errors > 0 {
+        parts.push(format!("{} error", tally.errors));
+    }
+    if tally.warnings > 0 {
+        parts.push(format!("{} warning", tally.warnings));
+    }
+    if tally.infos > 0 {
+        parts.push(format!("{} info", tally.infos));
+    }
+    format!(
+        "{} ({})",
+        match diagnostics.admission {
+            AdmissionState::Admitted => "admitted",
+            AdmissionState::Rejected => "rejected",
+        },
+        parts.join(", ")
+    )
+}
+
+fn diagnostic_tally(diagnostics: &fidget_spinner_core::NodeDiagnostics) -> DiagnosticTally {
+    diagnostics
+        .items
+        .iter()
+        .fold(DiagnosticTally::default(), |mut tally, item| {
+            tally.total += 1;
+            match item.severity {
+                fidget_spinner_core::DiagnosticSeverity::Error => tally.errors += 1,
+                fidget_spinner_core::DiagnosticSeverity::Warning => tally.warnings += 1,
+                fidget_spinner_core::DiagnosticSeverity::Info => tally.infos += 1,
+            }
+            tally
+        })
+}
+
+fn payload_preview_value(fields: &Map<String, Value>) -> Value {
+    let mut preview = Map::new();
+    for (index, (name, value)) in fields.iter().enumerate() {
+        if index == 6 {
+            let _ = preview.insert(
+                "...".to_owned(),
+                json!(format!("+{} more field(s)", fields.len() - index)),
+            );
+            break;
+        }
+        let _ = preview.insert(name.clone(), payload_value_preview(value));
+    }
+    Value::Object(preview)
+}
+
+fn payload_preview_lines(fields: &Map<String, Value>) -> Vec<String> {
+    if fields.is_empty() {
+        return Vec::new();
+    }
+    let mut lines = vec![format!("payload fields: {}", fields.len())];
+    for (index, (name, value)) in fields.iter().enumerate() {
+        if index == 6 {
+            lines.push(format!("payload: +{} more field(s)", fields.len() - index));
+            break;
+        }
+        lines.push(format!(
+            "payload.{}: {}",
+            name,
+            value_summary(&payload_value_preview(value))
+        ));
+    }
+    lines
+}
+
+fn payload_value_preview(value: &Value) -> Value {
+    match value {
+        Value::Null | Value::Bool(_) | Value::Number(_) => value.clone(),
+        Value::String(text) => Value::String(libmcp::collapse_inline_whitespace(text)),
+        Value::Array(items) => {
+            let preview = items
+                .iter()
+                .take(3)
+                .map(payload_value_preview)
+                .collect::<Vec<_>>();
+            if items.len() > 3 {
+                json!({
+                    "items": preview,
+                    "truncated": true,
+                    "total_count": items.len(),
+                })
+            } else {
+                Value::Array(preview)
+            }
+        }
+        Value::Object(object) => {
+            let mut preview = Map::new();
+            for (index, (name, nested)) in object.iter().enumerate() {
+                if index == 4 {
+                    let _ = preview.insert(
+                        "...".to_owned(),
+                        json!(format!("+{} more field(s)", object.len() - index)),
+                    );
+                    break;
+                }
+                let _ = preview.insert(name.clone(), payload_value_preview(nested));
+            }
+            Value::Object(preview)
+        }
+    }
+}
+
+fn metric_value(metric: &MetricObservation) -> Value {
+    json!({
+        "key": metric.metric_key,
+        "value": metric.value,
+        "unit": format!("{:?}", metric.unit).to_ascii_lowercase(),
+        "objective": format!("{:?}", metric.objective).to_ascii_lowercase(),
+    })
+}
+
+fn metric_text(metric: &MetricObservation) -> String {
+    format!(
+        "{}={} {} ({})",
+        metric.metric_key,
+        metric.value,
+        format!("{:?}", metric.unit).to_ascii_lowercase(),
+        format!("{:?}", metric.objective).to_ascii_lowercase(),
+    )
+}
+
+fn format_tags(tags: &BTreeSet<TagName>) -> String {
+    tags.iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn schema_label(schema: &ProjectSchema) -> String {
+    format!("{}@{}", schema.namespace, schema.version)
+}
+
+fn value_summary(value: &Value) -> String {
+    match value {
+        Value::Null => "null".to_owned(),
+        Value::Bool(flag) => flag.to_string(),
+        Value::Number(number) => number.to_string(),
+        Value::String(text) => text.clone(),
+        Value::Array(items) => format!("{} item(s)", items.len()),
+        Value::Object(object) => format!("{} field(s)", object.len()),
+    }
+}
+
+#[derive(Default)]
+struct DiagnosticTally {
+    total: usize,
+    errors: usize,
+    warnings: usize,
+    infos: usize,
 }
 
 fn store_fault<E>(operation: &'static str) -> impl FnOnce(E) -> FaultRecord
@@ -533,6 +1358,8 @@ fn classify_fault_kind(message: &str) -> FaultKind {
         || message.contains("invalid")
         || message.contains("unknown")
         || message.contains("empty")
+        || message.contains("already exists")
+        || message.contains("require an explicit tag list")
     {
         FaultKind::InvalidInput
     } else {
@@ -569,6 +1396,14 @@ fn lineage_attachments(parents: Vec<String>) -> Result<Vec<EdgeAttachment>, Stor
             })
         })
         .collect()
+}
+
+fn parse_tag_set(values: Vec<String>) -> Result<BTreeSet<TagName>, StoreError> {
+    values
+        .into_iter()
+        .map(TagName::new)
+        .collect::<Result<BTreeSet<_>, _>>()
+        .map_err(StoreError::from)
 }
 
 fn metric_spec_from_wire(raw: WireMetricSpec) -> Result<MetricSpec, StoreError> {
@@ -656,6 +1491,12 @@ struct FrontierStatusToolArgs {
 }
 
 #[derive(Debug, Deserialize)]
+struct TagAddToolArgs {
+    name: String,
+    description: String,
+}
+
+#[derive(Debug, Deserialize)]
 struct FrontierInitToolArgs {
     label: String,
     objective: String,
@@ -675,6 +1516,7 @@ struct NodeCreateToolArgs {
     frontier_id: Option<String>,
     title: String,
     summary: Option<String>,
+    tags: Option<Vec<String>>,
     #[serde(default)]
     payload: Option<Map<String, Value>>,
     #[serde(default)]
@@ -702,6 +1544,8 @@ struct ChangeRecordToolArgs {
 struct NodeListToolArgs {
     frontier_id: Option<String>,
     class: Option<String>,
+    #[serde(default)]
+    tags: Vec<String>,
     #[serde(default)]
     include_archived: bool,
     limit: Option<u32>,
@@ -731,6 +1575,7 @@ struct QuickNoteToolArgs {
     frontier_id: Option<String>,
     title: String,
     body: String,
+    tags: Vec<String>,
     #[serde(default)]
     annotations: Vec<WireAnnotation>,
     #[serde(default)]

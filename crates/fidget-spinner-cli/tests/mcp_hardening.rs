@@ -1,3 +1,4 @@
+use axum as _;
 use std::fs;
 use std::io::{self, BufRead, BufReader, Write};
 use std::path::PathBuf;
@@ -9,9 +10,12 @@ use dirs as _;
 use fidget_spinner_core::NonEmptyText;
 use fidget_spinner_store_sqlite::{ListNodesQuery, ProjectStore};
 use libmcp as _;
+use linkify as _;
+use maud as _;
 use serde as _;
 use serde_json::{Value, json};
 use time as _;
+use tokio as _;
 use uuid as _;
 
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
@@ -183,21 +187,11 @@ fn cold_start_exposes_health_and_telemetry() -> TestResult {
 
     let tools = harness.tools_list()?;
     let tool_count = must_some(tools["result"]["tools"].as_array(), "tools array")?.len();
-    assert!(tool_count >= 18);
+    assert!(tool_count >= 20);
 
     let health = harness.call_tool(3, "system.health", json!({}))?;
-    assert_eq!(
-        tool_content(&health)["initialization"]["ready"].as_bool(),
-        Some(true)
-    );
-    assert_eq!(
-        tool_content(&health)["initialization"]["seed_captured"].as_bool(),
-        Some(true)
-    );
-    assert_eq!(
-        tool_content(&health)["binding"]["bound"].as_bool(),
-        Some(false)
-    );
+    assert_eq!(tool_content(&health)["ready"].as_bool(), Some(true));
+    assert_eq!(tool_content(&health)["bound"].as_bool(), Some(false));
 
     let telemetry = harness.call_tool(4, "system.telemetry", json!({}))?;
     assert!(tool_content(&telemetry)["requests"].as_u64().unwrap_or(0) >= 3);
@@ -234,13 +228,49 @@ fn tool_output_defaults_to_porcelain_and_supports_json_render() -> TestResult {
 
     let porcelain = harness.call_tool(22, "project.status", json!({}))?;
     let porcelain_text = must_some(tool_text(&porcelain), "porcelain project.status text")?;
-    assert!(porcelain_text.contains("project_root:"));
+    assert!(porcelain_text.contains("root:"));
     assert!(!porcelain_text.contains("\"project_root\":"));
 
-    let json_render = harness.call_tool(23, "project.status", json!({"render": "json"}))?;
+    let health = harness.call_tool(23, "system.health", json!({}))?;
+    let health_text = must_some(tool_text(&health), "porcelain system.health text")?;
+    assert!(health_text.contains("ready | bound"));
+    assert!(health_text.contains("binary:"));
+
+    let frontier = harness.call_tool(
+        24,
+        "frontier.init",
+        json!({
+            "label": "render frontier",
+            "objective": "exercise porcelain output",
+            "contract_title": "render contract",
+            "benchmark_suites": ["smoke"],
+            "promotion_criteria": ["retain key fields in porcelain"],
+            "primary_metric": {
+                "key": "score",
+                "unit": "count",
+                "objective": "maximize"
+            }
+        }),
+    )?;
+    assert_eq!(frontier["result"]["isError"].as_bool(), Some(false));
+
+    let frontier_list = harness.call_tool(25, "frontier.list", json!({}))?;
+    let frontier_text = must_some(tool_text(&frontier_list), "porcelain frontier.list text")?;
+    assert!(frontier_text.contains("render frontier"));
+    assert!(!frontier_text.contains("root_contract_node_id"));
+
+    let json_render = harness.call_tool(26, "project.status", json!({"render": "json"}))?;
     let json_text = must_some(tool_text(&json_render), "json project.status text")?;
     assert!(json_text.contains("\"project_root\":"));
     assert!(json_text.trim_start().starts_with('{'));
+
+    let json_full = harness.call_tool(
+        27,
+        "project.status",
+        json!({"render": "json", "detail": "full"}),
+    )?;
+    let json_full_text = must_some(tool_text(&json_full), "json full project.status text")?;
+    assert!(json_full_text.contains("\"schema\": {"));
     Ok(())
 }
 
@@ -389,6 +419,50 @@ fn unbound_project_tools_fail_with_bind_hint() -> TestResult {
 }
 
 #[test]
+fn bind_bootstraps_empty_project_root() -> TestResult {
+    let project_root = temp_project_root("bind_bootstrap")?;
+
+    let mut harness = McpHarness::spawn(None, &[])?;
+    let _ = harness.initialize()?;
+    harness.notify_initialized()?;
+
+    let bind = harness.bind_project(28, &project_root)?;
+    assert_eq!(bind["result"]["isError"].as_bool(), Some(false));
+    assert_eq!(
+        tool_content(&bind)["project_root"].as_str(),
+        Some(project_root.as_str())
+    );
+
+    let status = harness.call_tool(29, "project.status", json!({}))?;
+    assert_eq!(status["result"]["isError"].as_bool(), Some(false));
+    assert_eq!(
+        tool_content(&status)["project_root"].as_str(),
+        Some(project_root.as_str())
+    );
+
+    let store = must(ProjectStore::open(&project_root), "open bootstrapped store")?;
+    assert_eq!(store.project_root().as_str(), project_root.as_str());
+    Ok(())
+}
+
+#[test]
+fn bind_rejects_nonempty_uninitialized_root() -> TestResult {
+    let project_root = temp_project_root("bind_nonempty")?;
+    must(
+        fs::write(project_root.join("README.txt").as_std_path(), "occupied"),
+        "seed nonempty directory",
+    )?;
+
+    let mut harness = McpHarness::spawn(None, &[])?;
+    let _ = harness.initialize()?;
+    harness.notify_initialized()?;
+
+    let bind = harness.bind_project(30, &project_root)?;
+    assert_eq!(bind["result"]["isError"].as_bool(), Some(true));
+    Ok(())
+}
+
+#[test]
 fn bind_retargets_writes_to_sibling_project_root() -> TestResult {
     let spinner_root = temp_project_root("spinner_root")?;
     let libgrid_root = temp_project_root("libgrid_root")?;
@@ -404,31 +478,32 @@ fn bind_retargets_writes_to_sibling_project_root() -> TestResult {
     let _ = harness.initialize()?;
     harness.notify_initialized()?;
 
-    let initial_status = harness.call_tool(30, "project.status", json!({}))?;
+    let initial_status = harness.call_tool(31, "project.status", json!({}))?;
     assert_eq!(
         tool_content(&initial_status)["project_root"].as_str(),
         Some(spinner_root.as_str())
     );
 
-    let rebind = harness.bind_project(31, &notes_dir)?;
+    let rebind = harness.bind_project(32, &notes_dir)?;
     assert_eq!(rebind["result"]["isError"].as_bool(), Some(false));
     assert_eq!(
         tool_content(&rebind)["project_root"].as_str(),
         Some(libgrid_root.as_str())
     );
 
-    let status = harness.call_tool(32, "project.status", json!({}))?;
+    let status = harness.call_tool(33, "project.status", json!({}))?;
     assert_eq!(
         tool_content(&status)["project_root"].as_str(),
         Some(libgrid_root.as_str())
     );
 
     let note = harness.call_tool(
-        33,
+        34,
         "note.quick",
         json!({
             "title": "libgrid dogfood note",
             "body": "rebind should redirect writes",
+            "tags": [],
         }),
     )?;
     assert_eq!(note["result"]["isError"].as_bool(), Some(false));
@@ -451,5 +526,59 @@ fn bind_retargets_writes_to_sibling_project_root() -> TestResult {
         .len(),
         1
     );
+    Ok(())
+}
+
+#[test]
+fn tag_registry_drives_note_creation_and_lookup() -> TestResult {
+    let project_root = temp_project_root("tag_registry")?;
+    init_project(&project_root)?;
+
+    let mut harness = McpHarness::spawn(None, &[])?;
+    let _ = harness.initialize()?;
+    harness.notify_initialized()?;
+    let bind = harness.bind_project(40, &project_root)?;
+    assert_eq!(bind["result"]["isError"].as_bool(), Some(false));
+
+    let missing_tags = harness.call_tool(
+        41,
+        "note.quick",
+        json!({
+            "title": "untagged",
+            "body": "should fail",
+        }),
+    )?;
+    assert_eq!(missing_tags["result"]["isError"].as_bool(), Some(true));
+
+    let tag = harness.call_tool(
+        42,
+        "tag.add",
+        json!({
+            "name": "dogfood/mcp",
+            "description": "MCP dogfood observations",
+        }),
+    )?;
+    assert_eq!(tag["result"]["isError"].as_bool(), Some(false));
+
+    let tag_list = harness.call_tool(43, "tag.list", json!({}))?;
+    let tags = must_some(tool_content(&tag_list).as_array(), "tag list")?;
+    assert_eq!(tags.len(), 1);
+    assert_eq!(tags[0]["name"].as_str(), Some("dogfood/mcp"));
+
+    let note = harness.call_tool(
+        44,
+        "note.quick",
+        json!({
+            "title": "tagged note",
+            "body": "tagged lookup should work",
+            "tags": ["dogfood/mcp"],
+        }),
+    )?;
+    assert_eq!(note["result"]["isError"].as_bool(), Some(false));
+
+    let filtered = harness.call_tool(45, "node.list", json!({"tags": ["dogfood/mcp"]}))?;
+    let nodes = must_some(tool_content(&filtered).as_array(), "filtered nodes")?;
+    assert_eq!(nodes.len(), 1);
+    assert_eq!(nodes[0]["tags"][0].as_str(), Some("dogfood/mcp"));
     Ok(())
 }

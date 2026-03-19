@@ -10,7 +10,7 @@ use libmcp::{
     remove_snapshot_file, write_snapshot_file,
 };
 use serde::Serialize;
-use serde_json::{Value, json};
+use serde_json::{Map, Value, json};
 
 use super::{
     binary::BinaryRuntime,
@@ -21,7 +21,7 @@ use crate::mcp::catalog::{
     DispatchTarget, list_resources, resource_spec, tool_definitions, tool_spec,
 };
 use crate::mcp::fault::{FaultKind, FaultRecord, FaultStage};
-use crate::mcp::output::split_render_mode;
+use crate::mcp::output::{ToolOutput, detailed_tool_output, split_presentation, tool_success};
 use crate::mcp::protocol::{
     CRASH_ONCE_ENV, FORCE_ROLLOUT_ENV, HOST_STATE_ENV, HostRequestId, HostStateSeed,
     PROTOCOL_VERSION, ProjectBindingSeed, SERVER_NAME, WorkerOperation, WorkerSpawnConfig,
@@ -385,7 +385,8 @@ impl HostRuntime {
 
     fn handle_host_tool(&mut self, name: &str, arguments: Value) -> Result<Value, FaultRecord> {
         let operation = format!("tools/call:{name}");
-        let (render, arguments) = split_render_mode(arguments, &operation, FaultStage::Host)?;
+        let (presentation, arguments) =
+            split_presentation(arguments, &operation, FaultStage::Host)?;
         match name {
             "project.bind" => {
                 let args = deserialize::<ProjectBindArgs>(arguments, "tools/call:project.bind")?;
@@ -393,13 +394,18 @@ impl HostRuntime {
                     .map_err(host_store_fault("tools/call:project.bind"))?;
                 self.worker.rebind(resolved.binding.project_root.clone());
                 self.binding = Some(resolved.binding);
-                tool_success(&resolved.status, render)
+                tool_success(
+                    project_bind_output(&resolved.status)?,
+                    presentation,
+                    FaultStage::Host,
+                    "tools/call:project.bind",
+                )
             }
             "skill.list" => tool_success(
-                &json!({
-                    "skills": crate::bundled_skill::bundled_skill_summaries(),
-                }),
-                render,
+                skill_list_output()?,
+                presentation,
+                FaultStage::Host,
+                "tools/call:skill.list",
             ),
             "skill.show" => {
                 let args = deserialize::<SkillShowArgs>(arguments, "tools/call:skill.show")?;
@@ -417,17 +423,14 @@ impl HostRuntime {
                     },
                 )?;
                 tool_success(
-                    &json!({
-                        "name": skill.name,
-                        "description": skill.description,
-                        "resource_uri": skill.resource_uri,
-                        "body": skill.body,
-                    }),
-                    render,
+                    skill_show_output(skill)?,
+                    presentation,
+                    FaultStage::Host,
+                    "tools/call:skill.show",
                 )
             }
-            "system.health" => tool_success(
-                &HealthSnapshot {
+            "system.health" => {
+                let health = HealthSnapshot {
                     initialization: InitializationHealth {
                         ready: self.session_initialized(),
                         seed_captured: self.seed_captured(),
@@ -443,10 +446,20 @@ impl HostRuntime {
                         rollout_pending: self.binary.rollout_pending().unwrap_or(false),
                     },
                     last_fault: self.telemetry.last_fault.clone(),
-                },
-                render,
+                };
+                tool_success(
+                    system_health_output(&health)?,
+                    presentation,
+                    FaultStage::Host,
+                    "tools/call:system.health",
+                )
+            }
+            "system.telemetry" => tool_success(
+                system_telemetry_output(&self.telemetry)?,
+                presentation,
+                FaultStage::Host,
+                "tools/call:system.telemetry",
             ),
-            "system.telemetry" => tool_success(&self.telemetry, render),
             other => Err(FaultRecord::new(
                 FaultKind::InvalidInput,
                 FaultStage::Host,
@@ -597,7 +610,7 @@ struct ResolvedProjectBinding {
 fn resolve_project_binding(
     requested_path: PathBuf,
 ) -> Result<ResolvedProjectBinding, fidget_spinner_store_sqlite::StoreError> {
-    let store = crate::open_store(&requested_path)?;
+    let store = crate::open_or_init_store_for_binding(&requested_path)?;
     Ok(ResolvedProjectBinding {
         binding: ProjectBinding {
             requested_path: requested_path.clone(),
@@ -710,8 +723,287 @@ fn request_id_from_frame(frame: &FramedMessage) -> Option<RequestId> {
     }
 }
 
-fn tool_success(value: &impl Serialize, render: libmcp::RenderMode) -> Result<Value, FaultRecord> {
-    crate::mcp::output::tool_success(value, render, FaultStage::Host, "tool_success")
+fn project_bind_output(status: &ProjectBindStatus) -> Result<ToolOutput, FaultRecord> {
+    let mut concise = Map::new();
+    let _ = concise.insert("project_root".to_owned(), json!(status.project_root));
+    let _ = concise.insert("state_root".to_owned(), json!(status.state_root));
+    let _ = concise.insert("display_name".to_owned(), json!(status.display_name));
+    let _ = concise.insert(
+        "schema".to_owned(),
+        json!(format!(
+            "{}@{}",
+            status.schema.namespace, status.schema.version
+        )),
+    );
+    let _ = concise.insert(
+        "git_repo_detected".to_owned(),
+        json!(status.git_repo_detected),
+    );
+    if status.requested_path != status.project_root {
+        let _ = concise.insert("requested_path".to_owned(), json!(status.requested_path));
+    }
+    detailed_tool_output(
+        &Value::Object(concise),
+        status,
+        [
+            format!("bound project {}", status.display_name),
+            format!("root: {}", status.project_root),
+            format!("state: {}", status.state_root),
+            format!(
+                "schema: {}@{}",
+                status.schema.namespace, status.schema.version
+            ),
+            format!(
+                "git: {}",
+                if status.git_repo_detected {
+                    "detected"
+                } else {
+                    "not detected"
+                }
+            ),
+        ]
+        .join("\n"),
+        None,
+        FaultStage::Host,
+        "tools/call:project.bind",
+    )
+}
+
+fn skill_list_output() -> Result<ToolOutput, FaultRecord> {
+    let skills = crate::bundled_skill::bundled_skill_summaries();
+    let concise = json!({
+        "skills": skills.iter().map(|skill| {
+            json!({
+                "name": skill.name,
+                "description": skill.description,
+            })
+        }).collect::<Vec<_>>(),
+    });
+    let mut lines = vec![format!("{} bundled skill(s)", skills.len())];
+    lines.extend(
+        skills
+            .iter()
+            .map(|skill| format!("{}: {}", skill.name, skill.description)),
+    );
+    detailed_tool_output(
+        &concise,
+        &json!({ "skills": skills }),
+        lines.join("\n"),
+        None,
+        FaultStage::Host,
+        "tools/call:skill.list",
+    )
+}
+
+fn skill_show_output(skill: crate::bundled_skill::BundledSkill) -> Result<ToolOutput, FaultRecord> {
+    detailed_tool_output(
+        &json!({
+            "name": skill.name,
+            "resource_uri": skill.resource_uri,
+            "body": skill.body,
+        }),
+        &json!({
+            "name": skill.name,
+            "description": skill.description,
+            "resource_uri": skill.resource_uri,
+            "body": skill.body,
+        }),
+        skill.body,
+        None,
+        FaultStage::Host,
+        "tools/call:skill.show",
+    )
+}
+
+fn system_health_output(health: &HealthSnapshot) -> Result<ToolOutput, FaultRecord> {
+    let mut concise = Map::new();
+    let _ = concise.insert(
+        "ready".to_owned(),
+        json!(health.initialization.ready && health.initialization.seed_captured),
+    );
+    let _ = concise.insert("bound".to_owned(), json!(health.binding.bound));
+    if let Some(project_root) = health.binding.project_root.as_ref() {
+        let _ = concise.insert("project_root".to_owned(), json!(project_root));
+    }
+    let _ = concise.insert(
+        "worker_generation".to_owned(),
+        json!(health.worker.worker_generation),
+    );
+    let _ = concise.insert("worker_alive".to_owned(), json!(health.worker.alive));
+    let _ = concise.insert(
+        "launch_path_stable".to_owned(),
+        json!(health.binary.launch_path_stable),
+    );
+    let _ = concise.insert(
+        "rollout_pending".to_owned(),
+        json!(health.binary.rollout_pending),
+    );
+    if let Some(fault) = health.last_fault.as_ref() {
+        let _ = concise.insert(
+            "last_fault".to_owned(),
+            json!({
+                "kind": format!("{:?}", fault.kind).to_ascii_lowercase(),
+                "stage": format!("{:?}", fault.stage).to_ascii_lowercase(),
+                "operation": fault.operation,
+                "message": fault.message,
+                "retryable": fault.retryable,
+                "retried": fault.retried,
+            }),
+        );
+    }
+
+    let mut lines = vec![format!(
+        "{} | {}",
+        if health.initialization.ready && health.initialization.seed_captured {
+            "ready"
+        } else {
+            "not-ready"
+        },
+        if health.binding.bound {
+            "bound"
+        } else {
+            "unbound"
+        }
+    )];
+    if let Some(project_root) = health.binding.project_root.as_ref() {
+        lines.push(format!("project: {project_root}"));
+    }
+    lines.push(format!(
+        "worker: gen {} {}",
+        health.worker.worker_generation,
+        if health.worker.alive { "alive" } else { "dead" }
+    ));
+    lines.push(format!(
+        "binary: {}{}",
+        if health.binary.launch_path_stable {
+            "stable"
+        } else {
+            "unstable"
+        },
+        if health.binary.rollout_pending {
+            " rollout-pending"
+        } else {
+            ""
+        }
+    ));
+    if let Some(fault) = health.last_fault.as_ref() {
+        lines.push(format!(
+            "fault: {} {} {}",
+            format!("{:?}", fault.kind).to_ascii_lowercase(),
+            fault.operation,
+            fault.message,
+        ));
+    }
+    detailed_tool_output(
+        &Value::Object(concise),
+        health,
+        lines.join("\n"),
+        None,
+        FaultStage::Host,
+        "tools/call:system.health",
+    )
+}
+
+fn system_telemetry_output(telemetry: &ServerTelemetry) -> Result<ToolOutput, FaultRecord> {
+    let hot_operations = telemetry
+        .operations
+        .iter()
+        .map(|(operation, stats)| {
+            (
+                operation.clone(),
+                stats.requests,
+                stats.errors,
+                stats.retries,
+                stats.last_latency_ms.unwrap_or(0),
+            )
+        })
+        .collect::<Vec<_>>();
+    let mut hot_operations = hot_operations;
+    hot_operations.sort_by(|left, right| {
+        right
+            .1
+            .cmp(&left.1)
+            .then_with(|| right.2.cmp(&left.2))
+            .then_with(|| right.3.cmp(&left.3))
+            .then_with(|| left.0.cmp(&right.0))
+    });
+    let hot_operations = hot_operations
+        .into_iter()
+        .take(6)
+        .map(|(operation, requests, errors, retries, last_latency_ms)| {
+            json!({
+                "operation": operation,
+                "requests": requests,
+                "errors": errors,
+                "retries": retries,
+                "last_latency_ms": last_latency_ms,
+            })
+        })
+        .collect::<Vec<_>>();
+
+    let mut concise = Map::new();
+    let _ = concise.insert("requests".to_owned(), json!(telemetry.requests));
+    let _ = concise.insert("successes".to_owned(), json!(telemetry.successes));
+    let _ = concise.insert("errors".to_owned(), json!(telemetry.errors));
+    let _ = concise.insert("retries".to_owned(), json!(telemetry.retries));
+    let _ = concise.insert(
+        "worker_restarts".to_owned(),
+        json!(telemetry.worker_restarts),
+    );
+    let _ = concise.insert("host_rollouts".to_owned(), json!(telemetry.host_rollouts));
+    let _ = concise.insert("hot_operations".to_owned(), Value::Array(hot_operations));
+    if let Some(fault) = telemetry.last_fault.as_ref() {
+        let _ = concise.insert(
+            "last_fault".to_owned(),
+            json!({
+                "kind": format!("{:?}", fault.kind).to_ascii_lowercase(),
+                "operation": fault.operation,
+                "message": fault.message,
+            }),
+        );
+    }
+
+    let mut lines = vec![format!(
+        "requests={} success={} error={} retry={}",
+        telemetry.requests, telemetry.successes, telemetry.errors, telemetry.retries
+    )];
+    lines.push(format!(
+        "worker_restarts={} host_rollouts={}",
+        telemetry.worker_restarts, telemetry.host_rollouts
+    ));
+    let mut ranked_operations = telemetry.operations.iter().collect::<Vec<_>>();
+    ranked_operations.sort_by(|(left_name, left), (right_name, right)| {
+        right
+            .requests
+            .cmp(&left.requests)
+            .then_with(|| right.errors.cmp(&left.errors))
+            .then_with(|| right.retries.cmp(&left.retries))
+            .then_with(|| left_name.cmp(right_name))
+    });
+    if !ranked_operations.is_empty() {
+        lines.push("hot operations:".to_owned());
+        for (operation, stats) in ranked_operations.into_iter().take(6) {
+            lines.push(format!(
+                "{} req={} err={} retry={} last={}ms",
+                operation,
+                stats.requests,
+                stats.errors,
+                stats.retries,
+                stats.last_latency_ms.unwrap_or(0),
+            ));
+        }
+    }
+    if let Some(fault) = telemetry.last_fault.as_ref() {
+        lines.push(format!("last fault: {} {}", fault.operation, fault.message));
+    }
+    detailed_tool_output(
+        &Value::Object(concise),
+        telemetry,
+        lines.join("\n"),
+        None,
+        FaultStage::Host,
+        "tools/call:system.telemetry",
+    )
 }
 
 fn host_store_fault(
