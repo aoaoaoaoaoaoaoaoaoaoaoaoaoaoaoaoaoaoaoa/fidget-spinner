@@ -1,15 +1,12 @@
+use libmcp::ReplayContract;
 use serde_json::{Value, json};
+
+use crate::mcp::output::with_render_property;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum DispatchTarget {
     Host,
     Worker,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum ReplayContract {
-    SafeReplay,
-    NeverReplay,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -32,7 +29,7 @@ impl ToolSpec {
     pub fn annotation_json(self) -> Value {
         json!({
             "title": self.name,
-            "readOnlyHint": self.replay == ReplayContract::SafeReplay,
+            "readOnlyHint": self.replay == ReplayContract::Convergent,
             "destructiveHint": self.replay == ReplayContract::NeverReplay,
             "fidgetSpinner": {
                 "dispatch": match self.dispatch {
@@ -40,7 +37,8 @@ impl ToolSpec {
                     DispatchTarget::Worker => "worker",
                 },
                 "replayContract": match self.replay {
-                    ReplayContract::SafeReplay => "safe_replay",
+                    ReplayContract::Convergent => "convergent",
+                    ReplayContract::ProbeRequired => "probe_required",
                     ReplayContract::NeverReplay => "never_replay",
                 },
             }
@@ -61,25 +59,25 @@ pub(crate) fn tool_spec(name: &str) -> Option<ToolSpec> {
             name: "project.status",
             description: "Read local project status, store paths, and git availability for the currently bound project.",
             dispatch: DispatchTarget::Worker,
-            replay: ReplayContract::SafeReplay,
+            replay: ReplayContract::Convergent,
         }),
         "project.schema" => Some(ToolSpec {
             name: "project.schema",
             description: "Read the project-local payload schema and field validation tiers.",
             dispatch: DispatchTarget::Worker,
-            replay: ReplayContract::SafeReplay,
+            replay: ReplayContract::Convergent,
         }),
         "frontier.list" => Some(ToolSpec {
             name: "frontier.list",
             description: "List frontiers for the current project.",
             dispatch: DispatchTarget::Worker,
-            replay: ReplayContract::SafeReplay,
+            replay: ReplayContract::Convergent,
         }),
         "frontier.status" => Some(ToolSpec {
             name: "frontier.status",
             description: "Read one frontier projection, including champion and active candidates.",
             dispatch: DispatchTarget::Worker,
-            replay: ReplayContract::SafeReplay,
+            replay: ReplayContract::Convergent,
         }),
         "frontier.init" => Some(ToolSpec {
             name: "frontier.init",
@@ -103,13 +101,13 @@ pub(crate) fn tool_spec(name: &str) -> Option<ToolSpec> {
             name: "node.list",
             description: "List recent nodes. Archived nodes are hidden unless explicitly requested.",
             dispatch: DispatchTarget::Worker,
-            replay: ReplayContract::SafeReplay,
+            replay: ReplayContract::Convergent,
         }),
         "node.read" => Some(ToolSpec {
             name: "node.read",
             description: "Read one node including payload, diagnostics, and hidden annotations.",
             dispatch: DispatchTarget::Worker,
-            replay: ReplayContract::SafeReplay,
+            replay: ReplayContract::Convergent,
         }),
         "node.annotate" => Some(ToolSpec {
             name: "node.annotate",
@@ -145,25 +143,25 @@ pub(crate) fn tool_spec(name: &str) -> Option<ToolSpec> {
             name: "skill.list",
             description: "List bundled skills shipped with this package.",
             dispatch: DispatchTarget::Host,
-            replay: ReplayContract::SafeReplay,
+            replay: ReplayContract::Convergent,
         }),
         "skill.show" => Some(ToolSpec {
             name: "skill.show",
             description: "Return one bundled skill text shipped with this package. Defaults to `fidget-spinner` when name is omitted.",
             dispatch: DispatchTarget::Host,
-            replay: ReplayContract::SafeReplay,
+            replay: ReplayContract::Convergent,
         }),
         "system.health" => Some(ToolSpec {
             name: "system.health",
             description: "Read MCP host health, session binding, worker generation, rollout state, and the last fault.",
             dispatch: DispatchTarget::Host,
-            replay: ReplayContract::SafeReplay,
+            replay: ReplayContract::Convergent,
         }),
         "system.telemetry" => Some(ToolSpec {
             name: "system.telemetry",
             description: "Read aggregate request, retry, restart, and per-operation telemetry for this MCP session.",
             dispatch: DispatchTarget::Host,
-            replay: ReplayContract::SafeReplay,
+            replay: ReplayContract::Convergent,
         }),
         _ => None,
     }
@@ -175,22 +173,22 @@ pub(crate) fn resource_spec(uri: &str) -> Option<ResourceSpec> {
         "fidget-spinner://project/config" => Some(ResourceSpec {
             uri: "fidget-spinner://project/config",
             dispatch: DispatchTarget::Worker,
-            replay: ReplayContract::SafeReplay,
+            replay: ReplayContract::Convergent,
         }),
         "fidget-spinner://project/schema" => Some(ResourceSpec {
             uri: "fidget-spinner://project/schema",
             dispatch: DispatchTarget::Worker,
-            replay: ReplayContract::SafeReplay,
+            replay: ReplayContract::Convergent,
         }),
         "fidget-spinner://skill/fidget-spinner" => Some(ResourceSpec {
             uri: "fidget-spinner://skill/fidget-spinner",
             dispatch: DispatchTarget::Host,
-            replay: ReplayContract::SafeReplay,
+            replay: ReplayContract::Convergent,
         }),
         "fidget-spinner://skill/frontier-loop" => Some(ResourceSpec {
             uri: "fidget-spinner://skill/frontier-loop",
             dispatch: DispatchTarget::Host,
-            replay: ReplayContract::SafeReplay,
+            replay: ReplayContract::Convergent,
         }),
         _ => None,
     }
@@ -225,7 +223,7 @@ pub(crate) fn tool_definitions() -> Vec<Value> {
         json!({
             "name": spec.name,
             "description": spec.description,
-            "inputSchema": input_schema(spec.name),
+            "inputSchema": with_render_property(input_schema(spec.name)),
             "annotations": spec.annotation_json(),
         })
     })

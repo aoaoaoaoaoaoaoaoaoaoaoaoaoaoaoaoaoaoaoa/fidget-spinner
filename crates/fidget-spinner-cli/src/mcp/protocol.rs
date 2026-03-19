@@ -1,5 +1,6 @@
 use std::path::PathBuf;
 
+use libmcp::HostSessionKernelSnapshot;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -14,15 +15,9 @@ pub(crate) const TRANSIENT_ONCE_ENV: &str = "FIDGET_SPINNER_MCP_TEST_WORKER_TRAN
 pub(crate) const TRANSIENT_ONCE_MARKER_ENV: &str =
     "FIDGET_SPINNER_MCP_TEST_WORKER_TRANSIENT_ONCE_MARKER";
 
-#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
-pub(crate) struct SessionSeed {
-    pub initialize_params: Option<Value>,
-    pub initialized: bool,
-}
-
-#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub(crate) struct HostStateSeed {
-    pub session: SessionSeed,
+    pub session_kernel: HostSessionKernelSnapshot,
     pub telemetry: ServerTelemetry,
     pub next_request_id: u64,
     pub binding: Option<ProjectBindingSeed>,

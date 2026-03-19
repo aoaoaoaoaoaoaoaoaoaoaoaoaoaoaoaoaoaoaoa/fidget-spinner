@@ -13,6 +13,7 @@ clap.workspace = true
 dirs.workspace = true
 fidget-spinner-core = { path = "../fidget-spinner-core" }
 fidget-spinner-store-sqlite = { path = "../fidget-spinner-store-sqlite" }
+libmcp = { path = "../../../libmcp/crates/libmcp" }
 serde.workspace = true
 serde_json.workspace = true
 time.workspace = true

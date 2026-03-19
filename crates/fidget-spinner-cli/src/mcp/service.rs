@@ -11,10 +11,12 @@ use fidget_spinner_store_sqlite::{
     CloseExperimentRequest, CreateFrontierRequest, CreateNodeRequest, EdgeAttachment,
     EdgeAttachmentDirection, ListNodesQuery, ProjectStore, StoreError,
 };
+use libmcp::RenderMode;
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
 
 use crate::mcp::fault::{FaultKind, FaultRecord, FaultStage};
+use crate::mcp::output::split_render_mode;
 use crate::mcp::protocol::{TRANSIENT_ONCE_ENV, TRANSIENT_ONCE_MARKER_ENV, WorkerOperation};
 
 pub(crate) struct WorkerService {
@@ -42,22 +44,28 @@ impl WorkerService {
     }
 
     fn call_tool(&mut self, name: &str, arguments: Value) -> Result<Value, FaultRecord> {
+        let operation = format!("tools/call:{name}");
+        let (render, arguments) = split_render_mode(arguments, &operation, FaultStage::Worker)?;
         match name {
-            "project.status" => tool_success(&json!({
-                "project_root": self.store.project_root(),
-                "state_root": self.store.state_root(),
-                "display_name": self.store.config().display_name,
-                "schema": self.store.schema().schema_ref(),
-                "git_repo_detected": crate::run_git(self.store.project_root(), &["rev-parse", "--show-toplevel"])
-                    .map_err(store_fault("tools/call:project.status"))?
-                    .is_some(),
-            })),
-            "project.schema" => tool_success(self.store.schema()),
+            "project.status" => tool_success(
+                &json!({
+                    "project_root": self.store.project_root(),
+                    "state_root": self.store.state_root(),
+                    "display_name": self.store.config().display_name,
+                    "schema": self.store.schema().schema_ref(),
+                    "git_repo_detected": crate::run_git(self.store.project_root(), &["rev-parse", "--show-toplevel"])
+                        .map_err(store_fault("tools/call:project.status"))?
+                        .is_some(),
+                }),
+                render,
+            ),
+            "project.schema" => tool_success(self.store.schema(), render),
             "frontier.list" => tool_success(
                 &self
                     .store
                     .list_frontiers()
                     .map_err(store_fault("tools/call:frontier.list"))?,
+                render,
             ),
             "frontier.status" => {
                 let args = deserialize::<FrontierStatusToolArgs>(arguments)?;
@@ -69,6 +77,7 @@ impl WorkerService {
                                 .map_err(store_fault("tools/call:frontier.status"))?,
                         )
                         .map_err(store_fault("tools/call:frontier.status"))?,
+                    render,
                 )
             }
             "frontier.init" => {
@@ -124,7 +133,7 @@ impl WorkerService {
                         initial_checkpoint,
                     })
                     .map_err(store_fault("tools/call:frontier.init"))?;
-                tool_success(&projection)
+                tool_success(&projection, render)
             }
             "node.create" => {
                 let args = deserialize::<NodeCreateToolArgs>(arguments)?;
@@ -156,7 +165,7 @@ impl WorkerService {
                             .map_err(store_fault("tools/call:node.create"))?,
                     })
                     .map_err(store_fault("tools/call:node.create"))?;
-                tool_success(&node)
+                tool_success(&node, render)
             }
             "change.record" => {
                 let args = deserialize::<ChangeRecordToolArgs>(arguments)?;
@@ -197,7 +206,7 @@ impl WorkerService {
                             .map_err(store_fault("tools/call:change.record"))?,
                     })
                     .map_err(store_fault("tools/call:change.record"))?;
-                tool_success(&node)
+                tool_success(&node, render)
             }
             "node.list" => {
                 let args = deserialize::<NodeListToolArgs>(arguments)?;
@@ -220,7 +229,7 @@ impl WorkerService {
                         limit: args.limit.unwrap_or(20),
                     })
                     .map_err(store_fault("tools/call:node.list"))?;
-                tool_success(&nodes)
+                tool_success(&nodes, render)
             }
             "node.read" => {
                 let args = deserialize::<NodeReadToolArgs>(arguments)?;
@@ -238,7 +247,7 @@ impl WorkerService {
                             format!("node {node_id} was not found"),
                         )
                     })?;
-                tool_success(&node)
+                tool_success(&node, render)
             }
             "node.annotate" => {
                 let args = deserialize::<NodeAnnotateToolArgs>(arguments)?;
@@ -265,7 +274,7 @@ impl WorkerService {
                         annotation,
                     )
                     .map_err(store_fault("tools/call:node.annotate"))?;
-                tool_success(&json!({"annotated": args.node_id}))
+                tool_success(&json!({"annotated": args.node_id}), render)
             }
             "node.archive" => {
                 let args = deserialize::<NodeArchiveToolArgs>(arguments)?;
@@ -275,7 +284,7 @@ impl WorkerService {
                             .map_err(store_fault("tools/call:node.archive"))?,
                     )
                     .map_err(store_fault("tools/call:node.archive"))?;
-                tool_success(&json!({"archived": args.node_id}))
+                tool_success(&json!({"archived": args.node_id}), render)
             }
             "note.quick" => {
                 let args = deserialize::<QuickNoteToolArgs>(arguments)?;
@@ -303,7 +312,7 @@ impl WorkerService {
                             .map_err(store_fault("tools/call:note.quick"))?,
                     })
                     .map_err(store_fault("tools/call:note.quick"))?;
-                tool_success(&node)
+                tool_success(&node, render)
             }
             "research.record" => {
                 let args = deserialize::<ResearchRecordToolArgs>(arguments)?;
@@ -335,7 +344,7 @@ impl WorkerService {
                             .map_err(store_fault("tools/call:research.record"))?,
                     })
                     .map_err(store_fault("tools/call:research.record"))?;
-                tool_success(&node)
+                tool_success(&node, render)
             }
             "experiment.close" => {
                 let args = deserialize::<ExperimentCloseToolArgs>(arguments)?;
@@ -420,7 +429,7 @@ impl WorkerService {
                             .map_err(store_fault("tools/call:experiment.close"))?,
                     })
                     .map_err(store_fault("tools/call:experiment.close"))?;
-                tool_success(&receipt)
+                tool_success(&receipt, render)
             }
             other => Err(FaultRecord::new(
                 FaultKind::InvalidInput,
@@ -501,16 +510,8 @@ fn deserialize<T: for<'de> Deserialize<'de>>(value: Value) -> Result<T, FaultRec
     })
 }
 
-fn tool_success(value: &impl serde::Serialize) -> Result<Value, FaultRecord> {
-    Ok(json!({
-        "content": [{
-            "type": "text",
-            "text": crate::to_pretty_json(value).map_err(store_fault("worker.tool_success"))?,
-        }],
-        "structuredContent": serde_json::to_value(value)
-            .map_err(store_fault("worker.tool_success"))?,
-        "isError": false,
-    }))
+fn tool_success(value: &impl serde::Serialize, render: RenderMode) -> Result<Value, FaultRecord> {
+    crate::mcp::output::tool_success(value, render, FaultStage::Worker, "worker.tool_success")
 }
 
 fn store_fault<E>(operation: &'static str) -> impl FnOnce(E) -> FaultRecord

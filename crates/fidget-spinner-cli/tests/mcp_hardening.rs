@@ -8,6 +8,7 @@ use clap as _;
 use dirs as _;
 use fidget_spinner_core::NonEmptyText;
 use fidget_spinner_store_sqlite::{ListNodesQuery, ProjectStore};
+use libmcp as _;
 use serde as _;
 use serde_json::{Value, json};
 use time as _;
@@ -160,6 +161,13 @@ fn tool_content(response: &Value) -> &Value {
     &response["result"]["structuredContent"]
 }
 
+fn tool_text(response: &Value) -> Option<&str> {
+    response["result"]["content"]
+        .as_array()
+        .and_then(|content| content.first())
+        .and_then(|entry| entry["text"].as_str())
+}
+
 #[test]
 fn cold_start_exposes_health_and_telemetry() -> TestResult {
     let project_root = temp_project_root("cold_start")?;
@@ -210,6 +218,29 @@ fn cold_start_exposes_health_and_telemetry() -> TestResult {
         tool_content(&base_skill)["name"].as_str(),
         Some("fidget-spinner")
     );
+    Ok(())
+}
+
+#[test]
+fn tool_output_defaults_to_porcelain_and_supports_json_render() -> TestResult {
+    let project_root = temp_project_root("render_modes")?;
+    init_project(&project_root)?;
+
+    let mut harness = McpHarness::spawn(None, &[])?;
+    let _ = harness.initialize()?;
+    harness.notify_initialized()?;
+    let bind = harness.bind_project(21, &project_root)?;
+    assert_eq!(bind["result"]["isError"].as_bool(), Some(false));
+
+    let porcelain = harness.call_tool(22, "project.status", json!({}))?;
+    let porcelain_text = must_some(tool_text(&porcelain), "porcelain project.status text")?;
+    assert!(porcelain_text.contains("project_root:"));
+    assert!(!porcelain_text.contains("\"project_root\":"));
+
+    let json_render = harness.call_tool(23, "project.status", json!({"render": "json"}))?;
+    let json_text = must_some(tool_text(&json_render), "json project.status text")?;
+    assert!(json_text.contains("\"project_root\":"));
+    assert!(json_text.trim_start().starts_with('{'));
     Ok(())
 }
 

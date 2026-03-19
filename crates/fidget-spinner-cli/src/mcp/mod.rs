@@ -1,6 +1,7 @@
 mod catalog;
 mod fault;
 mod host;
+mod output;
 mod protocol;
 mod service;
 mod telemetry;
