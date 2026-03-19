@@ -1,9 +1,13 @@
 [package]
 name = "fidget-spinner-core"
-description = "Core domain model for a local-first experimental DAG"
+categories.workspace = true
+description = "Core domain model for the Fidget Spinner experimental DAG"
 edition.workspace = true
+keywords.workspace = true
 license.workspace = true
 publish = false
+readme.workspace = true
+repository.workspace = true
 rust-version.workspace = true
 version.workspace = true
 

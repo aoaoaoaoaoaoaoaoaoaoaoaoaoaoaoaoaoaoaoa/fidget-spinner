@@ -230,8 +230,10 @@ done.
 - local SQLite backing store
 - local blob directory
 - typed Rust core model
+- optional light-touch project field types: `string`, `numeric`, `boolean`, `timestamp`
 - thin CLI for bootstrap and repair
 - hardened stdio MCP host exposed from the CLI
+- minimal read-only web navigator with tag filtering and linear node rendering
 - disposable MCP worker execution runtime
 - bundled `fidget-spinner` base skill
 - bundled `frontier-loop` skill
@@ -259,6 +261,8 @@ The initial tools should be:
 - `project.bind`
 - `project.status`
 - `project.schema`
+- `tag.add`
+- `tag.list`
 - `frontier.list`
 - `frontier.status`
 - `frontier.init`
@@ -289,9 +293,9 @@ The bundled skills should instruct agents to:
 
 1. inspect `system.health` first
 2. bind the MCP session to the target project before project-local reads or writes
-3. read project schema and frontier state
+3. read project schema, tag registry, and frontier state
 4. pull context from the DAG instead of giant prose dumps
-5. use `note.quick` and `research.record` freely off path
+5. use `note.quick` and `research.record` freely off path, but always pass an explicit tag list for notes
 6. use `change.record` before worktree thrash becomes ambiguous
 7. use `experiment.close` to atomically seal core-path work
 8. archive detritus instead of deleting it
@@ -306,6 +310,8 @@ The MVP is successful when:
 - an agent can inspect frontier state through MCP
 - an agent can inspect MCP health and telemetry through MCP
 - an agent can record off-path research without bureaucratic pain
+- the project schema can softly declare whether payload fields are strings, numbers, booleans, or timestamps
+- an operator can inspect recent nodes through a minimal localhost web navigator filtered by tag
 - a git-backed project can close a real core-path experiment atomically
 - retryable worker faults do not duplicate side effects
 - stale nodes can be archived instead of polluting normal enumeration

@@ -5,6 +5,7 @@ use camino::Utf8PathBuf;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use time::OffsetDateTime;
+use time::format_description::well_known::Rfc3339;
 
 use crate::{
     AgentSessionId, AnnotationId, ArtifactId, CheckpointId, CoreError, ExperimentId, FrontierId,
@@ -54,6 +55,60 @@ impl GitCommitHash {
 impl Display for GitCommitHash {
     fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
         Display::fmt(&self.0, formatter)
+    }
+}
+
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct TagName(String);
+
+impl TagName {
+    pub fn new(value: impl Into<String>) -> Result<Self, CoreError> {
+        let normalized = value.into().trim().to_ascii_lowercase();
+        if normalized.is_empty() {
+            return Err(CoreError::EmptyTagName);
+        }
+        let mut previous_was_separator = true;
+        for character in normalized.chars() {
+            if character.is_ascii_lowercase() || character.is_ascii_digit() {
+                previous_was_separator = false;
+                continue;
+            }
+            if matches!(character, '-' | '_' | '/') && !previous_was_separator {
+                previous_was_separator = true;
+                continue;
+            }
+            return Err(CoreError::InvalidTagName(normalized));
+        }
+        if previous_was_separator {
+            return Err(CoreError::InvalidTagName(normalized));
+        }
+        Ok(Self(normalized))
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl TryFrom<String> for TagName {
+    type Error = CoreError;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        Self::new(value)
+    }
+}
+
+impl From<TagName> for String {
+    fn from(value: TagName) -> Self {
+        value.0
+    }
+}
+
+impl Display for TagName {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
+        formatter.write_str(&self.0)
     }
 }
 
@@ -141,6 +196,44 @@ pub enum FieldRole {
 pub enum InferencePolicy {
     ManualOnly,
     ModelMayInfer,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FieldValueType {
+    String,
+    Numeric,
+    Boolean,
+    Timestamp,
+}
+
+impl FieldValueType {
+    #[must_use]
+    pub const fn is_plottable(self) -> bool {
+        matches!(self, Self::Numeric | Self::Timestamp)
+    }
+
+    #[must_use]
+    pub fn accepts(self, value: &Value) -> bool {
+        match self {
+            Self::String => value.is_string(),
+            Self::Numeric => value.is_number(),
+            Self::Boolean => value.is_boolean(),
+            Self::Timestamp => value
+                .as_str()
+                .is_some_and(|raw| OffsetDateTime::parse(raw, &Rfc3339).is_ok()),
+        }
+    }
+
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::String => "string",
+            Self::Numeric => "numeric",
+            Self::Boolean => "boolean",
+            Self::Timestamp => "timestamp",
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -265,6 +358,13 @@ impl NodeAnnotation {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct TagRecord {
+    pub name: TagName,
+    pub description: NonEmptyText,
+    pub created_at: OffsetDateTime,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct ValidationDiagnostic {
     pub severity: DiagnosticSeverity,
     pub code: String,
@@ -296,12 +396,19 @@ pub struct ProjectFieldSpec {
     pub severity: DiagnosticSeverity,
     pub role: FieldRole,
     pub inference_policy: InferencePolicy,
+    #[serde(default)]
+    pub value_type: Option<FieldValueType>,
 }
 
 impl ProjectFieldSpec {
     #[must_use]
     pub fn applies_to(&self, class: NodeClass) -> bool {
         self.node_classes.is_empty() || self.node_classes.contains(&class)
+    }
+
+    #[must_use]
+    pub fn is_plottable(&self) -> bool {
+        self.value_type.is_some_and(FieldValueType::is_plottable)
     }
 }
 
@@ -331,14 +438,37 @@ impl ProjectSchema {
     }
 
     #[must_use]
+    pub fn field_spec(&self, class: NodeClass, name: &str) -> Option<&ProjectFieldSpec> {
+        self.fields
+            .iter()
+            .find(|field| field.applies_to(class) && field.name.as_str() == name)
+    }
+
+    #[must_use]
     pub fn validate_node(&self, class: NodeClass, payload: &NodePayload) -> NodeDiagnostics {
         let items = self
             .fields
             .iter()
             .filter(|field| field.applies_to(class))
             .filter_map(|field| {
-                let is_missing = payload.field(field.name.as_str()).is_none();
+                let value = payload.field(field.name.as_str());
+                let is_missing = value.is_none();
                 if !is_missing || field.presence == FieldPresence::Optional {
+                    if let (Some(value), Some(value_type)) = (value, field.value_type)
+                        && !value_type.accepts(value)
+                    {
+                        return Some(ValidationDiagnostic {
+                            severity: field.severity,
+                            code: format!("type.{}", field.name.as_str()),
+                            message: validation_message(format!(
+                                "project payload field `{}` expected {}, found {}",
+                                field.name.as_str(),
+                                value_type.as_str(),
+                                json_value_kind(value)
+                            )),
+                            field_name: Some(field.name.as_str().to_owned()),
+                        });
+                    }
                     return None;
                 }
                 Some(ValidationDiagnostic {
@@ -366,6 +496,17 @@ fn validation_message(value: String) -> NonEmptyText {
     }
 }
 
+fn json_value_kind(value: &Value) -> &'static str {
+    match value {
+        Value::Null => "null",
+        Value::Bool(_) => "boolean",
+        Value::Number(_) => "numeric",
+        Value::String(_) => "string",
+        Value::Array(_) => "array",
+        Value::Object(_) => "object",
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct DagNode {
     pub id: NodeId,
@@ -375,6 +516,7 @@ pub struct DagNode {
     pub archived: bool,
     pub title: NonEmptyText,
     pub summary: Option<NonEmptyText>,
+    pub tags: BTreeSet<TagName>,
     pub payload: NodePayload,
     pub annotations: Vec<NodeAnnotation>,
     pub diagnostics: NodeDiagnostics,
@@ -402,6 +544,7 @@ impl DagNode {
             archived: false,
             title,
             summary,
+            tags: BTreeSet::new(),
             payload,
             annotations: Vec::new(),
             diagnostics,
@@ -628,8 +771,9 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        CommandRecipe, DagNode, DiagnosticSeverity, FieldPresence, FieldRole, InferencePolicy,
-        JsonObject, NodeClass, NodePayload, NonEmptyText, ProjectFieldSpec, ProjectSchema,
+        CommandRecipe, DagNode, DiagnosticSeverity, FieldPresence, FieldRole, FieldValueType,
+        InferencePolicy, JsonObject, NodeClass, NodePayload, NonEmptyText, ProjectFieldSpec,
+        ProjectSchema,
     };
     use crate::CoreError;
 
@@ -661,6 +805,7 @@ mod tests {
                 severity: DiagnosticSeverity::Warning,
                 role: FieldRole::ProjectionGate,
                 inference_policy: InferencePolicy::ManualOnly,
+                value_type: None,
             }],
         };
         let payload = NodePayload::with_schema(schema.schema_ref(), JsonObject::new());
@@ -669,6 +814,33 @@ mod tests {
         assert_eq!(diagnostics.admission, super::AdmissionState::Admitted);
         assert_eq!(diagnostics.items.len(), 1);
         assert_eq!(diagnostics.items[0].severity, DiagnosticSeverity::Warning);
+        Ok(())
+    }
+
+    #[test]
+    fn schema_validation_warns_on_type_mismatch() -> Result<(), CoreError> {
+        let schema = ProjectSchema {
+            namespace: NonEmptyText::new("local.libgrid")?,
+            version: 1,
+            fields: vec![ProjectFieldSpec {
+                name: NonEmptyText::new("improvement")?,
+                node_classes: BTreeSet::from([NodeClass::Analysis]),
+                presence: FieldPresence::Recommended,
+                severity: DiagnosticSeverity::Warning,
+                role: FieldRole::RenderOnly,
+                inference_policy: InferencePolicy::ManualOnly,
+                value_type: Some(FieldValueType::Numeric),
+            }],
+        };
+        let payload = NodePayload::with_schema(
+            schema.schema_ref(),
+            JsonObject::from_iter([("improvement".to_owned(), json!("not a number"))]),
+        );
+        let diagnostics = schema.validate_node(NodeClass::Analysis, &payload);
+
+        assert_eq!(diagnostics.admission, super::AdmissionState::Admitted);
+        assert_eq!(diagnostics.items.len(), 1);
+        assert_eq!(diagnostics.items[0].code, "type.improvement");
         Ok(())
     }
 

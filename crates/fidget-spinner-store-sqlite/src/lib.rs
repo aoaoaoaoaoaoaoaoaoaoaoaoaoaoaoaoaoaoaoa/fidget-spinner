@@ -1,3 +1,5 @@
+use std::collections::BTreeSet;
+use std::fmt::Write as _;
 use std::fs;
 use std::io;
 use std::process::Command;
@@ -9,9 +11,10 @@ use fidget_spinner_core::{
     ExecutionBackend, ExperimentResult, FrontierContract, FrontierNote, FrontierProjection,
     FrontierRecord, FrontierStatus, FrontierVerdict, GitCommitHash, JsonObject, MetricObservation,
     MetricSpec, MetricUnit, NodeAnnotation, NodeClass, NodeDiagnostics, NodePayload, NonEmptyText,
-    OptimizationObjective, ProjectSchema, RunRecord, RunStatus,
+    OptimizationObjective, ProjectSchema, RunRecord, RunStatus, TagName, TagRecord,
 };
-use rusqlite::{Connection, OptionalExtension, Transaction, params};
+use rusqlite::types::Value as SqlValue;
+use rusqlite::{Connection, OptionalExtension, Transaction, params, params_from_iter};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use thiserror::Error;
@@ -54,6 +57,12 @@ pub enum StoreError {
     MissingChampionCheckpoint {
         frontier_id: fidget_spinner_core::FrontierId,
     },
+    #[error("unknown tag `{0}`")]
+    UnknownTag(TagName),
+    #[error("tag `{0}` already exists")]
+    DuplicateTag(TagName),
+    #[error("note nodes require an explicit tag list; use an empty list if no tags apply")]
+    NoteTagsRequired,
     #[error("git repository inspection failed for {0}")]
     GitInspectionFailed(Utf8PathBuf),
 }
@@ -82,6 +91,7 @@ pub struct CreateNodeRequest {
     pub frontier_id: Option<fidget_spinner_core::FrontierId>,
     pub title: NonEmptyText,
     pub summary: Option<NonEmptyText>,
+    pub tags: Option<BTreeSet<TagName>>,
     pub payload: NodePayload,
     pub annotations: Vec<NodeAnnotation>,
     pub attachments: Vec<EdgeAttachment>,
@@ -122,6 +132,7 @@ impl EdgeAttachment {
 pub struct ListNodesQuery {
     pub frontier_id: Option<fidget_spinner_core::FrontierId>,
     pub class: Option<NodeClass>,
+    pub tags: BTreeSet<TagName>,
     pub include_archived: bool,
     pub limit: u32,
 }
@@ -131,6 +142,7 @@ impl Default for ListNodesQuery {
         Self {
             frontier_id: None,
             class: None,
+            tags: BTreeSet::new(),
             include_archived: false,
             limit: 20,
         }
@@ -146,6 +158,7 @@ pub struct NodeSummary {
     pub archived: bool,
     pub title: NonEmptyText,
     pub summary: Option<NonEmptyText>,
+    pub tags: BTreeSet<TagName>,
     pub diagnostic_count: u64,
     pub hidden_annotation_count: u64,
     pub created_at: OffsetDateTime,
@@ -317,6 +330,47 @@ impl ProjectStore {
         self.frontier_projection(frontier.id)
     }
 
+    pub fn add_tag(
+        &mut self,
+        name: TagName,
+        description: NonEmptyText,
+    ) -> Result<TagRecord, StoreError> {
+        let record = TagRecord {
+            name,
+            description,
+            created_at: OffsetDateTime::now_utc(),
+        };
+        let tx = self.connection.transaction()?;
+        insert_tag(&tx, &record)?;
+        insert_event(
+            &tx,
+            "tag",
+            record.name.as_str(),
+            "tag.created",
+            json!({"description": record.description.as_str()}),
+        )?;
+        tx.commit()?;
+        Ok(record)
+    }
+
+    pub fn list_tags(&self) -> Result<Vec<TagRecord>, StoreError> {
+        let mut statement = self.connection.prepare(
+            "SELECT name, description, created_at
+             FROM tags
+             ORDER BY name ASC",
+        )?;
+        let mut rows = statement.query([])?;
+        let mut items = Vec::new();
+        while let Some(row) = rows.next()? {
+            items.push(TagRecord {
+                name: TagName::new(row.get::<_, String>(0)?)?,
+                description: NonEmptyText::new(row.get::<_, String>(1)?)?,
+                created_at: decode_timestamp(&row.get::<_, String>(2)?)?,
+            });
+        }
+        Ok(items)
+    }
+
     pub fn add_node(&mut self, request: CreateNodeRequest) -> Result<DagNode, StoreError> {
         let diagnostics = self.schema.validate_node(request.class, &request.payload);
         let mut node = DagNode::new(
@@ -327,9 +381,16 @@ impl ProjectStore {
             request.payload,
             diagnostics,
         );
+        node.tags = match (request.class, request.tags) {
+            (NodeClass::Note, Some(tags)) => tags,
+            (NodeClass::Note, None) => return Err(StoreError::NoteTagsRequired),
+            (_, Some(tags)) => tags,
+            (_, None) => BTreeSet::new(),
+        };
         node.annotations = request.annotations;
 
         let tx = self.connection.transaction()?;
+        ensure_known_tags(&tx, &node.tags)?;
         insert_node(&tx, &node)?;
         for attachment in &request.attachments {
             insert_edge(&tx, &attachment.materialize(node.id))?;
@@ -419,6 +480,7 @@ impl ProjectStore {
             .query_row(params![node_id.to_string()], read_node_row)
             .optional()?;
         node.map(|mut item| {
+            item.tags = self.load_tags(item.id)?;
             item.annotations = self.load_annotations(item.id)?;
             Ok(item)
         })
@@ -428,8 +490,7 @@ impl ProjectStore {
     pub fn list_nodes(&self, query: ListNodesQuery) -> Result<Vec<NodeSummary>, StoreError> {
         let frontier_id = query.frontier_id.map(|id| id.to_string());
         let class = query.class.map(|item| item.as_str().to_owned());
-        let limit = i64::from(query.limit);
-        let mut statement = self.connection.prepare(
+        let mut sql = String::from(
             "SELECT
                 n.id,
                 n.class,
@@ -449,21 +510,42 @@ impl ProjectStore {
              FROM nodes AS n
              WHERE (?1 IS NULL OR n.frontier_id = ?1)
                AND (?2 IS NULL OR n.class = ?2)
-               AND (?3 = 1 OR n.archived = 0)
+               AND (?3 = 1 OR n.archived = 0)",
+        );
+        let mut parameters = vec![
+            frontier_id.map_or(SqlValue::Null, SqlValue::Text),
+            class.map_or(SqlValue::Null, SqlValue::Text),
+            SqlValue::Integer(i64::from(query.include_archived)),
+        ];
+        for (index, tag) in query.tags.iter().enumerate() {
+            let placeholder = parameters.len() + 1;
+            let _ = write!(
+                sql,
+                "
+               AND EXISTS (
+                    SELECT 1
+                    FROM node_tags AS nt{index}
+                    WHERE nt{index}.node_id = n.id AND nt{index}.tag_name = ?{placeholder}
+               )"
+            );
+            parameters.push(SqlValue::Text(tag.as_str().to_owned()));
+        }
+        let limit_placeholder = parameters.len() + 1;
+        let _ = write!(
+            sql,
+            "
              ORDER BY n.updated_at DESC
-             LIMIT ?4",
-        )?;
-        let mut rows = statement.query(params![
-            frontier_id,
-            class,
-            i64::from(query.include_archived),
-            limit
-        ])?;
+             LIMIT ?{limit_placeholder}"
+        );
+        parameters.push(SqlValue::Integer(i64::from(query.limit)));
+        let mut statement = self.connection.prepare(&sql)?;
+        let mut rows = statement.query(params_from_iter(parameters.iter()))?;
         let mut items = Vec::new();
         while let Some(row) = rows.next()? {
             let diagnostics = decode_json::<NodeDiagnostics>(&row.get::<_, String>(7)?)?;
+            let node_id = parse_node_id(&row.get::<_, String>(0)?)?;
             items.push(NodeSummary {
-                id: parse_node_id(&row.get::<_, String>(0)?)?,
+                id: node_id,
                 class: parse_node_class(&row.get::<_, String>(1)?)?,
                 track: parse_node_track(&row.get::<_, String>(2)?)?,
                 frontier_id: row
@@ -476,6 +558,7 @@ impl ProjectStore {
                     .get::<_, Option<String>>(6)?
                     .map(NonEmptyText::new)
                     .transpose()?,
+                tags: self.load_tags(node_id)?,
                 diagnostic_count: diagnostics.items.len() as u64,
                 hidden_annotation_count: row.get::<_, i64>(10)? as u64,
                 created_at: decode_timestamp(&row.get::<_, String>(8)?)?,
@@ -505,7 +588,7 @@ impl ProjectStore {
     ) -> Result<FrontierProjection, StoreError> {
         let frontier = self.load_frontier(frontier_id)?;
         let mut champion_checkpoint_id = None;
-        let mut candidate_checkpoint_ids = std::collections::BTreeSet::new();
+        let mut candidate_checkpoint_ids = BTreeSet::new();
 
         let mut statement = self.connection.prepare(
             "SELECT id, disposition
@@ -768,6 +851,24 @@ impl ProjectStore {
         Ok(items)
     }
 
+    fn load_tags(
+        &self,
+        node_id: fidget_spinner_core::NodeId,
+    ) -> Result<BTreeSet<TagName>, StoreError> {
+        let mut statement = self.connection.prepare(
+            "SELECT tag_name
+             FROM node_tags
+             WHERE node_id = ?1
+             ORDER BY tag_name ASC",
+        )?;
+        let mut rows = statement.query(params![node_id.to_string()])?;
+        let mut items = BTreeSet::new();
+        while let Some(row) = rows.next()? {
+            let _ = items.insert(TagName::new(row.get::<_, String>(0)?)?);
+        }
+        Ok(items)
+    }
+
     fn load_frontier(
         &self,
         frontier_id: fidget_spinner_core::FrontierId,
@@ -815,6 +916,18 @@ fn migrate(connection: &Connection) -> Result<(), StoreError> {
             label TEXT,
             body TEXT NOT NULL,
             created_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS tags (
+            name TEXT PRIMARY KEY,
+            description TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS node_tags (
+            node_id TEXT NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
+            tag_name TEXT NOT NULL REFERENCES tags(name) ON DELETE RESTRICT,
+            PRIMARY KEY (node_id, tag_name)
         );
 
         CREATE TABLE IF NOT EXISTS node_edges (
@@ -953,6 +1066,32 @@ fn insert_node(tx: &Transaction<'_>, node: &DagNode) -> Result<(), StoreError> {
     for annotation in &node.annotations {
         insert_annotation(tx, node.id, annotation)?;
     }
+    for tag in &node.tags {
+        insert_node_tag(tx, node.id, tag)?;
+    }
+    Ok(())
+}
+
+fn insert_tag(tx: &Transaction<'_>, tag: &TagRecord) -> Result<(), StoreError> {
+    let existing = tx
+        .query_row(
+            "SELECT 1 FROM tags WHERE name = ?1",
+            params![tag.name.as_str()],
+            |row| row.get::<_, i64>(0),
+        )
+        .optional()?;
+    if existing.is_some() {
+        return Err(StoreError::DuplicateTag(tag.name.clone()));
+    }
+    let _ = tx.execute(
+        "INSERT INTO tags (name, description, created_at)
+         VALUES (?1, ?2, ?3)",
+        params![
+            tag.name.as_str(),
+            tag.description.as_str(),
+            encode_timestamp(tag.created_at)?,
+        ],
+    )?;
     Ok(())
 }
 
@@ -973,6 +1112,32 @@ fn insert_annotation(
             encode_timestamp(annotation.created_at)?,
         ],
     )?;
+    Ok(())
+}
+
+fn insert_node_tag(
+    tx: &Transaction<'_>,
+    node_id: fidget_spinner_core::NodeId,
+    tag: &TagName,
+) -> Result<(), StoreError> {
+    let _ = tx.execute(
+        "INSERT INTO node_tags (node_id, tag_name)
+         VALUES (?1, ?2)",
+        params![node_id.to_string(), tag.as_str()],
+    )?;
+    Ok(())
+}
+
+fn ensure_known_tags(tx: &Transaction<'_>, tags: &BTreeSet<TagName>) -> Result<(), StoreError> {
+    let mut statement = tx.prepare("SELECT 1 FROM tags WHERE name = ?1")?;
+    for tag in tags {
+        let exists = statement
+            .query_row(params![tag.as_str()], |row| row.get::<_, i64>(0))
+            .optional()?;
+        if exists.is_none() {
+            return Err(StoreError::UnknownTag(tag.clone()));
+        }
+    }
     Ok(())
 }
 
@@ -1248,6 +1413,7 @@ fn read_node_row(row: &rusqlite::Row<'_>) -> Result<DagNode, rusqlite::Error> {
             .map(NonEmptyText::new)
             .transpose()
             .map_err(core_to_sql_conversion_error)?,
+        tags: BTreeSet::new(),
         payload,
         annotations: Vec::new(),
         diagnostics,
@@ -1626,6 +1792,8 @@ fn encode_frontier_verdict(verdict: FrontierVerdict) -> &'static str {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
+
     use serde_json::json;
 
     use super::{
@@ -1633,7 +1801,7 @@ mod tests {
     };
     use fidget_spinner_core::{
         CheckpointSnapshotRef, EvaluationProtocol, FrontierContract, MetricSpec, MetricUnit,
-        NodeAnnotation, NodeClass, NodePayload, NonEmptyText, OptimizationObjective,
+        NodeAnnotation, NodeClass, NodePayload, NonEmptyText, OptimizationObjective, TagName,
     };
 
     fn temp_project_root(label: &str) -> camino::Utf8PathBuf {
@@ -1672,6 +1840,7 @@ mod tests {
             frontier_id: None,
             title: NonEmptyText::new("feature sketch")?,
             summary: Some(NonEmptyText::new("research note")?),
+            tags: None,
             payload: NodePayload::with_schema(
                 store.schema().schema_ref(),
                 super::json_object(json!({"body": "freeform"}))?,
@@ -1708,15 +1877,13 @@ mod tests {
             contract: FrontierContract {
                 objective: NonEmptyText::new("improve wall time")?,
                 evaluation: EvaluationProtocol {
-                    benchmark_suites: std::collections::BTreeSet::from([NonEmptyText::new(
-                        "smoke",
-                    )?]),
+                    benchmark_suites: BTreeSet::from([NonEmptyText::new("smoke")?]),
                     primary_metric: MetricSpec {
                         metric_key: NonEmptyText::new("wall_clock_s")?,
                         unit: MetricUnit::Seconds,
                         objective: OptimizationObjective::Minimize,
                     },
-                    supporting_metrics: std::collections::BTreeSet::new(),
+                    supporting_metrics: BTreeSet::new(),
                 },
                 promotion_criteria: vec![NonEmptyText::new("strict speedup")?],
             },
@@ -1748,6 +1915,7 @@ mod tests {
             frontier_id: None,
             title: NonEmptyText::new("quick note")?,
             summary: None,
+            tags: Some(BTreeSet::new()),
             payload: NodePayload::with_schema(
                 store.schema().schema_ref(),
                 super::json_object(json!({"body": "hello"}))?,
@@ -1783,15 +1951,13 @@ mod tests {
             contract: FrontierContract {
                 objective: NonEmptyText::new("optimize")?,
                 evaluation: EvaluationProtocol {
-                    benchmark_suites: std::collections::BTreeSet::from([NonEmptyText::new(
-                        "smoke",
-                    )?]),
+                    benchmark_suites: BTreeSet::from([NonEmptyText::new("smoke")?]),
                     primary_metric: MetricSpec {
                         metric_key: NonEmptyText::new("wall_clock_s")?,
                         unit: MetricUnit::Seconds,
                         objective: OptimizationObjective::Minimize,
                     },
-                    supporting_metrics: std::collections::BTreeSet::new(),
+                    supporting_metrics: BTreeSet::new(),
                 },
                 promotion_criteria: vec![NonEmptyText::new("faster")?],
             },
@@ -1805,6 +1971,77 @@ mod tests {
 
         assert_eq!(nodes.len(), 1);
         assert_eq!(nodes[0].class, NodeClass::Contract);
+        Ok(())
+    }
+
+    #[test]
+    fn notes_require_explicit_tags_even_when_empty() -> Result<(), super::StoreError> {
+        let root = temp_project_root("note-tags-required");
+        let mut store = ProjectStore::init(
+            &root,
+            NonEmptyText::new("test project")?,
+            NonEmptyText::new("local.test")?,
+        )?;
+
+        let result = store.add_node(CreateNodeRequest {
+            class: NodeClass::Note,
+            frontier_id: None,
+            title: NonEmptyText::new("quick note")?,
+            summary: None,
+            tags: None,
+            payload: NodePayload::with_schema(
+                store.schema().schema_ref(),
+                super::json_object(json!({"body": "hello"}))?,
+            ),
+            annotations: Vec::new(),
+            attachments: Vec::new(),
+        });
+
+        assert!(matches!(result, Err(super::StoreError::NoteTagsRequired)));
+        Ok(())
+    }
+
+    #[test]
+    fn tags_round_trip_and_filter_node_list() -> Result<(), super::StoreError> {
+        let root = temp_project_root("tag-roundtrip");
+        let mut store = ProjectStore::init(
+            &root,
+            NonEmptyText::new("test project")?,
+            NonEmptyText::new("local.test")?,
+        )?;
+        let cuts = store.add_tag(
+            TagName::new("cuts/core")?,
+            NonEmptyText::new("Core cutset work")?,
+        )?;
+        let heuristics = store.add_tag(
+            TagName::new("heuristic")?,
+            NonEmptyText::new("Heuristic tuning")?,
+        )?;
+        let note = store.add_node(CreateNodeRequest {
+            class: NodeClass::Note,
+            frontier_id: None,
+            title: NonEmptyText::new("tagged note")?,
+            summary: None,
+            tags: Some(BTreeSet::from([cuts.name.clone(), heuristics.name.clone()])),
+            payload: NodePayload::with_schema(
+                store.schema().schema_ref(),
+                super::json_object(json!({"body": "tagged"}))?,
+            ),
+            annotations: Vec::new(),
+            attachments: Vec::new(),
+        })?;
+
+        let loaded = store
+            .get_node(note.id)?
+            .ok_or(super::StoreError::NodeNotFound(note.id))?;
+        assert_eq!(loaded.tags.len(), 2);
+
+        let filtered = store.list_nodes(ListNodesQuery {
+            tags: BTreeSet::from([cuts.name]),
+            ..ListNodesQuery::default()
+        })?;
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].tags.len(), 2);
         Ok(())
     }
 }

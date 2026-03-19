@@ -1,9 +1,13 @@
 [package]
 name = "fidget-spinner-store-sqlite"
-description = "Per-project SQLite store for the Fidget Spinner DAG spine"
+categories.workspace = true
+description = "SQLite-backed per-project store for Fidget Spinner DAG projects"
 edition.workspace = true
+keywords.workspace = true
 license.workspace = true
 publish = false
+readme.workspace = true
+repository.workspace = true
 rust-version.workspace = true
 version.workspace = true
 

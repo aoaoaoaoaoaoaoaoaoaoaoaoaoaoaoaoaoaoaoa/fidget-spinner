@@ -1,8 +1,10 @@
 mod bundled_skill;
 mod mcp;
+mod ui;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
+use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 
 use camino::{Utf8Path, Utf8PathBuf};
@@ -10,7 +12,7 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
 use fidget_spinner_core::{
     AnnotationVisibility, CodeSnapshotRef, CommandRecipe, ExecutionBackend, FrontierContract,
     FrontierNote, FrontierVerdict, GitCommitHash, MetricObservation, MetricSpec, MetricUnit,
-    NodeAnnotation, NodeClass, NodePayload, NonEmptyText, OptimizationObjective,
+    NodeAnnotation, NodeClass, NodePayload, NonEmptyText, OptimizationObjective, TagName,
 };
 use fidget_spinner_store_sqlite::{
     CloseExperimentRequest, CreateFrontierRequest, CreateNodeRequest, EdgeAttachment,
@@ -21,7 +23,11 @@ use serde_json::{Map, Value, json};
 use uuid::Uuid;
 
 #[derive(Parser)]
-#[command(author, version, about = "Fidget Spinner local project CLI")]
+#[command(
+    author,
+    version,
+    about = "Fidget Spinner CLI, MCP server, and local navigator"
+)]
 struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -29,29 +35,48 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Initialize a project-local `.fidget_spinner/` store.
     Init(InitArgs),
+    /// Read the local project payload schema.
     Schema {
         #[command(subcommand)]
         command: SchemaCommand,
     },
+    /// Create and inspect frontiers.
     Frontier {
         #[command(subcommand)]
         command: FrontierCommand,
     },
+    /// Create, inspect, and mutate DAG nodes.
     Node {
         #[command(subcommand)]
         command: NodeCommand,
     },
+    /// Record terse off-path notes.
     Note(NoteCommand),
+    /// Manage the repo-local tag registry.
+    Tag {
+        #[command(subcommand)]
+        command: TagCommand,
+    },
+    /// Record off-path research and enabling work.
     Research(ResearchCommand),
+    /// Close a core-path experiment atomically.
     Experiment {
         #[command(subcommand)]
         command: ExperimentCommand,
     },
+    /// Serve the hardened stdio MCP endpoint.
     Mcp {
         #[command(subcommand)]
         command: McpCommand,
     },
+    /// Serve the minimal local web navigator.
+    Ui {
+        #[command(subcommand)]
+        command: UiCommand,
+    },
+    /// Inspect or install bundled Codex skills.
     Skill {
         #[command(subcommand)]
         command: SkillCommand,
@@ -60,22 +85,28 @@ enum Command {
 
 #[derive(Args)]
 struct InitArgs {
+    /// Project root to initialize.
     #[arg(long, default_value = ".")]
     project: PathBuf,
+    /// Human-facing project name. Defaults to the directory name.
     #[arg(long)]
     name: Option<String>,
+    /// Payload schema namespace written into `.fidget_spinner/schema.json`.
     #[arg(long, default_value = "local.project")]
     namespace: String,
 }
 
 #[derive(Subcommand)]
 enum SchemaCommand {
+    /// Show the current project schema as JSON.
     Show(ProjectArg),
 }
 
 #[derive(Subcommand)]
 enum FrontierCommand {
+    /// Create a frontier and root contract node.
     Init(FrontierInitArgs),
+    /// Show one frontier projection or list frontiers when omitted.
     Status(FrontierStatusArgs),
 }
 
@@ -115,10 +146,15 @@ struct FrontierStatusArgs {
 
 #[derive(Subcommand)]
 enum NodeCommand {
+    /// Create a generic DAG node.
     Add(NodeAddArgs),
+    /// List recent nodes.
     List(NodeListArgs),
+    /// Show one node in full.
     Show(NodeShowArgs),
+    /// Attach an annotation to a node.
     Annotate(NodeAnnotateArgs),
+    /// Archive a node without deleting it.
     Archive(NodeArchiveArgs),
 }
 
@@ -138,6 +174,8 @@ struct NodeAddArgs {
     payload_json: Option<String>,
     #[arg(long = "payload-file")]
     payload_file: Option<PathBuf>,
+    #[command(flatten)]
+    tag_selection: ExplicitTagSelectionArgs,
     #[arg(long = "field")]
     fields: Vec<String>,
     #[arg(long = "annotation")]
@@ -154,10 +192,20 @@ struct NodeListArgs {
     frontier: Option<String>,
     #[arg(long, value_enum)]
     class: Option<CliNodeClass>,
+    #[arg(long = "tag")]
+    tags: Vec<String>,
     #[arg(long)]
     include_archived: bool,
     #[arg(long, default_value_t = 20)]
     limit: u32,
+}
+
+#[derive(Args, Default)]
+struct ExplicitTagSelectionArgs {
+    #[arg(long = "tag")]
+    tags: Vec<String>,
+    #[arg(long, conflicts_with = "tags")]
+    no_tags: bool,
 }
 
 #[derive(Args)]
@@ -198,7 +246,16 @@ struct NoteCommand {
 
 #[derive(Subcommand)]
 enum NoteSubcommand {
+    /// Record a quick off-path note.
     Quick(QuickNoteArgs),
+}
+
+#[derive(Subcommand)]
+enum TagCommand {
+    /// Register a new repo-local tag.
+    Add(TagAddArgs),
+    /// List registered repo-local tags.
+    List(ProjectArg),
 }
 
 #[derive(Args)]
@@ -209,6 +266,7 @@ struct ResearchCommand {
 
 #[derive(Subcommand)]
 enum ResearchSubcommand {
+    /// Record off-path research or enabling work.
     Add(QuickResearchArgs),
 }
 
@@ -222,8 +280,20 @@ struct QuickNoteArgs {
     title: String,
     #[arg(long)]
     body: String,
+    #[command(flatten)]
+    tag_selection: ExplicitTagSelectionArgs,
     #[arg(long = "parent")]
     parents: Vec<String>,
+}
+
+#[derive(Args)]
+struct TagAddArgs {
+    #[command(flatten)]
+    project: ProjectArg,
+    #[arg(long)]
+    name: String,
+    #[arg(long)]
+    description: String,
 }
 
 #[derive(Args)]
@@ -244,14 +314,22 @@ struct QuickResearchArgs {
 
 #[derive(Subcommand)]
 enum ExperimentCommand {
+    /// Close a core-path experiment with checkpoint, run, note, and verdict.
     Close(ExperimentCloseArgs),
 }
 
 #[derive(Subcommand)]
 enum McpCommand {
+    /// Serve the public stdio MCP host. If `--project` is omitted, the host starts unbound.
     Serve(McpServeArgs),
     #[command(hide = true)]
     Worker(McpWorkerArgs),
+}
+
+#[derive(Subcommand)]
+enum UiCommand {
+    /// Serve the local read-only navigator.
+    Serve(UiServeArgs),
 }
 
 #[derive(Args)]
@@ -304,33 +382,41 @@ struct ExperimentCloseArgs {
 
 #[derive(Subcommand)]
 enum SkillCommand {
+    /// List bundled skills.
     List,
+    /// Install bundled skills into a Codex skill directory.
     Install(SkillInstallArgs),
+    /// Print one bundled skill body.
     Show(SkillShowArgs),
 }
 
 #[derive(Args)]
 struct SkillInstallArgs {
+    /// Bundled skill name. Defaults to all bundled skills.
     #[arg(long)]
     name: Option<String>,
+    /// Destination root. Defaults to `~/.codex/skills`.
     #[arg(long)]
     destination: Option<PathBuf>,
 }
 
 #[derive(Args)]
 struct SkillShowArgs {
+    /// Bundled skill name. Defaults to `fidget-spinner`.
     #[arg(long)]
     name: Option<String>,
 }
 
 #[derive(Args)]
 struct ProjectArg {
+    /// Project root or any nested path inside a project containing `.fidget_spinner/`.
     #[arg(long, default_value = ".")]
     project: PathBuf,
 }
 
 #[derive(Args)]
 struct McpServeArgs {
+    /// Optional initial project binding. When omitted, the MCP starts unbound.
     #[arg(long)]
     project: Option<PathBuf>,
 }
@@ -339,6 +425,18 @@ struct McpServeArgs {
 struct McpWorkerArgs {
     #[arg(long)]
     project: PathBuf,
+}
+
+#[derive(Args)]
+struct UiServeArgs {
+    #[command(flatten)]
+    project: ProjectArg,
+    /// Bind address for the local navigator.
+    #[arg(long, default_value = "127.0.0.1:8913")]
+    bind: SocketAddr,
+    /// Maximum rows rendered in list views.
+    #[arg(long, default_value_t = 200)]
+    limit: u32,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
@@ -416,6 +514,10 @@ fn run() -> Result<(), StoreError> {
         Command::Note(command) => match command.command {
             NoteSubcommand::Quick(args) => run_quick_note(args),
         },
+        Command::Tag { command } => match command {
+            TagCommand::Add(args) => run_tag_add(args),
+            TagCommand::List(project) => run_tag_list(project),
+        },
         Command::Research(command) => match command.command {
             ResearchSubcommand::Add(args) => run_quick_research(args),
         },
@@ -425,6 +527,9 @@ fn run() -> Result<(), StoreError> {
         Command::Mcp { command } => match command {
             McpCommand::Serve(args) => mcp::serve(args.project),
             McpCommand::Worker(args) => mcp::serve_worker(args.project),
+        },
+        Command::Ui { command } => match command {
+            UiCommand::Serve(args) => run_ui_serve(args),
         },
         Command::Skill { command } => match command {
             SkillCommand::List => print_json(&bundled_skill::bundled_skill_summaries()),
@@ -439,16 +544,17 @@ fn run() -> Result<(), StoreError> {
 
 fn run_init(args: InitArgs) -> Result<(), StoreError> {
     let project_root = utf8_path(args.project);
-    let display_name = NonEmptyText::new(args.name.unwrap_or_else(|| {
-        project_root
-            .file_name()
-            .map_or_else(|| "fidget-spinner-project".to_owned(), ToOwned::to_owned)
-    }))?;
+    let display_name = args
+        .name
+        .map(NonEmptyText::new)
+        .transpose()?
+        .unwrap_or(default_display_name_for_root(&project_root)?);
     let namespace = NonEmptyText::new(args.namespace)?;
     let store = ProjectStore::init(&project_root, display_name, namespace)?;
     println!("initialized {}", store.state_root());
     println!("project: {}", store.config().display_name);
     println!("schema: {}", store.state_root().join("schema.json"));
+    maybe_print_gitignore_hint(&project_root)?;
     Ok(())
 }
 
@@ -498,6 +604,7 @@ fn run_node_add(args: NodeAddArgs) -> Result<(), StoreError> {
         .as_deref()
         .map(parse_frontier_id)
         .transpose()?;
+    let tags = optional_cli_tags(args.tag_selection, args.class == CliNodeClass::Note)?;
     let payload = load_payload(
         store.schema().schema_ref(),
         args.payload_json,
@@ -514,6 +621,7 @@ fn run_node_add(args: NodeAddArgs) -> Result<(), StoreError> {
         frontier_id,
         title: NonEmptyText::new(args.title)?,
         summary: args.summary.map(NonEmptyText::new).transpose()?,
+        tags,
         payload,
         annotations,
         attachments: lineage_attachments(args.parents)?,
@@ -530,6 +638,7 @@ fn run_node_list(args: NodeListArgs) -> Result<(), StoreError> {
             .map(parse_frontier_id)
             .transpose()?,
         class: args.class.map(Into::into),
+        tags: parse_tag_set(args.tags)?,
         include_archived: args.include_archived,
         limit: args.limit,
     })?;
@@ -585,11 +694,26 @@ fn run_quick_note(args: QuickNoteArgs) -> Result<(), StoreError> {
             .transpose()?,
         title: NonEmptyText::new(args.title)?,
         summary: None,
+        tags: Some(explicit_cli_tags(args.tag_selection)?),
         payload,
         annotations: Vec::new(),
         attachments: lineage_attachments(args.parents)?,
     })?;
     print_json(&node)
+}
+
+fn run_tag_add(args: TagAddArgs) -> Result<(), StoreError> {
+    let mut store = open_store(&args.project.project)?;
+    let tag = store.add_tag(
+        TagName::new(args.name)?,
+        NonEmptyText::new(args.description)?,
+    )?;
+    print_json(&tag)
+}
+
+fn run_tag_list(args: ProjectArg) -> Result<(), StoreError> {
+    let store = open_store(&args.project)?;
+    print_json(&store.list_tags()?)
 }
 
 fn run_quick_research(args: QuickResearchArgs) -> Result<(), StoreError> {
@@ -607,6 +731,7 @@ fn run_quick_research(args: QuickResearchArgs) -> Result<(), StoreError> {
             .transpose()?,
         title: NonEmptyText::new(args.title)?,
         summary: args.summary.map(NonEmptyText::new).transpose()?,
+        tags: None,
         payload,
         annotations: Vec::new(),
         attachments: lineage_attachments(args.parents)?,
@@ -684,6 +809,10 @@ fn run_skill_install(args: SkillInstallArgs) -> Result<(), StoreError> {
     Ok(())
 }
 
+fn run_ui_serve(args: UiServeArgs) -> Result<(), StoreError> {
+    ui::serve(utf8_path(args.project.project), args.bind, args.limit)
+}
+
 fn resolve_bundled_skill(
     requested_name: Option<&str>,
 ) -> Result<bundled_skill::BundledSkill, StoreError> {
@@ -712,8 +841,86 @@ fn open_store(path: &Path) -> Result<ProjectStore, StoreError> {
     ProjectStore::open(utf8_path(path.to_path_buf()))
 }
 
+fn open_or_init_store_for_binding(path: &Path) -> Result<ProjectStore, StoreError> {
+    let requested_root = utf8_path(path.to_path_buf());
+    match ProjectStore::open(requested_root.clone()) {
+        Ok(store) => Ok(store),
+        Err(StoreError::MissingProjectStore(_)) => {
+            let project_root = binding_bootstrap_root(&requested_root)?;
+            if !is_empty_directory(&project_root)? {
+                return Err(StoreError::MissingProjectStore(requested_root));
+            }
+            ProjectStore::init(
+                &project_root,
+                default_display_name_for_root(&project_root)?,
+                default_namespace_for_root(&project_root)?,
+            )
+        }
+        Err(error) => Err(error),
+    }
+}
+
 fn utf8_path(path: impl Into<PathBuf>) -> Utf8PathBuf {
     Utf8PathBuf::from(path.into().to_string_lossy().into_owned())
+}
+
+fn binding_bootstrap_root(path: &Utf8Path) -> Result<Utf8PathBuf, StoreError> {
+    match fs::metadata(path.as_std_path()) {
+        Ok(metadata) if metadata.is_file() => Ok(path
+            .parent()
+            .map_or_else(|| path.to_path_buf(), Utf8Path::to_path_buf)),
+        Ok(_) => Ok(path.to_path_buf()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(path.to_path_buf()),
+        Err(error) => Err(StoreError::from(error)),
+    }
+}
+
+fn is_empty_directory(path: &Utf8Path) -> Result<bool, StoreError> {
+    match fs::metadata(path.as_std_path()) {
+        Ok(metadata) if metadata.is_dir() => {
+            let mut entries = fs::read_dir(path.as_std_path())?;
+            Ok(entries.next().transpose()?.is_none())
+        }
+        Ok(_) => Ok(false),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(StoreError::from(error)),
+    }
+}
+
+fn default_display_name_for_root(project_root: &Utf8Path) -> Result<NonEmptyText, StoreError> {
+    NonEmptyText::new(
+        project_root
+            .file_name()
+            .map_or_else(|| "fidget-spinner-project".to_owned(), ToOwned::to_owned),
+    )
+    .map_err(StoreError::from)
+}
+
+fn default_namespace_for_root(project_root: &Utf8Path) -> Result<NonEmptyText, StoreError> {
+    let slug = slugify_namespace_component(project_root.file_name().unwrap_or("project"));
+    NonEmptyText::new(format!("local.{slug}")).map_err(StoreError::from)
+}
+
+fn slugify_namespace_component(raw: &str) -> String {
+    let mut slug = String::new();
+    let mut previous_was_separator = false;
+    for character in raw.chars().flat_map(char::to_lowercase) {
+        if character.is_ascii_alphanumeric() {
+            slug.push(character);
+            previous_was_separator = false;
+            continue;
+        }
+        if !previous_was_separator {
+            slug.push('_');
+            previous_was_separator = true;
+        }
+    }
+    let slug = slug.trim_matches('_').to_owned();
+    if slug.is_empty() {
+        "project".to_owned()
+    } else {
+        slug
+    }
 }
 
 fn to_text_vec(values: Vec<String>) -> Result<Vec<NonEmptyText>, StoreError> {
@@ -726,6 +933,35 @@ fn to_text_vec(values: Vec<String>) -> Result<Vec<NonEmptyText>, StoreError> {
 
 fn to_text_set(values: Vec<String>) -> Result<BTreeSet<NonEmptyText>, StoreError> {
     to_text_vec(values).map(BTreeSet::from_iter)
+}
+
+fn parse_tag_set(values: Vec<String>) -> Result<BTreeSet<TagName>, StoreError> {
+    values
+        .into_iter()
+        .map(TagName::new)
+        .collect::<Result<BTreeSet<_>, _>>()
+        .map_err(StoreError::from)
+}
+
+fn explicit_cli_tags(selection: ExplicitTagSelectionArgs) -> Result<BTreeSet<TagName>, StoreError> {
+    optional_cli_tags(selection, true)?.ok_or(StoreError::NoteTagsRequired)
+}
+
+fn optional_cli_tags(
+    selection: ExplicitTagSelectionArgs,
+    required: bool,
+) -> Result<Option<BTreeSet<TagName>>, StoreError> {
+    if selection.no_tags {
+        return Ok(Some(BTreeSet::new()));
+    }
+    if selection.tags.is_empty() {
+        return if required {
+            Err(StoreError::NoteTagsRequired)
+        } else {
+            Ok(None)
+        };
+    }
+    Ok(Some(parse_tag_set(selection.tags)?))
 }
 
 fn parse_env(values: Vec<String>) -> BTreeMap<String, String> {
@@ -823,6 +1059,29 @@ fn run_git(project_root: &Utf8Path, args: &[&str]) -> Result<Option<String>, Sto
         return Ok(None);
     }
     Ok(Some(text))
+}
+
+fn maybe_print_gitignore_hint(project_root: &Utf8Path) -> Result<(), StoreError> {
+    if run_git(project_root, &["rev-parse", "--show-toplevel"])?.is_none() {
+        return Ok(());
+    }
+
+    let status = std::process::Command::new("git")
+        .arg("-C")
+        .arg(project_root.as_str())
+        .args(["check-ignore", "-q", ".fidget_spinner"])
+        .status()?;
+
+    match status.code() {
+        Some(0) => Ok(()),
+        Some(1) => {
+            println!(
+                "note: add `.fidget_spinner/` to `.gitignore` or `.git/info/exclude` if you do not want local state in `git status`"
+            );
+            Ok(())
+        }
+        _ => Ok(()),
+    }
 }
 
 fn parse_metric_observation(raw: String) -> Result<MetricObservation, StoreError> {

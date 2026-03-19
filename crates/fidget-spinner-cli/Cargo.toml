@@ -1,22 +1,30 @@
 [package]
 name = "fidget-spinner-cli"
-description = "Thin local entrypoint for Fidget Spinner"
+categories.workspace = true
+description = "CLI, MCP server, and local navigator for Fidget Spinner"
 edition.workspace = true
+keywords.workspace = true
 license.workspace = true
 publish = false
+readme.workspace = true
+repository.workspace = true
 rust-version.workspace = true
 version.workspace = true
 
 [dependencies]
+axum.workspace = true
 camino.workspace = true
 clap.workspace = true
 dirs.workspace = true
 fidget-spinner-core = { path = "../fidget-spinner-core" }
 fidget-spinner-store-sqlite = { path = "../fidget-spinner-store-sqlite" }
-libmcp = { path = "../../../libmcp/crates/libmcp" }
+linkify.workspace = true
+libmcp = { git = "https://git.swarm.moe/libmcp.git", rev = "84e898d9ba699451d5d13fe384e7bbe220564bc1" }
+maud.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 time.workspace = true
+tokio.workspace = true
 uuid.workspace = true
 
 [lints]

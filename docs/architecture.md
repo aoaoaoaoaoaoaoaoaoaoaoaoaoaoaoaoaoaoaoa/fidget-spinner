@@ -95,6 +95,16 @@ project schema in `.fidget_spinner/schema.json`.
 
 This is where domain-specific richness lives.
 
+Project field specs may optionally declare a light-touch `value_type` of:
+
+- `string`
+- `numeric`
+- `boolean`
+- `timestamp`
+
+These are intentionally soft hints for validation and rendering, not rigid
+engine-schema commitments.
+
 ### 3. Annotation sidecar
 
 Annotations are stored separately from payload and are default-hidden unless
@@ -122,6 +132,7 @@ Project field expectations are warning-heavy:
 
 - missing recommended fields emit diagnostics
 - missing projection-gated fields remain storable
+- mistyped typed fields emit diagnostics
 - ingest usually succeeds
 
 ### Operational eligibility
@@ -308,7 +319,7 @@ This projection is derived from canonical state and intentionally rebuildable.
 
 These are intentionally cheap:
 
-- `note.quick`
+- `note.quick`, but only with explicit tags from the repo-local registry
 - `research.record`
 - generic `node.create` for escape-hatch use
 - `node.annotate`
@@ -356,6 +367,32 @@ worker subprocess.
 - return typed success or typed fault records
 - remain disposable without losing canonical state
 
+## Minimal Navigator
+
+The CLI also exposes a minimal localhost navigator through `ui serve`.
+
+Current shape:
+
+- left rail of repo-local tags
+- single linear node feed in reverse chronological order
+- full entry rendering in the main pane
+- lightweight hyperlinking for text fields
+- typed field badges for `string`, `numeric`, `boolean`, and `timestamp`
+
+This is intentionally not a full DAG canvas. It is a text-first operator window
+over the canonical store.
+
+## Binding Bootstrap
+
+`project.bind` may bootstrap a project store when the requested target root is
+an existing empty directory.
+
+That is intentionally narrow:
+
+- empty root: initialize and bind
+- non-empty uninitialized root: fail
+- existing store anywhere above the requested path: bind to that discovered root
+
 ### Fault model
 
 Faults are typed by:
@@ -375,11 +412,11 @@ The tool catalog explicitly marks each operation as one of:
 
 Current policy:
 
-- reads such as `project.status`, `project.schema`, `frontier.list`,
+- reads such as `project.status`, `project.schema`, `tag.list`, `frontier.list`,
   `frontier.status`, `node.list`, `node.read`, `skill.list`, `skill.show`, and
   resource reads
   are safe to replay once after a retryable worker fault
-- mutating tools such as `frontier.init`, `node.create`, `change.record`,
+- mutating tools such as `tag.add`, `frontier.init`, `node.create`, `change.record`,
   `node.annotate`, `node.archive`, `note.quick`, `research.record`, and
   `experiment.close` are never auto-replayed
 
@@ -399,6 +436,8 @@ Implemented tools:
 - `project.bind`
 - `project.status`
 - `project.schema`
+- `tag.add`
+- `tag.list`
 - `frontier.list`
 - `frontier.status`
 - `frontier.init`
