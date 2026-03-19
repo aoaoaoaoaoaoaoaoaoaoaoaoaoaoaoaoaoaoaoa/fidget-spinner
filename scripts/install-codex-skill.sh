@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+SOURCE_ROOT="$ROOT_DIR/assets/codex-skills"
+DEST_ROOT="${1:-$HOME/.codex/skills}"
+
+install_skill() {
+  local name="$1"
+  local source_dir="$SOURCE_ROOT/$name"
+  local dest_dir="$DEST_ROOT/$name"
+  mkdir -p "$DEST_ROOT"
+  rm -rf "$dest_dir"
+  ln -s "$source_dir" "$dest_dir"
+  printf 'installed skill symlink: %s -> %s\n' "$dest_dir" "$source_dir"
+}
+
+install_skill "fidget-spinner"
+install_skill "frontier-loop"
+
+printf 'mcp command: %s\n' "cargo run -p fidget-spinner-cli -- mcp serve"
