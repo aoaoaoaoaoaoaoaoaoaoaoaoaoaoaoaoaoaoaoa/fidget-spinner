@@ -39,7 +39,6 @@ macro_rules! define_id {
 define_id!(AgentSessionId);
 define_id!(AnnotationId);
 define_id!(ArtifactId);
-define_id!(CheckpointId);
 define_id!(ExperimentId);
 define_id!(FrontierId);
 define_id!(NodeId);

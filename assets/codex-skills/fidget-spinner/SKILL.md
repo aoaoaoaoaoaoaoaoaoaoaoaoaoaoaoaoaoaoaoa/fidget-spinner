@@ -52,7 +52,7 @@ If you need more context, pull it from:
 - `source.record` for imported source material, documentary context, or one substantial source digest; always pass `title`, `summary`, and `body`, and pass `tags` when the source belongs in a campaign/subsystem index
 - `note.quick` for atomic reusable takeaways, always with an explicit `tags` list plus `title`, `summary`, and `body`; use `[]` only when no registered tag applies
 - `hypothesis.record` before core-path work; every experiment must hang off exactly one hypothesis
-- `experiment.open` once a hypothesis has a concrete base checkpoint and is ready to be tested
+- `experiment.open` once a hypothesis has a concrete slice and is ready to be tested
 - `experiment.list` or `experiment.read` when resuming a session and you need to recover open experimental state
 - `metric.define` when a project-level metric key needs a canonical unit, objective, or human description
 - `run.dimension.define` when a new experiment slicer such as `scenario` or `duration_s` becomes query-worthy
@@ -60,7 +60,7 @@ If you need more context, pull it from:
 - `metric.keys` before guessing which numeric signals are actually rankable; pass exact run-dimension filters when narrowing to one workload slice
 - `metric.best` when you need the best closed experiments by one numeric key; pass `order` for noncanonical payload fields and exact run-dimension filters when comparing one slice
 - `node.annotate` for scratch text that should stay off the main path
-- `experiment.close` only for an already-open experiment and only when you have checkpoint, measured result, note, and verdict; attach `analysis` when the result needs explicit interpretation
+- `experiment.close` only for an already-open experiment and only when you have measured result, note, and verdict; attach `analysis` when the result needs explicit interpretation
 - `node.archive` to hide stale detritus without deleting evidence
 - `node.create` only as a true escape hatch
 
@@ -94,7 +94,8 @@ If the point is to test a claim, it should become a hypothesis plus an experimen
    Preserve one source digest if needed, then extract reusable claims into notes.
 8. A hypothesis is not an experiment. Open the experiment explicitly; do not
    smuggle “planned work” into off-path prose.
-9. Porcelain is the terse triage surface. Use `detail=full` only when concise
+9. The ledger is scientific, not git-forensic. Do not treat commit hashes as experiment identity.
+10. Porcelain is the terse triage surface. Use `detail=full` only when concise
    output stops being decision-sufficient.
-10. When the task becomes a true indefinite optimization push, pair this skill
+11. When the task becomes a true indefinite optimization push, pair this skill
     with `frontier-loop`.

@@ -8,8 +8,7 @@ use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
 
 use crate::{
-    AgentSessionId, AnnotationId, ArtifactId, CheckpointId, CoreError, ExperimentId, FrontierId,
-    NodeId, RunId,
+    AgentSessionId, AnnotationId, ArtifactId, CoreError, ExperimentId, FrontierId, NodeId, RunId,
 };
 
 #[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
@@ -34,27 +33,6 @@ impl NonEmptyText {
 impl Display for NonEmptyText {
     fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
         formatter.write_str(&self.0)
-    }
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
-#[serde(transparent)]
-pub struct GitCommitHash(NonEmptyText);
-
-impl GitCommitHash {
-    pub fn new(value: impl Into<String>) -> Result<Self, CoreError> {
-        NonEmptyText::new(value).map(Self)
-    }
-
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        self.0.as_str()
-    }
-}
-
-impl Display for GitCommitHash {
-    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
-        Display::fmt(&self.0, formatter)
     }
 }
 
@@ -286,15 +264,6 @@ pub enum FrontierStatus {
     Archived,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub enum CheckpointDisposition {
-    Champion,
-    FrontierCandidate,
-    Baseline,
-    DeadEnd,
-    Archived,
-}
-
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 pub enum MetricUnit {
     Seconds,
@@ -418,12 +387,12 @@ pub enum ExecutionBackend {
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum FrontierVerdict {
-    PromoteToChampion,
-    KeepOnFrontier,
-    RevertToChampion,
-    ArchiveDeadEnd,
-    NeedsMoreEvidence,
+    Accepted,
+    Kept,
+    Parked,
+    Rejected,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -732,23 +701,6 @@ pub struct ArtifactRef {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub struct CodeSnapshotRef {
-    pub repo_root: Utf8PathBuf,
-    pub worktree_root: Utf8PathBuf,
-    pub worktree_name: Option<NonEmptyText>,
-    pub head_commit: Option<GitCommitHash>,
-    pub dirty_paths: BTreeSet<Utf8PathBuf>,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub struct CheckpointSnapshotRef {
-    pub repo_root: Utf8PathBuf,
-    pub worktree_root: Utf8PathBuf,
-    pub worktree_name: Option<NonEmptyText>,
-    pub commit_hash: GitCommitHash,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct CommandRecipe {
     pub working_directory: Utf8PathBuf,
     pub argv: Vec<NonEmptyText>,
@@ -831,17 +783,6 @@ impl FrontierRecord {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub struct CheckpointRecord {
-    pub id: CheckpointId,
-    pub frontier_id: FrontierId,
-    pub node_id: NodeId,
-    pub snapshot: CheckpointSnapshotRef,
-    pub disposition: CheckpointDisposition,
-    pub summary: NonEmptyText,
-    pub created_at: OffsetDateTime,
-}
-
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct RunRecord {
     pub node_id: NodeId,
@@ -849,7 +790,6 @@ pub struct RunRecord {
     pub frontier_id: Option<FrontierId>,
     pub status: RunStatus,
     pub backend: ExecutionBackend,
-    pub code_snapshot: Option<CodeSnapshotRef>,
     pub dimensions: BTreeMap<NonEmptyText, RunDimensionValue>,
     pub command: CommandRecipe,
     pub started_at: Option<OffsetDateTime>,
@@ -868,7 +808,6 @@ pub struct ExperimentResult {
 pub struct OpenExperiment {
     pub id: ExperimentId,
     pub frontier_id: FrontierId,
-    pub base_checkpoint_id: CheckpointId,
     pub hypothesis_node_id: NodeId,
     pub title: NonEmptyText,
     pub summary: Option<NonEmptyText>,
@@ -885,8 +824,6 @@ pub struct FrontierNote {
 pub struct CompletedExperiment {
     pub id: ExperimentId,
     pub frontier_id: FrontierId,
-    pub base_checkpoint_id: CheckpointId,
-    pub candidate_checkpoint_id: CheckpointId,
     pub hypothesis_node_id: NodeId,
     pub run_node_id: NodeId,
     pub run_id: RunId,
@@ -900,12 +837,20 @@ pub struct CompletedExperiment {
     pub created_at: OffsetDateTime,
 }
 
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub struct FrontierVerdictCounts {
+    pub accepted: u64,
+    pub kept: u64,
+    pub parked: u64,
+    pub rejected: u64,
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct FrontierProjection {
     pub frontier: FrontierRecord,
-    pub champion_checkpoint_id: Option<CheckpointId>,
-    pub candidate_checkpoint_ids: BTreeSet<CheckpointId>,
-    pub experiment_count: u64,
+    pub open_experiment_count: u64,
+    pub completed_experiment_count: u64,
+    pub verdict_counts: FrontierVerdictCounts,
 }
 
 #[cfg(test)]

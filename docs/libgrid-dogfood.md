@@ -19,8 +19,8 @@ The MVP does not need to solve all of `libgrid`.
 It needs to solve this specific problem:
 
 replace the giant freeform experiment log with a machine in which the active
-frontier, the current champion, the candidate evidence, and the dead ends are
-all explicit and queryable.
+frontier, the accepted lines, the live evidence, and the dead ends are all
+explicit and queryable.
 
 When using a global unbound MCP session from a `libgrid` worktree, the first
 project-local action should be `project.bind` against the `libgrid` worktree
@@ -54,7 +54,6 @@ The root contract should state:
 Use `hypothesis.record` to capture:
 
 - what hypothesis is being tested
-- what base checkpoint it starts from
 - what benchmark suite matters
 - any terse sketch of the intended delta
 
@@ -65,19 +64,17 @@ The run node should capture:
 - exact command
 - cwd
 - backend kind
-- benchmark suite
-- code snapshot
+- run dimensions
 - resulting metrics
 
 ### Decision node
 
 The decision should make the verdict explicit:
 
-- promote to champion
-- keep on frontier
-- revert to champion
-- archive dead end
-- needs more evidence
+- accepted
+- kept
+- parked
+- rejected
 
 ### Off-path nodes
 
@@ -100,7 +97,6 @@ The MVP does not need hard rejection. It does need meaningful warnings.
 Good first project fields:
 
 - `hypothesis` on `hypothesis`
-- `base_checkpoint_id` on `hypothesis`
 - `benchmark_suite` on `hypothesis` and `run`
 - `body` on `hypothesis`, `source`, and `note`
 - `comparison_claim` on `analysis`
@@ -121,7 +117,6 @@ Good first metric vocabulary:
 
 1. Initialize the project store.
 2. Create a frontier contract.
-3. Capture the incumbent git checkpoint if available.
 
 ### 2. Start a line of attack
 
@@ -132,13 +127,12 @@ Good first metric vocabulary:
 ### 3. Execute one experiment
 
 1. Modify the worktree.
-2. Commit the candidate checkpoint.
-3. Run the benchmark protocol.
-4. Close the experiment atomically.
+2. Run the benchmark protocol.
+3. Close the experiment atomically.
 
 ### 4. Judge and continue
 
-1. Promote the checkpoint or keep it alive.
+1. Mark the line accepted, kept, parked, or rejected.
 2. Archive dead ends instead of leaving them noisy and active.
 3. Repeat.
 
@@ -148,12 +142,10 @@ For `libgrid`, the benchmark evidence needs to be structurally trustworthy.
 
 The MVP should always preserve at least:
 
-- benchmark suite identity
+- run dimensions
 - primary metric
 - supporting metrics
 - command envelope
-- host/worktree metadata
-- git commit identity
 
 This is the minimum needed to prevent "I think this was faster" folklore.
 
@@ -176,27 +168,28 @@ The right sequence is:
 ## Repo-Local Dogfood Before Libgrid
 
 This repository itself is a valid off-path dogfood target even though it is not
-currently a git repo.
+a benchmark-heavy repo.
 
 That means we can already use it to test:
 
 - project initialization
 - schema visibility
-- frontier creation without a champion
+- frontier creation and status projection
 - off-path source recording
 - hidden annotations
 - MCP read and write flows
 
-What it cannot honestly test is full git-backed core-path experiment closure.
-That still belongs in a real repo such as the `libgrid` worktree.
+What it cannot honestly test is heavy benchmark ingestion and the retrieval
+pressure that comes with it. That still belongs in a real optimization corpus
+such as the `libgrid` worktree.
 
 ## Acceptance Bar For Libgrid
 
 Fidget Spinner is ready for serious `libgrid` use when:
 
 - an agent can run for hours without generating a giant markdown graveyard
-- the operator can identify the champion checkpoint mechanically
-- each completed experiment has checkpoint, result, note, and verdict
+- the operator can identify accepted, kept, parked, and rejected lines mechanically
+- each completed experiment has result, note, and verdict
 - off-path side investigations stay preserved but do not pollute the core path
 - the system feels like a machine for evidence rather than a diary with better
   typography

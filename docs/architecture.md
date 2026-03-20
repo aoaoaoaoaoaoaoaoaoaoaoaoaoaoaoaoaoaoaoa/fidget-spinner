@@ -80,7 +80,6 @@ The engine depends on a stable, typed spine stored in SQLite:
 - node annotations
 - node edges
 - frontiers
-- checkpoints
 - runs
 - metrics
 - experiments
@@ -207,23 +206,6 @@ Important constraint:
 
 That keeps frontier filtering honest.
 
-### `checkpoints`
-
-Stores committed candidate or champion checkpoints:
-
-- checkpoint id
-- frontier id
-- anchoring node id
-- repo/worktree metadata
-- commit hash
-- disposition
-- summary
-- created timestamp
-
-In the current codebase, a frontier may temporarily exist without a champion if
-it was initialized outside a git repo. Core-path experimentation is only fully
-available once git-backed checkpoints exist.
-
 ### `runs`
 
 Stores run envelopes:
@@ -233,8 +215,7 @@ Stores run envelopes:
 - frontier id
 - backend
 - status
-- code snapshot metadata
-- benchmark suite
+- run dimensions
 - command envelope
 - started and finished timestamps
 
@@ -254,12 +235,12 @@ Stores the atomic closure object for core-path work:
 
 - experiment id
 - frontier id
-- base checkpoint id
-- candidate checkpoint id
 - hypothesis node id
 - run node id and run id
 - optional analysis node id
 - decision node id
+- title
+- summary
 - verdict
 - note payload
 - created timestamp
@@ -307,9 +288,9 @@ Track is derived from class, not operator whim.
 The frontier projection currently exposes:
 
 - frontier record
-- champion checkpoint id
-- active candidate checkpoint ids
-- experiment count
+- open experiment count
+- completed experiment count
+- verdict counts
 
 This projection is derived from canonical state and intentionally rebuildable.
 
@@ -336,11 +317,10 @@ It persists, in one transaction:
 
 - run node
 - run record
-- candidate checkpoint
 - decision node
 - experiment record
 - lineage and evidence edges
-- frontier touch and champion demotion when needed
+- frontier touch and verdict accounting inputs
 
 That atomic boundary is the answer to the ceremony/atomicity pre-mortem.
 

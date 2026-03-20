@@ -161,7 +161,6 @@ cargo run -p fidget-spinner-cli -- hypothesis add \
 cargo run -p fidget-spinner-cli -- experiment open \
   --project . \
   --frontier <frontier-id> \
-  --base-checkpoint <checkpoint-id> \
   --hypothesis-node <hypothesis-node-id> \
   --title "navigator metric card pass" \
   --summary "Evaluate inline metrics on experiment-bearing cards."
@@ -324,20 +323,14 @@ The intended flow is:
 9. open the live experiment explicitly with `experiment.open`
 10. seal core-path work with `experiment.close`
 
-## Git-Backed Vs Plain Local Projects
+## Git And The Ledger
 
-Off-path work does not require git. You can initialize a local project and use:
+Git remains useful for code history, bisect, and sensible commit messages, but
+the Fidget Spinner ledger is about the science rather than about reproducing git
+inside the experiment record.
 
-- `source add`
-- `tag add`
-- `note quick`
-- `metric keys`
-- `node annotate`
-- `mcp serve`
-
-Full core-path experiment closure needs a real git-backed project, such as the
-target `libgrid` worktree, because checkpoints and champion capture are git
-backed.
+Core-path closure does not require a git-backed project. The canonical record is
+the hypothesis, run slice, parsed metrics, verdict, and rationale.
 
 ## Workspace Layout
 

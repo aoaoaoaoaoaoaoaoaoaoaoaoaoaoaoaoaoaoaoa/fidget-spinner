@@ -3,11 +3,11 @@ use std::fs;
 
 use camino::{Utf8Path, Utf8PathBuf};
 use fidget_spinner_core::{
-    AdmissionState, AnnotationVisibility, CodeSnapshotRef, CommandRecipe, DiagnosticSeverity,
-    ExecutionBackend, FieldPresence, FieldRole, FieldValueType, FrontierContract, FrontierNote,
-    FrontierProjection, FrontierRecord, FrontierVerdict, InferencePolicy, MetricSpec, MetricUnit,
-    MetricValue, NodeAnnotation, NodeClass, NodePayload, NonEmptyText, ProjectFieldSpec,
-    ProjectSchema, RunDimensionValue, TagName, TagRecord,
+    AdmissionState, AnnotationVisibility, CommandRecipe, DiagnosticSeverity, ExecutionBackend,
+    FieldPresence, FieldRole, FieldValueType, FrontierContract, FrontierNote, FrontierProjection,
+    FrontierRecord, FrontierVerdict, InferencePolicy, MetricSpec, MetricUnit, MetricValue,
+    NodeAnnotation, NodeClass, NodePayload, NonEmptyText, ProjectFieldSpec, ProjectSchema,
+    RunDimensionValue, TagName, TagRecord,
 };
 use fidget_spinner_store_sqlite::{
     CloseExperimentRequest, CreateFrontierRequest, CreateNodeRequest, DefineMetricRequest,
@@ -203,16 +203,6 @@ impl WorkerService {
             }
             "frontier.init" => {
                 let args = deserialize::<FrontierInitToolArgs>(arguments)?;
-                let initial_checkpoint = self
-                    .store
-                    .auto_capture_checkpoint(
-                        NonEmptyText::new(
-                            args.seed_summary
-                                .unwrap_or_else(|| "initial champion checkpoint".to_owned()),
-                        )
-                        .map_err(store_fault("tools/call:frontier.init"))?,
-                    )
-                    .map_err(store_fault("tools/call:frontier.init"))?;
                 let projection = self
                     .store
                     .create_frontier(CreateFrontierRequest {
@@ -251,7 +241,6 @@ impl WorkerService {
                             promotion_criteria: crate::to_text_vec(args.promotion_criteria)
                                 .map_err(store_fault("tools/call:frontier.init"))?,
                         },
-                        initial_checkpoint,
                     })
                     .map_err(store_fault("tools/call:frontier.init"))?;
                 tool_success(
@@ -702,8 +691,6 @@ impl WorkerService {
                     .open_experiment(OpenExperimentRequest {
                         frontier_id: crate::parse_frontier_id(&args.frontier_id)
                             .map_err(store_fault("tools/call:experiment.open"))?,
-                        base_checkpoint_id: crate::parse_checkpoint_id(&args.base_checkpoint_id)
-                            .map_err(store_fault("tools/call:experiment.open"))?,
                         hypothesis_node_id: crate::parse_node_id(&args.hypothesis_node_id)
                             .map_err(store_fault("tools/call:experiment.open"))?,
                         title: NonEmptyText::new(args.title)
@@ -763,33 +750,11 @@ impl WorkerService {
             }
             "experiment.close" => {
                 let args = deserialize::<ExperimentCloseToolArgs>(arguments)?;
-                let snapshot = self
-                    .store
-                    .auto_capture_checkpoint(
-                        NonEmptyText::new(args.candidate_summary.clone())
-                            .map_err(store_fault("tools/call:experiment.close"))?,
-                    )
-                    .map_err(store_fault("tools/call:experiment.close"))?
-                    .map(|seed| seed.snapshot)
-                    .ok_or_else(|| {
-                        FaultRecord::new(
-                            FaultKind::Internal,
-                            FaultStage::Store,
-                            "tools/call:experiment.close",
-                            format!(
-                                "git repository inspection failed for {}",
-                                self.store.project_root()
-                            ),
-                        )
-                    })?;
                 let receipt = self
                     .store
                     .close_experiment(CloseExperimentRequest {
                         experiment_id: crate::parse_experiment_id(&args.experiment_id)
                             .map_err(store_fault("tools/call:experiment.close"))?,
-                        candidate_summary: NonEmptyText::new(args.candidate_summary)
-                            .map_err(store_fault("tools/call:experiment.close"))?,
-                        candidate_snapshot: snapshot,
                         run_title: NonEmptyText::new(args.run.title)
                             .map_err(store_fault("tools/call:experiment.close"))?,
                         run_summary: args
@@ -810,10 +775,6 @@ impl WorkerService {
                             self.store.project_root(),
                         )
                         .map_err(store_fault("tools/call:experiment.close"))?,
-                        code_snapshot: Some(
-                            capture_code_snapshot(self.store.project_root())
-                                .map_err(store_fault("tools/call:experiment.close"))?,
-                        ),
                         primary_metric: metric_value_from_wire(args.primary_metric)
                             .map_err(store_fault("tools/call:experiment.close"))?,
                         supporting_metrics: args
@@ -1346,8 +1307,8 @@ fn experiment_close_output(
     let concise = json!({
         "experiment_id": receipt.experiment.id,
         "frontier_id": receipt.experiment.frontier_id,
-        "candidate_checkpoint_id": receipt.experiment.candidate_checkpoint_id,
-        "verdict": format!("{:?}", receipt.experiment.verdict).to_ascii_lowercase(),
+        "experiment_title": receipt.experiment.title,
+        "verdict": metric_verdict_name(receipt.experiment.verdict),
         "run_id": receipt.run.run_id,
         "hypothesis_node_id": receipt.experiment.hypothesis_node_id,
         "decision_node_id": receipt.decision_node.id,
@@ -1362,11 +1323,11 @@ fn experiment_close_output(
                 "closed experiment {} on frontier {}",
                 receipt.experiment.id, receipt.experiment.frontier_id
             ),
+            format!("title: {}", receipt.experiment.title),
             format!("hypothesis: {}", receipt.experiment.hypothesis_node_id),
-            format!("candidate: {}", receipt.experiment.candidate_checkpoint_id),
             format!(
                 "verdict: {}",
-                format!("{:?}", receipt.experiment.verdict).to_ascii_lowercase()
+                metric_verdict_name(receipt.experiment.verdict)
             ),
             format!(
                 "primary metric: {}",
@@ -1393,7 +1354,6 @@ fn experiment_open_output(
     let concise = json!({
         "experiment_id": item.id,
         "frontier_id": item.frontier_id,
-        "base_checkpoint_id": item.base_checkpoint_id,
         "hypothesis_node_id": item.hypothesis_node_id,
         "title": item.title,
         "summary": item.summary,
@@ -1405,7 +1365,6 @@ fn experiment_open_output(
             format!("{action} {}", item.id),
             format!("frontier: {}", item.frontier_id),
             format!("hypothesis: {}", item.hypothesis_node_id),
-            format!("base checkpoint: {}", item.base_checkpoint_id),
             format!("title: {}", item.title),
             item.summary
                 .as_ref()
@@ -1426,7 +1385,6 @@ fn experiment_list_output(items: &[OpenExperimentSummary]) -> Result<ToolOutput,
             json!({
                 "experiment_id": item.id,
                 "frontier_id": item.frontier_id,
-                "base_checkpoint_id": item.base_checkpoint_id,
                 "hypothesis_node_id": item.hypothesis_node_id,
                 "title": item.title,
                 "summary": item.summary,
@@ -1436,8 +1394,8 @@ fn experiment_list_output(items: &[OpenExperimentSummary]) -> Result<ToolOutput,
     let mut lines = vec![format!("{} open experiment(s)", items.len())];
     lines.extend(items.iter().map(|item| {
         format!(
-            "{} {} | hypothesis={} | checkpoint={}",
-            item.id, item.title, item.hypothesis_node_id, item.base_checkpoint_id,
+            "{} {} | hypothesis={}",
+            item.id, item.title, item.hypothesis_node_id,
         )
     }));
     detailed_tool_output(
@@ -1511,12 +1469,11 @@ fn metric_best_output(
                 "value": item.value,
                 "order": item.order.as_str(),
                 "experiment_id": item.experiment_id,
+                "experiment_title": item.experiment_title,
                 "frontier_id": item.frontier_id,
                 "hypothesis_node_id": item.hypothesis_node_id,
                 "hypothesis_title": item.hypothesis_title,
                 "verdict": metric_verdict_name(item.verdict),
-                "candidate_checkpoint_id": item.candidate_checkpoint_id,
-                "candidate_commit_hash": item.candidate_commit_hash,
                 "run_id": item.run_id,
                 "unit": item.unit.map(metric_unit_name),
                 "objective": item.objective.map(metric_objective_name),
@@ -1527,15 +1484,14 @@ fn metric_best_output(
     let mut lines = vec![format!("{} ranked experiment(s)", items.len())];
     lines.extend(items.iter().enumerate().map(|(index, item)| {
         format!(
-            "{}. {}={} [{}] {} | verdict={} | commit={} | checkpoint={}",
+            "{}. {}={} [{}] {} | verdict={} | hypothesis={}",
             index + 1,
             item.key,
             item.value,
             item.source.as_str(),
-            item.hypothesis_title,
+            item.experiment_title,
             metric_verdict_name(item.verdict),
-            item.candidate_commit_hash,
-            item.candidate_checkpoint_id,
+            item.hypothesis_title,
         )
     }));
     lines.extend(
@@ -1668,17 +1624,13 @@ fn frontier_projection_summary_value(projection: &FrontierProjection) -> Value {
         "frontier_id": projection.frontier.id,
         "label": projection.frontier.label,
         "status": format!("{:?}", projection.frontier.status).to_ascii_lowercase(),
-        "champion_checkpoint_id": projection.champion_checkpoint_id,
-        "candidate_checkpoint_ids": projection.candidate_checkpoint_ids,
-        "experiment_count": projection.experiment_count,
+        "open_experiment_count": projection.open_experiment_count,
+        "completed_experiment_count": projection.completed_experiment_count,
+        "verdict_counts": projection.verdict_counts,
     })
 }
 
 fn frontier_projection_text(prefix: &str, projection: &FrontierProjection) -> String {
-    let champion = projection
-        .champion_checkpoint_id
-        .map(|value| value.to_string())
-        .unwrap_or_else(|| "none".to_owned());
     [
         format!(
             "{prefix} {} {}",
@@ -1688,9 +1640,18 @@ fn frontier_projection_text(prefix: &str, projection: &FrontierProjection) -> St
             "status: {}",
             format!("{:?}", projection.frontier.status).to_ascii_lowercase()
         ),
-        format!("champion: {champion}"),
-        format!("candidates: {}", projection.candidate_checkpoint_ids.len()),
-        format!("experiments: {}", projection.experiment_count),
+        format!("open experiments: {}", projection.open_experiment_count),
+        format!(
+            "completed experiments: {}",
+            projection.completed_experiment_count
+        ),
+        format!(
+            "verdicts: accepted={} kept={} parked={} rejected={}",
+            projection.verdict_counts.accepted,
+            projection.verdict_counts.kept,
+            projection.verdict_counts.parked,
+            projection.verdict_counts.rejected,
+        ),
     ]
     .join("\n")
 }
@@ -1991,11 +1952,10 @@ fn metric_objective_name(objective: fidget_spinner_core::OptimizationObjective) 
 
 fn metric_verdict_name(verdict: FrontierVerdict) -> &'static str {
     match verdict {
-        FrontierVerdict::PromoteToChampion => "promote_to_champion",
-        FrontierVerdict::KeepOnFrontier => "keep_on_frontier",
-        FrontierVerdict::RevertToChampion => "revert_to_champion",
-        FrontierVerdict::ArchiveDeadEnd => "archive_dead_end",
-        FrontierVerdict::NeedsMoreEvidence => "needs_more_evidence",
+        FrontierVerdict::Accepted => "accepted",
+        FrontierVerdict::Kept => "kept",
+        FrontierVerdict::Parked => "parked",
+        FrontierVerdict::Rejected => "rejected",
     }
 }
 
@@ -2192,10 +2152,6 @@ fn command_recipe_from_wire(
     .map_err(StoreError::from)
 }
 
-fn capture_code_snapshot(project_root: &Utf8Path) -> Result<CodeSnapshotRef, StoreError> {
-    crate::capture_code_snapshot(project_root)
-}
-
 fn parse_node_class_name(raw: &str) -> Result<NodeClass, StoreError> {
     match raw {
         "contract" => Ok(NodeClass::Contract),
@@ -2311,11 +2267,10 @@ fn parse_backend_name(raw: &str) -> Result<ExecutionBackend, StoreError> {
 
 fn parse_verdict_name(raw: &str) -> Result<FrontierVerdict, StoreError> {
     match raw {
-        "promote_to_champion" => Ok(FrontierVerdict::PromoteToChampion),
-        "keep_on_frontier" => Ok(FrontierVerdict::KeepOnFrontier),
-        "revert_to_champion" => Ok(FrontierVerdict::RevertToChampion),
-        "archive_dead_end" => Ok(FrontierVerdict::ArchiveDeadEnd),
-        "needs_more_evidence" => Ok(FrontierVerdict::NeedsMoreEvidence),
+        "accepted" => Ok(FrontierVerdict::Accepted),
+        "kept" => Ok(FrontierVerdict::Kept),
+        "parked" => Ok(FrontierVerdict::Parked),
+        "rejected" => Ok(FrontierVerdict::Rejected),
         other => Err(crate::invalid_input(format!("unknown verdict `{other}`"))),
     }
 }
@@ -2342,7 +2297,6 @@ struct FrontierInitToolArgs {
     primary_metric: WireMetricSpec,
     #[serde(default)]
     supporting_metrics: Vec<WireMetricSpec>,
-    seed_summary: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -2480,7 +2434,6 @@ struct MetricBestToolArgs {
 #[derive(Debug, Deserialize)]
 struct ExperimentOpenToolArgs {
     frontier_id: String,
-    base_checkpoint_id: String,
     hypothesis_node_id: String,
     title: String,
     summary: Option<String>,
@@ -2499,7 +2452,6 @@ struct ExperimentReadToolArgs {
 #[derive(Debug, Deserialize)]
 struct ExperimentCloseToolArgs {
     experiment_id: String,
-    candidate_summary: String,
     run: WireRun,
     primary_metric: WireMetricValue,
     #[serde(default)]

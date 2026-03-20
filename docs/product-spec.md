@@ -50,7 +50,7 @@ These are the load-bearing decisions to hold fixed through the MVP push.
 The canonical record is the DAG plus its normalized supporting tables.
 
 Frontier state is not a rival authority. It is a derived, rebuildable
-projection over the DAG and related run/checkpoint/experiment records.
+projection over the DAG and related run/experiment records.
 
 ### 2. Storage is per-project
 
@@ -103,21 +103,12 @@ benchmark/decision bureaucracy while still preserving it in the DAG.
 
 A completed experiment exists only when all of these exist together:
 
-- base checkpoint
-- candidate checkpoint
 - measured result
 - terse note
 - explicit verdict
 
 The write surface should make that one atomic mutation, not a loose sequence of
 low-level calls.
-
-### 7. Checkpoints are git-backed
-
-Dirty worktree snapshots are useful as descriptive context, but a completed
-core-path experiment should anchor to a committed candidate checkpoint.
-
-Off-path notes and source captures can remain lightweight and non-committal.
 
 ## Node Model
 
@@ -203,9 +194,9 @@ The frontier is a derived operational view over the canonical DAG.
 It answers:
 
 - what objective is active
-- what the current champion checkpoint is
-- which candidate checkpoints are still alive
-- how many completed experiments exist
+- how many experiments are open
+- how many experiments are completed
+- how the verdict mix currently breaks down
 
 The DAG answers:
 
@@ -316,10 +307,10 @@ The MVP is successful when:
 - an agent can record off-path sources and notes without bureaucratic pain
 - the project schema can softly declare whether payload fields are strings, numbers, booleans, or timestamps
 - an operator can inspect recent nodes through a minimal localhost web navigator filtered by tag
-- a git-backed project can close a real core-path experiment atomically
+- a project can close a real core-path experiment atomically
 - retryable worker faults do not duplicate side effects
 - stale nodes can be archived instead of polluting normal enumeration
-- a human can answer "what changed, what ran, what is the current champion,
+- a human can answer "what was tried, what ran, what was accepted or parked,
   and why?" without doing markdown archaeology
 
 ## Full Product

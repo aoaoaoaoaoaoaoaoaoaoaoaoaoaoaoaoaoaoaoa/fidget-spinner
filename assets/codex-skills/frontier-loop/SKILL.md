@@ -58,7 +58,7 @@ DO NOT EMIT A FINAL TURN UNLESS YOU ARE ACTUALLY BLOCKED OR EXPLICITLY TOLD TO S
 
 ASSUME YOU ARE RUNNING OVERNIGHT.
 
-1. Start from the current best checkpoint or most credible live branch.
+1. Start from the current best accepted line or most credible live branch.
 2. Study existing evidence from `fidget-spinner`.
 3. Search outward if the local frontier looks exhausted or you are starting to take unambitious strides.
 4. Form a strong, falsifiable hypothesis.
@@ -68,7 +68,7 @@ ASSUME YOU ARE RUNNING OVERNIGHT.
    rerun only enough to understand the outcome.
 8. Record the outcome through `fidget-spinner`.
 9. Keep the line if it advances the objective or opens a genuinely strong new avenue.
-10. If the line is dead, record that too, re-anchor to the best known checkpoint,
+10. If the line is dead, record that too, re-anchor to the best known accepted line,
     and try a different attack.
 11. Repeat.
 

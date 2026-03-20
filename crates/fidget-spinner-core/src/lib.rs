@@ -12,17 +12,16 @@ mod model;
 
 pub use crate::error::CoreError;
 pub use crate::id::{
-    AgentSessionId, AnnotationId, ArtifactId, CheckpointId, ExperimentId, FrontierId, NodeId, RunId,
+    AgentSessionId, AnnotationId, ArtifactId, ExperimentId, FrontierId, NodeId, RunId,
 };
 pub use crate::model::{
-    AdmissionState, AnnotationVisibility, ArtifactKind, ArtifactRef, CheckpointDisposition,
-    CheckpointRecord, CheckpointSnapshotRef, CodeSnapshotRef, CommandRecipe, CompletedExperiment,
-    DagEdge, DagNode, DiagnosticSeverity, EdgeKind, EvaluationProtocol, ExecutionBackend,
-    ExperimentResult, FieldPresence, FieldRole, FieldValueType, FrontierContract, FrontierNote,
-    FrontierProjection, FrontierRecord, FrontierStatus, FrontierVerdict, GitCommitHash,
-    InferencePolicy, JsonObject, MetricDefinition, MetricObservation, MetricSpec, MetricUnit,
-    MetricValue, NodeAnnotation, NodeClass, NodeDiagnostics, NodePayload, NodeTrack, NonEmptyText,
-    OpenExperiment, OptimizationObjective, PayloadSchemaRef, ProjectFieldSpec, ProjectSchema,
-    RunDimensionDefinition, RunDimensionValue, RunRecord, RunStatus, TagName, TagRecord,
-    ValidationDiagnostic,
+    AdmissionState, AnnotationVisibility, ArtifactKind, ArtifactRef, CommandRecipe,
+    CompletedExperiment, DagEdge, DagNode, DiagnosticSeverity, EdgeKind, EvaluationProtocol,
+    ExecutionBackend, ExperimentResult, FieldPresence, FieldRole, FieldValueType, FrontierContract,
+    FrontierNote, FrontierProjection, FrontierRecord, FrontierStatus, FrontierVerdict,
+    FrontierVerdictCounts, InferencePolicy, JsonObject, MetricDefinition, MetricObservation,
+    MetricSpec, MetricUnit, MetricValue, NodeAnnotation, NodeClass, NodeDiagnostics, NodePayload,
+    NodeTrack, NonEmptyText, OpenExperiment, OptimizationObjective, PayloadSchemaRef,
+    ProjectFieldSpec, ProjectSchema, RunDimensionDefinition, RunDimensionValue, RunRecord,
+    RunStatus, TagName, TagRecord, ValidationDiagnostic,
 };

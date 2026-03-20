@@ -57,48 +57,6 @@ fn init_project(root: &Utf8PathBuf) -> TestResult {
     Ok(())
 }
 
-fn run_command(root: &Utf8PathBuf, program: &str, args: &[&str]) -> TestResult<String> {
-    let output = must(
-        Command::new(program)
-            .current_dir(root.as_std_path())
-            .args(args)
-            .output(),
-        format!("{program} spawn"),
-    )?;
-    if !output.status.success() {
-        return Err(io::Error::other(format!(
-            "{program} {:?} failed: {}",
-            args,
-            String::from_utf8_lossy(&output.stderr)
-        ))
-        .into());
-    }
-    Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
-}
-
-fn run_git(root: &Utf8PathBuf, args: &[&str]) -> TestResult<String> {
-    run_command(root, "git", args)
-}
-
-fn init_git_project(root: &Utf8PathBuf) -> TestResult<String> {
-    let _ = run_git(root, &["init", "-b", "main"])?;
-    let _ = run_git(root, &["config", "user.name", "main"])?;
-    let _ = run_git(root, &["config", "user.email", "main@swarm.moe"])?;
-    let _ = run_git(root, &["add", "-A"])?;
-    let _ = run_git(root, &["commit", "-m", "initial state"])?;
-    run_git(root, &["rev-parse", "HEAD"])
-}
-
-fn commit_project_state(root: &Utf8PathBuf, marker: &str, message: &str) -> TestResult<String> {
-    must(
-        fs::write(root.join(marker).as_std_path(), message),
-        format!("write marker {marker}"),
-    )?;
-    let _ = run_git(root, &["add", "-A"])?;
-    let _ = run_git(root, &["commit", "-m", message])?;
-    run_git(root, &["rev-parse", "HEAD"])
-}
-
 fn binary_path() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_fidget-spinner-cli"))
 }
@@ -688,7 +646,7 @@ fn tag_registry_drives_note_creation_and_lookup() -> TestResult {
 }
 
 #[test]
-fn research_record_accepts_tags_and_filtering() -> TestResult {
+fn source_record_accepts_tags_and_filtering() -> TestResult {
     let project_root = temp_project_root("research_tags")?;
     init_project(&project_root)?;
 
@@ -721,10 +679,7 @@ fn research_record_accepts_tags_and_filtering() -> TestResult {
     assert_eq!(research["result"]["isError"].as_bool(), Some(false));
 
     let filtered = harness.call_tool(454, "node.list", json!({"tags": ["campaign/libgrid"]}))?;
-    let nodes = must_some(
-        tool_content(&filtered).as_array(),
-        "filtered research nodes",
-    )?;
+    let nodes = must_some(tool_content(&filtered).as_array(), "filtered source nodes")?;
     assert_eq!(nodes.len(), 1);
     assert_eq!(nodes[0]["class"].as_str(), Some("source"));
     assert_eq!(nodes[0]["tags"][0].as_str(), Some("campaign/libgrid"));
@@ -760,20 +715,20 @@ fn prose_tools_reject_invalid_shapes_over_mcp() -> TestResult {
             .is_some_and(|message| message.contains("summary") || message.contains("missing field"))
     );
 
-    let missing_research_summary = harness.call_tool(
+    let missing_source_summary = harness.call_tool(
         48,
         "source.record",
         json!({
-            "title": "research only",
+            "title": "source only",
             "body": "body only",
         }),
     )?;
     assert_eq!(
-        missing_research_summary["result"]["isError"].as_bool(),
+        missing_source_summary["result"]["isError"].as_bool(),
         Some(true)
     );
     assert!(
-        fault_message(&missing_research_summary)
+        fault_message(&missing_source_summary)
             .is_some_and(|message| message.contains("summary") || message.contains("missing field"))
     );
 
@@ -794,7 +749,7 @@ fn prose_tools_reject_invalid_shapes_over_mcp() -> TestResult {
             .is_some_and(|message| message.contains("payload field `body`"))
     );
 
-    let research_without_summary = harness.call_tool(
+    let source_without_summary = harness.call_tool(
         50,
         "node.create",
         json!({
@@ -804,11 +759,11 @@ fn prose_tools_reject_invalid_shapes_over_mcp() -> TestResult {
         }),
     )?;
     assert_eq!(
-        research_without_summary["result"]["isError"].as_bool(),
+        source_without_summary["result"]["isError"].as_bool(),
         Some(true)
     );
     assert!(
-        fault_message(&research_without_summary)
+        fault_message(&source_without_summary)
             .is_some_and(|message| message.contains("non-empty summary"))
     );
     Ok(())
@@ -885,11 +840,8 @@ fn concise_prose_reads_only_surface_payload_field_names() -> TestResult {
         }),
     )?;
     assert_eq!(research["result"]["isError"].as_bool(), Some(false));
-    let node_id = must_some(
-        tool_content(&research)["id"].as_str(),
-        "created research id",
-    )?
-    .to_owned();
+    let node_id =
+        must_some(tool_content(&research)["id"].as_str(), "created source id")?.to_owned();
 
     let concise = harness.call_tool(533, "node.read", json!({ "node_id": node_id }))?;
     let concise_structured = tool_content(&concise);
@@ -1043,7 +995,7 @@ fn bind_open_backfills_legacy_missing_summary() -> TestResult {
             store.add_node(fidget_spinner_store_sqlite::CreateNodeRequest {
                 class: fidget_spinner_core::NodeClass::Source,
                 frontier_id: None,
-                title: must(NonEmptyText::new("legacy research"), "legacy title")?,
+                title: must(NonEmptyText::new("legacy source"), "legacy title")?,
                 summary: Some(must(
                     NonEmptyText::new("temporary summary"),
                     "temporary summary",
@@ -1059,7 +1011,7 @@ fn bind_open_backfills_legacy_missing_summary() -> TestResult {
                 annotations: Vec::new(),
                 attachments: Vec::new(),
             }),
-            "create legacy research node",
+            "create legacy source node",
         )?;
         node.id.to_string()
     };
@@ -1097,7 +1049,7 @@ fn bind_open_backfills_legacy_missing_summary() -> TestResult {
     );
 
     let listed = harness.call_tool(62, "node.list", json!({ "class": "source" }))?;
-    let items = must_some(tool_content(&listed).as_array(), "research node list")?;
+    let items = must_some(tool_content(&listed).as_array(), "source node list")?;
     assert_eq!(items.len(), 1);
     assert_eq!(
         items[0]["summary"].as_str(),
@@ -1110,7 +1062,6 @@ fn bind_open_backfills_legacy_missing_summary() -> TestResult {
 fn metric_tools_rank_closed_experiments_and_enforce_disambiguation() -> TestResult {
     let project_root = temp_project_root("metric_rank_e2e")?;
     init_project(&project_root)?;
-    let _initial_head = init_git_project(&project_root)?;
 
     let mut harness = McpHarness::spawn(Some(&project_root), &[])?;
     let _ = harness.initialize()?;
@@ -1136,11 +1087,6 @@ fn metric_tools_rank_closed_experiments_and_enforce_disambiguation() -> TestResu
     let frontier_id = must_some(
         tool_content(&frontier)["frontier_id"].as_str(),
         "frontier id",
-    )?
-    .to_owned();
-    let base_checkpoint_id = must_some(
-        tool_content(&frontier)["champion_checkpoint_id"].as_str(),
-        "base checkpoint id",
     )?
     .to_owned();
     let metric_define = harness.call_tool(
@@ -1222,7 +1168,6 @@ fn metric_tools_rank_closed_experiments_and_enforce_disambiguation() -> TestResu
         "experiment.open",
         json!({
             "frontier_id": frontier_id,
-            "base_checkpoint_id": base_checkpoint_id,
             "hypothesis_node_id": first_change_id,
             "title": "first experiment",
             "summary": "first experiment summary"
@@ -1233,14 +1178,12 @@ fn metric_tools_rank_closed_experiments_and_enforce_disambiguation() -> TestResu
         tool_content(&first_experiment)["experiment_id"].as_str(),
         "first experiment id",
     )?;
-    let _first_commit = commit_project_state(&project_root, "candidate-one.txt", "candidate one")?;
 
     let first_close = harness.call_tool(
         72,
         "experiment.close",
         json!({
             "experiment_id": first_experiment_id,
-            "candidate_summary": "candidate one",
             "run": {
                 "title": "first run",
                 "summary": "first run summary",
@@ -1262,18 +1205,12 @@ fn metric_tools_rank_closed_experiments_and_enforce_disambiguation() -> TestResu
             "note": {
                 "summary": "first run note"
             },
-            "verdict": "keep_on_frontier",
+            "verdict": "kept",
             "decision_title": "first decision",
             "decision_rationale": "keep first candidate around"
         }),
     )?;
     assert_eq!(first_close["result"]["isError"].as_bool(), Some(false));
-
-    let first_candidate_checkpoint_id = must_some(
-        tool_content(&first_close)["candidate_checkpoint_id"].as_str(),
-        "first candidate checkpoint id",
-    )?
-    .to_owned();
 
     let second_change = harness.call_tool(
         73,
@@ -1299,7 +1236,6 @@ fn metric_tools_rank_closed_experiments_and_enforce_disambiguation() -> TestResu
         "experiment.open",
         json!({
             "frontier_id": frontier_id,
-            "base_checkpoint_id": base_checkpoint_id,
             "hypothesis_node_id": second_change_id,
             "title": "second experiment",
             "summary": "second experiment summary"
@@ -1313,14 +1249,12 @@ fn metric_tools_rank_closed_experiments_and_enforce_disambiguation() -> TestResu
         tool_content(&second_experiment)["experiment_id"].as_str(),
         "second experiment id",
     )?;
-    let second_commit = commit_project_state(&project_root, "candidate-two.txt", "candidate two")?;
 
     let second_close = harness.call_tool(
         74,
         "experiment.close",
         json!({
             "experiment_id": second_experiment_id,
-            "candidate_summary": "candidate two",
             "run": {
                 "title": "second run",
                 "summary": "second run summary",
@@ -1342,17 +1276,12 @@ fn metric_tools_rank_closed_experiments_and_enforce_disambiguation() -> TestResu
             "note": {
                 "summary": "second run note"
             },
-            "verdict": "keep_on_frontier",
+            "verdict": "kept",
             "decision_title": "second decision",
             "decision_rationale": "second candidate looks stronger"
         }),
     )?;
     assert_eq!(second_close["result"]["isError"].as_bool(), Some(false));
-    let second_candidate_checkpoint_id = must_some(
-        tool_content(&second_close)["candidate_checkpoint_id"].as_str(),
-        "second candidate checkpoint id",
-    )?
-    .to_owned();
 
     let second_frontier = harness.call_tool(
         80,
@@ -1374,11 +1303,6 @@ fn metric_tools_rank_closed_experiments_and_enforce_disambiguation() -> TestResu
     let second_frontier_id = must_some(
         tool_content(&second_frontier)["frontier_id"].as_str(),
         "second frontier id",
-    )?
-    .to_owned();
-    let second_base_checkpoint_id = must_some(
-        tool_content(&second_frontier)["champion_checkpoint_id"].as_str(),
-        "second frontier base checkpoint id",
     )?
     .to_owned();
 
@@ -1406,7 +1330,6 @@ fn metric_tools_rank_closed_experiments_and_enforce_disambiguation() -> TestResu
         "experiment.open",
         json!({
             "frontier_id": second_frontier_id,
-            "base_checkpoint_id": second_base_checkpoint_id,
             "hypothesis_node_id": third_change_id,
             "title": "third experiment",
             "summary": "third experiment summary"
@@ -1417,15 +1340,12 @@ fn metric_tools_rank_closed_experiments_and_enforce_disambiguation() -> TestResu
         tool_content(&third_experiment)["experiment_id"].as_str(),
         "third experiment id",
     )?;
-    let third_commit =
-        commit_project_state(&project_root, "candidate-three.txt", "candidate three")?;
 
     let third_close = harness.call_tool(
         82,
         "experiment.close",
         json!({
             "experiment_id": third_experiment_id,
-            "candidate_summary": "candidate three",
             "run": {
                 "title": "third run",
                 "summary": "third run summary",
@@ -1447,17 +1367,12 @@ fn metric_tools_rank_closed_experiments_and_enforce_disambiguation() -> TestResu
             "note": {
                 "summary": "third run note"
             },
-            "verdict": "keep_on_frontier",
+            "verdict": "kept",
             "decision_title": "third decision",
             "decision_rationale": "third candidate is best overall but not in the first frontier"
         }),
     )?;
     assert_eq!(third_close["result"]["isError"].as_bool(), Some(false));
-    let third_candidate_checkpoint_id = must_some(
-        tool_content(&third_close)["candidate_checkpoint_id"].as_str(),
-        "third candidate checkpoint id",
-    )?
-    .to_owned();
 
     let keys = harness.call_tool(75, "metric.keys", json!({}))?;
     assert_eq!(keys["result"]["isError"].as_bool(), Some(false));
@@ -1524,13 +1439,10 @@ fn metric_tools_rank_closed_experiments_and_enforce_disambiguation() -> TestResu
     assert_eq!(run_best_rows[0]["value"].as_f64(), Some(5.0));
     assert_eq!(run_best_rows.len(), 1);
     assert_eq!(
-        run_best_rows[0]["candidate_checkpoint_id"].as_str(),
-        Some(second_candidate_checkpoint_id.as_str())
+        run_best_rows[0]["experiment_title"].as_str(),
+        Some("second experiment")
     );
-    assert_eq!(
-        run_best_rows[0]["candidate_commit_hash"].as_str(),
-        Some(second_commit.as_str())
-    );
+    assert_eq!(run_best_rows[0]["verdict"].as_str(), Some("kept"));
     assert_eq!(
         run_best_rows[0]["dimensions"]["scenario"].as_str(),
         Some("belt_4x5")
@@ -1539,7 +1451,9 @@ fn metric_tools_rank_closed_experiments_and_enforce_disambiguation() -> TestResu
         run_best_rows[0]["dimensions"]["duration_s"].as_f64(),
         Some(60.0)
     );
-    assert!(must_some(tool_text(&run_metric_best), "run metric best text")?.contains("commit="));
+    assert!(
+        must_some(tool_text(&run_metric_best), "run metric best text")?.contains("hypothesis=")
+    );
     assert!(must_some(tool_text(&run_metric_best), "run metric best text")?.contains("dims:"));
 
     let payload_requires_order = harness.call_tool(
@@ -1580,12 +1494,8 @@ fn metric_tools_rank_closed_experiments_and_enforce_disambiguation() -> TestResu
     assert_eq!(payload_best_rows[0]["value"].as_f64(), Some(7.0));
     assert_eq!(payload_best_rows.len(), 1);
     assert_eq!(
-        payload_best_rows[0]["candidate_checkpoint_id"].as_str(),
-        Some(second_candidate_checkpoint_id.as_str())
-    );
-    assert_eq!(
-        payload_best_rows[0]["candidate_commit_hash"].as_str(),
-        Some(second_commit.as_str())
+        payload_best_rows[0]["experiment_title"].as_str(),
+        Some("second experiment")
     );
 
     let filtered_best = harness.call_tool(
@@ -1608,8 +1518,8 @@ fn metric_tools_rank_closed_experiments_and_enforce_disambiguation() -> TestResu
     )?;
     assert_eq!(filtered_rows.len(), 2);
     assert_eq!(
-        filtered_rows[0]["candidate_checkpoint_id"].as_str(),
-        Some(second_candidate_checkpoint_id.as_str())
+        filtered_rows[0]["experiment_title"].as_str(),
+        Some("second experiment")
     );
     assert!(
         filtered_rows
@@ -1632,12 +1542,12 @@ fn metric_tools_rank_closed_experiments_and_enforce_disambiguation() -> TestResu
         "global metric best array",
     )?;
     assert_eq!(
-        global_rows[0]["candidate_checkpoint_id"].as_str(),
-        Some(third_candidate_checkpoint_id.as_str())
+        global_rows[0]["experiment_title"].as_str(),
+        Some("third experiment")
     );
     assert_eq!(
-        global_rows[0]["candidate_commit_hash"].as_str(),
-        Some(third_commit.as_str())
+        global_rows[0]["frontier_id"].as_str(),
+        Some(second_frontier_id.as_str())
     );
 
     let migrate = harness.call_tool(85, "metric.migrate", json!({}))?;
@@ -1653,15 +1563,6 @@ fn metric_tools_rank_closed_experiments_and_enforce_disambiguation() -> TestResu
     assert_eq!(
         tool_content(&migrate)["inserted_dimension_values"].as_u64(),
         Some(0)
-    );
-
-    assert_ne!(
-        first_candidate_checkpoint_id,
-        second_candidate_checkpoint_id
-    );
-    assert_ne!(
-        second_candidate_checkpoint_id,
-        third_candidate_checkpoint_id
     );
     Ok(())
 }

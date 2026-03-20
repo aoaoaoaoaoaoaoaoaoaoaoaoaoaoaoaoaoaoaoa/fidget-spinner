@@ -10,10 +10,10 @@ use std::path::{Path, PathBuf};
 use camino::{Utf8Path, Utf8PathBuf};
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use fidget_spinner_core::{
-    AnnotationVisibility, CodeSnapshotRef, CommandRecipe, DiagnosticSeverity, ExecutionBackend,
-    FieldPresence, FieldRole, FieldValueType, FrontierContract, FrontierNote, FrontierVerdict,
-    GitCommitHash, InferencePolicy, MetricSpec, MetricUnit, MetricValue, NodeAnnotation, NodeClass,
-    NodePayload, NonEmptyText, OptimizationObjective, ProjectFieldSpec, TagName,
+    AnnotationVisibility, CommandRecipe, DiagnosticSeverity, ExecutionBackend, FieldPresence,
+    FieldRole, FieldValueType, FrontierContract, FrontierNote, FrontierVerdict, InferencePolicy,
+    MetricSpec, MetricUnit, MetricValue, NodeAnnotation, NodeClass, NodePayload, NonEmptyText,
+    OptimizationObjective, ProjectFieldSpec, TagName,
 };
 use fidget_spinner_store_sqlite::{
     CloseExperimentRequest, CreateFrontierRequest, CreateNodeRequest, DefineMetricRequest,
@@ -152,8 +152,6 @@ struct FrontierInitArgs {
     primary_metric_unit: CliMetricUnit,
     #[arg(long = "primary-metric-objective", value_enum)]
     primary_metric_objective: CliOptimizationObjective,
-    #[arg(long = "seed-summary", default_value = "initial champion checkpoint")]
-    seed_summary: String,
 }
 
 #[derive(Args)]
@@ -490,11 +488,11 @@ struct MetricBestArgs {
 
 #[derive(Subcommand)]
 enum ExperimentCommand {
-    /// Open a stateful experiment against one hypothesis and base checkpoint.
+    /// Open a stateful experiment against one hypothesis.
     Open(ExperimentOpenArgs),
     /// List open experiments, optionally narrowed to one frontier.
     List(ExperimentListArgs),
-    /// Close a core-path experiment with checkpoint, run, note, and verdict.
+    /// Close a core-path experiment with run data, note, and verdict.
     Close(Box<ExperimentCloseArgs>),
 }
 
@@ -518,8 +516,6 @@ struct ExperimentCloseArgs {
     project: ProjectArg,
     #[arg(long = "experiment")]
     experiment_id: String,
-    #[arg(long = "candidate-summary")]
-    candidate_summary: String,
     #[arg(long = "run-title")]
     run_title: String,
     #[arg(long = "run-summary")]
@@ -567,8 +563,6 @@ struct ExperimentOpenArgs {
     project: ProjectArg,
     #[arg(long)]
     frontier: String,
-    #[arg(long = "base-checkpoint")]
-    base_checkpoint: String,
     #[arg(long = "hypothesis-node")]
     hypothesis_node: String,
     #[arg(long)]
@@ -733,11 +727,10 @@ enum CliInferencePolicy {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
 enum CliFrontierVerdict {
-    PromoteToChampion,
-    KeepOnFrontier,
-    RevertToChampion,
-    ArchiveDeadEnd,
-    NeedsMoreEvidence,
+    Accepted,
+    Kept,
+    Parked,
+    Rejected,
 }
 
 fn main() {
@@ -834,8 +827,6 @@ fn run_init(args: InitArgs) -> Result<(), StoreError> {
 
 fn run_frontier_init(args: FrontierInitArgs) -> Result<(), StoreError> {
     let mut store = open_store(&args.project.project)?;
-    let initial_checkpoint =
-        store.auto_capture_checkpoint(NonEmptyText::new(args.seed_summary)?)?;
     let projection = store.create_frontier(CreateFrontierRequest {
         label: NonEmptyText::new(args.label)?,
         contract_title: NonEmptyText::new(args.contract_title)?,
@@ -853,7 +844,6 @@ fn run_frontier_init(args: FrontierInitArgs) -> Result<(), StoreError> {
             },
             promotion_criteria: to_text_vec(args.promotion_criteria)?,
         },
-        initial_checkpoint,
     })?;
     print_json(&projection)
 }
@@ -1131,7 +1121,6 @@ fn run_experiment_open(args: ExperimentOpenArgs) -> Result<(), StoreError> {
     let summary = args.summary.map(NonEmptyText::new).transpose()?;
     let experiment = store.open_experiment(OpenExperimentRequest {
         frontier_id: parse_frontier_id(&args.frontier)?,
-        base_checkpoint_id: parse_checkpoint_id(&args.base_checkpoint)?,
         hypothesis_node_id: parse_node_id(&args.hypothesis_node)?,
         title: NonEmptyText::new(args.title)?,
         summary,
@@ -1151,12 +1140,6 @@ fn run_experiment_list(args: ExperimentListArgs) -> Result<(), StoreError> {
 
 fn run_experiment_close(args: ExperimentCloseArgs) -> Result<(), StoreError> {
     let mut store = open_store(&args.project.project)?;
-    let snapshot = store
-        .auto_capture_checkpoint(NonEmptyText::new(args.candidate_summary.clone())?)?
-        .map(|seed| seed.snapshot)
-        .ok_or(StoreError::GitInspectionFailed(
-            store.project_root().to_path_buf(),
-        ))?;
     let command = CommandRecipe::new(
         args.working_directory
             .map(utf8_path)
@@ -1186,14 +1169,11 @@ fn run_experiment_close(args: ExperimentCloseArgs) -> Result<(), StoreError> {
     };
     let receipt = store.close_experiment(CloseExperimentRequest {
         experiment_id: parse_experiment_id(&args.experiment_id)?,
-        candidate_summary: NonEmptyText::new(args.candidate_summary)?,
-        candidate_snapshot: snapshot,
         run_title: NonEmptyText::new(args.run_title)?,
         run_summary: args.run_summary.map(NonEmptyText::new).transpose()?,
         backend: args.backend.into(),
         dimensions: coerce_cli_dimension_filters(&store, args.dimensions)?,
         command,
-        code_snapshot: Some(capture_code_snapshot(store.project_root())?),
         primary_metric: parse_metric_value(args.primary_metric)?,
         supporting_metrics: args
             .metrics
@@ -1539,31 +1519,6 @@ fn parse_node_class_set(classes: Vec<CliNodeClass>) -> BTreeSet<NodeClass> {
     classes.into_iter().map(Into::into).collect()
 }
 
-fn capture_code_snapshot(project_root: &Utf8Path) -> Result<CodeSnapshotRef, StoreError> {
-    let head_commit = run_git(project_root, &["rev-parse", "HEAD"])?;
-    let dirty_paths = run_git(project_root, &["status", "--porcelain"])?
-        .map(|status| {
-            status
-                .lines()
-                .filter_map(|line| line.get(3..).map(str::trim))
-                .filter(|line| !line.is_empty())
-                .map(Utf8PathBuf::from)
-                .collect::<BTreeSet<_>>()
-        })
-        .unwrap_or_default();
-    Ok(CodeSnapshotRef {
-        repo_root: run_git(project_root, &["rev-parse", "--show-toplevel"])?
-            .map(Utf8PathBuf::from)
-            .unwrap_or_else(|| project_root.to_path_buf()),
-        worktree_root: project_root.to_path_buf(),
-        worktree_name: run_git(project_root, &["rev-parse", "--abbrev-ref", "HEAD"])?
-            .map(NonEmptyText::new)
-            .transpose()?,
-        head_commit: head_commit.map(GitCommitHash::new).transpose()?,
-        dirty_paths,
-    })
-}
-
 fn run_git(project_root: &Utf8Path, args: &[&str]) -> Result<Option<String>, StoreError> {
     let output = std::process::Command::new("git")
         .arg("-C")
@@ -1700,12 +1655,6 @@ fn parse_frontier_id(raw: &str) -> Result<fidget_spinner_core::FrontierId, Store
     Ok(fidget_spinner_core::FrontierId::from_uuid(Uuid::parse_str(
         raw,
     )?))
-}
-
-fn parse_checkpoint_id(raw: &str) -> Result<fidget_spinner_core::CheckpointId, StoreError> {
-    Ok(fidget_spinner_core::CheckpointId::from_uuid(
-        Uuid::parse_str(raw)?,
-    ))
 }
 
 fn parse_experiment_id(raw: &str) -> Result<fidget_spinner_core::ExperimentId, StoreError> {
@@ -1851,11 +1800,10 @@ impl From<CliInferencePolicy> for InferencePolicy {
 impl From<CliFrontierVerdict> for FrontierVerdict {
     fn from(value: CliFrontierVerdict) -> Self {
         match value {
-            CliFrontierVerdict::PromoteToChampion => Self::PromoteToChampion,
-            CliFrontierVerdict::KeepOnFrontier => Self::KeepOnFrontier,
-            CliFrontierVerdict::RevertToChampion => Self::RevertToChampion,
-            CliFrontierVerdict::ArchiveDeadEnd => Self::ArchiveDeadEnd,
-            CliFrontierVerdict::NeedsMoreEvidence => Self::NeedsMoreEvidence,
+            CliFrontierVerdict::Accepted => Self::Accepted,
+            CliFrontierVerdict::Kept => Self::Kept,
+            CliFrontierVerdict::Parked => Self::Parked,
+            CliFrontierVerdict::Rejected => Self::Rejected,
         }
     }
 }

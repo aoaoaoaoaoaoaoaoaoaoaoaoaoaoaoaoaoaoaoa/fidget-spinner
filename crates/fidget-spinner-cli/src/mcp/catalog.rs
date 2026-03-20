@@ -99,13 +99,13 @@ pub(crate) fn tool_spec(name: &str) -> Option<ToolSpec> {
         }),
         "frontier.status" => Some(ToolSpec {
             name: "frontier.status",
-            description: "Read one frontier projection, including champion and active candidates.",
+            description: "Read one frontier projection, including open/completed experiment counts and verdict totals.",
             dispatch: DispatchTarget::Worker,
             replay: ReplayContract::Convergent,
         }),
         "frontier.init" => Some(ToolSpec {
             name: "frontier.init",
-            description: "Create a new frontier rooted in a contract node. If the project is a git repo, the current HEAD becomes the initial champion when possible.",
+            description: "Create a new frontier rooted in a contract node.",
             dispatch: DispatchTarget::Worker,
             replay: ReplayContract::NeverReplay,
         }),
@@ -183,7 +183,7 @@ pub(crate) fn tool_spec(name: &str) -> Option<ToolSpec> {
         }),
         "metric.best" => Some(ToolSpec {
             name: "metric.best",
-            description: "Rank completed experiments by one numeric key, with optional run-dimension filters and candidate commit surfacing.",
+            description: "Rank completed experiments by one numeric key, with optional run-dimension filters.",
             dispatch: DispatchTarget::Worker,
             replay: ReplayContract::Convergent,
         }),
@@ -195,7 +195,7 @@ pub(crate) fn tool_spec(name: &str) -> Option<ToolSpec> {
         }),
         "experiment.open" => Some(ToolSpec {
             name: "experiment.open",
-            description: "Open a stateful experiment against one hypothesis and one base checkpoint.",
+            description: "Open a stateful experiment against one hypothesis.",
             dispatch: DispatchTarget::Worker,
             replay: ReplayContract::NeverReplay,
         }),
@@ -213,7 +213,7 @@ pub(crate) fn tool_spec(name: &str) -> Option<ToolSpec> {
         }),
         "experiment.close" => Some(ToolSpec {
             name: "experiment.close",
-            description: "Close one open experiment with typed run dimensions, preregistered metric observations, candidate checkpoint capture, optional analysis, note, and verdict.",
+            description: "Close one open experiment with typed run dimensions, preregistered metric observations, optional analysis, note, and verdict.",
             dispatch: DispatchTarget::Worker,
             replay: ReplayContract::NeverReplay,
         }),
@@ -562,12 +562,11 @@ fn input_schema(name: &str) -> Value {
             "type": "object",
             "properties": {
                 "frontier_id": { "type": "string" },
-                "base_checkpoint_id": { "type": "string" },
                 "hypothesis_node_id": { "type": "string" },
                 "title": { "type": "string" },
                 "summary": { "type": "string" }
             },
-            "required": ["frontier_id", "base_checkpoint_id", "hypothesis_node_id", "title"],
+            "required": ["frontier_id", "hypothesis_node_id", "title"],
             "additionalProperties": false
         }),
         "experiment.list" => json!({
@@ -589,7 +588,6 @@ fn input_schema(name: &str) -> Value {
             "type": "object",
             "properties": {
                 "experiment_id": { "type": "string" },
-                "candidate_summary": { "type": "string" },
                 "run": run_schema(),
                 "primary_metric": metric_value_schema(),
                 "supporting_metrics": { "type": "array", "items": metric_value_schema() },
@@ -601,7 +599,6 @@ fn input_schema(name: &str) -> Value {
             },
             "required": [
                 "experiment_id",
-                "candidate_summary",
                 "run",
                 "primary_metric",
                 "note",
@@ -753,11 +750,10 @@ fn verdict_schema() -> Value {
     json!({
         "type": "string",
         "enum": [
-            "promote_to_champion",
-            "keep_on_frontier",
-            "revert_to_champion",
-            "archive_dead_end",
-            "needs_more_evidence"
+            "accepted",
+            "kept",
+            "parked",
+            "rejected"
         ]
     })
 }

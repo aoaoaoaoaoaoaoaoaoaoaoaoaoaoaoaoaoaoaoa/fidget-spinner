@@ -3,18 +3,16 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 use std::fs;
 use std::io;
-use std::process::Command;
 
 use camino::{Utf8Path, Utf8PathBuf};
 use fidget_spinner_core::{
-    AnnotationVisibility, CheckpointDisposition, CheckpointRecord, CheckpointSnapshotRef,
-    CodeSnapshotRef, CommandRecipe, CompletedExperiment, DagEdge, DagNode, DiagnosticSeverity,
+    AnnotationVisibility, CommandRecipe, CompletedExperiment, DagEdge, DagNode, DiagnosticSeverity,
     EdgeKind, ExecutionBackend, ExperimentResult, FieldPresence, FieldRole, FieldValueType,
     FrontierContract, FrontierNote, FrontierProjection, FrontierRecord, FrontierStatus,
-    FrontierVerdict, GitCommitHash, InferencePolicy, JsonObject, MetricDefinition, MetricSpec,
-    MetricUnit, MetricValue, NodeAnnotation, NodeClass, NodeDiagnostics, NodePayload, NonEmptyText,
-    OpenExperiment, OptimizationObjective, ProjectFieldSpec, ProjectSchema, RunDimensionDefinition,
-    RunDimensionValue, RunRecord, RunStatus, TagName, TagRecord,
+    FrontierVerdict, FrontierVerdictCounts, InferencePolicy, JsonObject, MetricDefinition,
+    MetricSpec, MetricUnit, MetricValue, NodeAnnotation, NodeClass, NodeDiagnostics, NodePayload,
+    NonEmptyText, OpenExperiment, OptimizationObjective, ProjectFieldSpec, ProjectSchema,
+    RunDimensionDefinition, RunDimensionValue, RunRecord, RunStatus, TagName, TagRecord,
 };
 use rusqlite::types::Value as SqlValue;
 use rusqlite::{Connection, OptionalExtension, Transaction, params, params_from_iter};
@@ -29,7 +27,7 @@ pub const STORE_DIR_NAME: &str = ".fidget_spinner";
 pub const STATE_DB_NAME: &str = "state.sqlite";
 pub const PROJECT_CONFIG_NAME: &str = "project.json";
 pub const PROJECT_SCHEMA_NAME: &str = "schema.json";
-pub const CURRENT_STORE_FORMAT_VERSION: u32 = 2;
+pub const CURRENT_STORE_FORMAT_VERSION: u32 = 3;
 
 #[derive(Debug, Error)]
 pub enum StoreError {
@@ -58,8 +56,6 @@ pub enum StoreError {
     NodeNotFound(fidget_spinner_core::NodeId),
     #[error("frontier {0} was not found")]
     FrontierNotFound(fidget_spinner_core::FrontierId),
-    #[error("checkpoint {0} was not found")]
-    CheckpointNotFound(fidget_spinner_core::CheckpointId),
     #[error("experiment {0} was not found")]
     ExperimentNotFound(fidget_spinner_core::ExperimentId),
     #[error("node {0} is not a hypothesis node")]
@@ -68,10 +64,6 @@ pub enum StoreError {
         "project store format {observed} is incompatible with this binary (expected {expected}); reinitialize the store"
     )]
     IncompatibleStoreFormatVersion { observed: u32, expected: u32 },
-    #[error("frontier {frontier_id} has no champion checkpoint")]
-    MissingChampionCheckpoint {
-        frontier_id: fidget_spinner_core::FrontierId,
-    },
     #[error("unknown tag `{0}`")]
     UnknownTag(TagName),
     #[error("tag `{0}` already exists")]
@@ -82,8 +74,6 @@ pub enum StoreError {
     ProseSummaryRequired(NodeClass),
     #[error("{0} nodes require a non-empty string payload field `body`")]
     ProseBodyRequired(NodeClass),
-    #[error("git repository inspection failed for {0}")]
-    GitInspectionFailed(Utf8PathBuf),
     #[error("metric `{0}` is not registered")]
     UnknownMetricDefinition(NonEmptyText),
     #[error(
@@ -301,13 +291,12 @@ pub struct MetricBestEntry {
     pub value: f64,
     pub order: MetricRankOrder,
     pub experiment_id: fidget_spinner_core::ExperimentId,
+    pub experiment_title: NonEmptyText,
     pub frontier_id: fidget_spinner_core::FrontierId,
     pub hypothesis_node_id: fidget_spinner_core::NodeId,
     pub hypothesis_title: NonEmptyText,
     pub run_id: fidget_spinner_core::RunId,
     pub verdict: FrontierVerdict,
-    pub candidate_checkpoint_id: fidget_spinner_core::CheckpointId,
-    pub candidate_commit_hash: GitCommitHash,
     pub unit: Option<MetricUnit>,
     pub objective: Option<OptimizationObjective>,
     pub dimensions: BTreeMap<NonEmptyText, RunDimensionValue>,
@@ -375,19 +364,11 @@ pub struct CreateFrontierRequest {
     pub contract_title: NonEmptyText,
     pub contract_summary: Option<NonEmptyText>,
     pub contract: FrontierContract,
-    pub initial_checkpoint: Option<CheckpointSeed>,
-}
-
-#[derive(Clone, Debug)]
-pub struct CheckpointSeed {
-    pub summary: NonEmptyText,
-    pub snapshot: CheckpointSnapshotRef,
 }
 
 #[derive(Clone, Debug)]
 pub struct OpenExperimentRequest {
     pub frontier_id: fidget_spinner_core::FrontierId,
-    pub base_checkpoint_id: fidget_spinner_core::CheckpointId,
     pub hypothesis_node_id: fidget_spinner_core::NodeId,
     pub title: NonEmptyText,
     pub summary: Option<NonEmptyText>,
@@ -397,7 +378,6 @@ pub struct OpenExperimentRequest {
 pub struct OpenExperimentSummary {
     pub id: fidget_spinner_core::ExperimentId,
     pub frontier_id: fidget_spinner_core::FrontierId,
-    pub base_checkpoint_id: fidget_spinner_core::CheckpointId,
     pub hypothesis_node_id: fidget_spinner_core::NodeId,
     pub title: NonEmptyText,
     pub summary: Option<NonEmptyText>,
@@ -414,14 +394,11 @@ pub struct ExperimentAnalysisDraft {
 #[derive(Clone, Debug)]
 pub struct CloseExperimentRequest {
     pub experiment_id: fidget_spinner_core::ExperimentId,
-    pub candidate_summary: NonEmptyText,
-    pub candidate_snapshot: CheckpointSnapshotRef,
     pub run_title: NonEmptyText,
     pub run_summary: Option<NonEmptyText>,
     pub backend: ExecutionBackend,
     pub dimensions: BTreeMap<NonEmptyText, RunDimensionValue>,
     pub command: CommandRecipe,
-    pub code_snapshot: Option<CodeSnapshotRef>,
     pub primary_metric: MetricValue,
     pub supporting_metrics: Vec<MetricValue>,
     pub note: FrontierNote,
@@ -434,7 +411,6 @@ pub struct CloseExperimentRequest {
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct ExperimentReceipt {
     pub open_experiment: OpenExperiment,
-    pub checkpoint: CheckpointRecord,
     pub run_node: DagNode,
     pub run: RunRecord,
     pub analysis_node: Option<DagNode>,
@@ -629,18 +605,6 @@ impl ProjectStore {
         }
         insert_node(&tx, &contract_node)?;
         insert_frontier(&tx, &frontier)?;
-        if let Some(seed) = request.initial_checkpoint {
-            let checkpoint = CheckpointRecord {
-                id: fidget_spinner_core::CheckpointId::fresh(),
-                frontier_id: frontier.id,
-                node_id: contract_node.id,
-                snapshot: seed.snapshot,
-                disposition: CheckpointDisposition::Champion,
-                summary: seed.summary,
-                created_at: OffsetDateTime::now_utc(),
-            };
-            insert_checkpoint(&tx, &checkpoint)?;
-        }
         insert_event(
             &tx,
             "frontier",
@@ -1074,66 +1038,41 @@ impl ProjectStore {
         frontier_id: fidget_spinner_core::FrontierId,
     ) -> Result<FrontierProjection, StoreError> {
         let frontier = self.load_frontier(frontier_id)?;
-        let mut champion_checkpoint_id = None;
-        let mut candidate_checkpoint_ids = BTreeSet::new();
-
-        let mut statement = self.connection.prepare(
-            "SELECT id, disposition
-             FROM checkpoints
-             WHERE frontier_id = ?1",
-        )?;
-        let mut rows = statement.query(params![frontier_id.to_string()])?;
-        while let Some(row) = rows.next()? {
-            let checkpoint_id = parse_checkpoint_id(&row.get::<_, String>(0)?)?;
-            match parse_checkpoint_disposition(&row.get::<_, String>(1)?)? {
-                CheckpointDisposition::Champion => champion_checkpoint_id = Some(checkpoint_id),
-                CheckpointDisposition::FrontierCandidate => {
-                    let _ = candidate_checkpoint_ids.insert(checkpoint_id);
-                }
-                CheckpointDisposition::Baseline
-                | CheckpointDisposition::DeadEnd
-                | CheckpointDisposition::Archived => {}
-            }
-        }
-        let experiment_count = self.connection.query_row(
+        let open_experiment_count = self.connection.query_row(
+            "SELECT COUNT(*) FROM open_experiments WHERE frontier_id = ?1",
+            params![frontier_id.to_string()],
+            |row| row.get::<_, i64>(0),
+        )? as u64;
+        let completed_experiment_count = self.connection.query_row(
             "SELECT COUNT(*) FROM experiments WHERE frontier_id = ?1",
             params![frontier_id.to_string()],
             |row| row.get::<_, i64>(0),
         )? as u64;
+        let verdict_counts = self.connection.query_row(
+            "SELECT
+                SUM(CASE WHEN verdict = 'accepted' THEN 1 ELSE 0 END),
+                SUM(CASE WHEN verdict = 'kept' THEN 1 ELSE 0 END),
+                SUM(CASE WHEN verdict = 'parked' THEN 1 ELSE 0 END),
+                SUM(CASE WHEN verdict = 'rejected' THEN 1 ELSE 0 END)
+             FROM experiments
+             WHERE frontier_id = ?1",
+            params![frontier_id.to_string()],
+            |row| {
+                Ok(FrontierVerdictCounts {
+                    accepted: row.get::<_, Option<i64>>(0)?.unwrap_or(0) as u64,
+                    kept: row.get::<_, Option<i64>>(1)?.unwrap_or(0) as u64,
+                    parked: row.get::<_, Option<i64>>(2)?.unwrap_or(0) as u64,
+                    rejected: row.get::<_, Option<i64>>(3)?.unwrap_or(0) as u64,
+                })
+            },
+        )?;
 
         Ok(FrontierProjection {
             frontier,
-            champion_checkpoint_id,
-            candidate_checkpoint_ids,
-            experiment_count,
+            open_experiment_count,
+            completed_experiment_count,
+            verdict_counts,
         })
-    }
-
-    pub fn load_checkpoint(
-        &self,
-        checkpoint_id: fidget_spinner_core::CheckpointId,
-    ) -> Result<Option<CheckpointRecord>, StoreError> {
-        let mut statement = self.connection.prepare(
-            "SELECT
-                id,
-                frontier_id,
-                node_id,
-                repo_root,
-                worktree_root,
-                worktree_name,
-                commit_hash,
-                disposition,
-                summary,
-                created_at
-             FROM checkpoints
-             WHERE id = ?1",
-        )?;
-        statement
-            .query_row(params![checkpoint_id.to_string()], |row| {
-                read_checkpoint_row(row)
-            })
-            .optional()
-            .map_err(StoreError::from)
     }
 
     pub fn open_experiment(
@@ -1149,16 +1088,9 @@ impl ProjectStore {
         if hypothesis_node.frontier_id != Some(request.frontier_id) {
             return Err(StoreError::FrontierNotFound(request.frontier_id));
         }
-        let base_checkpoint = self
-            .load_checkpoint(request.base_checkpoint_id)?
-            .ok_or(StoreError::CheckpointNotFound(request.base_checkpoint_id))?;
-        if base_checkpoint.frontier_id != request.frontier_id {
-            return Err(StoreError::CheckpointNotFound(request.base_checkpoint_id));
-        }
         let experiment = OpenExperiment {
             id: fidget_spinner_core::ExperimentId::fresh(),
             frontier_id: request.frontier_id,
-            base_checkpoint_id: request.base_checkpoint_id,
             hypothesis_node_id: request.hypothesis_node_id,
             title: request.title,
             summary: request.summary,
@@ -1175,7 +1107,6 @@ impl ProjectStore {
             json!({
                 "frontier_id": experiment.frontier_id,
                 "hypothesis_node_id": experiment.hypothesis_node_id,
-                "base_checkpoint_id": experiment.base_checkpoint_id,
             }),
         )?;
         tx.commit()?;
@@ -1190,7 +1121,6 @@ impl ProjectStore {
             "SELECT
                 id,
                 frontier_id,
-                base_checkpoint_id,
                 hypothesis_node_id,
                 title,
                 summary,
@@ -1205,14 +1135,13 @@ impl ProjectStore {
             items.push(OpenExperimentSummary {
                 id: parse_experiment_id(&row.get::<_, String>(0)?)?,
                 frontier_id: parse_frontier_id(&row.get::<_, String>(1)?)?,
-                base_checkpoint_id: parse_checkpoint_id(&row.get::<_, String>(2)?)?,
-                hypothesis_node_id: parse_node_id(&row.get::<_, String>(3)?)?,
-                title: NonEmptyText::new(row.get::<_, String>(4)?)?,
+                hypothesis_node_id: parse_node_id(&row.get::<_, String>(2)?)?,
+                title: NonEmptyText::new(row.get::<_, String>(3)?)?,
                 summary: row
-                    .get::<_, Option<String>>(5)?
+                    .get::<_, Option<String>>(4)?
                     .map(NonEmptyText::new)
                     .transpose()?,
-                created_at: decode_timestamp(&row.get::<_, String>(6)?)?,
+                created_at: decode_timestamp(&row.get::<_, String>(5)?)?,
             });
         }
         Ok(items)
@@ -1239,16 +1168,6 @@ impl ProjectStore {
         if hypothesis_node.class != NodeClass::Hypothesis {
             return Err(StoreError::NodeNotHypothesis(
                 open_experiment.hypothesis_node_id,
-            ));
-        }
-        let base_checkpoint = self
-            .load_checkpoint(open_experiment.base_checkpoint_id)?
-            .ok_or(StoreError::CheckpointNotFound(
-                open_experiment.base_checkpoint_id,
-            ))?;
-        if base_checkpoint.frontier_id != open_experiment.frontier_id {
-            return Err(StoreError::CheckpointNotFound(
-                open_experiment.base_checkpoint_id,
             ));
         }
         let tx = self.connection.transaction()?;
@@ -1292,7 +1211,6 @@ impl ProjectStore {
             frontier_id: Some(open_experiment.frontier_id),
             status: RunStatus::Succeeded,
             backend: request.backend,
-            code_snapshot: request.code_snapshot,
             dimensions: dimensions.clone(),
             command: request.command,
             started_at: Some(now),
@@ -1339,28 +1257,9 @@ impl ProjectStore {
             decision_diagnostics,
         );
 
-        let checkpoint = CheckpointRecord {
-            id: fidget_spinner_core::CheckpointId::fresh(),
-            frontier_id: open_experiment.frontier_id,
-            node_id: run_node.id,
-            snapshot: request.candidate_snapshot,
-            disposition: match request.verdict {
-                FrontierVerdict::PromoteToChampion => CheckpointDisposition::Champion,
-                FrontierVerdict::KeepOnFrontier | FrontierVerdict::NeedsMoreEvidence => {
-                    CheckpointDisposition::FrontierCandidate
-                }
-                FrontierVerdict::RevertToChampion => CheckpointDisposition::DeadEnd,
-                FrontierVerdict::ArchiveDeadEnd => CheckpointDisposition::Archived,
-            },
-            summary: request.candidate_summary,
-            created_at: now,
-        };
-
         let experiment = CompletedExperiment {
             id: open_experiment.id,
             frontier_id: open_experiment.frontier_id,
-            base_checkpoint_id: open_experiment.base_checkpoint_id,
-            candidate_checkpoint_id: checkpoint.id,
             hypothesis_node_id: open_experiment.hypothesis_node_id,
             run_node_id: run_node.id,
             run_id,
@@ -1428,16 +1327,6 @@ impl ProjectStore {
             supporting_metric_definitions.as_slice(),
         )?;
         insert_run_dimensions(&tx, run.run_id, &dimensions)?;
-        match request.verdict {
-            FrontierVerdict::PromoteToChampion => {
-                demote_previous_champion(&tx, open_experiment.frontier_id)?;
-            }
-            FrontierVerdict::KeepOnFrontier
-            | FrontierVerdict::NeedsMoreEvidence
-            | FrontierVerdict::RevertToChampion
-            | FrontierVerdict::ArchiveDeadEnd => {}
-        }
-        insert_checkpoint(&tx, &checkpoint)?;
         insert_experiment(&tx, &experiment)?;
         delete_open_experiment(&tx, open_experiment.id)?;
         touch_frontier(&tx, open_experiment.frontier_id)?;
@@ -1450,27 +1339,18 @@ impl ProjectStore {
                 "frontier_id": open_experiment.frontier_id,
                 "hypothesis_node_id": open_experiment.hypothesis_node_id,
                 "verdict": format!("{:?}", request.verdict),
-                "candidate_checkpoint_id": checkpoint.id,
             }),
         )?;
         tx.commit()?;
 
         Ok(ExperimentReceipt {
             open_experiment,
-            checkpoint,
             run_node,
             run,
             analysis_node,
             decision_node,
             experiment,
         })
-    }
-
-    pub fn auto_capture_checkpoint(
-        &self,
-        summary: NonEmptyText,
-    ) -> Result<Option<CheckpointSeed>, StoreError> {
-        auto_capture_checkpoint_seed(&self.project_root, summary)
     }
 
     fn load_annotations(
@@ -1565,12 +1445,11 @@ struct MetricSample {
     value: f64,
     frontier_id: fidget_spinner_core::FrontierId,
     experiment_id: fidget_spinner_core::ExperimentId,
+    experiment_title: NonEmptyText,
     hypothesis_node_id: fidget_spinner_core::NodeId,
     hypothesis_title: NonEmptyText,
     run_id: fidget_spinner_core::RunId,
     verdict: FrontierVerdict,
-    candidate_checkpoint_id: fidget_spinner_core::CheckpointId,
-    candidate_commit_hash: GitCommitHash,
     unit: Option<MetricUnit>,
     objective: Option<OptimizationObjective>,
     dimensions: BTreeMap<NonEmptyText, RunDimensionValue>,
@@ -1584,13 +1463,12 @@ impl MetricSample {
             value: self.value,
             order,
             experiment_id: self.experiment_id,
+            experiment_title: self.experiment_title,
             frontier_id: self.frontier_id,
             hypothesis_node_id: self.hypothesis_node_id,
             hypothesis_title: self.hypothesis_title,
             run_id: self.run_id,
             verdict: self.verdict,
-            candidate_checkpoint_id: self.candidate_checkpoint_id,
-            candidate_commit_hash: self.candidate_commit_hash,
             unit: self.unit,
             objective: self.objective,
             dimensions: self.dimensions,
@@ -1737,10 +1615,10 @@ fn compare_metric_samples(
 #[derive(Clone, Debug)]
 struct ExperimentMetricRow {
     experiment_id: fidget_spinner_core::ExperimentId,
+    experiment_title: NonEmptyText,
     frontier_id: fidget_spinner_core::FrontierId,
     run_id: fidget_spinner_core::RunId,
     verdict: FrontierVerdict,
-    candidate_checkpoint: CheckpointRecord,
     hypothesis_node: DagNode,
     run_node: DagNode,
     analysis_node: Option<DagNode>,
@@ -1755,13 +1633,13 @@ fn load_experiment_rows(store: &ProjectStore) -> Result<Vec<ExperimentMetricRow>
     let mut statement = store.connection.prepare(
         "SELECT
             id,
+            title,
             frontier_id,
             run_id,
             hypothesis_node_id,
             run_node_id,
             analysis_node_id,
             decision_node_id,
-            candidate_checkpoint_id,
             primary_metric_json,
             supporting_metrics_json,
             verdict
@@ -1770,23 +1648,20 @@ fn load_experiment_rows(store: &ProjectStore) -> Result<Vec<ExperimentMetricRow>
     let mut rows = statement.query([])?;
     let mut items = Vec::new();
     while let Some(row) = rows.next()? {
-        let hypothesis_node_id = parse_node_id(&row.get::<_, String>(3)?)?;
-        let run_id = parse_run_id(&row.get::<_, String>(2)?)?;
-        let run_node_id = parse_node_id(&row.get::<_, String>(4)?)?;
+        let hypothesis_node_id = parse_node_id(&row.get::<_, String>(4)?)?;
+        let run_id = parse_run_id(&row.get::<_, String>(3)?)?;
+        let run_node_id = parse_node_id(&row.get::<_, String>(5)?)?;
         let analysis_node_id = row
-            .get::<_, Option<String>>(5)?
+            .get::<_, Option<String>>(6)?
             .map(|raw| parse_node_id(&raw))
             .transpose()?;
-        let decision_node_id = parse_node_id(&row.get::<_, String>(6)?)?;
-        let candidate_checkpoint_id = parse_checkpoint_id(&row.get::<_, String>(7)?)?;
+        let decision_node_id = parse_node_id(&row.get::<_, String>(7)?)?;
         items.push(ExperimentMetricRow {
             experiment_id: parse_experiment_id(&row.get::<_, String>(0)?)?,
-            frontier_id: parse_frontier_id(&row.get::<_, String>(1)?)?,
+            experiment_title: NonEmptyText::new(row.get::<_, String>(1)?)?,
+            frontier_id: parse_frontier_id(&row.get::<_, String>(2)?)?,
             run_id,
             verdict: parse_frontier_verdict(&row.get::<_, String>(10)?)?,
-            candidate_checkpoint: store
-                .load_checkpoint(candidate_checkpoint_id)?
-                .ok_or(StoreError::CheckpointNotFound(candidate_checkpoint_id))?,
             hypothesis_node: store
                 .get_node(hypothesis_node_id)?
                 .ok_or(StoreError::NodeNotFound(hypothesis_node_id))?,
@@ -1856,12 +1731,11 @@ fn metric_sample_from_observation(
         value: metric.value,
         frontier_id: row.frontier_id,
         experiment_id: row.experiment_id,
+        experiment_title: row.experiment_title.clone(),
         hypothesis_node_id: row.hypothesis_node.id,
         hypothesis_title: row.hypothesis_node.title.clone(),
         run_id: row.run_id,
         verdict: row.verdict,
-        candidate_checkpoint_id: row.candidate_checkpoint.id,
-        candidate_commit_hash: row.candidate_checkpoint.snapshot.commit_hash.clone(),
         unit: registry.map(|definition| definition.unit),
         objective: registry.map(|definition| definition.objective),
         dimensions: row.dimensions.clone(),
@@ -1895,12 +1769,11 @@ fn metric_samples_from_payload(
                 value,
                 frontier_id: row.frontier_id,
                 experiment_id: row.experiment_id,
+                experiment_title: row.experiment_title.clone(),
                 hypothesis_node_id: row.hypothesis_node.id,
                 hypothesis_title: row.hypothesis_node.title.clone(),
                 run_id: row.run_id,
                 verdict: row.verdict,
-                candidate_checkpoint_id: row.candidate_checkpoint.id,
-                candidate_commit_hash: row.candidate_checkpoint.snapshot.commit_hash.clone(),
                 unit: None,
                 objective: None,
                 dimensions: row.dimensions.clone(),
@@ -1968,30 +1841,12 @@ fn migrate(connection: &Connection) -> Result<(), StoreError> {
             updated_at TEXT NOT NULL
         );
 
-        CREATE TABLE IF NOT EXISTS checkpoints (
-            id TEXT PRIMARY KEY,
-            frontier_id TEXT NOT NULL REFERENCES frontiers(id) ON DELETE CASCADE,
-            node_id TEXT NOT NULL REFERENCES nodes(id) ON DELETE RESTRICT,
-            repo_root TEXT NOT NULL,
-            worktree_root TEXT NOT NULL,
-            worktree_name TEXT,
-            commit_hash TEXT NOT NULL,
-            disposition TEXT NOT NULL,
-            summary TEXT NOT NULL,
-            created_at TEXT NOT NULL
-        );
-
         CREATE TABLE IF NOT EXISTS runs (
             run_id TEXT PRIMARY KEY,
             node_id TEXT NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
             frontier_id TEXT REFERENCES frontiers(id) ON DELETE SET NULL,
             status TEXT NOT NULL,
             backend TEXT NOT NULL,
-            repo_root TEXT,
-            worktree_root TEXT,
-            worktree_name TEXT,
-            head_commit TEXT,
-            dirty_paths_json TEXT,
             benchmark_suite TEXT,
             working_directory TEXT NOT NULL,
             argv_json TEXT NOT NULL,
@@ -2037,7 +1892,6 @@ fn migrate(connection: &Connection) -> Result<(), StoreError> {
         CREATE TABLE IF NOT EXISTS open_experiments (
             id TEXT PRIMARY KEY,
             frontier_id TEXT NOT NULL REFERENCES frontiers(id) ON DELETE CASCADE,
-            base_checkpoint_id TEXT NOT NULL REFERENCES checkpoints(id) ON DELETE RESTRICT,
             hypothesis_node_id TEXT NOT NULL REFERENCES nodes(id) ON DELETE RESTRICT,
             title TEXT NOT NULL,
             summary TEXT,
@@ -2047,8 +1901,6 @@ fn migrate(connection: &Connection) -> Result<(), StoreError> {
         CREATE TABLE IF NOT EXISTS experiments (
             id TEXT PRIMARY KEY,
             frontier_id TEXT NOT NULL REFERENCES frontiers(id) ON DELETE CASCADE,
-            base_checkpoint_id TEXT NOT NULL REFERENCES checkpoints(id) ON DELETE RESTRICT,
-            candidate_checkpoint_id TEXT NOT NULL REFERENCES checkpoints(id) ON DELETE RESTRICT,
             hypothesis_node_id TEXT NOT NULL REFERENCES nodes(id) ON DELETE RESTRICT,
             run_node_id TEXT NOT NULL REFERENCES nodes(id) ON DELETE RESTRICT,
             run_id TEXT NOT NULL REFERENCES runs(run_id) ON DELETE RESTRICT,
@@ -2903,43 +2755,6 @@ fn insert_frontier(tx: &Transaction<'_>, frontier: &FrontierRecord) -> Result<()
     Ok(())
 }
 
-fn insert_checkpoint(
-    tx: &Transaction<'_>,
-    checkpoint: &CheckpointRecord,
-) -> Result<(), StoreError> {
-    let _ = tx.execute(
-        "INSERT INTO checkpoints (
-            id,
-            frontier_id,
-            node_id,
-            repo_root,
-            worktree_root,
-            worktree_name,
-            commit_hash,
-            disposition,
-            summary,
-            created_at
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
-        params![
-            checkpoint.id.to_string(),
-            checkpoint.frontier_id.to_string(),
-            checkpoint.node_id.to_string(),
-            checkpoint.snapshot.repo_root.as_str(),
-            checkpoint.snapshot.worktree_root.as_str(),
-            checkpoint
-                .snapshot
-                .worktree_name
-                .as_ref()
-                .map(NonEmptyText::as_str),
-            checkpoint.snapshot.commit_hash.as_str(),
-            encode_checkpoint_disposition(checkpoint.disposition),
-            checkpoint.summary.as_str(),
-            encode_timestamp(checkpoint.created_at)?,
-        ],
-    )?;
-    Ok(())
-}
-
 fn insert_run(
     tx: &Transaction<'_>,
     run: &RunRecord,
@@ -2949,28 +2764,6 @@ fn insert_run(
     supporting_metrics: &[MetricValue],
     supporting_metric_definitions: &[MetricDefinition],
 ) -> Result<(), StoreError> {
-    let (repo_root, worktree_root, worktree_name, head_commit, dirty_paths) = run
-        .code_snapshot
-        .as_ref()
-        .map_or((None, None, None, None, None), |snapshot| {
-            (
-                Some(snapshot.repo_root.as_str().to_owned()),
-                Some(snapshot.worktree_root.as_str().to_owned()),
-                snapshot.worktree_name.as_ref().map(ToOwned::to_owned),
-                snapshot.head_commit.as_ref().map(ToOwned::to_owned),
-                Some(
-                    snapshot
-                        .dirty_paths
-                        .iter()
-                        .map(ToOwned::to_owned)
-                        .collect::<Vec<_>>(),
-                ),
-            )
-        });
-    let dirty_paths_json = match dirty_paths.as_ref() {
-        Some(paths) => Some(encode_json(paths)?),
-        None => None,
-    };
     let started_at = match run.started_at {
         Some(timestamp) => Some(encode_timestamp(timestamp)?),
         None => None,
@@ -2986,29 +2779,19 @@ fn insert_run(
             frontier_id,
             status,
             backend,
-            repo_root,
-            worktree_root,
-            worktree_name,
-            head_commit,
-            dirty_paths_json,
             benchmark_suite,
             working_directory,
             argv_json,
             env_json,
             started_at,
             finished_at
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
         params![
             run.run_id.to_string(),
             run.node_id.to_string(),
             run.frontier_id.map(|id| id.to_string()),
             encode_run_status(run.status),
             encode_backend(run.backend),
-            repo_root,
-            worktree_root,
-            worktree_name.map(|item| item.to_string()),
-            head_commit.map(|item| item.to_string()),
-            dirty_paths_json,
             benchmark_suite,
             run.command.working_directory.as_str(),
             encode_json(&run.command.argv)?,
@@ -3046,16 +2829,14 @@ fn insert_open_experiment(
         "INSERT INTO open_experiments (
             id,
             frontier_id,
-            base_checkpoint_id,
             hypothesis_node_id,
             title,
             summary,
             created_at
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
         params![
             experiment.id.to_string(),
             experiment.frontier_id.to_string(),
-            experiment.base_checkpoint_id.to_string(),
             experiment.hypothesis_node_id.to_string(),
             experiment.title.as_str(),
             experiment.summary.as_ref().map(NonEmptyText::as_str),
@@ -3084,8 +2865,6 @@ fn insert_experiment(
         "INSERT INTO experiments (
             id,
             frontier_id,
-            base_checkpoint_id,
-            candidate_checkpoint_id,
             hypothesis_node_id,
             run_node_id,
             run_id,
@@ -3100,12 +2879,10 @@ fn insert_experiment(
             note_next_json,
             verdict,
             created_at
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
         params![
             experiment.id.to_string(),
             experiment.frontier_id.to_string(),
-            experiment.base_checkpoint_id.to_string(),
-            experiment.candidate_checkpoint_id.to_string(),
             experiment.hypothesis_node_id.to_string(),
             experiment.run_node_id.to_string(),
             experiment.run_id.to_string(),
@@ -3154,7 +2931,6 @@ fn load_open_experiment(
         "SELECT
             id,
             frontier_id,
-            base_checkpoint_id,
             hypothesis_node_id,
             title,
             summary,
@@ -3169,18 +2945,16 @@ fn load_open_experiment(
                     .map_err(to_sql_conversion_error)?,
                 frontier_id: parse_frontier_id(&row.get::<_, String>(1)?)
                     .map_err(to_sql_conversion_error)?,
-                base_checkpoint_id: parse_checkpoint_id(&row.get::<_, String>(2)?)
+                hypothesis_node_id: parse_node_id(&row.get::<_, String>(2)?)
                     .map_err(to_sql_conversion_error)?,
-                hypothesis_node_id: parse_node_id(&row.get::<_, String>(3)?)
-                    .map_err(to_sql_conversion_error)?,
-                title: NonEmptyText::new(row.get::<_, String>(4)?)
+                title: NonEmptyText::new(row.get::<_, String>(3)?)
                     .map_err(core_to_sql_conversion_error)?,
                 summary: row
-                    .get::<_, Option<String>>(5)?
+                    .get::<_, Option<String>>(4)?
                     .map(NonEmptyText::new)
                     .transpose()
                     .map_err(core_to_sql_conversion_error)?,
-                created_at: decode_timestamp(&row.get::<_, String>(6)?)
+                created_at: decode_timestamp(&row.get::<_, String>(5)?)
                     .map_err(to_sql_conversion_error)?,
             })
         })
@@ -3192,7 +2966,6 @@ fn summarize_open_experiment(experiment: &OpenExperiment) -> OpenExperimentSumma
     OpenExperimentSummary {
         id: experiment.id,
         frontier_id: experiment.frontier_id,
-        base_checkpoint_id: experiment.base_checkpoint_id,
         hypothesis_node_id: experiment.hypothesis_node_id,
         title: experiment.title.clone(),
         summary: experiment.summary.clone(),
@@ -3210,19 +2983,6 @@ fn touch_frontier(
             encode_timestamp(OffsetDateTime::now_utc())?,
             frontier_id.to_string()
         ],
-    )?;
-    Ok(())
-}
-
-fn demote_previous_champion(
-    tx: &Transaction<'_>,
-    frontier_id: fidget_spinner_core::FrontierId,
-) -> Result<(), StoreError> {
-    let _ = tx.execute(
-        "UPDATE checkpoints
-         SET disposition = 'baseline'
-         WHERE frontier_id = ?1 AND disposition = 'champion'",
-        params![frontier_id.to_string()],
     )?;
     Ok(())
 }
@@ -3273,31 +3033,6 @@ fn read_frontier_row(row: &rusqlite::Row<'_>) -> Result<FrontierRecord, StoreErr
         status: parse_frontier_status(&row.get::<_, String>(3)?)?,
         created_at: decode_timestamp(&row.get::<_, String>(4)?)?,
         updated_at: decode_timestamp(&row.get::<_, String>(5)?)?,
-    })
-}
-
-fn read_checkpoint_row(row: &rusqlite::Row<'_>) -> Result<CheckpointRecord, rusqlite::Error> {
-    Ok(CheckpointRecord {
-        id: parse_checkpoint_id(&row.get::<_, String>(0)?).map_err(to_sql_conversion_error)?,
-        frontier_id: parse_frontier_id(&row.get::<_, String>(1)?)
-            .map_err(to_sql_conversion_error)?,
-        node_id: parse_node_id(&row.get::<_, String>(2)?).map_err(to_sql_conversion_error)?,
-        snapshot: CheckpointSnapshotRef {
-            repo_root: Utf8PathBuf::from(row.get::<_, String>(3)?),
-            worktree_root: Utf8PathBuf::from(row.get::<_, String>(4)?),
-            worktree_name: row
-                .get::<_, Option<String>>(5)?
-                .map(NonEmptyText::new)
-                .transpose()
-                .map_err(core_to_sql_conversion_error)?,
-            commit_hash: GitCommitHash::new(row.get::<_, String>(6)?)
-                .map_err(core_to_sql_conversion_error)?,
-        },
-        disposition: parse_checkpoint_disposition(&row.get::<_, String>(7)?)
-            .map_err(to_sql_conversion_error)?,
-        summary: NonEmptyText::new(row.get::<_, String>(8)?)
-            .map_err(core_to_sql_conversion_error)?,
-        created_at: decode_timestamp(&row.get::<_, String>(9)?).map_err(to_sql_conversion_error)?,
     })
 }
 
@@ -3395,44 +3130,6 @@ fn discovery_start(path: &Utf8Path) -> Utf8PathBuf {
     }
 }
 
-fn auto_capture_checkpoint_seed(
-    project_root: &Utf8Path,
-    summary: NonEmptyText,
-) -> Result<Option<CheckpointSeed>, StoreError> {
-    let top_level = git_output(project_root, &["rev-parse", "--show-toplevel"])?;
-    let Some(repo_root) = top_level else {
-        return Ok(None);
-    };
-    let commit_hash = git_output(project_root, &["rev-parse", "HEAD"])?
-        .ok_or_else(|| StoreError::GitInspectionFailed(project_root.to_path_buf()))?;
-    let worktree_name = git_output(project_root, &["rev-parse", "--abbrev-ref", "HEAD"])?;
-    Ok(Some(CheckpointSeed {
-        summary,
-        snapshot: CheckpointSnapshotRef {
-            repo_root: Utf8PathBuf::from(repo_root),
-            worktree_root: project_root.to_path_buf(),
-            worktree_name: worktree_name.map(NonEmptyText::new).transpose()?,
-            commit_hash: GitCommitHash::new(commit_hash)?,
-        },
-    }))
-}
-
-fn git_output(project_root: &Utf8Path, args: &[&str]) -> Result<Option<String>, StoreError> {
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(project_root.as_str())
-        .args(args)
-        .output()?;
-    if !output.status.success() {
-        return Ok(None);
-    }
-    let text = String::from_utf8_lossy(&output.stdout).trim().to_owned();
-    if text.is_empty() {
-        return Ok(None);
-    }
-    Ok(Some(text))
-}
-
 fn to_sql_conversion_error(error: StoreError) -> rusqlite::Error {
     rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(error))
 }
@@ -3451,12 +3148,6 @@ fn parse_node_id(raw: &str) -> Result<fidget_spinner_core::NodeId, StoreError> {
 
 fn parse_frontier_id(raw: &str) -> Result<fidget_spinner_core::FrontierId, StoreError> {
     Ok(fidget_spinner_core::FrontierId::from_uuid(parse_uuid(raw)?))
-}
-
-fn parse_checkpoint_id(raw: &str) -> Result<fidget_spinner_core::CheckpointId, StoreError> {
-    Ok(fidget_spinner_core::CheckpointId::from_uuid(parse_uuid(
-        raw,
-    )?))
 }
 
 fn parse_experiment_id(raw: &str) -> Result<fidget_spinner_core::ExperimentId, StoreError> {
@@ -3565,30 +3256,6 @@ fn parse_frontier_status(raw: &str) -> Result<FrontierStatus, StoreError> {
     }
 }
 
-fn encode_checkpoint_disposition(disposition: CheckpointDisposition) -> &'static str {
-    match disposition {
-        CheckpointDisposition::Champion => "champion",
-        CheckpointDisposition::FrontierCandidate => "frontier-candidate",
-        CheckpointDisposition::Baseline => "baseline",
-        CheckpointDisposition::DeadEnd => "dead-end",
-        CheckpointDisposition::Archived => "archived",
-    }
-}
-
-fn parse_checkpoint_disposition(raw: &str) -> Result<CheckpointDisposition, StoreError> {
-    match raw {
-        "champion" => Ok(CheckpointDisposition::Champion),
-        "frontier-candidate" => Ok(CheckpointDisposition::FrontierCandidate),
-        "baseline" => Ok(CheckpointDisposition::Baseline),
-        "dead-end" => Ok(CheckpointDisposition::DeadEnd),
-        "archived" => Ok(CheckpointDisposition::Archived),
-        other => Err(StoreError::Json(serde_json::Error::io(io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!("unknown checkpoint disposition `{other}`"),
-        )))),
-    }
-}
-
 fn encode_run_status(status: RunStatus) -> &'static str {
     match status {
         RunStatus::Queued => "queued",
@@ -3670,21 +3337,19 @@ fn decode_optimization_objective(raw: &str) -> Result<OptimizationObjective, Sto
 
 fn encode_frontier_verdict(verdict: FrontierVerdict) -> &'static str {
     match verdict {
-        FrontierVerdict::PromoteToChampion => "promote-to-champion",
-        FrontierVerdict::KeepOnFrontier => "keep-on-frontier",
-        FrontierVerdict::RevertToChampion => "revert-to-champion",
-        FrontierVerdict::ArchiveDeadEnd => "archive-dead-end",
-        FrontierVerdict::NeedsMoreEvidence => "needs-more-evidence",
+        FrontierVerdict::Accepted => "accepted",
+        FrontierVerdict::Kept => "kept",
+        FrontierVerdict::Parked => "parked",
+        FrontierVerdict::Rejected => "rejected",
     }
 }
 
 fn parse_frontier_verdict(raw: &str) -> Result<FrontierVerdict, StoreError> {
     match raw {
-        "promote-to-champion" => Ok(FrontierVerdict::PromoteToChampion),
-        "keep-on-frontier" => Ok(FrontierVerdict::KeepOnFrontier),
-        "revert-to-champion" => Ok(FrontierVerdict::RevertToChampion),
-        "archive-dead-end" => Ok(FrontierVerdict::ArchiveDeadEnd),
-        "needs-more-evidence" => Ok(FrontierVerdict::NeedsMoreEvidence),
+        "accepted" => Ok(FrontierVerdict::Accepted),
+        "kept" => Ok(FrontierVerdict::Kept),
+        "parked" => Ok(FrontierVerdict::Parked),
+        "rejected" => Ok(FrontierVerdict::Rejected),
         other => Err(StoreError::Json(serde_json::Error::io(io::Error::new(
             io::ErrorKind::InvalidData,
             format!("unknown frontier verdict `{other}`"),
@@ -3785,10 +3450,10 @@ mod tests {
         RemoveSchemaFieldRequest, UpsertSchemaFieldRequest,
     };
     use fidget_spinner_core::{
-        CheckpointSnapshotRef, CommandRecipe, DiagnosticSeverity, EvaluationProtocol,
-        FieldPresence, FieldRole, FieldValueType, FrontierContract, FrontierNote, FrontierVerdict,
-        GitCommitHash, InferencePolicy, MetricSpec, MetricUnit, MetricValue, NodeAnnotation,
-        NodeClass, NodePayload, NonEmptyText, OptimizationObjective, RunDimensionValue, TagName,
+        CommandRecipe, DiagnosticSeverity, EvaluationProtocol, FieldPresence, FieldRole,
+        FieldValueType, FrontierContract, FrontierNote, FrontierVerdict, InferencePolicy,
+        MetricSpec, MetricUnit, MetricValue, NodeAnnotation, NodeClass, NodePayload, NonEmptyText,
+        OptimizationObjective, RunDimensionValue, TagName,
     };
 
     fn temp_project_root(label: &str) -> camino::Utf8PathBuf {
@@ -3850,7 +3515,7 @@ mod tests {
     }
 
     #[test]
-    fn frontier_projection_tracks_initial_champion() -> Result<(), super::StoreError> {
+    fn frontier_projection_tracks_experiment_counts() -> Result<(), super::StoreError> {
         let root = temp_project_root("frontier");
         let mut store = ProjectStore::init(
             &root,
@@ -3874,18 +3539,14 @@ mod tests {
                 },
                 promotion_criteria: vec![NonEmptyText::new("strict speedup")?],
             },
-            initial_checkpoint: Some(super::CheckpointSeed {
-                summary: NonEmptyText::new("seed")?,
-                snapshot: CheckpointSnapshotRef {
-                    repo_root: root.clone(),
-                    worktree_root: root,
-                    worktree_name: Some(NonEmptyText::new("main")?),
-                    commit_hash: GitCommitHash::new("0123456789abcdef")?,
-                },
-            }),
         })?;
 
-        assert!(projection.champion_checkpoint_id.is_some());
+        assert_eq!(projection.open_experiment_count, 0);
+        assert_eq!(projection.completed_experiment_count, 0);
+        assert_eq!(projection.verdict_counts.accepted, 0);
+        assert_eq!(projection.verdict_counts.kept, 0);
+        assert_eq!(projection.verdict_counts.parked, 0);
+        assert_eq!(projection.verdict_counts.rejected, 0);
         Ok(())
     }
 
@@ -3948,7 +3609,6 @@ mod tests {
                 },
                 promotion_criteria: vec![NonEmptyText::new("faster")?],
             },
-            initial_checkpoint: None,
         })?;
 
         let nodes = store.list_nodes(ListNodesQuery {
@@ -4203,15 +3863,8 @@ mod tests {
                 },
                 promotion_criteria: vec![NonEmptyText::new("strict speedup")?],
             },
-            initial_checkpoint: Some(super::CheckpointSeed {
-                summary: NonEmptyText::new("seed")?,
-                snapshot: checkpoint_snapshot(&root, "aaaaaaaaaaaaaaaa")?,
-            }),
         })?;
         let frontier_id = projection.frontier.id;
-        let base_checkpoint_id = projection
-            .champion_checkpoint_id
-            .ok_or_else(|| super::StoreError::MissingChampionCheckpoint { frontier_id })?;
         let _ = store.define_metric(DefineMetricRequest {
             key: NonEmptyText::new("wall_clock_s")?,
             unit: MetricUnit::Seconds,
@@ -4257,21 +3910,18 @@ mod tests {
         })?;
         let first_experiment = store.open_experiment(open_experiment_request(
             frontier_id,
-            base_checkpoint_id,
             first_hypothesis.id,
             "first experiment",
         )?)?;
         let second_experiment = store.open_experiment(open_experiment_request(
             frontier_id,
-            base_checkpoint_id,
             second_hypothesis.id,
             "second experiment",
         )?)?;
 
-        let first_receipt = store.close_experiment(experiment_request(
+        let _first_receipt = store.close_experiment(experiment_request(
             &root,
             first_experiment.id,
-            "bbbbbbbbbbbbbbbb",
             "first run",
             10.0,
             run_dimensions("belt_4x5", 20.0)?,
@@ -4279,7 +3929,6 @@ mod tests {
         let second_receipt = store.close_experiment(experiment_request(
             &root,
             second_experiment.id,
-            "cccccccccccccccc",
             "second run",
             5.0,
             run_dimensions("belt_4x5", 60.0)?,
@@ -4334,9 +3983,10 @@ mod tests {
         assert_eq!(canonical_best.len(), 1);
         assert_eq!(canonical_best[0].value, 5.0);
         assert_eq!(
-            canonical_best[0].candidate_checkpoint_id,
-            second_receipt.checkpoint.id
+            canonical_best[0].experiment_title.as_str(),
+            "second experiment"
         );
+        assert_eq!(canonical_best[0].verdict, FrontierVerdict::Kept);
         assert_eq!(
             canonical_best[0]
                 .dimensions
@@ -4369,8 +4019,8 @@ mod tests {
             Err(super::StoreError::MetricOrderRequired { .. })
         ));
         assert_eq!(
-            first_receipt.checkpoint.snapshot.commit_hash.as_str(),
-            "bbbbbbbbbbbbbbbb"
+            second_receipt.experiment.title.as_str(),
+            "second experiment"
         );
         Ok(())
     }
@@ -4401,15 +4051,8 @@ mod tests {
                 },
                 promotion_criteria: vec![NonEmptyText::new("keep the metric plane queryable")?],
             },
-            initial_checkpoint: Some(super::CheckpointSeed {
-                summary: NonEmptyText::new("seed")?,
-                snapshot: checkpoint_snapshot(&root, "aaaaaaaaaaaaaaaa")?,
-            }),
         })?;
         let frontier_id = projection.frontier.id;
-        let base_checkpoint_id = projection
-            .champion_checkpoint_id
-            .ok_or_else(|| super::StoreError::MissingChampionCheckpoint { frontier_id })?;
         let hypothesis = store.add_node(CreateNodeRequest {
             class: NodeClass::Hypothesis,
             frontier_id: Some(frontier_id),
@@ -4425,14 +4068,12 @@ mod tests {
         })?;
         let experiment = store.open_experiment(open_experiment_request(
             frontier_id,
-            base_checkpoint_id,
             hypothesis.id,
             "migration experiment",
         )?)?;
         let _ = store.close_experiment(experiment_request(
             &root,
             experiment.id,
-            "bbbbbbbbbbbbbbbb",
             "migration run",
             11.0,
             BTreeMap::from([(
@@ -4472,27 +4113,13 @@ mod tests {
         Ok(())
     }
 
-    fn checkpoint_snapshot(
-        root: &camino::Utf8Path,
-        commit: &str,
-    ) -> Result<CheckpointSnapshotRef, super::StoreError> {
-        Ok(CheckpointSnapshotRef {
-            repo_root: root.to_path_buf(),
-            worktree_root: root.to_path_buf(),
-            worktree_name: Some(NonEmptyText::new("main")?),
-            commit_hash: GitCommitHash::new(commit)?,
-        })
-    }
-
     fn open_experiment_request(
         frontier_id: fidget_spinner_core::FrontierId,
-        base_checkpoint_id: fidget_spinner_core::CheckpointId,
         hypothesis_node_id: fidget_spinner_core::NodeId,
         title: &str,
     ) -> Result<OpenExperimentRequest, super::StoreError> {
         Ok(OpenExperimentRequest {
             frontier_id,
-            base_checkpoint_id,
             hypothesis_node_id,
             title: NonEmptyText::new(title)?,
             summary: Some(NonEmptyText::new(format!("{title} summary"))?),
@@ -4502,15 +4129,12 @@ mod tests {
     fn experiment_request(
         root: &camino::Utf8Path,
         experiment_id: fidget_spinner_core::ExperimentId,
-        candidate_commit: &str,
         run_title: &str,
         wall_clock_s: f64,
         dimensions: BTreeMap<NonEmptyText, RunDimensionValue>,
     ) -> Result<CloseExperimentRequest, super::StoreError> {
         Ok(CloseExperimentRequest {
             experiment_id,
-            candidate_summary: NonEmptyText::new(format!("candidate {candidate_commit}"))?,
-            candidate_snapshot: checkpoint_snapshot(root, candidate_commit)?,
             run_title: NonEmptyText::new(run_title)?,
             run_summary: Some(NonEmptyText::new("run summary")?),
             backend: fidget_spinner_core::ExecutionBackend::WorktreeProcess,
@@ -4520,7 +4144,6 @@ mod tests {
                 vec![NonEmptyText::new("true")?],
                 BTreeMap::new(),
             )?,
-            code_snapshot: None,
             primary_metric: MetricValue {
                 key: NonEmptyText::new("wall_clock_s")?,
                 value: wall_clock_s,
@@ -4530,7 +4153,7 @@ mod tests {
                 summary: NonEmptyText::new("note summary")?,
                 next_hypotheses: Vec::new(),
             },
-            verdict: FrontierVerdict::KeepOnFrontier,
+            verdict: FrontierVerdict::Kept,
             analysis: None,
             decision_title: NonEmptyText::new("decision")?,
             decision_rationale: NonEmptyText::new("decision rationale")?,
