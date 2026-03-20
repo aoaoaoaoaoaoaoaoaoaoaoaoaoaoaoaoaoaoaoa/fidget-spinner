@@ -20,7 +20,10 @@ use uuid as _;
 
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 
-fn must<T, E: std::fmt::Display>(result: Result<T, E>, context: &str) -> TestResult<T> {
+fn must<T, E: std::fmt::Display, C: std::fmt::Display>(
+    result: Result<T, E>,
+    context: C,
+) -> TestResult<T> {
     result.map_err(|error| io::Error::other(format!("{context}: {error}")).into())
 }
 
@@ -52,6 +55,48 @@ fn init_project(root: &Utf8PathBuf) -> TestResult {
         "init project store",
     )?;
     Ok(())
+}
+
+fn run_command(root: &Utf8PathBuf, program: &str, args: &[&str]) -> TestResult<String> {
+    let output = must(
+        Command::new(program)
+            .current_dir(root.as_std_path())
+            .args(args)
+            .output(),
+        format!("{program} spawn"),
+    )?;
+    if !output.status.success() {
+        return Err(io::Error::other(format!(
+            "{program} {:?} failed: {}",
+            args,
+            String::from_utf8_lossy(&output.stderr)
+        ))
+        .into());
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
+}
+
+fn run_git(root: &Utf8PathBuf, args: &[&str]) -> TestResult<String> {
+    run_command(root, "git", args)
+}
+
+fn init_git_project(root: &Utf8PathBuf) -> TestResult<String> {
+    let _ = run_git(root, &["init", "-b", "main"])?;
+    let _ = run_git(root, &["config", "user.name", "main"])?;
+    let _ = run_git(root, &["config", "user.email", "main@swarm.moe"])?;
+    let _ = run_git(root, &["add", "-A"])?;
+    let _ = run_git(root, &["commit", "-m", "initial state"])?;
+    run_git(root, &["rev-parse", "HEAD"])
+}
+
+fn commit_project_state(root: &Utf8PathBuf, marker: &str, message: &str) -> TestResult<String> {
+    must(
+        fs::write(root.join(marker).as_std_path(), message),
+        format!("write marker {marker}"),
+    )?;
+    let _ = run_git(root, &["add", "-A"])?;
+    let _ = run_git(root, &["commit", "-m", message])?;
+    run_git(root, &["rev-parse", "HEAD"])
 }
 
 fn binary_path() -> PathBuf {
@@ -170,6 +215,10 @@ fn tool_text(response: &Value) -> Option<&str> {
         .as_array()
         .and_then(|content| content.first())
         .and_then(|entry| entry["text"].as_str())
+}
+
+fn fault_message(response: &Value) -> Option<&str> {
+    response["result"]["structuredContent"]["message"].as_str()
 }
 
 #[test]
@@ -361,6 +410,7 @@ fn side_effecting_request_is_not_replayed_after_worker_crash() -> TestResult {
         "research.record",
         json!({
             "title": "should not duplicate",
+            "summary": "dedupe check",
             "body": "host crash before worker execution",
         }),
     )?;
@@ -463,6 +513,57 @@ fn bind_rejects_nonempty_uninitialized_root() -> TestResult {
 }
 
 #[test]
+fn successful_bind_clears_stale_fault_from_health() -> TestResult {
+    let bad_root = temp_project_root("bind_fault_bad")?;
+    must(
+        fs::write(bad_root.join("README.txt").as_std_path(), "occupied"),
+        "seed bad bind root",
+    )?;
+    let good_root = temp_project_root("bind_fault_good")?;
+    init_project(&good_root)?;
+
+    let mut harness = McpHarness::spawn(None, &[])?;
+    let _ = harness.initialize()?;
+    harness.notify_initialized()?;
+
+    let failed_bind = harness.bind_project(301, &bad_root)?;
+    assert_eq!(failed_bind["result"]["isError"].as_bool(), Some(true));
+
+    let failed_health = harness.call_tool(302, "system.health", json!({ "detail": "full" }))?;
+    assert_eq!(
+        tool_content(&failed_health)["last_fault"]["operation"].as_str(),
+        Some("tools/call:project.bind")
+    );
+
+    let good_bind = harness.bind_project(303, &good_root)?;
+    assert_eq!(good_bind["result"]["isError"].as_bool(), Some(false));
+
+    let recovered_health = harness.call_tool(304, "system.health", json!({}))?;
+    assert_eq!(recovered_health["result"]["isError"].as_bool(), Some(false));
+    assert!(tool_content(&recovered_health).get("last_fault").is_none());
+    assert!(!must_some(tool_text(&recovered_health), "recovered health text")?.contains("fault:"));
+
+    let recovered_health_full =
+        harness.call_tool(306, "system.health", json!({ "detail": "full" }))?;
+    assert_eq!(
+        tool_content(&recovered_health_full)["last_fault"],
+        Value::Null,
+    );
+
+    let recovered_telemetry = harness.call_tool(305, "system.telemetry", json!({}))?;
+    assert_eq!(
+        recovered_telemetry["result"]["isError"].as_bool(),
+        Some(false)
+    );
+    assert_eq!(
+        tool_content(&recovered_telemetry)["errors"].as_u64(),
+        Some(1)
+    );
+    assert!(tool_content(&recovered_telemetry)["last_fault"].is_null());
+    Ok(())
+}
+
+#[test]
 fn bind_retargets_writes_to_sibling_project_root() -> TestResult {
     let spinner_root = temp_project_root("spinner_root")?;
     let libgrid_root = temp_project_root("libgrid_root")?;
@@ -502,6 +603,7 @@ fn bind_retargets_writes_to_sibling_project_root() -> TestResult {
         "note.quick",
         json!({
             "title": "libgrid dogfood note",
+            "summary": "rebind summary",
             "body": "rebind should redirect writes",
             "tags": [],
         }),
@@ -545,6 +647,7 @@ fn tag_registry_drives_note_creation_and_lookup() -> TestResult {
         "note.quick",
         json!({
             "title": "untagged",
+            "summary": "should fail without explicit tags",
             "body": "should fail",
         }),
     )?;
@@ -570,6 +673,7 @@ fn tag_registry_drives_note_creation_and_lookup() -> TestResult {
         "note.quick",
         json!({
             "title": "tagged note",
+            "summary": "tagged lookup summary",
             "body": "tagged lookup should work",
             "tags": ["dogfood/mcp"],
         }),
@@ -580,5 +684,939 @@ fn tag_registry_drives_note_creation_and_lookup() -> TestResult {
     let nodes = must_some(tool_content(&filtered).as_array(), "filtered nodes")?;
     assert_eq!(nodes.len(), 1);
     assert_eq!(nodes[0]["tags"][0].as_str(), Some("dogfood/mcp"));
+    Ok(())
+}
+
+#[test]
+fn research_record_accepts_tags_and_filtering() -> TestResult {
+    let project_root = temp_project_root("research_tags")?;
+    init_project(&project_root)?;
+
+    let mut harness = McpHarness::spawn(None, &[])?;
+    let _ = harness.initialize()?;
+    harness.notify_initialized()?;
+    let bind = harness.bind_project(451, &project_root)?;
+    assert_eq!(bind["result"]["isError"].as_bool(), Some(false));
+
+    let tag = harness.call_tool(
+        452,
+        "tag.add",
+        json!({
+            "name": "campaign/libgrid",
+            "description": "libgrid migration campaign",
+        }),
+    )?;
+    assert_eq!(tag["result"]["isError"].as_bool(), Some(false));
+
+    let research = harness.call_tool(
+        453,
+        "research.record",
+        json!({
+            "title": "ingest tranche",
+            "summary": "Import the next libgrid tranche.",
+            "body": "Full import notes live here.",
+            "tags": ["campaign/libgrid"],
+        }),
+    )?;
+    assert_eq!(research["result"]["isError"].as_bool(), Some(false));
+
+    let filtered = harness.call_tool(454, "node.list", json!({"tags": ["campaign/libgrid"]}))?;
+    let nodes = must_some(
+        tool_content(&filtered).as_array(),
+        "filtered research nodes",
+    )?;
+    assert_eq!(nodes.len(), 1);
+    assert_eq!(nodes[0]["class"].as_str(), Some("research"));
+    assert_eq!(nodes[0]["tags"][0].as_str(), Some("campaign/libgrid"));
+    Ok(())
+}
+
+#[test]
+fn prose_tools_reject_invalid_shapes_over_mcp() -> TestResult {
+    let project_root = temp_project_root("prose_invalid")?;
+    init_project(&project_root)?;
+
+    let mut harness = McpHarness::spawn(None, &[])?;
+    let _ = harness.initialize()?;
+    harness.notify_initialized()?;
+    let bind = harness.bind_project(46, &project_root)?;
+    assert_eq!(bind["result"]["isError"].as_bool(), Some(false));
+
+    let missing_note_summary = harness.call_tool(
+        47,
+        "note.quick",
+        json!({
+            "title": "untagged",
+            "body": "body only",
+            "tags": [],
+        }),
+    )?;
+    assert_eq!(
+        missing_note_summary["result"]["isError"].as_bool(),
+        Some(true)
+    );
+    assert!(
+        fault_message(&missing_note_summary)
+            .is_some_and(|message| message.contains("summary") || message.contains("missing field"))
+    );
+
+    let missing_research_summary = harness.call_tool(
+        48,
+        "research.record",
+        json!({
+            "title": "research only",
+            "body": "body only",
+        }),
+    )?;
+    assert_eq!(
+        missing_research_summary["result"]["isError"].as_bool(),
+        Some(true)
+    );
+    assert!(
+        fault_message(&missing_research_summary)
+            .is_some_and(|message| message.contains("summary") || message.contains("missing field"))
+    );
+
+    let note_without_body = harness.call_tool(
+        49,
+        "node.create",
+        json!({
+            "class": "note",
+            "title": "missing body",
+            "summary": "triage layer",
+            "tags": [],
+            "payload": {},
+        }),
+    )?;
+    assert_eq!(note_without_body["result"]["isError"].as_bool(), Some(true));
+    assert!(
+        fault_message(&note_without_body)
+            .is_some_and(|message| message.contains("payload field `body`"))
+    );
+
+    let research_without_summary = harness.call_tool(
+        50,
+        "node.create",
+        json!({
+            "class": "research",
+            "title": "missing summary",
+            "payload": { "body": "full research body" },
+        }),
+    )?;
+    assert_eq!(
+        research_without_summary["result"]["isError"].as_bool(),
+        Some(true)
+    );
+    assert!(
+        fault_message(&research_without_summary)
+            .is_some_and(|message| message.contains("non-empty summary"))
+    );
+    Ok(())
+}
+
+#[test]
+fn concise_note_reads_do_not_leak_body_text() -> TestResult {
+    let project_root = temp_project_root("concise_note_read")?;
+    init_project(&project_root)?;
+
+    let mut harness = McpHarness::spawn(None, &[])?;
+    let _ = harness.initialize()?;
+    harness.notify_initialized()?;
+    let bind = harness.bind_project(50, &project_root)?;
+    assert_eq!(bind["result"]["isError"].as_bool(), Some(false));
+
+    let note = harness.call_tool(
+        51,
+        "note.quick",
+        json!({
+            "title": "tagged note",
+            "summary": "triage layer",
+            "body": "full note body should stay out of concise reads",
+            "tags": [],
+        }),
+    )?;
+    assert_eq!(note["result"]["isError"].as_bool(), Some(false));
+    let node_id = must_some(tool_content(&note)["id"].as_str(), "created note id")?.to_owned();
+
+    let concise = harness.call_tool(52, "node.read", json!({ "node_id": node_id }))?;
+    let concise_structured = tool_content(&concise);
+    assert_eq!(concise_structured["summary"].as_str(), Some("triage layer"));
+    assert!(concise_structured["payload_preview"].get("body").is_none());
+    assert!(
+        !must_some(tool_text(&concise), "concise note.read text")?
+            .contains("full note body should stay out of concise reads")
+    );
+
+    let full = harness.call_tool(
+        53,
+        "node.read",
+        json!({ "node_id": node_id, "detail": "full" }),
+    )?;
+    assert_eq!(
+        tool_content(&full)["payload"]["fields"]["body"].as_str(),
+        Some("full note body should stay out of concise reads")
+    );
+    Ok(())
+}
+
+#[test]
+fn concise_prose_reads_only_surface_payload_field_names() -> TestResult {
+    let project_root = temp_project_root("concise_prose_field_names")?;
+    init_project(&project_root)?;
+
+    let mut harness = McpHarness::spawn(None, &[])?;
+    let _ = harness.initialize()?;
+    harness.notify_initialized()?;
+    let bind = harness.bind_project(531, &project_root)?;
+    assert_eq!(bind["result"]["isError"].as_bool(), Some(false));
+
+    let research = harness.call_tool(
+        532,
+        "node.create",
+        json!({
+            "class": "research",
+            "title": "rich import",
+            "summary": "triage layer only",
+            "payload": {
+                "body": "Body stays out of concise output.",
+                "source_excerpt": "This imported excerpt is intentionally long and should never reappear in concise node reads as a value preview.",
+                "verbatim_snippet": "Another long snippet that belongs in full payload inspection only, not in triage surfaces."
+            }
+        }),
+    )?;
+    assert_eq!(research["result"]["isError"].as_bool(), Some(false));
+    let node_id = must_some(
+        tool_content(&research)["id"].as_str(),
+        "created research id",
+    )?
+    .to_owned();
+
+    let concise = harness.call_tool(533, "node.read", json!({ "node_id": node_id }))?;
+    let concise_structured = tool_content(&concise);
+    assert_eq!(concise_structured["payload_field_count"].as_u64(), Some(2));
+    let payload_fields = must_some(
+        concise_structured["payload_fields"].as_array(),
+        "concise prose payload fields",
+    )?;
+    assert!(
+        payload_fields
+            .iter()
+            .any(|field| field.as_str() == Some("source_excerpt"))
+    );
+    assert!(concise_structured.get("payload_preview").is_none());
+    let concise_text = must_some(tool_text(&concise), "concise prose read text")?;
+    assert!(!concise_text.contains("This imported excerpt is intentionally long"));
+    assert!(concise_text.contains("payload fields: source_excerpt, verbatim_snippet"));
+    Ok(())
+}
+
+#[test]
+fn node_list_does_not_enumerate_full_prose_bodies() -> TestResult {
+    let project_root = temp_project_root("node_list_no_body_leak")?;
+    init_project(&project_root)?;
+
+    let mut harness = McpHarness::spawn(None, &[])?;
+    let _ = harness.initialize()?;
+    harness.notify_initialized()?;
+    let bind = harness.bind_project(54, &project_root)?;
+    assert_eq!(bind["result"]["isError"].as_bool(), Some(false));
+
+    let note = harness.call_tool(
+        55,
+        "note.quick",
+        json!({
+            "title": "tagged note",
+            "summary": "triage summary",
+            "body": "full note body should never appear in list-like surfaces",
+            "tags": [],
+        }),
+    )?;
+    assert_eq!(note["result"]["isError"].as_bool(), Some(false));
+
+    let listed = harness.call_tool(56, "node.list", json!({ "class": "note" }))?;
+    let listed_rows = must_some(tool_content(&listed).as_array(), "listed note rows")?;
+    assert_eq!(listed_rows.len(), 1);
+    assert_eq!(listed_rows[0]["summary"].as_str(), Some("triage summary"));
+    assert!(listed_rows[0].get("body").is_none());
+    assert!(
+        !must_some(tool_text(&listed), "node.list text")?
+            .contains("full note body should never appear in list-like surfaces")
+    );
+    Ok(())
+}
+
+#[test]
+fn metric_tools_are_listed_for_discovery() -> TestResult {
+    let project_root = temp_project_root("metric_tool_list")?;
+    init_project(&project_root)?;
+
+    let mut harness = McpHarness::spawn(Some(&project_root), &[])?;
+    let _ = harness.initialize()?;
+    harness.notify_initialized()?;
+    let tools = harness.tools_list()?;
+    let names = must_some(tools["result"]["tools"].as_array(), "tool list")?
+        .iter()
+        .filter_map(|tool| tool["name"].as_str())
+        .collect::<Vec<_>>();
+    assert!(names.contains(&"metric.define"));
+    assert!(names.contains(&"metric.keys"));
+    assert!(names.contains(&"metric.best"));
+    assert!(names.contains(&"metric.migrate"));
+    assert!(names.contains(&"run.dimension.define"));
+    assert!(names.contains(&"run.dimension.list"));
+    assert!(names.contains(&"schema.field.upsert"));
+    assert!(names.contains(&"schema.field.remove"));
+    Ok(())
+}
+
+#[test]
+fn schema_field_tools_mutate_project_schema() -> TestResult {
+    let project_root = temp_project_root("schema_field_tools")?;
+    init_project(&project_root)?;
+
+    let mut harness = McpHarness::spawn(Some(&project_root), &[])?;
+    let _ = harness.initialize()?;
+    harness.notify_initialized()?;
+
+    let upsert = harness.call_tool(
+        861,
+        "schema.field.upsert",
+        json!({
+            "name": "scenario",
+            "node_classes": ["change", "analysis"],
+            "presence": "recommended",
+            "severity": "warning",
+            "role": "projection_gate",
+            "inference_policy": "manual_only",
+            "value_type": "string"
+        }),
+    )?;
+    assert_eq!(upsert["result"]["isError"].as_bool(), Some(false));
+    assert_eq!(
+        tool_content(&upsert)["field"]["name"].as_str(),
+        Some("scenario")
+    );
+    assert_eq!(
+        tool_content(&upsert)["field"]["node_classes"],
+        json!(["change", "analysis"])
+    );
+
+    let schema = harness.call_tool(862, "project.schema", json!({ "detail": "full" }))?;
+    assert_eq!(schema["result"]["isError"].as_bool(), Some(false));
+    let fields = must_some(tool_content(&schema)["fields"].as_array(), "schema fields")?;
+    assert!(fields.iter().any(|field| {
+        field["name"].as_str() == Some("scenario") && field["value_type"].as_str() == Some("string")
+    }));
+
+    let remove = harness.call_tool(
+        863,
+        "schema.field.remove",
+        json!({
+            "name": "scenario",
+            "node_classes": ["change", "analysis"]
+        }),
+    )?;
+    assert_eq!(remove["result"]["isError"].as_bool(), Some(false));
+    assert_eq!(tool_content(&remove)["removed_count"].as_u64(), Some(1));
+
+    let schema_after = harness.call_tool(864, "project.schema", json!({ "detail": "full" }))?;
+    let fields_after = must_some(
+        tool_content(&schema_after)["fields"].as_array(),
+        "schema fields after remove",
+    )?;
+    assert!(
+        !fields_after
+            .iter()
+            .any(|field| field["name"].as_str() == Some("scenario"))
+    );
+    Ok(())
+}
+
+#[test]
+fn bind_open_backfills_legacy_missing_summary() -> TestResult {
+    let project_root = temp_project_root("bind_backfill")?;
+    init_project(&project_root)?;
+
+    let node_id = {
+        let mut store = must(ProjectStore::open(&project_root), "open project store")?;
+        let node = must(
+            store.add_node(fidget_spinner_store_sqlite::CreateNodeRequest {
+                class: fidget_spinner_core::NodeClass::Research,
+                frontier_id: None,
+                title: must(NonEmptyText::new("legacy research"), "legacy title")?,
+                summary: Some(must(
+                    NonEmptyText::new("temporary summary"),
+                    "temporary summary",
+                )?),
+                tags: None,
+                payload: fidget_spinner_core::NodePayload::with_schema(
+                    store.schema().schema_ref(),
+                    serde_json::from_value(json!({
+                        "body": "Derived summary first paragraph.\n\nLonger body follows."
+                    }))
+                    .map_err(|error| io::Error::other(format!("payload object: {error}")))?,
+                ),
+                annotations: Vec::new(),
+                attachments: Vec::new(),
+            }),
+            "create legacy research node",
+        )?;
+        node.id.to_string()
+    };
+
+    let database_path = project_root.join(".fidget_spinner").join("state.sqlite");
+    let clear_output = must(
+        Command::new("sqlite3")
+            .current_dir(project_root.as_std_path())
+            .arg(database_path.as_str())
+            .arg(format!(
+                "UPDATE nodes SET summary = NULL WHERE id = '{node_id}';"
+            ))
+            .output(),
+        "spawn sqlite3 for direct summary clear",
+    )?;
+    if !clear_output.status.success() {
+        return Err(io::Error::other(format!(
+            "sqlite3 summary clear failed: {}",
+            String::from_utf8_lossy(&clear_output.stderr)
+        ))
+        .into());
+    }
+
+    let mut harness = McpHarness::spawn(None, &[])?;
+    let _ = harness.initialize()?;
+    harness.notify_initialized()?;
+    let bind = harness.bind_project(60, &project_root)?;
+    assert_eq!(bind["result"]["isError"].as_bool(), Some(false));
+
+    let read = harness.call_tool(61, "node.read", json!({ "node_id": node_id }))?;
+    assert_eq!(read["result"]["isError"].as_bool(), Some(false));
+    assert_eq!(
+        tool_content(&read)["summary"].as_str(),
+        Some("Derived summary first paragraph.")
+    );
+
+    let listed = harness.call_tool(62, "node.list", json!({ "class": "research" }))?;
+    let items = must_some(tool_content(&listed).as_array(), "research node list")?;
+    assert_eq!(items.len(), 1);
+    assert_eq!(
+        items[0]["summary"].as_str(),
+        Some("Derived summary first paragraph.")
+    );
+    Ok(())
+}
+
+#[test]
+fn metric_tools_rank_closed_experiments_and_enforce_disambiguation() -> TestResult {
+    let project_root = temp_project_root("metric_rank_e2e")?;
+    init_project(&project_root)?;
+    let _initial_head = init_git_project(&project_root)?;
+
+    let mut harness = McpHarness::spawn(Some(&project_root), &[])?;
+    let _ = harness.initialize()?;
+    harness.notify_initialized()?;
+
+    let frontier = harness.call_tool(
+        70,
+        "frontier.init",
+        json!({
+            "label": "metric frontier",
+            "objective": "exercise metric ranking",
+            "contract_title": "metric contract",
+            "benchmark_suites": ["smoke"],
+            "promotion_criteria": ["rank by one key"],
+            "primary_metric": {
+                "key": "wall_clock_s",
+                "unit": "seconds",
+                "objective": "minimize"
+            }
+        }),
+    )?;
+    assert_eq!(frontier["result"]["isError"].as_bool(), Some(false));
+    let frontier_id = must_some(
+        tool_content(&frontier)["frontier_id"].as_str(),
+        "frontier id",
+    )?
+    .to_owned();
+    let base_checkpoint_id = must_some(
+        tool_content(&frontier)["champion_checkpoint_id"].as_str(),
+        "base checkpoint id",
+    )?
+    .to_owned();
+    let metric_define = harness.call_tool(
+        701,
+        "metric.define",
+        json!({
+            "key": "wall_clock_s",
+            "unit": "seconds",
+            "objective": "minimize",
+            "description": "elapsed wall time"
+        }),
+    )?;
+    assert_eq!(metric_define["result"]["isError"].as_bool(), Some(false));
+
+    let scenario_dimension = harness.call_tool(
+        702,
+        "run.dimension.define",
+        json!({
+            "key": "scenario",
+            "value_type": "string",
+            "description": "workload family"
+        }),
+    )?;
+    assert_eq!(
+        scenario_dimension["result"]["isError"].as_bool(),
+        Some(false)
+    );
+
+    let duration_dimension = harness.call_tool(
+        703,
+        "run.dimension.define",
+        json!({
+            "key": "duration_s",
+            "value_type": "numeric",
+            "description": "time budget in seconds"
+        }),
+    )?;
+    assert_eq!(
+        duration_dimension["result"]["isError"].as_bool(),
+        Some(false)
+    );
+
+    let dimensions = harness.call_tool(704, "run.dimension.list", json!({}))?;
+    assert_eq!(dimensions["result"]["isError"].as_bool(), Some(false));
+    let dimension_rows = must_some(tool_content(&dimensions).as_array(), "run dimension rows")?;
+    assert!(dimension_rows.iter().any(|row| {
+        row["key"].as_str() == Some("benchmark_suite")
+            && row["value_type"].as_str() == Some("string")
+    }));
+    assert!(dimension_rows.iter().any(|row| {
+        row["key"].as_str() == Some("scenario")
+            && row["description"].as_str() == Some("workload family")
+    }));
+    assert!(dimension_rows.iter().any(|row| {
+        row["key"].as_str() == Some("duration_s") && row["value_type"].as_str() == Some("numeric")
+    }));
+
+    let first_change = harness.call_tool(
+        71,
+        "node.create",
+        json!({
+            "class": "change",
+            "frontier_id": frontier_id,
+            "title": "first change",
+            "summary": "first change summary",
+            "payload": {
+                "body": "first change body",
+                "wall_clock_s": 14.0
+            }
+        }),
+    )?;
+    assert_eq!(first_change["result"]["isError"].as_bool(), Some(false));
+    let first_change_id = must_some(
+        tool_content(&first_change)["id"].as_str(),
+        "first change id",
+    )?;
+    let _first_commit = commit_project_state(&project_root, "candidate-one.txt", "candidate one")?;
+
+    let first_close = harness.call_tool(
+        72,
+        "experiment.close",
+        json!({
+            "frontier_id": frontier_id,
+            "base_checkpoint_id": base_checkpoint_id,
+            "change_node_id": first_change_id,
+            "candidate_summary": "candidate one",
+            "run": {
+                "title": "first run",
+                "summary": "first run summary",
+                "backend": "worktree_process",
+                "dimensions": {
+                    "benchmark_suite": "smoke",
+                    "scenario": "belt_4x5",
+                    "duration_s": 20.0
+                },
+                "command": {
+                    "working_directory": project_root.as_str(),
+                    "argv": ["true"]
+                }
+            },
+            "primary_metric": {
+                "key": "wall_clock_s",
+                "value": 10.0
+            },
+            "note": {
+                "summary": "first run note"
+            },
+            "verdict": "keep_on_frontier",
+            "decision_title": "first decision",
+            "decision_rationale": "keep first candidate around"
+        }),
+    )?;
+    assert_eq!(first_close["result"]["isError"].as_bool(), Some(false));
+
+    let first_candidate_checkpoint_id = must_some(
+        tool_content(&first_close)["candidate_checkpoint_id"].as_str(),
+        "first candidate checkpoint id",
+    )?
+    .to_owned();
+
+    let second_change = harness.call_tool(
+        73,
+        "node.create",
+        json!({
+            "class": "change",
+            "frontier_id": frontier_id,
+            "title": "second change",
+            "summary": "second change summary",
+            "payload": {
+                "body": "second change body",
+                "wall_clock_s": 7.0
+            }
+        }),
+    )?;
+    assert_eq!(second_change["result"]["isError"].as_bool(), Some(false));
+    let second_change_id = must_some(
+        tool_content(&second_change)["id"].as_str(),
+        "second change id",
+    )?;
+    let second_commit = commit_project_state(&project_root, "candidate-two.txt", "candidate two")?;
+
+    let second_close = harness.call_tool(
+        74,
+        "experiment.close",
+        json!({
+            "frontier_id": frontier_id,
+            "base_checkpoint_id": base_checkpoint_id,
+            "change_node_id": second_change_id,
+            "candidate_summary": "candidate two",
+            "run": {
+                "title": "second run",
+                "summary": "second run summary",
+                "backend": "worktree_process",
+                "dimensions": {
+                    "benchmark_suite": "smoke",
+                    "scenario": "belt_4x5",
+                    "duration_s": 60.0
+                },
+                "command": {
+                    "working_directory": project_root.as_str(),
+                    "argv": ["true"]
+                }
+            },
+            "primary_metric": {
+                "key": "wall_clock_s",
+                "value": 5.0
+            },
+            "note": {
+                "summary": "second run note"
+            },
+            "verdict": "keep_on_frontier",
+            "decision_title": "second decision",
+            "decision_rationale": "second candidate looks stronger"
+        }),
+    )?;
+    assert_eq!(second_close["result"]["isError"].as_bool(), Some(false));
+    let second_candidate_checkpoint_id = must_some(
+        tool_content(&second_close)["candidate_checkpoint_id"].as_str(),
+        "second candidate checkpoint id",
+    )?
+    .to_owned();
+
+    let second_frontier = harness.call_tool(
+        80,
+        "frontier.init",
+        json!({
+            "label": "metric frontier two",
+            "objective": "exercise frontier filtering",
+            "contract_title": "metric contract two",
+            "benchmark_suites": ["smoke"],
+            "promotion_criteria": ["frontier filters should isolate rankings"],
+            "primary_metric": {
+                "key": "wall_clock_s",
+                "unit": "seconds",
+                "objective": "minimize"
+            }
+        }),
+    )?;
+    assert_eq!(second_frontier["result"]["isError"].as_bool(), Some(false));
+    let second_frontier_id = must_some(
+        tool_content(&second_frontier)["frontier_id"].as_str(),
+        "second frontier id",
+    )?
+    .to_owned();
+    let second_base_checkpoint_id = must_some(
+        tool_content(&second_frontier)["champion_checkpoint_id"].as_str(),
+        "second frontier base checkpoint id",
+    )?
+    .to_owned();
+
+    let third_change = harness.call_tool(
+        81,
+        "node.create",
+        json!({
+            "class": "change",
+            "frontier_id": second_frontier_id,
+            "title": "third change",
+            "summary": "third change summary",
+            "payload": {
+                "body": "third change body",
+                "wall_clock_s": 3.0
+            }
+        }),
+    )?;
+    assert_eq!(third_change["result"]["isError"].as_bool(), Some(false));
+    let third_change_id = must_some(
+        tool_content(&third_change)["id"].as_str(),
+        "third change id",
+    )?;
+    let third_commit =
+        commit_project_state(&project_root, "candidate-three.txt", "candidate three")?;
+
+    let third_close = harness.call_tool(
+        82,
+        "experiment.close",
+        json!({
+            "frontier_id": second_frontier_id,
+            "base_checkpoint_id": second_base_checkpoint_id,
+            "change_node_id": third_change_id,
+            "candidate_summary": "candidate three",
+            "run": {
+                "title": "third run",
+                "summary": "third run summary",
+                "backend": "worktree_process",
+                "dimensions": {
+                    "benchmark_suite": "smoke",
+                    "scenario": "belt_4x5_alt",
+                    "duration_s": 60.0
+                },
+                "command": {
+                    "working_directory": project_root.as_str(),
+                    "argv": ["true"]
+                }
+            },
+            "primary_metric": {
+                "key": "wall_clock_s",
+                "value": 3.0
+            },
+            "note": {
+                "summary": "third run note"
+            },
+            "verdict": "keep_on_frontier",
+            "decision_title": "third decision",
+            "decision_rationale": "third candidate is best overall but not in the first frontier"
+        }),
+    )?;
+    assert_eq!(third_close["result"]["isError"].as_bool(), Some(false));
+    let third_candidate_checkpoint_id = must_some(
+        tool_content(&third_close)["candidate_checkpoint_id"].as_str(),
+        "third candidate checkpoint id",
+    )?
+    .to_owned();
+
+    let keys = harness.call_tool(75, "metric.keys", json!({}))?;
+    assert_eq!(keys["result"]["isError"].as_bool(), Some(false));
+    let key_rows = must_some(tool_content(&keys).as_array(), "metric keys array")?;
+    assert!(key_rows.iter().any(|row| {
+        row["key"].as_str() == Some("wall_clock_s") && row["source"].as_str() == Some("run_metric")
+    }));
+    assert!(key_rows.iter().any(|row| {
+        row["key"].as_str() == Some("wall_clock_s")
+            && row["source"].as_str() == Some("run_metric")
+            && row["description"].as_str() == Some("elapsed wall time")
+            && row["requires_order"].as_bool() == Some(false)
+    }));
+    assert!(key_rows.iter().any(|row| {
+        row["key"].as_str() == Some("wall_clock_s")
+            && row["source"].as_str() == Some("change_payload")
+    }));
+
+    let filtered_keys = harness.call_tool(
+        750,
+        "metric.keys",
+        json!({
+            "source": "run_metric",
+            "dimensions": {
+                "scenario": "belt_4x5",
+                "duration_s": 60.0
+            }
+        }),
+    )?;
+    assert_eq!(filtered_keys["result"]["isError"].as_bool(), Some(false));
+    let filtered_key_rows = must_some(
+        tool_content(&filtered_keys).as_array(),
+        "filtered metric keys array",
+    )?;
+    assert_eq!(filtered_key_rows.len(), 1);
+    assert_eq!(filtered_key_rows[0]["key"].as_str(), Some("wall_clock_s"));
+    assert_eq!(filtered_key_rows[0]["experiment_count"].as_u64(), Some(1));
+
+    let ambiguous = harness.call_tool(76, "metric.best", json!({ "key": "wall_clock_s" }))?;
+    assert_eq!(ambiguous["result"]["isError"].as_bool(), Some(true));
+    assert!(
+        fault_message(&ambiguous)
+            .is_some_and(|message| message.contains("ambiguous across sources"))
+    );
+
+    let run_metric_best = harness.call_tool(
+        77,
+        "metric.best",
+        json!({
+            "key": "wall_clock_s",
+            "source": "run_metric",
+            "dimensions": {
+                "scenario": "belt_4x5",
+                "duration_s": 60.0
+            },
+            "limit": 5
+        }),
+    )?;
+    assert_eq!(run_metric_best["result"]["isError"].as_bool(), Some(false));
+    let run_best_rows = must_some(
+        tool_content(&run_metric_best).as_array(),
+        "run metric best array",
+    )?;
+    assert_eq!(run_best_rows[0]["value"].as_f64(), Some(5.0));
+    assert_eq!(run_best_rows.len(), 1);
+    assert_eq!(
+        run_best_rows[0]["candidate_checkpoint_id"].as_str(),
+        Some(second_candidate_checkpoint_id.as_str())
+    );
+    assert_eq!(
+        run_best_rows[0]["candidate_commit_hash"].as_str(),
+        Some(second_commit.as_str())
+    );
+    assert_eq!(
+        run_best_rows[0]["dimensions"]["scenario"].as_str(),
+        Some("belt_4x5")
+    );
+    assert_eq!(
+        run_best_rows[0]["dimensions"]["duration_s"].as_f64(),
+        Some(60.0)
+    );
+    assert!(must_some(tool_text(&run_metric_best), "run metric best text")?.contains("commit="));
+    assert!(must_some(tool_text(&run_metric_best), "run metric best text")?.contains("dims:"));
+
+    let payload_requires_order = harness.call_tool(
+        78,
+        "metric.best",
+        json!({
+            "key": "wall_clock_s",
+            "source": "change_payload"
+        }),
+    )?;
+    assert_eq!(
+        payload_requires_order["result"]["isError"].as_bool(),
+        Some(true)
+    );
+    assert!(
+        fault_message(&payload_requires_order)
+            .is_some_and(|message| message.contains("explicit order"))
+    );
+
+    let payload_best = harness.call_tool(
+        79,
+        "metric.best",
+        json!({
+            "key": "wall_clock_s",
+            "source": "change_payload",
+            "dimensions": {
+                "scenario": "belt_4x5",
+                "duration_s": 60.0
+            },
+            "order": "asc"
+        }),
+    )?;
+    assert_eq!(payload_best["result"]["isError"].as_bool(), Some(false));
+    let payload_best_rows = must_some(
+        tool_content(&payload_best).as_array(),
+        "payload metric best array",
+    )?;
+    assert_eq!(payload_best_rows[0]["value"].as_f64(), Some(7.0));
+    assert_eq!(payload_best_rows.len(), 1);
+    assert_eq!(
+        payload_best_rows[0]["candidate_checkpoint_id"].as_str(),
+        Some(second_candidate_checkpoint_id.as_str())
+    );
+    assert_eq!(
+        payload_best_rows[0]["candidate_commit_hash"].as_str(),
+        Some(second_commit.as_str())
+    );
+
+    let filtered_best = harness.call_tool(
+        83,
+        "metric.best",
+        json!({
+            "key": "wall_clock_s",
+            "source": "run_metric",
+            "frontier_id": frontier_id,
+            "dimensions": {
+                "scenario": "belt_4x5"
+            },
+            "limit": 5
+        }),
+    )?;
+    assert_eq!(filtered_best["result"]["isError"].as_bool(), Some(false));
+    let filtered_rows = must_some(
+        tool_content(&filtered_best).as_array(),
+        "filtered metric best array",
+    )?;
+    assert_eq!(filtered_rows.len(), 2);
+    assert_eq!(
+        filtered_rows[0]["candidate_checkpoint_id"].as_str(),
+        Some(second_candidate_checkpoint_id.as_str())
+    );
+    assert!(
+        filtered_rows
+            .iter()
+            .all(|row| row["frontier_id"].as_str() == Some(frontier_id.as_str()))
+    );
+
+    let global_best = harness.call_tool(
+        84,
+        "metric.best",
+        json!({
+            "key": "wall_clock_s",
+            "source": "run_metric",
+            "limit": 5
+        }),
+    )?;
+    assert_eq!(global_best["result"]["isError"].as_bool(), Some(false));
+    let global_rows = must_some(
+        tool_content(&global_best).as_array(),
+        "global metric best array",
+    )?;
+    assert_eq!(
+        global_rows[0]["candidate_checkpoint_id"].as_str(),
+        Some(third_candidate_checkpoint_id.as_str())
+    );
+    assert_eq!(
+        global_rows[0]["candidate_commit_hash"].as_str(),
+        Some(third_commit.as_str())
+    );
+
+    let migrate = harness.call_tool(85, "metric.migrate", json!({}))?;
+    assert_eq!(migrate["result"]["isError"].as_bool(), Some(false));
+    assert_eq!(
+        tool_content(&migrate)["inserted_metric_definitions"].as_u64(),
+        Some(0)
+    );
+    assert_eq!(
+        tool_content(&migrate)["inserted_dimension_definitions"].as_u64(),
+        Some(0)
+    );
+    assert_eq!(
+        tool_content(&migrate)["inserted_dimension_values"].as_u64(),
+        Some(0)
+    );
+
+    assert_ne!(
+        first_candidate_checkpoint_id,
+        second_candidate_checkpoint_id
+    );
+    assert_ne!(
+        second_candidate_checkpoint_id,
+        third_candidate_checkpoint_id
+    );
     Ok(())
 }

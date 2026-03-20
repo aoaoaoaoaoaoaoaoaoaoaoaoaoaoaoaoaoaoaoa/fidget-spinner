@@ -20,8 +20,9 @@ pub use crate::model::{
     DagEdge, DagNode, DiagnosticSeverity, EdgeKind, EvaluationProtocol, ExecutionBackend,
     ExperimentResult, FieldPresence, FieldRole, FieldValueType, FrontierContract, FrontierNote,
     FrontierProjection, FrontierRecord, FrontierStatus, FrontierVerdict, GitCommitHash,
-    InferencePolicy, JsonObject, MetricObservation, MetricSpec, MetricUnit, NodeAnnotation,
-    NodeClass, NodeDiagnostics, NodePayload, NodeTrack, NonEmptyText, OptimizationObjective,
-    PayloadSchemaRef, ProjectFieldSpec, ProjectSchema, RunRecord, RunStatus, TagName, TagRecord,
+    InferencePolicy, JsonObject, MetricDefinition, MetricObservation, MetricSpec, MetricUnit,
+    MetricValue, NodeAnnotation, NodeClass, NodeDiagnostics, NodePayload, NodeTrack, NonEmptyText,
+    OptimizationObjective, PayloadSchemaRef, ProjectFieldSpec, ProjectSchema,
+    RunDimensionDefinition, RunDimensionValue, RunRecord, RunStatus, TagName, TagRecord,
     ValidationDiagnostic,
 };

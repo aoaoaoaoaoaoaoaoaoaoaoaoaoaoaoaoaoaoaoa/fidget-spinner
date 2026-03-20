@@ -43,8 +43,15 @@ If you need more context, pull it from:
 
 - `tag.add` when a new note taxonomy token is genuinely needed; every tag must carry a description
 - `tag.list` before inventing note tags by memory
-- `research.record` for exploratory work, design notes, dead ends, and enabling ideas
-- `note.quick` for terse state pushes, always with an explicit `tags` list; use `[]` only when no registered tag applies
+- `schema.field.upsert` when one project payload field needs to become canonical without hand-editing `schema.json`
+- `schema.field.remove` when one project payload field definition should be purged cleanly
+- `research.record` for exploratory work, design notes, dead ends, and enabling ideas; always pass `title`, `summary`, and `body`, and pass `tags` when the research belongs in a campaign/subsystem index
+- `note.quick` for terse state pushes, always with an explicit `tags` list plus `title`, `summary`, and `body`; use `[]` only when no registered tag applies
+- `metric.define` when a project-level metric key needs a canonical unit, objective, or human description
+- `run.dimension.define` when a new experiment slicer such as `scenario` or `duration_s` becomes query-worthy
+- `run.dimension.list` before guessing which run dimensions actually exist in the store
+- `metric.keys` before guessing which numeric signals are actually rankable; pass exact run-dimension filters when narrowing to one workload slice
+- `metric.best` when you need the best closed experiments by one numeric key; pass `order` for noncanonical payload fields and exact run-dimension filters when comparing one slice
 - `node.annotate` for scratch text that should stay off the main path
 - `change.record` before core-path work
 - `experiment.close` only when you have checkpoint, measured result, note, and verdict
@@ -60,5 +67,10 @@ If you need more context, pull it from:
    and `system.telemetry` before pushing further.
 5. Keep fetches narrow by default; widen only when stale or archived context is
    actually needed.
-6. When the task becomes a true indefinite optimization push, pair this skill
+6. Treat metric keys as project-level registry entries and run dimensions as the
+   first-class slice surface for experiment comparison; do not encode scenario
+   context into the metric key itself.
+7. Porcelain is the terse triage surface. Use `detail=full` only when concise
+   output stops being decision-sufficient.
+8. When the task becomes a true indefinite optimization push, pair this skill
    with `frontier-loop`.

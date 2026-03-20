@@ -67,6 +67,18 @@ pub(crate) fn tool_spec(name: &str) -> Option<ToolSpec> {
             dispatch: DispatchTarget::Worker,
             replay: ReplayContract::Convergent,
         }),
+        "schema.field.upsert" => Some(ToolSpec {
+            name: "schema.field.upsert",
+            description: "Add or replace one project-local payload schema field definition.",
+            dispatch: DispatchTarget::Worker,
+            replay: ReplayContract::NeverReplay,
+        }),
+        "schema.field.remove" => Some(ToolSpec {
+            name: "schema.field.remove",
+            description: "Remove one project-local payload schema field definition, optionally narrowed by node-class set.",
+            dispatch: DispatchTarget::Worker,
+            replay: ReplayContract::NeverReplay,
+        }),
         "tag.add" => Some(ToolSpec {
             name: "tag.add",
             description: "Register one repo-local tag with a required description. Notes may only reference tags from this registry.",
@@ -145,9 +157,45 @@ pub(crate) fn tool_spec(name: &str) -> Option<ToolSpec> {
             dispatch: DispatchTarget::Worker,
             replay: ReplayContract::NeverReplay,
         }),
+        "metric.define" => Some(ToolSpec {
+            name: "metric.define",
+            description: "Register one project-level metric definition so experiment ingestion only has to send key/value observations.",
+            dispatch: DispatchTarget::Worker,
+            replay: ReplayContract::NeverReplay,
+        }),
+        "run.dimension.define" => Some(ToolSpec {
+            name: "run.dimension.define",
+            description: "Register one project-level run dimension used to slice metrics across scenarios, budgets, and flags.",
+            dispatch: DispatchTarget::Worker,
+            replay: ReplayContract::NeverReplay,
+        }),
+        "run.dimension.list" => Some(ToolSpec {
+            name: "run.dimension.list",
+            description: "List registered run dimensions together with observed value counts and sample values.",
+            dispatch: DispatchTarget::Worker,
+            replay: ReplayContract::Convergent,
+        }),
+        "metric.keys" => Some(ToolSpec {
+            name: "metric.keys",
+            description: "List rankable metric keys, including registered run metrics and observed payload-derived numeric fields.",
+            dispatch: DispatchTarget::Worker,
+            replay: ReplayContract::Convergent,
+        }),
+        "metric.best" => Some(ToolSpec {
+            name: "metric.best",
+            description: "Rank completed experiments by one numeric key, with optional run-dimension filters and candidate commit surfacing.",
+            dispatch: DispatchTarget::Worker,
+            replay: ReplayContract::Convergent,
+        }),
+        "metric.migrate" => Some(ToolSpec {
+            name: "metric.migrate",
+            description: "Re-run the idempotent legacy metric-plane normalization that registers canonical metrics and backfills benchmark_suite dimensions.",
+            dispatch: DispatchTarget::Worker,
+            replay: ReplayContract::NeverReplay,
+        }),
         "experiment.close" => Some(ToolSpec {
             name: "experiment.close",
-            description: "Atomically close a core-path experiment with candidate checkpoint capture, measured result, note, and verdict.",
+            description: "Atomically close a core-path experiment with typed run dimensions, preregistered metric observations, candidate checkpoint capture, note, and verdict.",
             dispatch: DispatchTarget::Worker,
             replay: ReplayContract::NeverReplay,
         }),
@@ -212,6 +260,8 @@ pub(crate) fn tool_definitions() -> Vec<Value> {
         "project.bind",
         "project.status",
         "project.schema",
+        "schema.field.upsert",
+        "schema.field.remove",
         "tag.add",
         "tag.list",
         "frontier.list",
@@ -225,6 +275,12 @@ pub(crate) fn tool_definitions() -> Vec<Value> {
         "node.archive",
         "note.quick",
         "research.record",
+        "metric.define",
+        "run.dimension.define",
+        "run.dimension.list",
+        "metric.keys",
+        "metric.best",
+        "metric.migrate",
         "experiment.close",
         "skill.list",
         "skill.show",
@@ -277,7 +333,32 @@ pub(crate) fn list_resources() -> Vec<Value> {
 fn input_schema(name: &str) -> Value {
     match name {
         "project.status" | "project.schema" | "tag.list" | "skill.list" | "system.health"
-        | "system.telemetry" => json!({"type":"object","additionalProperties":false}),
+        | "system.telemetry" | "run.dimension.list" | "metric.migrate" => {
+            json!({"type":"object","additionalProperties":false})
+        }
+        "schema.field.upsert" => json!({
+            "type": "object",
+            "properties": {
+                "name": { "type": "string", "description": "Project payload field name." },
+                "node_classes": { "type": "array", "items": node_class_schema(), "description": "Optional node-class scope. Omit or pass [] for all classes." },
+                "presence": field_presence_schema(),
+                "severity": diagnostic_severity_schema(),
+                "role": field_role_schema(),
+                "inference_policy": inference_policy_schema(),
+                "value_type": field_value_type_schema(),
+            },
+            "required": ["name", "presence", "severity", "role", "inference_policy"],
+            "additionalProperties": false
+        }),
+        "schema.field.remove" => json!({
+            "type": "object",
+            "properties": {
+                "name": { "type": "string", "description": "Project payload field name." },
+                "node_classes": { "type": "array", "items": node_class_schema(), "description": "Optional exact node-class scope to remove." }
+            },
+            "required": ["name"],
+            "additionalProperties": false
+        }),
         "project.bind" => json!({
             "type": "object",
             "properties": {
@@ -333,9 +414,9 @@ fn input_schema(name: &str) -> Value {
                 "class": node_class_schema(),
                 "frontier_id": { "type": "string" },
                 "title": { "type": "string" },
-                "summary": { "type": "string" },
-                "tags": { "type": "array", "items": tag_name_schema() },
-                "payload": { "type": "object" },
+                "summary": { "type": "string", "description": "Required for `note` and `research` nodes." },
+                "tags": { "type": "array", "items": tag_name_schema(), "description": "Required for `note` nodes; optional for other classes." },
+                "payload": { "type": "object", "description": "`note` and `research` nodes require a non-empty string `body` field." },
                 "annotations": { "type": "array", "items": annotation_schema() },
                 "parents": { "type": "array", "items": { "type": "string" } }
             },
@@ -393,12 +474,13 @@ fn input_schema(name: &str) -> Value {
             "properties": {
                 "frontier_id": { "type": "string" },
                 "title": { "type": "string" },
+                "summary": { "type": "string" },
                 "body": { "type": "string" },
                 "tags": { "type": "array", "items": tag_name_schema() },
                 "annotations": { "type": "array", "items": annotation_schema() },
                 "parents": { "type": "array", "items": { "type": "string" } }
             },
-            "required": ["title", "body", "tags"],
+            "required": ["title", "summary", "body", "tags"],
             "additionalProperties": false
         }),
         "research.record" => json!({
@@ -408,10 +490,54 @@ fn input_schema(name: &str) -> Value {
                 "title": { "type": "string" },
                 "summary": { "type": "string" },
                 "body": { "type": "string" },
+                "tags": { "type": "array", "items": tag_name_schema() },
                 "annotations": { "type": "array", "items": annotation_schema() },
                 "parents": { "type": "array", "items": { "type": "string" } }
             },
-            "required": ["title", "body"],
+            "required": ["title", "summary", "body"],
+            "additionalProperties": false
+        }),
+        "metric.define" => json!({
+            "type": "object",
+            "properties": {
+                "key": { "type": "string" },
+                "unit": metric_unit_schema(),
+                "objective": optimization_objective_schema(),
+                "description": { "type": "string" }
+            },
+            "required": ["key", "unit", "objective"],
+            "additionalProperties": false
+        }),
+        "run.dimension.define" => json!({
+            "type": "object",
+            "properties": {
+                "key": { "type": "string" },
+                "value_type": field_value_type_schema(),
+                "description": { "type": "string" }
+            },
+            "required": ["key", "value_type"],
+            "additionalProperties": false
+        }),
+        "metric.keys" => json!({
+            "type": "object",
+            "properties": {
+                "frontier_id": { "type": "string" },
+                "source": metric_source_schema(),
+                "dimensions": { "type": "object" }
+            },
+            "additionalProperties": false
+        }),
+        "metric.best" => json!({
+            "type": "object",
+            "properties": {
+                "key": { "type": "string" },
+                "frontier_id": { "type": "string" },
+                "source": metric_source_schema(),
+                "dimensions": { "type": "object" },
+                "order": metric_order_schema(),
+                "limit": { "type": "integer", "minimum": 1, "maximum": 500 }
+            },
+            "required": ["key"],
             "additionalProperties": false
         }),
         "experiment.close" => json!({
@@ -422,8 +548,8 @@ fn input_schema(name: &str) -> Value {
                 "change_node_id": { "type": "string" },
                 "candidate_summary": { "type": "string" },
                 "run": run_schema(),
-                "primary_metric": metric_observation_schema(),
-                "supporting_metrics": { "type": "array", "items": metric_observation_schema() },
+                "primary_metric": metric_value_schema(),
+                "supporting_metrics": { "type": "array", "items": metric_value_schema() },
                 "note": note_schema(),
                 "verdict": verdict_schema(),
                 "decision_title": { "type": "string" },
@@ -461,16 +587,14 @@ fn metric_spec_schema() -> Value {
     })
 }
 
-fn metric_observation_schema() -> Value {
+fn metric_value_schema() -> Value {
     json!({
         "type": "object",
         "properties": {
             "key": { "type": "string" },
-            "unit": metric_unit_schema(),
-            "objective": optimization_objective_schema(),
             "value": { "type": "number" }
         },
-        "required": ["key", "unit", "objective", "value"],
+        "required": ["key", "value"],
         "additionalProperties": false
     })
 }
@@ -509,6 +633,61 @@ fn metric_unit_schema() -> Value {
     })
 }
 
+fn metric_source_schema() -> Value {
+    json!({
+        "type": "string",
+        "enum": [
+            "run_metric",
+            "change_payload",
+            "run_payload",
+            "analysis_payload",
+            "decision_payload"
+        ]
+    })
+}
+
+fn metric_order_schema() -> Value {
+    json!({
+        "type": "string",
+        "enum": ["asc", "desc"]
+    })
+}
+
+fn field_value_type_schema() -> Value {
+    json!({
+        "type": "string",
+        "enum": ["string", "numeric", "boolean", "timestamp"]
+    })
+}
+
+fn diagnostic_severity_schema() -> Value {
+    json!({
+        "type": "string",
+        "enum": ["error", "warning", "info"]
+    })
+}
+
+fn field_presence_schema() -> Value {
+    json!({
+        "type": "string",
+        "enum": ["required", "recommended", "optional"]
+    })
+}
+
+fn field_role_schema() -> Value {
+    json!({
+        "type": "string",
+        "enum": ["index", "projection_gate", "render_only", "opaque"]
+    })
+}
+
+fn inference_policy_schema() -> Value {
+    json!({
+        "type": "string",
+        "enum": ["manual_only", "model_may_infer"]
+    })
+}
+
 fn optimization_objective_schema() -> Value {
     json!({
         "type": "string",
@@ -539,7 +718,7 @@ fn run_schema() -> Value {
                 "type": "string",
                 "enum": ["local_process", "worktree_process", "ssh_process"]
             },
-            "benchmark_suite": { "type": "string" },
+            "dimensions": { "type": "object" },
             "command": {
                 "type": "object",
                 "properties": {
@@ -554,7 +733,7 @@ fn run_schema() -> Value {
                 "additionalProperties": false
             }
         },
-        "required": ["title", "backend", "benchmark_suite", "command"],
+        "required": ["title", "backend", "dimensions", "command"],
         "additionalProperties": false
     })
 }

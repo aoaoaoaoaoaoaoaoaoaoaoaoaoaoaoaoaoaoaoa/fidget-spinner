@@ -320,7 +320,7 @@ This projection is derived from canonical state and intentionally rebuildable.
 These are intentionally cheap:
 
 - `note.quick`, but only with explicit tags from the repo-local registry
-- `research.record`
+- `research.record`, optionally tagged into the same repo-local taxonomy
 - generic `node.create` for escape-hatch use
 - `node.annotate`
 
@@ -350,6 +350,13 @@ The MVP MCP server is stdio-only and follows newline-delimited JSON-RPC message
 framing. The public server is a stable host. It owns initialization state,
 replay policy, telemetry, and host rollout. Execution happens in a disposable
 worker subprocess.
+
+Presentation is orthogonal to payload detail:
+
+- `render=porcelain|json`
+- `detail=concise|full`
+
+Porcelain is the terse model-facing surface, not a pretty-printed JSON dump.
 
 ### Host responsibilities
 
@@ -436,6 +443,8 @@ Implemented tools:
 - `project.bind`
 - `project.status`
 - `project.schema`
+- `schema.field.upsert`
+- `schema.field.remove`
 - `tag.add`
 - `tag.list`
 - `frontier.list`
@@ -449,6 +458,12 @@ Implemented tools:
 - `node.archive`
 - `note.quick`
 - `research.record`
+- `metric.define`
+- `metric.keys`
+- `metric.best`
+- `metric.migrate`
+- `run.dimension.define`
+- `run.dimension.list`
 - `experiment.close`
 - `skill.list`
 - `skill.show`
@@ -464,7 +479,9 @@ Implemented resources:
 
 ### Operational tools
 
-`system.health` returns a typed operational snapshot:
+`system.health` returns a typed operational snapshot. Concise/default output
+stays on immediate session state; full detail widens to the entire health
+object:
 
 - initialization state
 - binding state
@@ -472,7 +489,7 @@ Implemented resources:
 - current executable path
 - launch-path stability
 - rollout-pending state
-- last recorded fault
+- last recorded fault in full detail
 
 `system.telemetry` returns cumulative counters:
 
@@ -482,6 +499,7 @@ Implemented resources:
 - retries
 - worker restarts
 - host rollouts
+- last recorded fault
 - per-operation counts and last latencies
 
 ### Rollout model
@@ -507,6 +525,8 @@ Current commands:
 
 - `init`
 - `schema show`
+- `schema upsert-field`
+- `schema remove-field`
 - `frontier init`
 - `frontier status`
 - `node add`
@@ -515,16 +535,29 @@ Current commands:
 - `node annotate`
 - `node archive`
 - `note quick`
+- `tag add`
+- `tag list`
 - `research add`
+- `metric define`
+- `metric keys`
+- `metric best`
+- `metric migrate`
+- `dimension define`
+- `dimension list`
 - `experiment close`
 - `mcp serve`
+- `ui serve`
 - hidden internal `mcp worker`
 - `skill list`
 - `skill install`
 - `skill show`
 
 The CLI is not the strategic write plane, but it is the easiest repair and
-bootstrap surface.
+bootstrap surface. Its naming is intentionally parallel but not identical to
+the MCP surface:
+
+- CLI subcommands use spaces such as `schema upsert-field` and `dimension define`
+- MCP tools use dotted names such as `schema.field.upsert` and `run.dimension.define`
 
 ## Bundled Skill
 

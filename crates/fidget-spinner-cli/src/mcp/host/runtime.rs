@@ -838,20 +838,6 @@ fn system_health_output(health: &HealthSnapshot) -> Result<ToolOutput, FaultReco
         "rollout_pending".to_owned(),
         json!(health.binary.rollout_pending),
     );
-    if let Some(fault) = health.last_fault.as_ref() {
-        let _ = concise.insert(
-            "last_fault".to_owned(),
-            json!({
-                "kind": format!("{:?}", fault.kind).to_ascii_lowercase(),
-                "stage": format!("{:?}", fault.stage).to_ascii_lowercase(),
-                "operation": fault.operation,
-                "message": fault.message,
-                "retryable": fault.retryable,
-                "retried": fault.retried,
-            }),
-        );
-    }
-
     let mut lines = vec![format!(
         "{} | {}",
         if health.initialization.ready && health.initialization.seed_captured {
@@ -886,14 +872,6 @@ fn system_health_output(health: &HealthSnapshot) -> Result<ToolOutput, FaultReco
             ""
         }
     ));
-    if let Some(fault) = health.last_fault.as_ref() {
-        lines.push(format!(
-            "fault: {} {} {}",
-            format!("{:?}", fault.kind).to_ascii_lowercase(),
-            fault.operation,
-            fault.message,
-        ));
-    }
     detailed_tool_output(
         &Value::Object(concise),
         health,

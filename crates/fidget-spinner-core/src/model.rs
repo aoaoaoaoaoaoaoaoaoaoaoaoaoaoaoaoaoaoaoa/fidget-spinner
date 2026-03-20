@@ -177,11 +177,33 @@ pub enum DiagnosticSeverity {
     Info,
 }
 
+impl DiagnosticSeverity {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Error => "error",
+            Self::Warning => "warning",
+            Self::Info => "info",
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 pub enum FieldPresence {
     Required,
     Recommended,
     Optional,
+}
+
+impl FieldPresence {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Required => "required",
+            Self::Recommended => "recommended",
+            Self::Optional => "optional",
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
@@ -192,10 +214,32 @@ pub enum FieldRole {
     Opaque,
 }
 
+impl FieldRole {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Index => "index",
+            Self::ProjectionGate => "projection_gate",
+            Self::RenderOnly => "render_only",
+            Self::Opaque => "opaque",
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 pub enum InferencePolicy {
     ManualOnly,
     ModelMayInfer,
+}
+
+impl InferencePolicy {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::ManualOnly => "manual_only",
+            Self::ModelMayInfer => "model_may_infer",
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
@@ -267,6 +311,96 @@ pub enum OptimizationObjective {
     Minimize,
     Maximize,
     Target,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct MetricDefinition {
+    pub key: NonEmptyText,
+    pub unit: MetricUnit,
+    pub objective: OptimizationObjective,
+    pub description: Option<NonEmptyText>,
+    pub created_at: OffsetDateTime,
+}
+
+impl MetricDefinition {
+    #[must_use]
+    pub fn new(
+        key: NonEmptyText,
+        unit: MetricUnit,
+        objective: OptimizationObjective,
+        description: Option<NonEmptyText>,
+    ) -> Self {
+        Self {
+            key,
+            unit,
+            objective,
+            description,
+            created_at: OffsetDateTime::now_utc(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case", tag = "type", content = "value")]
+pub enum RunDimensionValue {
+    String(NonEmptyText),
+    Numeric(f64),
+    Boolean(bool),
+    Timestamp(NonEmptyText),
+}
+
+impl RunDimensionValue {
+    #[must_use]
+    pub const fn value_type(&self) -> FieldValueType {
+        match self {
+            Self::String(_) => FieldValueType::String,
+            Self::Numeric(_) => FieldValueType::Numeric,
+            Self::Boolean(_) => FieldValueType::Boolean,
+            Self::Timestamp(_) => FieldValueType::Timestamp,
+        }
+    }
+
+    #[must_use]
+    pub fn as_json(&self) -> Value {
+        match self {
+            Self::String(value) | Self::Timestamp(value) => Value::String(value.to_string()),
+            Self::Numeric(value) => {
+                serde_json::Number::from_f64(*value).map_or(Value::Null, Value::Number)
+            }
+            Self::Boolean(value) => Value::Bool(*value),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct RunDimensionDefinition {
+    pub key: NonEmptyText,
+    pub value_type: FieldValueType,
+    pub description: Option<NonEmptyText>,
+    pub created_at: OffsetDateTime,
+}
+
+impl RunDimensionDefinition {
+    #[must_use]
+    pub fn new(
+        key: NonEmptyText,
+        value_type: FieldValueType,
+        description: Option<NonEmptyText>,
+    ) -> Self {
+        Self {
+            key,
+            value_type,
+            description,
+            created_at: OffsetDateTime::now_utc(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct MetricValue {
+    #[serde(alias = "metric_key")]
+    pub key: NonEmptyText,
+    pub value: f64,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -710,7 +844,7 @@ pub struct CheckpointRecord {
     pub created_at: OffsetDateTime,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct RunRecord {
     pub node_id: NodeId,
     pub run_id: RunId,
@@ -718,7 +852,7 @@ pub struct RunRecord {
     pub status: RunStatus,
     pub backend: ExecutionBackend,
     pub code_snapshot: Option<CodeSnapshotRef>,
-    pub benchmark_suite: Option<NonEmptyText>,
+    pub dimensions: BTreeMap<NonEmptyText, RunDimensionValue>,
     pub command: CommandRecipe,
     pub started_at: Option<OffsetDateTime>,
     pub finished_at: Option<OffsetDateTime>,
@@ -726,9 +860,9 @@ pub struct RunRecord {
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct ExperimentResult {
-    pub benchmark_suite: NonEmptyText,
-    pub primary_metric: MetricObservation,
-    pub supporting_metrics: Vec<MetricObservation>,
+    pub dimensions: BTreeMap<NonEmptyText, RunDimensionValue>,
+    pub primary_metric: MetricValue,
+    pub supporting_metrics: Vec<MetricValue>,
     pub benchmark_bundle: Option<ArtifactId>,
 }
 

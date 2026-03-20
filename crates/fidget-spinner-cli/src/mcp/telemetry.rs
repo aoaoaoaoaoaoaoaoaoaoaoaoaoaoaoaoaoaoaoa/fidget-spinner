@@ -36,6 +36,7 @@ impl ServerTelemetry {
 
     pub fn record_success(&mut self, operation: &str, latency_ms: u128) {
         self.successes += 1;
+        self.last_fault = None;
         let entry = self.operations.entry(operation.to_owned()).or_default();
         entry.successes += 1;
         entry.last_latency_ms = Some(latency_ms);
