@@ -55,6 +55,11 @@ impl WorkerSupervisor {
         self.bound_project_root = Some(project_root);
     }
 
+    pub(super) fn refresh_binding(&mut self, project_root: PathBuf) {
+        self.kill_current_worker();
+        self.bound_project_root = Some(project_root);
+    }
+
     pub(super) fn execute(
         &mut self,
         request_id: HostRequestId,

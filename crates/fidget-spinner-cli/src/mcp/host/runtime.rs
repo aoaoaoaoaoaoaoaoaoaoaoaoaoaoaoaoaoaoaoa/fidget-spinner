@@ -392,7 +392,8 @@ impl HostRuntime {
                 let args = deserialize::<ProjectBindArgs>(arguments, "tools/call:project.bind")?;
                 let resolved = resolve_project_binding(PathBuf::from(args.path))
                     .map_err(host_store_fault("tools/call:project.bind"))?;
-                self.worker.rebind(resolved.binding.project_root.clone());
+                self.worker
+                    .refresh_binding(resolved.binding.project_root.clone());
                 self.binding = Some(resolved.binding);
                 tool_success(
                     project_bind_output(&resolved.status)?,

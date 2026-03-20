@@ -7,8 +7,8 @@ use std::path::PathBuf;
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 
 use camino::Utf8PathBuf;
-use fidget_spinner_core::NonEmptyText;
-use fidget_spinner_store_sqlite::ProjectStore;
+use fidget_spinner_core::{NonEmptyText, Slug};
+use fidget_spinner_store_sqlite::{CreateFrontierRequest, ProjectStore};
 use libmcp as _;
 use maud as _;
 use percent_encoding as _;
@@ -196,6 +196,15 @@ fn tool_names(response: &Value) -> Vec<&str> {
         .into_iter()
         .flatten()
         .filter_map(|tool| tool["name"].as_str())
+        .collect()
+}
+
+fn frontier_slugs(response: &Value) -> Vec<&str> {
+    tool_content(response)["frontiers"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|frontier| frontier["slug"].as_str())
         .collect()
 }
 
@@ -594,5 +603,56 @@ fn experiment_close_drives_metric_best_and_analysis() -> TestResult {
         content["record"]["outcome"]["analysis"]["summary"].as_str(),
         Some("Node LP work is now the primary native sink.")
     );
+    Ok(())
+}
+
+#[test]
+fn same_path_project_bind_refreshes_destructive_reseed() -> TestResult {
+    let project_root = temp_project_root("same_path_reseed")?;
+
+    let mut harness = McpHarness::spawn(None)?;
+    let _ = harness.initialize()?;
+    harness.notify_initialized()?;
+
+    let bind = harness.bind_project(60, &project_root)?;
+    assert_tool_ok(&bind);
+
+    assert_tool_ok(&harness.call_tool(
+        61,
+        "frontier.create",
+        json!({
+            "label": "alpha frontier",
+            "objective": "first seeded frontier",
+            "slug": "alpha",
+        }),
+    )?);
+    let alpha_list = harness.call_tool_full(62, "frontier.list", json!({}))?;
+    assert_tool_ok(&alpha_list);
+    assert_eq!(frontier_slugs(&alpha_list), vec!["alpha"]);
+
+    must(
+        fs::remove_dir_all(project_root.join(fidget_spinner_store_sqlite::STORE_DIR_NAME)),
+        "remove project store",
+    )?;
+    init_project(&project_root)?;
+    let mut reopened = must(ProjectStore::open(&project_root), "open recreated store")?;
+    let _beta = must(
+        reopened.create_frontier(CreateFrontierRequest {
+            label: must(NonEmptyText::new("beta frontier"), "beta label")?,
+            objective: must(
+                NonEmptyText::new("second seeded frontier"),
+                "beta objective",
+            )?,
+            slug: Some(must(Slug::new("beta"), "beta slug")?),
+        }),
+        "create beta frontier directly in recreated store",
+    )?;
+
+    let rebind = harness.bind_project(63, &project_root)?;
+    assert_tool_ok(&rebind);
+
+    let beta_list = harness.call_tool_full(64, "frontier.list", json!({}))?;
+    assert_tool_ok(&beta_list);
+    assert_eq!(frontier_slugs(&beta_list), vec!["beta"]);
     Ok(())
 }
