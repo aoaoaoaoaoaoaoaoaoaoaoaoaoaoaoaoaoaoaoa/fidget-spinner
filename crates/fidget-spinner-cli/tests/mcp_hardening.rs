@@ -607,7 +607,7 @@ fn experiment_close_drives_metric_best_and_analysis() -> TestResult {
 }
 
 #[test]
-fn same_path_project_bind_refreshes_destructive_reseed() -> TestResult {
+fn already_bound_worker_refreshes_after_destructive_reseed() -> TestResult {
     let project_root = temp_project_root("same_path_reseed")?;
 
     let mut harness = McpHarness::spawn(None)?;
@@ -648,10 +648,7 @@ fn same_path_project_bind_refreshes_destructive_reseed() -> TestResult {
         "create beta frontier directly in recreated store",
     )?;
 
-    let rebind = harness.bind_project(63, &project_root)?;
-    assert_tool_ok(&rebind);
-
-    let beta_list = harness.call_tool_full(64, "frontier.list", json!({}))?;
+    let beta_list = harness.call_tool_full(63, "frontier.list", json!({}))?;
     assert_tool_ok(&beta_list);
     assert_eq!(frontier_slugs(&beta_list), vec!["beta"]);
     Ok(())

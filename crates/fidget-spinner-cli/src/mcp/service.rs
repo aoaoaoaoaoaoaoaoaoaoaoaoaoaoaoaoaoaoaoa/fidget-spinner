@@ -1,6 +1,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 use std::fs;
+#[cfg(unix)]
+use std::os::unix::fs::MetadataExt;
+use std::time::UNIX_EPOCH;
 
 use camino::{Utf8Path, Utf8PathBuf};
 use fidget_spinner_core::{
@@ -28,13 +31,20 @@ use crate::mcp::output::{
 use crate::mcp::protocol::{TRANSIENT_ONCE_ENV, TRANSIENT_ONCE_MARKER_ENV, WorkerOperation};
 
 pub(crate) struct WorkerService {
+    project_root: Utf8PathBuf,
     store: ProjectStore,
+    store_identity: StoreIdentity,
 }
 
 impl WorkerService {
     pub fn new(project: &Utf8Path) -> Result<Self, StoreError> {
+        let project_root = project.to_path_buf();
+        let store = crate::open_store(project_root.as_std_path())?;
+        let store_identity = read_store_identity(&project_root)?;
         Ok(Self {
-            store: crate::open_store(project.as_std_path())?,
+            project_root,
+            store,
+            store_identity,
         })
     }
 
@@ -43,10 +53,34 @@ impl WorkerService {
             WorkerOperation::CallTool { name, .. } => format!("tools/call:{name}"),
             WorkerOperation::ReadResource { uri } => format!("resources/read:{uri}"),
         };
+        self.refresh_store_if_replaced(&operation_key)?;
         Self::maybe_inject_transient(&operation_key)?;
-        match operation {
+        let result = match operation {
             WorkerOperation::CallTool { name, arguments } => self.call_tool(&name, arguments),
             WorkerOperation::ReadResource { uri } => Self::read_resource(&uri),
+        };
+        if result.is_ok() {
+            self.refresh_store_identity_snapshot();
+        }
+        result
+    }
+
+    fn refresh_store_if_replaced(&mut self, operation: &str) -> Result<(), FaultRecord> {
+        let live_identity = with_fault(read_store_identity(&self.project_root), operation)?;
+        if live_identity == self.store_identity {
+            return Ok(());
+        }
+        self.store = with_fault(
+            crate::open_store(self.project_root.as_std_path()),
+            operation,
+        )?;
+        self.store_identity = live_identity;
+        Ok(())
+    }
+
+    fn refresh_store_identity_snapshot(&mut self) {
+        if let Ok(identity) = read_store_identity(&self.project_root) {
+            self.store_identity = identity;
         }
     }
 
@@ -752,6 +786,19 @@ struct DimensionDefineArgs {
     description: Option<String>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct StoreIdentity {
+    config: FileIdentity,
+    database: FileIdentity,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct FileIdentity {
+    len_bytes: u64,
+    modified_unix_nanos: u128,
+    unique_key: u128,
+}
+
 fn deserialize<T: for<'de> Deserialize<'de>>(value: Value) -> Result<T, FaultRecord> {
     serde_json::from_value(value).map_err(|error| {
         FaultRecord::new(
@@ -812,6 +859,36 @@ where
     E: Into<StoreError>,
 {
     result.map_err(store_fault(operation))
+}
+
+fn read_store_identity(project_root: &Utf8Path) -> Result<StoreIdentity, StoreError> {
+    let state_root = project_root.join(fidget_spinner_store_sqlite::STORE_DIR_NAME);
+    let config_path = state_root.join(fidget_spinner_store_sqlite::PROJECT_CONFIG_NAME);
+    let database_path = state_root.join(fidget_spinner_store_sqlite::STATE_DB_NAME);
+    if !config_path.exists() || !database_path.exists() {
+        return Err(StoreError::MissingProjectStore(project_root.to_path_buf()));
+    }
+    Ok(StoreIdentity {
+        config: read_file_identity(&config_path)?,
+        database: read_file_identity(&database_path)?,
+    })
+}
+
+fn read_file_identity(path: &Utf8Path) -> Result<FileIdentity, StoreError> {
+    let metadata = fs::metadata(path.as_std_path())?;
+    let modified_unix_nanos = metadata
+        .modified()?
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |duration| duration.as_nanos());
+    #[cfg(unix)]
+    let unique_key = (u128::from(metadata.dev()) << 64) | u128::from(metadata.ino());
+    #[cfg(not(unix))]
+    let unique_key = 0;
+    Ok(FileIdentity {
+        len_bytes: metadata.len(),
+        modified_unix_nanos,
+        unique_key,
+    })
 }
 
 fn tags_to_set(tags: Vec<String>) -> Result<BTreeSet<TagName>, StoreError> {
