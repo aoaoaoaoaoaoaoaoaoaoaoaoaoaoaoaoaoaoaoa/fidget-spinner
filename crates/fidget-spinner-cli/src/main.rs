@@ -19,7 +19,7 @@ use fidget_spinner_store_sqlite::{
     CloseExperimentRequest, CreateFrontierRequest, CreateNodeRequest, DefineMetricRequest,
     DefineRunDimensionRequest, EdgeAttachment, EdgeAttachmentDirection, ListNodesQuery,
     MetricBestQuery, MetricFieldSource, MetricKeyQuery, MetricRankOrder, ProjectStore,
-    RemoveSchemaFieldRequest, StoreError, UpsertSchemaFieldRequest,
+    RemoveSchemaFieldRequest, STORE_DIR_NAME, StoreError, UpsertSchemaFieldRequest,
 };
 use serde::Serialize;
 use serde_json::{Map, Value, json};
@@ -573,8 +573,10 @@ struct McpWorkerArgs {
 
 #[derive(Args)]
 struct UiServeArgs {
-    #[command(flatten)]
-    project: ProjectArg,
+    /// Path to serve. Accepts a project root, `.fidget_spinner/`, descendants inside it,
+    /// or a parent directory containing one unique descendant project store.
+    #[arg(long = "path", alias = "project", default_value = ".")]
+    path: PathBuf,
     /// Bind address for the local navigator.
     #[arg(long, default_value = "127.0.0.1:8913")]
     bind: SocketAddr,
@@ -1106,7 +1108,8 @@ fn run_skill_install(args: SkillInstallArgs) -> Result<(), StoreError> {
 }
 
 fn run_ui_serve(args: UiServeArgs) -> Result<(), StoreError> {
-    ui::serve(utf8_path(args.project.project), args.bind, args.limit)
+    let project_root = resolve_ui_project_root(&utf8_path(args.path))?;
+    ui::serve(project_root, args.bind, args.limit)
 }
 
 fn resolve_bundled_skill(
@@ -1135,6 +1138,28 @@ fn install_skill(skill: bundled_skill::BundledSkill, destination: &Path) -> Resu
 
 fn open_store(path: &Path) -> Result<ProjectStore, StoreError> {
     ProjectStore::open(utf8_path(path.to_path_buf()))
+}
+
+fn resolve_ui_project_root(path: &Utf8Path) -> Result<Utf8PathBuf, StoreError> {
+    if let Some(project_root) = fidget_spinner_store_sqlite::discover_project_root(path) {
+        return Ok(project_root);
+    }
+    let candidates = discover_descendant_project_roots(path)?;
+    match candidates.len() {
+        0 => Err(StoreError::MissingProjectStore(path.to_path_buf())),
+        1 => candidates
+            .into_iter()
+            .next()
+            .ok_or_else(|| StoreError::MissingProjectStore(path.to_path_buf())),
+        _ => Err(StoreError::AmbiguousProjectStoreDiscovery {
+            path: path.to_path_buf(),
+            candidates: candidates
+                .iter()
+                .map(|candidate| candidate.as_str())
+                .collect::<Vec<_>>()
+                .join(", "),
+        }),
+    }
 }
 
 fn open_or_init_store_for_binding(path: &Path) -> Result<ProjectStore, StoreError> {
@@ -1181,6 +1206,47 @@ fn is_empty_directory(path: &Utf8Path) -> Result<bool, StoreError> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
         Err(error) => Err(StoreError::from(error)),
     }
+}
+
+fn discover_descendant_project_roots(path: &Utf8Path) -> Result<BTreeSet<Utf8PathBuf>, StoreError> {
+    let start = binding_bootstrap_root(path)?;
+    let mut candidates = BTreeSet::new();
+    collect_descendant_project_roots(&start, &mut candidates)?;
+    Ok(candidates)
+}
+
+fn collect_descendant_project_roots(
+    path: &Utf8Path,
+    candidates: &mut BTreeSet<Utf8PathBuf>,
+) -> Result<(), StoreError> {
+    let metadata = match fs::metadata(path.as_std_path()) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(StoreError::from(error)),
+    };
+    if metadata.is_file() {
+        return Ok(());
+    }
+    if path.file_name() == Some(STORE_DIR_NAME) {
+        if let Some(project_root) = path.parent() {
+            let _ = candidates.insert(project_root.to_path_buf());
+        }
+        return Ok(());
+    }
+    for entry in fs::read_dir(path.as_std_path())? {
+        let entry = entry?;
+        let entry_type = entry.file_type()?;
+        if !entry_type.is_dir() {
+            continue;
+        }
+        let child = utf8_path(entry.path());
+        if child.file_name() == Some(STORE_DIR_NAME) {
+            let _ = candidates.insert(path.to_path_buf());
+            continue;
+        }
+        collect_descendant_project_roots(&child, candidates)?;
+    }
+    Ok(())
 }
 
 fn default_display_name_for_root(project_root: &Utf8Path) -> Result<NonEmptyText, StoreError> {
@@ -1662,5 +1728,92 @@ impl From<CliFrontierVerdict> for FrontierVerdict {
             CliFrontierVerdict::ArchiveDeadEnd => Self::ArchiveDeadEnd,
             CliFrontierVerdict::NeedsMoreEvidence => Self::NeedsMoreEvidence,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::resolve_ui_project_root;
+    use std::fs;
+
+    use camino::Utf8PathBuf;
+    use fidget_spinner_core::NonEmptyText;
+    use fidget_spinner_store_sqlite::{
+        PROJECT_CONFIG_NAME, ProjectStore, STORE_DIR_NAME, StoreError,
+    };
+
+    fn temp_project_root(label: &str) -> Utf8PathBuf {
+        let mut path = std::env::temp_dir();
+        path.push(format!(
+            "fidget_spinner_cli_test_{}_{}",
+            label,
+            uuid::Uuid::now_v7()
+        ));
+        Utf8PathBuf::from(path.to_string_lossy().into_owned())
+    }
+
+    #[test]
+    fn ui_resolver_accepts_state_root_and_descendants() -> Result<(), StoreError> {
+        let project_root = temp_project_root("ui_resolve_state_root");
+        let _store = ProjectStore::init(
+            &project_root,
+            NonEmptyText::new("ui dogfood")?,
+            NonEmptyText::new("local.ui")?,
+        )?;
+        let state_root = project_root.join(STORE_DIR_NAME);
+        let config_path = state_root.join(PROJECT_CONFIG_NAME);
+
+        assert_eq!(resolve_ui_project_root(&state_root)?, project_root);
+        assert_eq!(resolve_ui_project_root(&config_path)?, project_root);
+        Ok(())
+    }
+
+    #[test]
+    fn ui_resolver_accepts_unique_descendant_store_from_parent() -> Result<(), StoreError> {
+        let parent_root = temp_project_root("ui_resolve_parent");
+        let nested_project = parent_root.join("nested/libgrid");
+        fs::create_dir_all(nested_project.as_std_path())?;
+        let _store = ProjectStore::init(
+            &nested_project,
+            NonEmptyText::new("nested ui dogfood")?,
+            NonEmptyText::new("local.nested.ui")?,
+        )?;
+
+        assert_eq!(resolve_ui_project_root(&parent_root)?, nested_project);
+        Ok(())
+    }
+
+    #[test]
+    fn ui_resolver_rejects_ambiguous_descendant_stores() -> Result<(), StoreError> {
+        let parent_root = temp_project_root("ui_resolve_ambiguous");
+        let alpha_project = parent_root.join("alpha");
+        let beta_project = parent_root.join("beta");
+        fs::create_dir_all(alpha_project.as_std_path())?;
+        fs::create_dir_all(beta_project.as_std_path())?;
+        let _alpha = ProjectStore::init(
+            &alpha_project,
+            NonEmptyText::new("alpha")?,
+            NonEmptyText::new("local.alpha")?,
+        )?;
+        let _beta = ProjectStore::init(
+            &beta_project,
+            NonEmptyText::new("beta")?,
+            NonEmptyText::new("local.beta")?,
+        )?;
+
+        let error = match resolve_ui_project_root(&parent_root) {
+            Ok(project_root) => {
+                return Err(StoreError::Io(std::io::Error::other(format!(
+                    "expected ambiguous descendant discovery failure, got {project_root}"
+                ))));
+            }
+            Err(error) => error,
+        };
+        assert!(
+            error
+                .to_string()
+                .contains("multiple descendant project stores")
+        );
+        Ok(())
     }
 }

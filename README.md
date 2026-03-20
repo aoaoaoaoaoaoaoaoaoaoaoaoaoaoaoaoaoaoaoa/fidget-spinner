@@ -168,8 +168,12 @@ cargo run -p fidget-spinner-cli -- mcp serve
 Serve the minimal local navigator:
 
 ```bash
-cargo run -p fidget-spinner-cli -- ui serve --project . --bind 127.0.0.1:8913
+cargo run -p fidget-spinner-cli -- ui serve --path . --bind 127.0.0.1:8913
 ```
+
+`ui serve --path` is permissive: it accepts the project root, the
+`.fidget_spinner/` directory itself, descendants inside that directory, or a
+parent directory containing one unique descendant store.
 
 Then bind the session from the client with:
 

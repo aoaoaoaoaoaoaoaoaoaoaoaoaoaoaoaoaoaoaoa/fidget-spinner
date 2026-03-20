@@ -34,6 +34,11 @@ pub const PROJECT_SCHEMA_NAME: &str = "schema.json";
 pub enum StoreError {
     #[error("project store is not initialized at {0}")]
     MissingProjectStore(Utf8PathBuf),
+    #[error("path `{path}` contains multiple descendant project stores: {candidates}")]
+    AmbiguousProjectStoreDiscovery {
+        path: Utf8PathBuf,
+        candidates: String,
+    },
     #[error("I/O failure")]
     Io(#[from] io::Error),
     #[error("SQLite failure")]
