@@ -10,6 +10,12 @@ pub enum CoreError {
         "invalid tag name `{0}`; expected lowercase ascii alphanumerics separated by `-`, `_`, or `/`"
     )]
     InvalidTagName(String),
+    #[error("slug values must not be blank")]
+    EmptySlug,
+    #[error("invalid slug `{0}`; expected lowercase ascii alphanumerics separated by `-` or `_`")]
+    InvalidSlug(String),
+    #[error("slug `{0}` is ambiguous with a UUID selector")]
+    UuidLikeSlug(String),
     #[error("command recipes must contain at least one argv element")]
     EmptyCommand,
 }

@@ -1,7 +1,7 @@
 # Fidget Spinner
 
-Fidget Spinner is a local-first, agent-first experimental DAG for autonomous
-program optimization, source capture, and experiment adjudication.
+Fidget Spinner is a local-first, agent-first frontier ledger for autonomous
+optimization work.
 
 Constraints that are part of the product:
 
@@ -9,12 +9,14 @@ Constraints that are part of the product:
 - no hosted control plane
 - no mandatory cloud resources
 - no managed-compute marketplace in the core design
-- DAG is canonical truth
-- frontier state is a derived projection
+- frontier is scope and grounding, not a graph vertex
+- hypotheses and experiments are the true graph vertices
+- every experiment has one mandatory owning hypothesis
 - per-project state lives under `.fidget_spinner/`
-- project payload schemas are local and warning-heavy, not globally rigid
-- off-path nodes should remain cheap
-- core-path work should remain hypothesis-owned and experiment-gated
+- the frontier brief is the one sanctioned freeform overview
+- artifacts are references only; Spinner never reads artifact bodies
+- slow intentional traversal beats giant context dumps
+- `frontier.open` is the only sanctioned overview surface
 
 Engineering posture:
 
@@ -28,7 +30,7 @@ MVP target:
 
 - dogfood against `libgrid` worktrees
 - replace sprawling freeform experiment markdown with structured
-  contract/hypothesis/run/analysis/decision nodes plus cheap source/note side paths
-- make runs, comparisons, artifacts, and code snapshots first-class
+  frontier/hypothesis/experiment records plus artifact references
+- make live metrics and influence lineage discoverable without giant dumps
 - bundle the frontier-loop skill with the MCP surface instead of treating it as
   folklore

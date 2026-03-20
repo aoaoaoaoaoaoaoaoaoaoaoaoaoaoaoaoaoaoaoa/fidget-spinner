@@ -1,216 +1,269 @@
 # Fidget Spinner
 
-Fidget Spinner is a local-first, agent-first experimental DAG for autonomous
-program optimization, source capture, and experiment adjudication.
+Fidget Spinner is a local-first frontier ledger for long-running optimization
+work.
 
-It is aimed at the ugly, practical problem of replacing sprawling experiment
-markdown in worktree-heavy optimization projects such as `libgrid` with a
-structured local system of record.
+It is intentionally not a general research notebook. It is a hard scientific
+spine:
 
-The current shape is built around four ideas:
+- `frontier` is scope and grounding, not a graph node
+- `hypothesis` is a real graph vertex
+- `experiment` is a real graph vertex with one mandatory owning hypothesis
+- influence edges form a sparse DAG over that canonical tree spine
+- `artifact` is an external reference only; Spinner never reads artifact bodies
 
-- the DAG is canonical truth
-- frontier state is a derived projection
-- project payload schemas are local and flexible
-- core-path work is hypothesis-owned and experiment-gated
+The product goal is token austerity. `frontier.open` is the only sanctioned
+overview dump. Everything else should require deliberate traversal one object at
+a time.
 
-## Current Scope
+## Current Model
 
-Implemented today:
+The ledger has four first-class object families:
 
-- typed Rust core model
-- per-project SQLite store under `.fidget_spinner/`
-- project-local schema file
-- light-touch project field types: `string`, `numeric`, `boolean`, `timestamp`
-- hidden and visible node annotations
-- core-path and off-path node classes
-- CLI for local project work
-- hardened stdio MCP host via `mcp serve`
-- minimal web navigator via `ui serve`
-- replay-aware disposable MCP worker runtime
-- MCP health and telemetry tools
-- bundled `fidget-spinner` base skill
-- bundled `frontier-loop` specialization
+- `frontier`
+  - a named scope
+  - owns one mutable `brief`
+  - partitions hypotheses and experiments
+- `hypothesis`
+  - terse claim or intervention
+  - title + summary + exactly one paragraph of body
+- `experiment`
+  - open or closed
+  - belongs to exactly one hypothesis
+  - may cite other hypotheses or experiments as influences
+  - when closed, stores dimensions, metrics, verdict, rationale, and optional analysis
+- `artifact`
+  - reference to an external document, link, log, plot, table, dump, or binary
+  - attaches to frontiers, hypotheses, or experiments
+  - only metadata and locator live in Spinner
+  - Spinner never reads the body
 
-Not implemented yet:
+There are no canonical freeform `note` or `source` nodes anymore. If a piece of
+text does not belong in a frontier brief, hypothesis, or experiment analysis, it
+probably belongs outside Spinner as an artifact.
 
-- long-lived daemon
-- full web UI
-- remote runners
-- strong markdown migration
-- cross-project indexing
+## Design Rules
+
+- `frontier.open` is the only overview surface.
+- No broad prose dumps in list-like tools.
+- Artifact bodies are never read through Spinner.
+- Live metrics are derived, not manually curated.
+- Selectors are permissive: UUID or slug, one field, no parallel `_id` / `_slug`.
+- Slow intentional graph walking is preferred to burning context on giant feeds.
 
 ## Local Install
 
 Install the release CLI into `~/.local/bin` and refresh the bundled skill
-symlinks in `~/.codex/skills` with:
+symlinks in `~/.codex/skills`:
 
 ```bash
 ./scripts/install-local.sh
 ```
 
-Pass a different local install root or skill destination explicitly if needed:
-
-```bash
-./scripts/install-local.sh /tmp/fidget-local /tmp/codex-skills
-```
+The installed binary is `~/.local/bin/fidget-spinner-cli`.
 
 ## Quickstart
 
-Initialize the current directory as a Fidget Spinner project:
+Initialize a project:
 
 ```bash
-cargo run -p fidget-spinner-cli -- init --project . --name fidget-spinner --namespace local.fidget-spinner
+cargo run -p fidget-spinner-cli -- init --project . --name libgrid
 ```
 
-Create a frontier:
+Register the tag, metric, and run-dimension vocabulary before heavy ingest:
 
 ```bash
-cargo run -p fidget-spinner-cli -- frontier init \
+cargo run -p fidget-spinner-cli -- tag add \
   --project . \
-  --label "repo evolution" \
-  --objective "improve the local MVP" \
-  --contract-title "fidget spinner self-host frontier" \
-  --benchmark-suite smoke \
-  --promotion-criterion "cleaner and more capable" \
-  --primary-metric-key research_value \
-  --primary-metric-unit count \
-  --primary-metric-objective maximize
-```
-
-Register project-level metric and run-dimension vocabulary before recording a
-lot of experiments:
-
-```bash
-cargo run -p fidget-spinner-cli -- schema upsert-field \
-  --project . \
-  --name scenario \
-  --class hypothesis \
-  --class analysis \
-  --presence recommended \
-  --severity warning \
-  --role projection-gate \
-  --inference manual-only \
-  --type string
+  --name root-conquest \
+  --description "Root-cash-out work"
 ```
 
 ```bash
 cargo run -p fidget-spinner-cli -- metric define \
   --project . \
-  --key wall_clock_s \
-  --unit seconds \
-  --objective minimize \
-  --description "elapsed wall time"
+  --key nodes_solved \
+  --unit count \
+  --objective maximize \
+  --visibility canonical \
+  --description "Solved search nodes on the target rail"
 ```
 
 ```bash
 cargo run -p fidget-spinner-cli -- dimension define \
   --project . \
-  --key scenario \
-  --type string \
-  --description "workload family"
+  --key instance \
+  --value-type string \
+  --description "Workload slice"
 ```
+
+Create a frontier:
 
 ```bash
-cargo run -p fidget-spinner-cli -- dimension define \
+cargo run -p fidget-spinner-cli -- frontier create \
   --project . \
-  --key duration_s \
-  --type numeric \
-  --description "time budget in seconds"
+  --label "native mip" \
+  --objective "Drive braid-rail LP cash-out" \
+  --slug native-mip
 ```
 
-Record low-ceremony off-path work:
+Write the frontier brief:
 
 ```bash
-cargo run -p fidget-spinner-cli -- tag add \
+cargo run -p fidget-spinner-cli -- frontier update-brief \
   --project . \
-  --name dogfood/mvp \
-  --description "Self-hosted MVP dogfood notes"
+  --frontier native-mip \
+  --situation "Root LP spend is understood; node-local LP churn is the active frontier."
 ```
+
+Record a hypothesis:
 
 ```bash
-cargo run -p fidget-spinner-cli -- source add \
+cargo run -p fidget-spinner-cli -- hypothesis record \
   --project . \
-  --title "next feature slate" \
-  --summary "Investigate the next tranche of high-value product work." \
-  --body "Investigate pruning, richer projections, and libgrid schema presets." \
-  --tag dogfood/mvp
+  --frontier native-mip \
+  --slug node-local-loop \
+  --title "Node-local logical cut loop" \
+  --summary "Push cut cash-out below root." \
+  --body "Thread node-local logical cuts through native LP reoptimization so the same intervention can cash out below root on parity rails without corrupting root ownership semantics." \
+  --tag root-conquest
 ```
 
-```bash
-cargo run -p fidget-spinner-cli -- note quick \
-  --project . \
-  --title "first tagged note" \
-  --summary "Tag-aware note capture is live." \
-  --body "Tag-aware note capture is live." \
-  --tag dogfood/mvp
-```
-
-Record a core-path hypothesis and open an experiment against it:
-
-```bash
-cargo run -p fidget-spinner-cli -- hypothesis add \
-  --project . \
-  --frontier <frontier-id> \
-  --title "inline metric table" \
-  --summary "Rendering candidate metrics on cards will improve navigator utility." \
-  --body "Surface experiment metrics and objective-aware deltas directly on change cards."
-```
+Open an experiment:
 
 ```bash
 cargo run -p fidget-spinner-cli -- experiment open \
   --project . \
-  --frontier <frontier-id> \
-  --hypothesis-node <hypothesis-node-id> \
-  --title "navigator metric card pass" \
-  --summary "Evaluate inline metrics on experiment-bearing cards."
+  --hypothesis node-local-loop \
+  --slug parity-20s \
+  --title "Parity rail 20s" \
+  --summary "Live challenger on the canonical braid slice." \
+  --tag root-conquest
 ```
 
+Close an experiment:
+
 ```bash
-cargo run -p fidget-spinner-cli -- metric keys --project .
+cargo run -p fidget-spinner-cli -- experiment close \
+  --project . \
+  --experiment parity-20s \
+  --backend manual \
+  --argv matched-lp-site-traces \
+  --dimension instance=4x5-braid \
+  --primary-metric nodes_solved=273 \
+  --verdict accepted \
+  --rationale "Matched LP site traces isolate node reoptimization as the dominant native LP sink."
+```
+
+Record an external artifact by reference:
+
+```bash
+cargo run -p fidget-spinner-cli -- artifact record \
+  --project . \
+  --kind document \
+  --slug lp-review-doc \
+  --label "LP review tranche" \
+  --summary "External markdown tranche." \
+  --locator /abs/path/to/review.md \
+  --attach hypothesis:node-local-loop
+```
+
+Inspect live metrics:
+
+```bash
+cargo run -p fidget-spinner-cli -- metric keys --project . --frontier native-mip --scope live
 ```
 
 ```bash
 cargo run -p fidget-spinner-cli -- metric best \
   --project . \
-  --key wall_clock_s \
-  --dimension scenario=belt_4x5 \
-  --dimension duration_s=60 \
-  --source run-metric
+  --frontier native-mip \
+  --hypothesis node-local-loop \
+  --key nodes_solved
 ```
 
-Serve the local MCP surface in unbound mode:
+## MCP Surface
+
+Serve the MCP host:
 
 ```bash
 cargo run -p fidget-spinner-cli -- mcp serve
 ```
 
-Serve the minimal local navigator:
-
-```bash
-cargo run -p fidget-spinner-cli -- ui serve --path . --bind 127.0.0.1:8913
-```
-
-`ui serve --path` is permissive: it accepts the project root, the
-`.fidget_spinner/` directory itself, descendants inside that directory, or a
-parent directory containing one unique descendant store.
-
-Then bind the session from the client with:
+If the host starts unbound, bind it with:
 
 ```json
 {"name":"project.bind","arguments":{"path":"<project-root-or-nested-path>"}}
 ```
 
-If the target root is an existing empty directory, `project.bind` now
-bootstraps `.fidget_spinner/` automatically instead of requiring a separate
-`init` step. Non-empty uninitialized directories still fail rather than being
-guessed into existence.
+The main model-facing tools are:
 
-Install the bundled skills into Codex:
+- `system.health`
+- `system.telemetry`
+- `project.bind`
+- `project.status`
+- `tag.add`
+- `tag.list`
+- `frontier.create`
+- `frontier.list`
+- `frontier.read`
+- `frontier.open`
+- `frontier.brief.update`
+- `frontier.history`
+- `hypothesis.record`
+- `hypothesis.list`
+- `hypothesis.read`
+- `hypothesis.update`
+- `hypothesis.history`
+- `experiment.open`
+- `experiment.list`
+- `experiment.read`
+- `experiment.update`
+- `experiment.close`
+- `experiment.history`
+- `artifact.record`
+- `artifact.list`
+- `artifact.read`
+- `artifact.update`
+- `artifact.history`
+- `metric.define`
+- `metric.keys`
+- `metric.best`
+- `run.dimension.define`
+- `run.dimension.list`
+
+`frontier.open` is the grounding call. It returns:
+
+- frontier brief
+- active tags
+- live metric keys
+- active hypotheses with deduped current state
+- open experiments
+
+Everything deeper should be fetched by explicit selector.
+
+## Navigator
+
+Serve the local navigator:
 
 ```bash
-cargo run -p fidget-spinner-cli -- skill install
+cargo run -p fidget-spinner-cli -- ui serve --path . --bind 127.0.0.1:8913
 ```
+
+`ui serve --path` accepts:
+
+- the project root
+- `.fidget_spinner/`
+- any descendant inside `.fidget_spinner/`
+- a parent containing exactly one descendant store
+
+The navigator mirrors the product philosophy:
+
+- root page lists frontiers
+- frontier page is the only overview
+- hypothesis / experiment / artifact pages are detail reads
+- local navigation happens card-to-card
+- artifact bodies are never surfaced
 
 ## Store Layout
 
@@ -219,136 +272,17 @@ Each initialized project gets:
 ```text
 .fidget_spinner/
     project.json
-    schema.json
     state.sqlite
-    blobs/
 ```
 
-`schema.json` is the model-facing contract for project-local payload fields and
-their validation tiers. Fields may now optionally declare a light-touch
-`value_type` of `string`, `numeric`, `boolean`, or `timestamp`; mismatches are
-diagnostic warnings rather than ingest blockers.
+In git-backed projects `.fidget_spinner/` normally belongs in `.gitignore` or
+`.git/info/exclude`.
 
-`.fidget_spinner/` is local state. In git-backed projects it usually belongs in
-`.gitignore` or `.git/info/exclude`.
+## Doctrine
 
-## Model-Facing Surface
-
-The current MCP tools are:
-
-- `system.health`
-- `system.telemetry`
-- `project.bind`
-- `project.status`
-- `project.schema`
-- `schema.field.upsert`
-- `schema.field.remove`
-- `tag.add`
-- `tag.list`
-- `frontier.list`
-- `frontier.status`
-- `frontier.init`
-- `node.create`
-- `hypothesis.record`
-- `experiment.open`
-- `experiment.list`
-- `experiment.read`
-- `node.list`
-- `node.read`
-- `node.annotate`
-- `node.archive`
-- `note.quick`
-- `source.record`
-- `metric.define`
-- `metric.keys`
-- `metric.best`
-- `metric.migrate`
-- `run.dimension.define`
-- `run.dimension.list`
-- `experiment.close`
-- `skill.list`
-- `skill.show`
-
-Nontrivial MCP tools follow the shared presentation contract:
-
-- `render=porcelain|json` chooses terse text vs structured JSON rendering
-- `detail=concise|full` chooses triage payload vs widened detail
-- porcelain is default and is intentionally not just pretty-printed JSON
-
-Operationally, the MCP now runs as a stable host process that owns the public
-JSON-RPC session and delegates tool execution to an internal worker subprocess.
-Safe replay is only allowed for explicitly read-only operations and resources.
-Mutating tools are never auto-replayed after worker failure.
-
-Notes now require an explicit `tags` list. Tags are repo-local registry entries
-created with `tag.add`, each with a required human description. `note.quick`
-accepts `tags: []` when no existing tag applies, but the field itself is still
-mandatory so note classification is always conscious.
-
-`source.record` now also accepts optional `tags`, so rich imported documents
-can join the same campaign/subsystem index as terse notes without falling back
-to the generic escape hatch.
-
-`note.quick`, `source.record`, and generic `node create` for `note`/`source`
-now enforce the same strict prose split: `title` is terse identity, `summary`
-is the triage/search layer, and `body` holds the full text. List-like surfaces
-stay on `title` + `summary`; full prose is for explicit reads only.
-
-Schema authoring no longer has to happen by hand in `.fidget_spinner/schema.json`.
-The CLI exposes `schema upsert-field` / `schema remove-field`, and the MCP
-surface exposes the corresponding `schema.field.upsert` / `schema.field.remove`
-tools. The CLI uses space-separated subcommands; the MCP uses dotted tool names.
-
-Metrics and run dimensions are now project-level registries. Frontier contracts
-still declare the evaluation metric vocabulary, but closed experiments report
-only thin `key=value` metrics plus typed run dimensions. `metric.define` can
-enrich metric descriptions, CLI `dimension define` / MCP `run.dimension.define`
-preregister slicers such as `scenario` or `duration_s`, `metric.keys`
-discovers rankable numeric signals, and `metric.best` ranks one key within
-optional exact dimension filters.
-Legacy `benchmark_suite` data is normalized into a builtin string dimension on
-store open, and `metric.migrate` can be invoked explicitly as an idempotent
-repair pass.
-
-The intended flow is:
-
-1. inspect `system.health`
-2. `project.bind` to the target project root or any nested path inside it
-3. read `project.status`, `tag.list`, and `frontier.list`
-4. read `experiment.list` if the session may be resuming in-flight work
-5. read `project.schema` only when payload rules are actually relevant
-6. pull context from the DAG
-7. use `source.record` for documentary context and `note.quick` for atomic takeaways
-8. record a `hypothesis` before core-path work
-9. open the live experiment explicitly with `experiment.open`
-10. seal core-path work with `experiment.close`
-
-## Git And The Ledger
-
-Git remains useful for code history, bisect, and sensible commit messages, but
-the Fidget Spinner ledger is about the science rather than about reproducing git
-inside the experiment record.
-
-Core-path closure does not require a git-backed project. The canonical record is
-the hypothesis, run slice, parsed metrics, verdict, and rationale.
-
-## Workspace Layout
-
-- `crates/fidget-spinner-core`: domain model and invariants
-- `crates/fidget-spinner-store-sqlite`: per-project store and atomic writes
-- `crates/fidget-spinner-cli`: CLI plus hardened stdio MCP host and worker
-- `assets/codex-skills/fidget-spinner`: bundled base skill asset
-- `assets/codex-skills/frontier-loop`: bundled skill asset
-
-## Docs
-
-- [docs/product-spec.md](docs/product-spec.md)
-- [docs/architecture.md](docs/architecture.md)
-- [docs/libgrid-dogfood.md](docs/libgrid-dogfood.md)
-
-## Checks
-
-```bash
-./check.py
-./check.py deep
-```
+- hypotheses are short and disciplined
+- experiments carry the real scientific record
+- verdicts are explicit: `accepted`, `kept`, `parked`, `rejected`
+- artifacts keep large text and dumps off the token hot path
+- live metrics answer “what matters now?”, not “what has ever existed?”
+- the ledger is about experimental truth, not recreating git inside the database

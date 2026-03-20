@@ -1,7 +1,7 @@
 [package]
 name = "fidget-spinner-store-sqlite"
 categories.workspace = true
-description = "SQLite-backed per-project store for Fidget Spinner DAG projects"
+description = "SQLite-backed per-project frontier ledger store for Fidget Spinner"
 edition.workspace = true
 keywords.workspace = true
 license.workspace = true

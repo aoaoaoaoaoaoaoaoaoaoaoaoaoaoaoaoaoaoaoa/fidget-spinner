@@ -2,341 +2,250 @@
 
 ## Thesis
 
-Fidget Spinner is a local-first, agent-first frontier machine for autonomous
-program optimization, source capture, and experiment adjudication.
+Fidget Spinner is a local-first, agent-first frontier ledger for autonomous
+optimization work.
 
-The immediate target is brutally practical: replace gigantic freeform
-experiment markdown with a machine that preserves evidence as structure.
+It is not a notebook. It is not a generic DAG memory. It is not an inner
+platform for git. It is a hard experimental spine whose job is to preserve
+scientific truth with enough structure that agents can resume work without
+reconstructing everything from prose.
 
 The package is deliberately two things at once:
 
-- a local MCP-backed DAG substrate
-- bundled skills that teach agents how to drive that substrate
+- a local MCP-backed frontier ledger
+- bundled skills that teach agents how to drive that ledger
 
-Those two halves should be versioned together and treated as one product.
+Those two halves are one product and should be versioned together.
 
 ## Product Position
 
-This is not a hosted lab notebook.
+This is a machine for long-running frontier work in local repos.
 
-This is not a cloud compute marketplace.
+Humans and agents should be able to answer:
 
-This is not a collaboration shell with experiments bolted on.
+- what frontier is active
+- which hypotheses are live
+- which experiments are still open
+- what the latest accepted, kept, parked, and rejected outcomes are
+- which metrics matter right now
 
-This is a local machine for indefinite frontier pushes, with agents as primary
-writers and humans as auditors, reviewers, and occasional editors.
+without opening a markdown graveyard.
 
 ## Non-Goals
 
 These are explicitly out of scope for the core product:
 
-- OAuth
 - hosted identity
 - cloud tenancy
-- billing, credits, and subscriptions
-- managed provider brokerage
+- billing or credits
 - chat as the system of record
 - mandatory remote control planes
 - replacing git
+- storing or rendering large artifact bodies
 
-Git remains the code substrate. Fidget Spinner is the evidence substrate.
+Git remains the code substrate. Fidget Spinner is the experimental ledger.
 
 ## Locked Design Decisions
 
-These are the load-bearing decisions to hold fixed through the MVP push.
+### 1. The ledger is austere
 
-### 1. The DAG is canonical truth
+The only freeform overview surface is the frontier brief, read through
+`frontier.open`.
 
-The canonical record is the DAG plus its normalized supporting tables.
+Everything else should require deliberate traversal one selector at a time.
+Slow is better than burning tokens on giant feeds.
 
-Frontier state is not a rival authority. It is a derived, rebuildable
-projection over the DAG and related run/experiment records.
+### 2. The ontology is small
 
-### 2. Storage is per-project
+The canonical object families are:
 
-Each project owns its own local store under:
+- `frontier`
+- `hypothesis`
+- `experiment`
+- `artifact`
+
+There are no canonical `note` or `source` ledger nodes.
+
+### 3. Frontier is scope, not a graph vertex
+
+A frontier is a named scope and grounding object. It owns:
+
+- objective
+- status
+- brief
+
+And it partitions hypotheses and experiments.
+
+### 4. Hypothesis and experiment are the true graph vertices
+
+A hypothesis is a terse intervention claim.
+
+An experiment is a stateful scientific record. Every experiment has:
+
+- one mandatory owning hypothesis
+- optional influence parents drawn from hypotheses or experiments
+
+This gives the product a canonical tree spine plus a sparse influence network.
+
+### 5. Artifacts are references only
+
+Artifacts are metadata plus locators for external material:
+
+- files
+- links
+- logs
+- tables
+- plots
+- dumps
+- bibliographies
+
+Spinner never reads artifact bodies. If a wall of text matters, attach it as an
+artifact and summarize the operational truth elsewhere.
+
+### 6. Experiment closure is atomic
+
+A closed experiment exists only when all of these exist together:
+
+- dimensions
+- primary metric
+- verdict
+- rationale
+- optional supporting metrics
+- optional analysis
+
+Closing an experiment is one atomic mutation, not a loose pile of lower-level
+writes.
+
+### 7. Live metrics are derived
+
+The hot-path metric surface is not “all metrics that have ever existed.”
+
+The hot-path metric surface is the derived live set for the active frontier.
+That set should stay small, frontier-relevant, and queryable.
+
+## Canonical Data Model
+
+### Frontier
+
+Frontier is a scope/partition object with one mutable brief.
+
+The brief is the sanctioned grounding object. It should stay short and answer:
+
+- situation
+- roadmap
+- unknowns
+
+### Hypothesis
+
+A hypothesis is a disciplined claim:
+
+- title
+- summary
+- exactly one paragraph of body
+- tags
+- influence parents
+
+It is not a design doc and not a catch-all prose bucket.
+
+### Experiment
+
+An experiment is a stateful object:
+
+- open while the work is live
+- closed when the result is in
+
+A closed experiment stores:
+
+- dimensions
+- primary metric
+- supporting metrics
+- verdict: `accepted | kept | parked | rejected`
+- rationale
+- optional analysis
+- attached artifacts
+
+### Artifact
+
+Artifacts preserve external material by reference. They are deliberately off the
+token hot path. Artifact metadata should be enough to discover the thing; the
+body lives elsewhere.
+
+## Token Discipline
+
+`frontier.open` is the only sanctioned overview dump. It should return:
+
+- frontier brief
+- active tags
+- live metric keys
+- active hypotheses with deduped current state
+- open experiments
+
+After that, the model should walk explicitly:
+
+- `hypothesis.read`
+- `experiment.read`
+- `artifact.read`
+
+No broad list surface should dump large prose. Artifact bodies are never in the
+MCP path.
+
+## Storage
+
+Every project owns a private state root:
 
 ```text
 <project root>/.fidget_spinner/
-    state.sqlite
     project.json
-    schema.json
-    blobs/
+    state.sqlite
 ```
 
-There is no mandatory global database in the MVP.
+There is no required global database.
 
-### 3. Node structure is layered
+## MVP Surface
 
-Every node has three layers:
-
-- a hard global envelope for indexing and traversal
-- a project-local structured payload
-- free-form sidecar annotations as an escape hatch
-
-The engine only hard-depends on the envelope. Project payloads remain flexible.
-
-### 4. Validation is warning-heavy
-
-Engine integrity is hard-validated.
-
-Project semantics are diagnostically validated.
-
-Workflow eligibility is action-gated.
-
-In other words:
-
-- bad engine state is rejected
-- incomplete project payloads are usually admitted with diagnostics
-- projections and frontier actions may refuse incomplete nodes later
-
-### 5. Core-path and off-path work must diverge
-
-Core-path work is disciplined and atomic.
-
-Off-path work is cheap and permissive.
-
-The point is to avoid forcing every scrap of source digestion or note-taking through the full
-benchmark/decision bureaucracy while still preserving it in the DAG.
-
-### 6. Completed core-path experiments are atomic
-
-A completed experiment exists only when all of these exist together:
-
-- measured result
-- terse note
-- explicit verdict
-
-The write surface should make that one atomic mutation, not a loose sequence of
-low-level calls.
-
-## Node Model
-
-### Global envelope
-
-The hard spine should be stable across projects. It includes at least:
-
-- node id
-- node class
-- node track
-- frontier id if any
-- archived flag
-- title
-- summary
-- schema namespace and version
-- timestamps
-- diagnostics
-- hidden or visible annotations
-
-This is the engine layer: the part that powers indexing, traversal, archiving,
-default enumeration, and model-facing summaries.
-
-### Project-local payload
-
-Every project may define richer payload fields in:
-
-`<project root>/.fidget_spinner/schema.json`
-
-That file is a model-facing contract. It defines field names and soft
-validation tiers without forcing global schema churn.
-
-Per-field settings should express at least:
-
-- presence: `required`, `recommended`, `optional`
-- severity: `error`, `warning`, `info`
-- role: `index`, `projection_gate`, `render_only`, `opaque`
-- inference policy: whether the model may infer the field
-
-These settings are advisory at ingest time and stricter at projection/action
-time.
-
-### Free-form annotations
-
-Any node may carry free-form annotations.
-
-These are explicitly sidecar, not primary payload. They are:
-
-- allowed everywhere
-- hidden from default enumeration
-- useful as a scratchpad or escape hatch
-- not allowed to become the only home of critical operational truth
-
-If a fact matters to automation, comparison, or promotion, it must migrate into
-the spine or project payload.
-
-## Node Taxonomy
-
-### Core-path node classes
-
-These are the disciplined frontier-loop classes:
-
-- `contract`
-- `hypothesis`
-- `run`
-- `analysis`
-- `decision`
-
-### Off-path node classes
-
-These are deliberately low-ceremony:
-
-- `source`
-- `source`
-- `note`
-
-They exist so the product can absorb real thinking instead of forcing users and
-agents back into sprawling markdown.
-
-## Frontier Model
-
-The frontier is a derived operational view over the canonical DAG.
-
-It answers:
-
-- what objective is active
-- how many experiments are open
-- how many experiments are completed
-- how the verdict mix currently breaks down
-
-The DAG answers:
-
-- what changed
-- what ran
-- what evidence was collected
-- what was concluded
-- what dead ends and side investigations exist
-
-That split is deliberate. It prevents "frontier state" from turning into a
-second unofficial database.
-
-## First Usable MVP
-
-The first usable MVP is the first cut that can already replace a meaningful
-slice of the markdown habit without pretending the whole full-product vision is
-done.
-
-### MVP deliverables
-
-- per-project `.fidget_spinner/` state
-- local SQLite backing store
-- local blob directory
-- typed Rust core model
-- optional light-touch project field types: `string`, `numeric`, `boolean`, `timestamp`
-- thin CLI for bootstrap and repair
-- hardened stdio MCP host exposed from the CLI
-- minimal read-only web navigator with tag filtering and linear node rendering
-- disposable MCP worker execution runtime
-- bundled `fidget-spinner` base skill
-- bundled `frontier-loop` skill
-- low-ceremony off-path note and source recording
-- explicit experiment open/close lifecycle for the core path
-
-### Explicitly deferred from the MVP
-
-- long-lived `spinnerd`
-- web UI
-- remote runners
-- multi-agent hardening
-- aggressive pruning and vacuuming
-- strong markdown migration tooling
-- cross-project indexing
-
-### MVP model-facing surface
-
-The model-facing surface is a local MCP server oriented around frontier work.
-
-The initial tools should be:
+The current model-facing surface is:
 
 - `system.health`
 - `system.telemetry`
 - `project.bind`
 - `project.status`
-- `project.schema`
 - `tag.add`
 - `tag.list`
+- `frontier.create`
 - `frontier.list`
-- `frontier.status`
-- `frontier.init`
-- `node.create`
+- `frontier.read`
+- `frontier.open`
+- `frontier.brief.update`
+- `frontier.history`
 - `hypothesis.record`
-- `node.list`
-- `node.read`
-- `node.annotate`
-- `node.archive`
-- `note.quick`
-- `source.record`
+- `hypothesis.list`
+- `hypothesis.read`
+- `hypothesis.update`
+- `hypothesis.history`
 - `experiment.open`
 - `experiment.list`
 - `experiment.read`
+- `experiment.update`
 - `experiment.close`
-- `skill.list`
-- `skill.show`
+- `experiment.history`
+- `artifact.record`
+- `artifact.list`
+- `artifact.read`
+- `artifact.update`
+- `artifact.history`
+- `metric.define`
+- `metric.keys`
+- `metric.best`
+- `run.dimension.define`
+- `run.dimension.list`
 
-The important point is not the exact names. The important point is the shape:
+## Explicitly Deferred
 
-- cheap read access to project and frontier context
-- cheap off-path writes
-- low-ceremony hypothesis capture
-- one explicit experiment-open step plus one experiment-close step
-- explicit operational introspection for long-lived agent sessions
-- explicit replay boundaries so side effects are never duplicated by accident
+Still out of scope:
 
-### MVP skill posture
-
-The bundled skills should instruct agents to:
-
-1. inspect `system.health` first
-2. bind the MCP session to the target project before project-local reads or writes
-3. read project schema, tag registry, and frontier state
-4. pull context from the DAG instead of giant prose dumps
-5. use `note.quick` and `source.record` freely off path, but always pass an explicit tag list for notes
-6. use `hypothesis.record` before worktree thrash becomes ambiguous
-7. use `experiment.open` before running a live hypothesis-owned line
-8. use `experiment.close` to seal that line with measured evidence
-9. archive detritus instead of deleting it
-10. use the base `fidget-spinner` skill for ordinary DAG work and add
-   `frontier-loop` only when the task becomes a true autonomous frontier push
-
-### MVP acceptance bar
-
-The MVP is successful when:
-
-- a project can be initialized locally with no hosted dependencies
-- an agent can inspect frontier state through MCP
-- an agent can inspect MCP health and telemetry through MCP
-- an agent can record off-path sources and notes without bureaucratic pain
-- the project schema can softly declare whether payload fields are strings, numbers, booleans, or timestamps
-- an operator can inspect recent nodes through a minimal localhost web navigator filtered by tag
-- a project can close a real core-path experiment atomically
-- retryable worker faults do not duplicate side effects
-- stale nodes can be archived instead of polluting normal enumeration
-- a human can answer "what was tried, what ran, what was accepted or parked,
-  and why?" without doing markdown archaeology
-
-## Full Product
-
-The full product grows outward from the MVP rather than replacing it.
-
-### Planned additions
-
-- `spinnerd` as a long-lived local daemon
-- local HTTP and SSE
-- read-mostly graph and run inspection UI
-- richer artifact handling
-- model-driven pruning and archive passes
-- stronger interruption recovery
-- local runner backends beyond direct process execution
-- optional global indexing across projects
-- import/export and subgraph packaging
-
-### Invariant for all later stages
-
-No future layer should invalidate the MVP spine:
-
-- DAG canonical
-- frontier derived
-- project-local store
-- layered node model
-- warning-heavy schema validation
-- cheap off-path writes
-- atomic core-path closure
+- remote runners
+- hosted multi-user control planes
+- broad artifact ingestion
+- reading artifact bodies through Spinner
+- giant auto-generated context dumps
+- replacing git or reconstructing git inside the ledger

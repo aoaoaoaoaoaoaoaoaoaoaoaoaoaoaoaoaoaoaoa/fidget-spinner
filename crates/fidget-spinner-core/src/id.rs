@@ -36,10 +36,7 @@ macro_rules! define_id {
     };
 }
 
-define_id!(AgentSessionId);
-define_id!(AnnotationId);
 define_id!(ArtifactId);
 define_id!(ExperimentId);
 define_id!(FrontierId);
-define_id!(NodeId);
-define_id!(RunId);
+define_id!(HypothesisId);

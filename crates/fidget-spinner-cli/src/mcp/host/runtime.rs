@@ -230,7 +230,7 @@ impl HostRuntime {
                     "name": SERVER_NAME,
                     "version": env!("CARGO_PKG_VERSION")
                 },
-                "instructions": "The DAG is canonical truth. Frontier state is derived. Bind the session with project.bind before project-local DAG operations when the MCP is running unbound."
+                "instructions": "Bind the session with project.bind before project-local work when the MCP is unbound. Use frontier.open as the only overview surface, then walk hypotheses and experiments deliberately by selector. Artifacts are references only; Spinner does not read artifact bodies."
             }))),
             "notifications/initialized" => {
                 if !self.seed_captured() {
@@ -598,8 +598,11 @@ struct ProjectBindStatus {
     project_root: String,
     state_root: String,
     display_name: fidget_spinner_core::NonEmptyText,
-    schema: fidget_spinner_core::PayloadSchemaRef,
-    git_repo_detected: bool,
+    frontier_count: u64,
+    hypothesis_count: u64,
+    experiment_count: u64,
+    open_experiment_count: u64,
+    artifact_count: u64,
 }
 
 struct ResolvedProjectBinding {
@@ -611,6 +614,7 @@ fn resolve_project_binding(
     requested_path: PathBuf,
 ) -> Result<ResolvedProjectBinding, fidget_spinner_store_sqlite::StoreError> {
     let store = crate::open_or_init_store_for_binding(&requested_path)?;
+    let project_status = store.status()?;
     Ok(ResolvedProjectBinding {
         binding: ProjectBinding {
             requested_path: requested_path.clone(),
@@ -621,12 +625,11 @@ fn resolve_project_binding(
             project_root: store.project_root().to_string(),
             state_root: store.state_root().to_string(),
             display_name: store.config().display_name.clone(),
-            schema: store.schema().schema_ref(),
-            git_repo_detected: crate::run_git(
-                store.project_root(),
-                &["rev-parse", "--show-toplevel"],
-            )?
-            .is_some(),
+            frontier_count: project_status.frontier_count,
+            hypothesis_count: project_status.hypothesis_count,
+            experiment_count: project_status.experiment_count,
+            open_experiment_count: project_status.open_experiment_count,
+            artifact_count: project_status.artifact_count,
         },
     })
 }
@@ -728,17 +731,20 @@ fn project_bind_output(status: &ProjectBindStatus) -> Result<ToolOutput, FaultRe
     let _ = concise.insert("project_root".to_owned(), json!(status.project_root));
     let _ = concise.insert("state_root".to_owned(), json!(status.state_root));
     let _ = concise.insert("display_name".to_owned(), json!(status.display_name));
+    let _ = concise.insert("frontier_count".to_owned(), json!(status.frontier_count));
     let _ = concise.insert(
-        "schema".to_owned(),
-        json!(format!(
-            "{}@{}",
-            status.schema.namespace, status.schema.version
-        )),
+        "hypothesis_count".to_owned(),
+        json!(status.hypothesis_count),
     );
     let _ = concise.insert(
-        "git_repo_detected".to_owned(),
-        json!(status.git_repo_detected),
+        "experiment_count".to_owned(),
+        json!(status.experiment_count),
     );
+    let _ = concise.insert(
+        "open_experiment_count".to_owned(),
+        json!(status.open_experiment_count),
+    );
+    let _ = concise.insert("artifact_count".to_owned(), json!(status.artifact_count));
     if status.requested_path != status.project_root {
         let _ = concise.insert("requested_path".to_owned(), json!(status.requested_path));
     }
@@ -749,18 +755,13 @@ fn project_bind_output(status: &ProjectBindStatus) -> Result<ToolOutput, FaultRe
             format!("bound project {}", status.display_name),
             format!("root: {}", status.project_root),
             format!("state: {}", status.state_root),
+            format!("frontiers: {}", status.frontier_count),
+            format!("hypotheses: {}", status.hypothesis_count),
             format!(
-                "schema: {}@{}",
-                status.schema.namespace, status.schema.version
+                "experiments: {} total, {} open",
+                status.experiment_count, status.open_experiment_count
             ),
-            format!(
-                "git: {}",
-                if status.git_repo_detected {
-                    "detected"
-                } else {
-                    "not detected"
-                }
-            ),
+            format!("artifacts: {}", status.artifact_count),
         ]
         .join("\n"),
         None,

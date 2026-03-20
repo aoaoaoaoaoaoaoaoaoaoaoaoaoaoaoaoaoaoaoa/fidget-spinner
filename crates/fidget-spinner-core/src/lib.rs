@@ -1,27 +1,21 @@
 //! Core domain types for the Fidget Spinner frontier machine.
 //!
-//! The product direction is intentionally local-first and agent-first: the DAG
-//! is the canonical truth, while frontier state is a derived operational
-//! projection over that graph. The global spine is intentionally narrow so
-//! projects can carry richer payloads and annotations without fossilizing the
-//! whole system into one universal schema.
+//! Fidget Spinner is intentionally austere. The canonical ledger is a narrow
+//! experimental spine: frontiers scope work, hypotheses and experiments are the
+//! only graph vertices, and bulky context lives off the hot path as artifact
+//! references.
 
 mod error;
 mod id;
 mod model;
 
 pub use crate::error::CoreError;
-pub use crate::id::{
-    AgentSessionId, AnnotationId, ArtifactId, ExperimentId, FrontierId, NodeId, RunId,
-};
+pub use crate::id::{ArtifactId, ExperimentId, FrontierId, HypothesisId};
 pub use crate::model::{
-    AdmissionState, AnnotationVisibility, ArtifactKind, ArtifactRef, CommandRecipe,
-    CompletedExperiment, DagEdge, DagNode, DiagnosticSeverity, EdgeKind, EvaluationProtocol,
-    ExecutionBackend, ExperimentResult, FieldPresence, FieldRole, FieldValueType, FrontierContract,
-    FrontierNote, FrontierProjection, FrontierRecord, FrontierStatus, FrontierVerdict,
-    FrontierVerdictCounts, InferencePolicy, JsonObject, MetricDefinition, MetricObservation,
-    MetricSpec, MetricUnit, MetricValue, NodeAnnotation, NodeClass, NodeDiagnostics, NodePayload,
-    NodeTrack, NonEmptyText, OpenExperiment, OptimizationObjective, PayloadSchemaRef,
-    ProjectFieldSpec, ProjectSchema, RunDimensionDefinition, RunDimensionValue, RunRecord,
-    RunStatus, TagName, TagRecord, ValidationDiagnostic,
+    ArtifactKind, ArtifactRecord, AttachmentTargetKind, AttachmentTargetRef, CommandRecipe,
+    ExecutionBackend, ExperimentAnalysis, ExperimentOutcome, ExperimentRecord, ExperimentStatus,
+    FieldValueType, FrontierBrief, FrontierRecord, FrontierRoadmapItem, FrontierStatus,
+    FrontierVerdict, HypothesisRecord, MetricDefinition, MetricUnit, MetricValue, MetricVisibility,
+    NonEmptyText, OptimizationObjective, RunDimensionDefinition, RunDimensionValue, Slug, TagName,
+    TagRecord, VertexKind, VertexRef,
 };
