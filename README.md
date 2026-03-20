@@ -40,6 +40,21 @@ Not implemented yet:
 - strong markdown migration
 - cross-project indexing
 
+## Local Install
+
+Install the release CLI into `~/.local/bin` and refresh the bundled skill
+symlinks in `~/.codex/skills` with:
+
+```bash
+./scripts/install-local.sh
+```
+
+Pass a different local install root or skill destination explicitly if needed:
+
+```bash
+./scripts/install-local.sh /tmp/fidget-local /tmp/codex-skills
+```
+
 ## Quickstart
 
 Initialize the current directory as a Fidget Spinner project:
