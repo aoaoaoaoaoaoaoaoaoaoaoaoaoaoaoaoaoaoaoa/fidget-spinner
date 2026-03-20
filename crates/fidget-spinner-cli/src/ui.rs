@@ -15,6 +15,7 @@ use serde::Deserialize;
 use serde_json::Value;
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
+use time::macros::format_description;
 
 use crate::{open_store, to_pretty_json};
 
@@ -322,10 +323,10 @@ fn render_field(class: NodeClass, schema: &ProjectSchema, key: &str, value: &Val
                     @if let Some(raw) = value.as_str() {
                         time datetime=(raw) { (render_timestamp_value(raw)) }
                     } @else {
-                        (render_json_value(value))
+                        (render_untyped_value(value))
                     }
                 }
-                None => (render_json_value(value)),
+                None => (render_untyped_value(value)),
             }
         }
     }
@@ -356,9 +357,26 @@ fn render_json_value(value: &Value) -> Markup {
     }
 }
 
+fn render_untyped_value(value: &Value) -> Markup {
+    match value {
+        Value::String(text) => render_string_value(text),
+        Value::Number(number) => html! {
+            code class="numeric" { (number) }
+        },
+        Value::Bool(boolean) => html! {
+            span class={ "boolean " (if *boolean { "true" } else { "false" }) } {
+                (if *boolean { "true" } else { "false" })
+            }
+        },
+        _ => render_json_value(value),
+    }
+}
+
 fn render_timestamp(timestamp: OffsetDateTime) -> String {
     timestamp
-        .format(&Rfc3339)
+        .format(&format_description!(
+            "[year]-[month]-[day] [hour]:[minute]:[second]Z"
+        ))
         .unwrap_or_else(|_| timestamp.to_string())
 }
 
@@ -454,12 +472,14 @@ fn stylesheet() -> &'static str {
     .tag-description {
         grid-column: 1 / -1;
         font-size: 0.9rem;
+        overflow-wrap: anywhere;
     }
 
     .feed {
         padding: 1.5rem;
         display: grid;
         gap: 1rem;
+        min-width: 0;
     }
 
     .feed-header {
@@ -471,6 +491,8 @@ fn stylesheet() -> &'static str {
         background: var(--panel);
         border: 1px solid var(--line);
         padding: 1rem 1.1rem;
+        min-width: 0;
+        overflow: hidden;
     }
 
     .entry-header {
@@ -481,6 +503,7 @@ fn stylesheet() -> &'static str {
 
     .entry-title-row {
         display: flex;
+        flex-wrap: wrap;
         gap: 0.75rem;
         align-items: baseline;
     }
@@ -488,6 +511,8 @@ fn stylesheet() -> &'static str {
     .entry-title {
         margin: 0;
         font-size: 1.05rem;
+        min-width: 0;
+        overflow-wrap: anywhere;
     }
 
     .entry-meta {
@@ -495,6 +520,7 @@ fn stylesheet() -> &'static str {
         flex-wrap: wrap;
         gap: 0.75rem;
         font-size: 0.9rem;
+        min-width: 0;
     }
 
     .class-badge, .field-type, .entry-tag {
@@ -518,10 +544,14 @@ fn stylesheet() -> &'static str {
 
     .entry-body {
         margin-bottom: 0.9rem;
+        min-width: 0;
     }
 
     .rich-text p {
         margin: 0 0 0.55rem;
+        overflow-wrap: anywhere;
+        word-break: break-word;
+        max-width: 100%;
     }
 
     .rich-text p:last-child {
@@ -533,18 +563,23 @@ fn stylesheet() -> &'static str {
         grid-template-columns: minmax(12rem, 18rem) minmax(0, 1fr);
         gap: 0.55rem 1rem;
         margin: 0;
+        width: 100%;
+        min-width: 0;
     }
 
     .field-list dt {
         font-weight: 700;
         display: flex;
+        flex-wrap: wrap;
         gap: 0.4rem;
         align-items: center;
         overflow-wrap: anywhere;
+        min-width: 0;
     }
 
     .field-list dd {
         margin: 0;
+        min-width: 0;
     }
 
     .json-value {
@@ -552,6 +587,8 @@ fn stylesheet() -> &'static str {
         padding: 0.6rem 0.7rem;
         background: #f3eee4;
         overflow: auto;
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
     }
 
     .boolean.true { color: var(--accent); }
@@ -590,10 +627,19 @@ fn stylesheet() -> &'static str {
             height: auto;
             border-right: 0;
             border-bottom: 1px solid var(--line);
+            padding: 1rem 0.85rem;
         }
 
         .field-list {
-            grid-template-columns: 1fr;
+            grid-template-columns: minmax(0, 1fr);
+        }
+
+        .feed {
+            padding: 1rem;
+        }
+
+        .entry, .empty-state {
+            padding: 0.85rem 0.9rem;
         }
     }
     "#
