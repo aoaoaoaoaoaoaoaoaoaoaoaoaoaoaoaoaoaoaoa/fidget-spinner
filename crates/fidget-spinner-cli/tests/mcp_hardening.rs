@@ -397,7 +397,7 @@ fn side_effecting_request_is_not_replayed_after_worker_crash() -> TestResult {
         None,
         &[(
             "FIDGET_SPINNER_MCP_TEST_HOST_CRASH_ONCE_KEY",
-            "tools/call:research.record".to_owned(),
+            "tools/call:source.record".to_owned(),
         )],
     )?;
     let _ = harness.initialize()?;
@@ -407,7 +407,7 @@ fn side_effecting_request_is_not_replayed_after_worker_crash() -> TestResult {
 
     let response = harness.call_tool(
         7,
-        "research.record",
+        "source.record",
         json!({
             "title": "should not duplicate",
             "summary": "dedupe check",
@@ -710,7 +710,7 @@ fn research_record_accepts_tags_and_filtering() -> TestResult {
 
     let research = harness.call_tool(
         453,
-        "research.record",
+        "source.record",
         json!({
             "title": "ingest tranche",
             "summary": "Import the next libgrid tranche.",
@@ -726,7 +726,7 @@ fn research_record_accepts_tags_and_filtering() -> TestResult {
         "filtered research nodes",
     )?;
     assert_eq!(nodes.len(), 1);
-    assert_eq!(nodes[0]["class"].as_str(), Some("research"));
+    assert_eq!(nodes[0]["class"].as_str(), Some("source"));
     assert_eq!(nodes[0]["tags"][0].as_str(), Some("campaign/libgrid"));
     Ok(())
 }
@@ -762,7 +762,7 @@ fn prose_tools_reject_invalid_shapes_over_mcp() -> TestResult {
 
     let missing_research_summary = harness.call_tool(
         48,
-        "research.record",
+        "source.record",
         json!({
             "title": "research only",
             "body": "body only",
@@ -798,7 +798,7 @@ fn prose_tools_reject_invalid_shapes_over_mcp() -> TestResult {
         50,
         "node.create",
         json!({
-            "class": "research",
+            "class": "source",
             "title": "missing summary",
             "payload": { "body": "full research body" },
         }),
@@ -874,7 +874,7 @@ fn concise_prose_reads_only_surface_payload_field_names() -> TestResult {
         532,
         "node.create",
         json!({
-            "class": "research",
+            "class": "source",
             "title": "rich import",
             "summary": "triage layer only",
             "payload": {
@@ -983,7 +983,7 @@ fn schema_field_tools_mutate_project_schema() -> TestResult {
         "schema.field.upsert",
         json!({
             "name": "scenario",
-            "node_classes": ["change", "analysis"],
+            "node_classes": ["hypothesis", "analysis"],
             "presence": "recommended",
             "severity": "warning",
             "role": "projection_gate",
@@ -998,7 +998,7 @@ fn schema_field_tools_mutate_project_schema() -> TestResult {
     );
     assert_eq!(
         tool_content(&upsert)["field"]["node_classes"],
-        json!(["change", "analysis"])
+        json!(["hypothesis", "analysis"])
     );
 
     let schema = harness.call_tool(862, "project.schema", json!({ "detail": "full" }))?;
@@ -1013,7 +1013,7 @@ fn schema_field_tools_mutate_project_schema() -> TestResult {
         "schema.field.remove",
         json!({
             "name": "scenario",
-            "node_classes": ["change", "analysis"]
+            "node_classes": ["hypothesis", "analysis"]
         }),
     )?;
     assert_eq!(remove["result"]["isError"].as_bool(), Some(false));
@@ -1041,7 +1041,7 @@ fn bind_open_backfills_legacy_missing_summary() -> TestResult {
         let mut store = must(ProjectStore::open(&project_root), "open project store")?;
         let node = must(
             store.add_node(fidget_spinner_store_sqlite::CreateNodeRequest {
-                class: fidget_spinner_core::NodeClass::Research,
+                class: fidget_spinner_core::NodeClass::Source,
                 frontier_id: None,
                 title: must(NonEmptyText::new("legacy research"), "legacy title")?,
                 summary: Some(must(
@@ -1096,7 +1096,7 @@ fn bind_open_backfills_legacy_missing_summary() -> TestResult {
         Some("Derived summary first paragraph.")
     );
 
-    let listed = harness.call_tool(62, "node.list", json!({ "class": "research" }))?;
+    let listed = harness.call_tool(62, "node.list", json!({ "class": "source" }))?;
     let items = must_some(tool_content(&listed).as_array(), "research node list")?;
     assert_eq!(items.len(), 1);
     assert_eq!(
@@ -1202,7 +1202,7 @@ fn metric_tools_rank_closed_experiments_and_enforce_disambiguation() -> TestResu
         71,
         "node.create",
         json!({
-            "class": "change",
+            "class": "hypothesis",
             "frontier_id": frontier_id,
             "title": "first change",
             "summary": "first change summary",
@@ -1217,15 +1217,29 @@ fn metric_tools_rank_closed_experiments_and_enforce_disambiguation() -> TestResu
         tool_content(&first_change)["id"].as_str(),
         "first change id",
     )?;
+    let first_experiment = harness.call_tool(
+        711,
+        "experiment.open",
+        json!({
+            "frontier_id": frontier_id,
+            "base_checkpoint_id": base_checkpoint_id,
+            "hypothesis_node_id": first_change_id,
+            "title": "first experiment",
+            "summary": "first experiment summary"
+        }),
+    )?;
+    assert_eq!(first_experiment["result"]["isError"].as_bool(), Some(false));
+    let first_experiment_id = must_some(
+        tool_content(&first_experiment)["experiment_id"].as_str(),
+        "first experiment id",
+    )?;
     let _first_commit = commit_project_state(&project_root, "candidate-one.txt", "candidate one")?;
 
     let first_close = harness.call_tool(
         72,
         "experiment.close",
         json!({
-            "frontier_id": frontier_id,
-            "base_checkpoint_id": base_checkpoint_id,
-            "change_node_id": first_change_id,
+            "experiment_id": first_experiment_id,
             "candidate_summary": "candidate one",
             "run": {
                 "title": "first run",
@@ -1265,7 +1279,7 @@ fn metric_tools_rank_closed_experiments_and_enforce_disambiguation() -> TestResu
         73,
         "node.create",
         json!({
-            "class": "change",
+            "class": "hypothesis",
             "frontier_id": frontier_id,
             "title": "second change",
             "summary": "second change summary",
@@ -1280,15 +1294,32 @@ fn metric_tools_rank_closed_experiments_and_enforce_disambiguation() -> TestResu
         tool_content(&second_change)["id"].as_str(),
         "second change id",
     )?;
+    let second_experiment = harness.call_tool(
+        712,
+        "experiment.open",
+        json!({
+            "frontier_id": frontier_id,
+            "base_checkpoint_id": base_checkpoint_id,
+            "hypothesis_node_id": second_change_id,
+            "title": "second experiment",
+            "summary": "second experiment summary"
+        }),
+    )?;
+    assert_eq!(
+        second_experiment["result"]["isError"].as_bool(),
+        Some(false)
+    );
+    let second_experiment_id = must_some(
+        tool_content(&second_experiment)["experiment_id"].as_str(),
+        "second experiment id",
+    )?;
     let second_commit = commit_project_state(&project_root, "candidate-two.txt", "candidate two")?;
 
     let second_close = harness.call_tool(
         74,
         "experiment.close",
         json!({
-            "frontier_id": frontier_id,
-            "base_checkpoint_id": base_checkpoint_id,
-            "change_node_id": second_change_id,
+            "experiment_id": second_experiment_id,
             "candidate_summary": "candidate two",
             "run": {
                 "title": "second run",
@@ -1355,7 +1386,7 @@ fn metric_tools_rank_closed_experiments_and_enforce_disambiguation() -> TestResu
         81,
         "node.create",
         json!({
-            "class": "change",
+            "class": "hypothesis",
             "frontier_id": second_frontier_id,
             "title": "third change",
             "summary": "third change summary",
@@ -1370,6 +1401,22 @@ fn metric_tools_rank_closed_experiments_and_enforce_disambiguation() -> TestResu
         tool_content(&third_change)["id"].as_str(),
         "third change id",
     )?;
+    let third_experiment = harness.call_tool(
+        811,
+        "experiment.open",
+        json!({
+            "frontier_id": second_frontier_id,
+            "base_checkpoint_id": second_base_checkpoint_id,
+            "hypothesis_node_id": third_change_id,
+            "title": "third experiment",
+            "summary": "third experiment summary"
+        }),
+    )?;
+    assert_eq!(third_experiment["result"]["isError"].as_bool(), Some(false));
+    let third_experiment_id = must_some(
+        tool_content(&third_experiment)["experiment_id"].as_str(),
+        "third experiment id",
+    )?;
     let third_commit =
         commit_project_state(&project_root, "candidate-three.txt", "candidate three")?;
 
@@ -1377,9 +1424,7 @@ fn metric_tools_rank_closed_experiments_and_enforce_disambiguation() -> TestResu
         82,
         "experiment.close",
         json!({
-            "frontier_id": second_frontier_id,
-            "base_checkpoint_id": second_base_checkpoint_id,
-            "change_node_id": third_change_id,
+            "experiment_id": third_experiment_id,
             "candidate_summary": "candidate three",
             "run": {
                 "title": "third run",
@@ -1428,7 +1473,7 @@ fn metric_tools_rank_closed_experiments_and_enforce_disambiguation() -> TestResu
     }));
     assert!(key_rows.iter().any(|row| {
         row["key"].as_str() == Some("wall_clock_s")
-            && row["source"].as_str() == Some("change_payload")
+            && row["source"].as_str() == Some("hypothesis_payload")
     }));
 
     let filtered_keys = harness.call_tool(
@@ -1502,7 +1547,7 @@ fn metric_tools_rank_closed_experiments_and_enforce_disambiguation() -> TestResu
         "metric.best",
         json!({
             "key": "wall_clock_s",
-            "source": "change_payload"
+            "source": "hypothesis_payload"
         }),
     )?;
     assert_eq!(
@@ -1519,7 +1564,7 @@ fn metric_tools_rank_closed_experiments_and_enforce_disambiguation() -> TestResu
         "metric.best",
         json!({
             "key": "wall_clock_s",
-            "source": "change_payload",
+            "source": "hypothesis_payload",
             "dimensions": {
                 "scenario": "belt_4x5",
                 "duration_s": 60.0

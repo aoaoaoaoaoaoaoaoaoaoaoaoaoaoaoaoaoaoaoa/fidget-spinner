@@ -142,7 +142,7 @@ Specific actions may refuse incomplete records.
 Examples:
 
 - core-path experiment closure requires complete run/result/note/verdict state
-- future promotion helpers may require a projection-ready change payload
+- future promotion helpers may require a projection-ready hypothesis payload
 
 ## SQLite Schema
 
@@ -256,7 +256,7 @@ Stores the atomic closure object for core-path work:
 - frontier id
 - base checkpoint id
 - candidate checkpoint id
-- change node id
+- hypothesis node id
 - run node id and run id
 - optional analysis node id
 - decision node id
@@ -284,15 +284,15 @@ Stores durable audit events:
 Core path:
 
 - `contract`
-- `change`
+- `hypothesis`
 - `run`
 - `analysis`
 - `decision`
 
 Off path:
 
-- `research`
-- `enabling`
+- `source`
+- `source`
 - `note`
 
 ### Node tracks
@@ -320,13 +320,13 @@ This projection is derived from canonical state and intentionally rebuildable.
 These are intentionally cheap:
 
 - `note.quick`, but only with explicit tags from the repo-local registry
-- `research.record`, optionally tagged into the same repo-local taxonomy
+- `source.record`, optionally tagged into the same repo-local taxonomy
 - generic `node.create` for escape-hatch use
 - `node.annotate`
 
 ### Low-ceremony core-path entry
 
-`change.record` exists to capture intent before worktree state becomes muddy.
+`hypothesis.record` exists to capture intent before worktree state becomes muddy.
 
 ### Atomic core-path closure
 
@@ -423,8 +423,8 @@ Current policy:
   `frontier.status`, `node.list`, `node.read`, `skill.list`, `skill.show`, and
   resource reads
   are safe to replay once after a retryable worker fault
-- mutating tools such as `tag.add`, `frontier.init`, `node.create`, `change.record`,
-  `node.annotate`, `node.archive`, `note.quick`, `research.record`, and
+- mutating tools such as `tag.add`, `frontier.init`, `node.create`, `hypothesis.record`,
+  `node.annotate`, `node.archive`, `note.quick`, `source.record`, and
   `experiment.close` are never auto-replayed
 
 This is the hardening answer to side-effect safety.
@@ -451,13 +451,13 @@ Implemented tools:
 - `frontier.status`
 - `frontier.init`
 - `node.create`
-- `change.record`
+- `hypothesis.record`
 - `node.list`
 - `node.read`
 - `node.annotate`
 - `node.archive`
 - `note.quick`
-- `research.record`
+- `source.record`
 - `metric.define`
 - `metric.keys`
 - `metric.best`
@@ -537,7 +537,7 @@ Current commands:
 - `note quick`
 - `tag add`
 - `tag list`
-- `research add`
+- `source add`
 - `metric define`
 - `metric keys`
 - `metric best`

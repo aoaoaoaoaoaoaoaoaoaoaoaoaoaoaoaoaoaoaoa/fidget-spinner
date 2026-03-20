@@ -62,7 +62,7 @@ ASSUME YOU ARE RUNNING OVERNIGHT.
 2. Study existing evidence from `fidget-spinner`.
 3. Search outward if the local frontier looks exhausted or you are starting to take unambitious strides.
 4. Form a strong, falsifiable hypothesis.
-5. Make the change.
+5. Record the hypothesis and open the experiment.
 6. Measure it.
 7. If the result is surprising, noisy, or broken, debug the implementation and
    rerun only enough to understand the outcome.
@@ -99,11 +99,12 @@ Every real experiment must leave an auditable record in `fidget-spinner`.
 
 If something matters to the frontier, put it in the DAG.
 
-Use off-path records liberally for enabling work, side investigations, and dead
+Use off-path records liberally for source capture, side investigations, and dead
 ends.
 
 When a line becomes a real measured experiment, close it through the proper
-`fidget-spinner` path instead of improvising a chain of half-recorded steps.
+`fidget-spinner` path instead of improvising a chain of half-recorded steps:
+`hypothesis.record` -> `experiment.open` -> `experiment.close`.
 
 ## Resume Discipline
 

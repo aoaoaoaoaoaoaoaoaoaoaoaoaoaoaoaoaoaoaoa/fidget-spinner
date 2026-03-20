@@ -3,7 +3,7 @@
 ## Thesis
 
 Fidget Spinner is a local-first, agent-first frontier machine for autonomous
-program optimization and research.
+program optimization, source capture, and experiment adjudication.
 
 The immediate target is brutally practical: replace gigantic freeform
 experiment markdown with a machine that preserves evidence as structure.
@@ -96,7 +96,7 @@ Core-path work is disciplined and atomic.
 
 Off-path work is cheap and permissive.
 
-The point is to avoid forcing every scrap of research through the full
+The point is to avoid forcing every scrap of source digestion or note-taking through the full
 benchmark/decision bureaucracy while still preserving it in the DAG.
 
 ### 6. Completed core-path experiments are atomic
@@ -117,7 +117,7 @@ low-level calls.
 Dirty worktree snapshots are useful as descriptive context, but a completed
 core-path experiment should anchor to a committed candidate checkpoint.
 
-Off-path notes and research can remain lightweight and non-committal.
+Off-path notes and source captures can remain lightweight and non-committal.
 
 ## Node Model
 
@@ -180,7 +180,7 @@ the spine or project payload.
 These are the disciplined frontier-loop classes:
 
 - `contract`
-- `change`
+- `hypothesis`
 - `run`
 - `analysis`
 - `decision`
@@ -189,8 +189,8 @@ These are the disciplined frontier-loop classes:
 
 These are deliberately low-ceremony:
 
-- `research`
-- `enabling`
+- `source`
+- `source`
 - `note`
 
 They exist so the product can absorb real thinking instead of forcing users and
@@ -237,8 +237,8 @@ done.
 - disposable MCP worker execution runtime
 - bundled `fidget-spinner` base skill
 - bundled `frontier-loop` skill
-- low-ceremony off-path note and research recording
-- atomic core-path experiment closure
+- low-ceremony off-path note and source recording
+- explicit experiment open/close lifecycle for the core path
 
 ### Explicitly deferred from the MVP
 
@@ -267,13 +267,16 @@ The initial tools should be:
 - `frontier.status`
 - `frontier.init`
 - `node.create`
-- `change.record`
+- `hypothesis.record`
 - `node.list`
 - `node.read`
 - `node.annotate`
 - `node.archive`
 - `note.quick`
-- `research.record`
+- `source.record`
+- `experiment.open`
+- `experiment.list`
+- `experiment.read`
 - `experiment.close`
 - `skill.list`
 - `skill.show`
@@ -282,8 +285,8 @@ The important point is not the exact names. The important point is the shape:
 
 - cheap read access to project and frontier context
 - cheap off-path writes
-- low-ceremony change capture
-- one atomic "close the experiment" tool
+- low-ceremony hypothesis capture
+- one explicit experiment-open step plus one experiment-close step
 - explicit operational introspection for long-lived agent sessions
 - explicit replay boundaries so side effects are never duplicated by accident
 
@@ -295,11 +298,12 @@ The bundled skills should instruct agents to:
 2. bind the MCP session to the target project before project-local reads or writes
 3. read project schema, tag registry, and frontier state
 4. pull context from the DAG instead of giant prose dumps
-5. use `note.quick` and `research.record` freely off path, but always pass an explicit tag list for notes
-6. use `change.record` before worktree thrash becomes ambiguous
-7. use `experiment.close` to atomically seal core-path work
-8. archive detritus instead of deleting it
-9. use the base `fidget-spinner` skill for ordinary DAG work and add
+5. use `note.quick` and `source.record` freely off path, but always pass an explicit tag list for notes
+6. use `hypothesis.record` before worktree thrash becomes ambiguous
+7. use `experiment.open` before running a live hypothesis-owned line
+8. use `experiment.close` to seal that line with measured evidence
+9. archive detritus instead of deleting it
+10. use the base `fidget-spinner` skill for ordinary DAG work and add
    `frontier-loop` only when the task becomes a true autonomous frontier push
 
 ### MVP acceptance bar
@@ -309,7 +313,7 @@ The MVP is successful when:
 - a project can be initialized locally with no hosted dependencies
 - an agent can inspect frontier state through MCP
 - an agent can inspect MCP health and telemetry through MCP
-- an agent can record off-path research without bureaucratic pain
+- an agent can record off-path sources and notes without bureaucratic pain
 - the project schema can softly declare whether payload fields are strings, numbers, booleans, or timestamps
 - an operator can inspect recent nodes through a minimal localhost web navigator filtered by tag
 - a git-backed project can close a real core-path experiment atomically

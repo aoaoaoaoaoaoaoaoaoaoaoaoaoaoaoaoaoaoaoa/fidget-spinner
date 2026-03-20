@@ -17,9 +17,10 @@ use fidget_spinner_core::{
 };
 use fidget_spinner_store_sqlite::{
     CloseExperimentRequest, CreateFrontierRequest, CreateNodeRequest, DefineMetricRequest,
-    DefineRunDimensionRequest, EdgeAttachment, EdgeAttachmentDirection, ListNodesQuery,
-    MetricBestQuery, MetricFieldSource, MetricKeyQuery, MetricRankOrder, ProjectStore,
-    RemoveSchemaFieldRequest, STORE_DIR_NAME, StoreError, UpsertSchemaFieldRequest,
+    DefineRunDimensionRequest, EdgeAttachment, EdgeAttachmentDirection, ExperimentAnalysisDraft,
+    ListNodesQuery, MetricBestQuery, MetricFieldSource, MetricKeyQuery, MetricRankOrder,
+    OpenExperimentRequest, ProjectStore, RemoveSchemaFieldRequest, STORE_DIR_NAME, StoreError,
+    UpsertSchemaFieldRequest,
 };
 use serde::Serialize;
 use serde_json::{Map, Value, json};
@@ -57,13 +58,15 @@ enum Command {
     },
     /// Record terse off-path notes.
     Note(NoteCommand),
+    /// Record core-path hypotheses before experimental work begins.
+    Hypothesis(HypothesisCommand),
     /// Manage the repo-local tag registry.
     Tag {
         #[command(subcommand)]
         command: TagCommand,
     },
-    /// Record off-path research and enabling work.
-    Research(ResearchCommand),
+    /// Record imported sources and documentary context.
+    Source(SourceCommand),
     /// Inspect rankable metrics across closed experiments.
     Metric {
         #[command(subcommand)]
@@ -186,10 +189,10 @@ struct NodeAddArgs {
     #[arg(long)]
     title: String,
     #[arg(long)]
-    /// Required for `note` and `research` nodes.
+    /// Required for `note` and `source` nodes.
     summary: Option<String>,
     #[arg(long = "payload-json")]
-    /// JSON object payload. `note` and `research` nodes require a non-empty `body` string.
+    /// JSON object payload. `note` and `source` nodes require a non-empty `body` string.
     payload_json: Option<String>,
     #[arg(long = "payload-file")]
     payload_file: Option<PathBuf>,
@@ -263,10 +266,22 @@ struct NoteCommand {
     command: NoteSubcommand,
 }
 
+#[derive(Args)]
+struct HypothesisCommand {
+    #[command(subcommand)]
+    command: HypothesisSubcommand,
+}
+
 #[derive(Subcommand)]
 enum NoteSubcommand {
     /// Record a quick off-path note.
     Quick(QuickNoteArgs),
+}
+
+#[derive(Subcommand)]
+enum HypothesisSubcommand {
+    /// Record a core-path hypothesis with low ceremony.
+    Add(QuickHypothesisArgs),
 }
 
 #[derive(Subcommand)]
@@ -278,15 +293,15 @@ enum TagCommand {
 }
 
 #[derive(Args)]
-struct ResearchCommand {
+struct SourceCommand {
     #[command(subcommand)]
-    command: ResearchSubcommand,
+    command: SourceSubcommand,
 }
 
 #[derive(Subcommand)]
-enum ResearchSubcommand {
-    /// Record off-path research or enabling work.
-    Add(QuickResearchArgs),
+enum SourceSubcommand {
+    /// Record imported source material or documentary context.
+    Add(QuickSourceArgs),
 }
 
 #[derive(Subcommand)]
@@ -376,6 +391,22 @@ struct QuickNoteArgs {
 }
 
 #[derive(Args)]
+struct QuickHypothesisArgs {
+    #[command(flatten)]
+    project: ProjectArg,
+    #[arg(long)]
+    frontier: String,
+    #[arg(long)]
+    title: String,
+    #[arg(long)]
+    summary: String,
+    #[arg(long)]
+    body: String,
+    #[arg(long = "parent")]
+    parents: Vec<String>,
+}
+
+#[derive(Args)]
 struct TagAddArgs {
     #[command(flatten)]
     project: ProjectArg,
@@ -386,7 +417,7 @@ struct TagAddArgs {
 }
 
 #[derive(Args)]
-struct QuickResearchArgs {
+struct QuickSourceArgs {
     #[command(flatten)]
     project: ProjectArg,
     #[arg(long)]
@@ -459,8 +490,12 @@ struct MetricBestArgs {
 
 #[derive(Subcommand)]
 enum ExperimentCommand {
+    /// Open a stateful experiment against one hypothesis and base checkpoint.
+    Open(ExperimentOpenArgs),
+    /// List open experiments, optionally narrowed to one frontier.
+    List(ExperimentListArgs),
     /// Close a core-path experiment with checkpoint, run, note, and verdict.
-    Close(ExperimentCloseArgs),
+    Close(Box<ExperimentCloseArgs>),
 }
 
 #[derive(Subcommand)]
@@ -481,12 +516,8 @@ enum UiCommand {
 struct ExperimentCloseArgs {
     #[command(flatten)]
     project: ProjectArg,
-    #[arg(long)]
-    frontier: String,
-    #[arg(long = "base-checkpoint")]
-    base_checkpoint: String,
-    #[arg(long = "change-node")]
-    change_node: String,
+    #[arg(long = "experiment")]
+    experiment_id: String,
     #[arg(long = "candidate-summary")]
     candidate_summary: String,
     #[arg(long = "run-title")]
@@ -518,10 +549,40 @@ struct ExperimentCloseArgs {
     next_hypotheses: Vec<String>,
     #[arg(long = "verdict", value_enum)]
     verdict: CliFrontierVerdict,
+    #[arg(long = "analysis-title")]
+    analysis_title: Option<String>,
+    #[arg(long = "analysis-summary")]
+    analysis_summary: Option<String>,
+    #[arg(long = "analysis-body")]
+    analysis_body: Option<String>,
     #[arg(long = "decision-title")]
     decision_title: String,
     #[arg(long = "decision-rationale")]
     decision_rationale: String,
+}
+
+#[derive(Args)]
+struct ExperimentOpenArgs {
+    #[command(flatten)]
+    project: ProjectArg,
+    #[arg(long)]
+    frontier: String,
+    #[arg(long = "base-checkpoint")]
+    base_checkpoint: String,
+    #[arg(long = "hypothesis-node")]
+    hypothesis_node: String,
+    #[arg(long)]
+    title: String,
+    #[arg(long)]
+    summary: Option<String>,
+}
+
+#[derive(Args)]
+struct ExperimentListArgs {
+    #[command(flatten)]
+    project: ProjectArg,
+    #[arg(long)]
+    frontier: Option<String>,
 }
 
 #[derive(Subcommand)]
@@ -588,12 +649,11 @@ struct UiServeArgs {
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
 enum CliNodeClass {
     Contract,
-    Change,
+    Hypothesis,
     Run,
     Analysis,
     Decision,
-    Research,
-    Enabling,
+    Source,
     Note,
 }
 
@@ -623,7 +683,7 @@ enum CliExecutionBackend {
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
 enum CliMetricSource {
     RunMetric,
-    ChangePayload,
+    HypothesisPayload,
     RunPayload,
     AnalysisPayload,
     DecisionPayload,
@@ -713,12 +773,15 @@ fn run() -> Result<(), StoreError> {
         Command::Note(command) => match command.command {
             NoteSubcommand::Quick(args) => run_quick_note(args),
         },
+        Command::Hypothesis(command) => match command.command {
+            HypothesisSubcommand::Add(args) => run_quick_hypothesis(args),
+        },
         Command::Tag { command } => match command {
             TagCommand::Add(args) => run_tag_add(args),
             TagCommand::List(project) => run_tag_list(project),
         },
-        Command::Research(command) => match command.command {
-            ResearchSubcommand::Add(args) => run_quick_research(args),
+        Command::Source(command) => match command.command {
+            SourceSubcommand::Add(args) => run_quick_source(args),
         },
         Command::Metric { command } => match command {
             MetricCommand::Define(args) => run_metric_define(args),
@@ -731,7 +794,9 @@ fn run() -> Result<(), StoreError> {
             DimensionCommand::List(project) => run_dimension_list(project),
         },
         Command::Experiment { command } => match command {
-            ExperimentCommand::Close(args) => run_experiment_close(args),
+            ExperimentCommand::Open(args) => run_experiment_open(args),
+            ExperimentCommand::List(args) => run_experiment_list(args),
+            ExperimentCommand::Close(args) => run_experiment_close(*args),
         },
         Command::Mcp { command } => match command {
             McpCommand::Serve(args) => mcp::serve(args.project),
@@ -942,6 +1007,25 @@ fn run_quick_note(args: QuickNoteArgs) -> Result<(), StoreError> {
     print_json(&node)
 }
 
+fn run_quick_hypothesis(args: QuickHypothesisArgs) -> Result<(), StoreError> {
+    let mut store = open_store(&args.project.project)?;
+    let payload = NodePayload::with_schema(
+        store.schema().schema_ref(),
+        json_object(json!({ "body": args.body }))?,
+    );
+    let node = store.add_node(CreateNodeRequest {
+        class: NodeClass::Hypothesis,
+        frontier_id: Some(parse_frontier_id(&args.frontier)?),
+        title: NonEmptyText::new(args.title)?,
+        summary: Some(NonEmptyText::new(args.summary)?),
+        tags: None,
+        payload,
+        annotations: Vec::new(),
+        attachments: lineage_attachments(args.parents)?,
+    })?;
+    print_json(&node)
+}
+
 fn run_tag_add(args: TagAddArgs) -> Result<(), StoreError> {
     let mut store = open_store(&args.project.project)?;
     let tag = store.add_tag(
@@ -956,14 +1040,14 @@ fn run_tag_list(args: ProjectArg) -> Result<(), StoreError> {
     print_json(&store.list_tags()?)
 }
 
-fn run_quick_research(args: QuickResearchArgs) -> Result<(), StoreError> {
+fn run_quick_source(args: QuickSourceArgs) -> Result<(), StoreError> {
     let mut store = open_store(&args.project.project)?;
     let payload = NodePayload::with_schema(
         store.schema().schema_ref(),
         json_object(json!({ "body": args.body }))?,
     );
     let node = store.add_node(CreateNodeRequest {
-        class: NodeClass::Research,
+        class: NodeClass::Source,
         frontier_id: args
             .frontier
             .as_deref()
@@ -1042,9 +1126,31 @@ fn run_dimension_list(args: ProjectArg) -> Result<(), StoreError> {
     print_json(&store.list_run_dimensions()?)
 }
 
+fn run_experiment_open(args: ExperimentOpenArgs) -> Result<(), StoreError> {
+    let mut store = open_store(&args.project.project)?;
+    let summary = args.summary.map(NonEmptyText::new).transpose()?;
+    let experiment = store.open_experiment(OpenExperimentRequest {
+        frontier_id: parse_frontier_id(&args.frontier)?,
+        base_checkpoint_id: parse_checkpoint_id(&args.base_checkpoint)?,
+        hypothesis_node_id: parse_node_id(&args.hypothesis_node)?,
+        title: NonEmptyText::new(args.title)?,
+        summary,
+    })?;
+    print_json(&experiment)
+}
+
+fn run_experiment_list(args: ExperimentListArgs) -> Result<(), StoreError> {
+    let store = open_store(&args.project.project)?;
+    let frontier_id = args
+        .frontier
+        .as_deref()
+        .map(parse_frontier_id)
+        .transpose()?;
+    print_json(&store.list_open_experiments(frontier_id)?)
+}
+
 fn run_experiment_close(args: ExperimentCloseArgs) -> Result<(), StoreError> {
     let mut store = open_store(&args.project.project)?;
-    let frontier_id = parse_frontier_id(&args.frontier)?;
     let snapshot = store
         .auto_capture_checkpoint(NonEmptyText::new(args.candidate_summary.clone())?)?
         .map(|seed| seed.snapshot)
@@ -1058,10 +1164,28 @@ fn run_experiment_close(args: ExperimentCloseArgs) -> Result<(), StoreError> {
         to_text_vec(args.argv)?,
         parse_env(args.env),
     )?;
+    let analysis = match (
+        args.analysis_title,
+        args.analysis_summary,
+        args.analysis_body,
+    ) {
+        (Some(title), Some(summary), Some(body)) => Some(ExperimentAnalysisDraft {
+            title: NonEmptyText::new(title)?,
+            summary: NonEmptyText::new(summary)?,
+            body: NonEmptyText::new(body)?,
+        }),
+        (None, None, None) => None,
+        _ => {
+            return Err(StoreError::Json(serde_json::Error::io(
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "analysis-title, analysis-summary, and analysis-body must be provided together",
+                ),
+            )));
+        }
+    };
     let receipt = store.close_experiment(CloseExperimentRequest {
-        frontier_id,
-        base_checkpoint_id: parse_checkpoint_id(&args.base_checkpoint)?,
-        change_node_id: parse_node_id(&args.change_node)?,
+        experiment_id: parse_experiment_id(&args.experiment_id)?,
         candidate_summary: NonEmptyText::new(args.candidate_summary)?,
         candidate_snapshot: snapshot,
         run_title: NonEmptyText::new(args.run_title)?,
@@ -1081,9 +1205,9 @@ fn run_experiment_close(args: ExperimentCloseArgs) -> Result<(), StoreError> {
             next_hypotheses: to_text_vec(args.next_hypotheses)?,
         },
         verdict: args.verdict.into(),
+        analysis,
         decision_title: NonEmptyText::new(args.decision_title)?,
         decision_rationale: NonEmptyText::new(args.decision_rationale)?,
-        analysis_node_id: None,
     })?;
     print_json(&receipt)
 }
@@ -1378,7 +1502,7 @@ fn validate_cli_prose_payload(
     summary: Option<&str>,
     payload: &NodePayload,
 ) -> Result<(), StoreError> {
-    if !matches!(class, NodeClass::Note | NodeClass::Research) {
+    if !matches!(class, NodeClass::Note | NodeClass::Source) {
         return Ok(());
     }
     if summary.is_none() {
@@ -1584,6 +1708,12 @@ fn parse_checkpoint_id(raw: &str) -> Result<fidget_spinner_core::CheckpointId, S
     ))
 }
 
+fn parse_experiment_id(raw: &str) -> Result<fidget_spinner_core::ExperimentId, StoreError> {
+    Ok(fidget_spinner_core::ExperimentId::from_uuid(
+        Uuid::parse_str(raw)?,
+    ))
+}
+
 fn print_json<T: Serialize>(value: &T) -> Result<(), StoreError> {
     println!("{}", to_pretty_json(value)?);
     Ok(())
@@ -1604,12 +1734,11 @@ impl From<CliNodeClass> for NodeClass {
     fn from(value: CliNodeClass) -> Self {
         match value {
             CliNodeClass::Contract => Self::Contract,
-            CliNodeClass::Change => Self::Change,
+            CliNodeClass::Hypothesis => Self::Hypothesis,
             CliNodeClass::Run => Self::Run,
             CliNodeClass::Analysis => Self::Analysis,
             CliNodeClass::Decision => Self::Decision,
-            CliNodeClass::Research => Self::Research,
-            CliNodeClass::Enabling => Self::Enabling,
+            CliNodeClass::Source => Self::Source,
             CliNodeClass::Note => Self::Note,
         }
     }
@@ -1651,7 +1780,7 @@ impl From<CliMetricSource> for MetricFieldSource {
     fn from(value: CliMetricSource) -> Self {
         match value {
             CliMetricSource::RunMetric => Self::RunMetric,
-            CliMetricSource::ChangePayload => Self::ChangePayload,
+            CliMetricSource::HypothesisPayload => Self::HypothesisPayload,
             CliMetricSource::RunPayload => Self::RunPayload,
             CliMetricSource::AnalysisPayload => Self::AnalysisPayload,
             CliMetricSource::DecisionPayload => Self::DecisionPayload,

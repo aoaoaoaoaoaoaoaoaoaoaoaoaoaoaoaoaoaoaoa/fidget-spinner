@@ -51,7 +51,7 @@ The root contract should state:
 
 ### Change node
 
-Use `change.record` to capture:
+Use `hypothesis.record` to capture:
 
 - what hypothesis is being tested
 - what base checkpoint it starts from
@@ -83,8 +83,8 @@ The decision should make the verdict explicit:
 
 Use these freely:
 
-- `research` for ideas, external references, algorithm sketches
-- `enabling` for scaffolding that is not yet a benchmarked experiment
+- `source` for ideas, external references, algorithm sketches
+- `source` for scaffolding that is not yet a benchmarked experiment
 - `note` for quick observations
 
 This is how the system avoids forcing every useful thought into experiment
@@ -99,10 +99,10 @@ The MVP does not need hard rejection. It does need meaningful warnings.
 
 Good first project fields:
 
-- `hypothesis` on `change`
-- `base_checkpoint_id` on `change`
-- `benchmark_suite` on `change` and `run`
-- `body` on `change`, `research`, and `note`
+- `hypothesis` on `hypothesis`
+- `base_checkpoint_id` on `hypothesis`
+- `benchmark_suite` on `hypothesis` and `run`
+- `body` on `hypothesis`, `source`, and `note`
 - `comparison_claim` on `analysis`
 - `rationale` on `decision`
 
@@ -126,8 +126,8 @@ Good first metric vocabulary:
 ### 2. Start a line of attack
 
 1. Read the current frontier and the recent DAG tail.
-2. Record a `change`.
-3. If needed, attach off-path `research` or `note` nodes first.
+2. Record a `hypothesis`.
+3. If needed, attach off-path `source` or `note` nodes first.
 
 ### 3. Execute one experiment
 
@@ -183,7 +183,7 @@ That means we can already use it to test:
 - project initialization
 - schema visibility
 - frontier creation without a champion
-- off-path research recording
+- off-path source recording
 - hidden annotations
 - MCP read and write flows
 

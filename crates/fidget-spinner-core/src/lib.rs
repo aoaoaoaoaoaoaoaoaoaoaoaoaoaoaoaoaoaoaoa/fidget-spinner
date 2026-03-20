@@ -22,7 +22,7 @@ pub use crate::model::{
     FrontierProjection, FrontierRecord, FrontierStatus, FrontierVerdict, GitCommitHash,
     InferencePolicy, JsonObject, MetricDefinition, MetricObservation, MetricSpec, MetricUnit,
     MetricValue, NodeAnnotation, NodeClass, NodeDiagnostics, NodePayload, NodeTrack, NonEmptyText,
-    OptimizationObjective, PayloadSchemaRef, ProjectFieldSpec, ProjectSchema,
+    OpenExperiment, OptimizationObjective, PayloadSchemaRef, ProjectFieldSpec, ProjectSchema,
     RunDimensionDefinition, RunDimensionValue, RunRecord, RunStatus, TagName, TagRecord,
     ValidationDiagnostic,
 };

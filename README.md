@@ -1,7 +1,7 @@
 # Fidget Spinner
 
 Fidget Spinner is a local-first, agent-first experimental DAG for autonomous
-program optimization and research.
+program optimization, source capture, and experiment adjudication.
 
 It is aimed at the ugly, practical problem of replacing sprawling experiment
 markdown in worktree-heavy optimization projects such as `libgrid` with a
@@ -12,7 +12,7 @@ The current shape is built around four ideas:
 - the DAG is canonical truth
 - frontier state is a derived projection
 - project payload schemas are local and flexible
-- core-path experiment closure is atomic
+- core-path work is hypothesis-owned and experiment-gated
 
 ## Current Scope
 
@@ -85,7 +85,7 @@ lot of experiments:
 cargo run -p fidget-spinner-cli -- schema upsert-field \
   --project . \
   --name scenario \
-  --class change \
+  --class hypothesis \
   --class analysis \
   --presence recommended \
   --severity warning \
@@ -129,7 +129,7 @@ cargo run -p fidget-spinner-cli -- tag add \
 ```
 
 ```bash
-cargo run -p fidget-spinner-cli -- research add \
+cargo run -p fidget-spinner-cli -- source add \
   --project . \
   --title "next feature slate" \
   --summary "Investigate the next tranche of high-value product work." \
@@ -144,6 +144,27 @@ cargo run -p fidget-spinner-cli -- note quick \
   --summary "Tag-aware note capture is live." \
   --body "Tag-aware note capture is live." \
   --tag dogfood/mvp
+```
+
+Record a core-path hypothesis and open an experiment against it:
+
+```bash
+cargo run -p fidget-spinner-cli -- hypothesis add \
+  --project . \
+  --frontier <frontier-id> \
+  --title "inline metric table" \
+  --summary "Rendering candidate metrics on cards will improve navigator utility." \
+  --body "Surface experiment metrics and objective-aware deltas directly on change cards."
+```
+
+```bash
+cargo run -p fidget-spinner-cli -- experiment open \
+  --project . \
+  --frontier <frontier-id> \
+  --base-checkpoint <checkpoint-id> \
+  --hypothesis-node <hypothesis-node-id> \
+  --title "navigator metric card pass" \
+  --summary "Evaluate inline metrics on experiment-bearing cards."
 ```
 
 ```bash
@@ -229,13 +250,16 @@ The current MCP tools are:
 - `frontier.status`
 - `frontier.init`
 - `node.create`
-- `change.record`
+- `hypothesis.record`
+- `experiment.open`
+- `experiment.list`
+- `experiment.read`
 - `node.list`
 - `node.read`
 - `node.annotate`
 - `node.archive`
 - `note.quick`
-- `research.record`
+- `source.record`
 - `metric.define`
 - `metric.keys`
 - `metric.best`
@@ -262,11 +286,11 @@ created with `tag.add`, each with a required human description. `note.quick`
 accepts `tags: []` when no existing tag applies, but the field itself is still
 mandatory so note classification is always conscious.
 
-`research.record` now also accepts optional `tags`, so rich imported documents
+`source.record` now also accepts optional `tags`, so rich imported documents
 can join the same campaign/subsystem index as terse notes without falling back
 to the generic escape hatch.
 
-`note.quick`, `research.record`, and generic `node create` for `note`/`research`
+`note.quick`, `source.record`, and generic `node create` for `note`/`source`
 now enforce the same strict prose split: `title` is terse identity, `summary`
 is the triage/search layer, and `body` holds the full text. List-like surfaces
 stay on `title` + `summary`; full prose is for explicit reads only.
@@ -292,17 +316,19 @@ The intended flow is:
 1. inspect `system.health`
 2. `project.bind` to the target project root or any nested path inside it
 3. read `project.status`, `tag.list`, and `frontier.list`
-4. read `project.schema` only when payload rules are actually relevant
-5. pull context from the DAG
-6. use cheap off-path writes liberally
-7. record a `change` before core-path work
-8. seal core-path work with one atomic `experiment.close`
+4. read `experiment.list` if the session may be resuming in-flight work
+5. read `project.schema` only when payload rules are actually relevant
+6. pull context from the DAG
+7. use `source.record` for documentary context and `note.quick` for atomic takeaways
+8. record a `hypothesis` before core-path work
+9. open the live experiment explicitly with `experiment.open`
+10. seal core-path work with `experiment.close`
 
 ## Git-Backed Vs Plain Local Projects
 
 Off-path work does not require git. You can initialize a local project and use:
 
-- `research add`
+- `source add`
 - `tag add`
 - `note quick`
 - `metric keys`

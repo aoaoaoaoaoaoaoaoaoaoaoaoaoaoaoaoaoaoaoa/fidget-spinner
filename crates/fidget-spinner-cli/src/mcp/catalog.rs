@@ -115,9 +115,9 @@ pub(crate) fn tool_spec(name: &str) -> Option<ToolSpec> {
             dispatch: DispatchTarget::Worker,
             replay: ReplayContract::NeverReplay,
         }),
-        "change.record" => Some(ToolSpec {
-            name: "change.record",
-            description: "Record a core-path change hypothesis with low ceremony.",
+        "hypothesis.record" => Some(ToolSpec {
+            name: "hypothesis.record",
+            description: "Record a core-path hypothesis with low ceremony.",
             dispatch: DispatchTarget::Worker,
             replay: ReplayContract::NeverReplay,
         }),
@@ -151,9 +151,9 @@ pub(crate) fn tool_spec(name: &str) -> Option<ToolSpec> {
             dispatch: DispatchTarget::Worker,
             replay: ReplayContract::NeverReplay,
         }),
-        "research.record" => Some(ToolSpec {
-            name: "research.record",
-            description: "Record off-path research or enabling work that should live in the DAG but not on the bureaucratic core path.",
+        "source.record" => Some(ToolSpec {
+            name: "source.record",
+            description: "Record imported sources and documentary context that should live in the DAG without polluting the core path.",
             dispatch: DispatchTarget::Worker,
             replay: ReplayContract::NeverReplay,
         }),
@@ -193,9 +193,27 @@ pub(crate) fn tool_spec(name: &str) -> Option<ToolSpec> {
             dispatch: DispatchTarget::Worker,
             replay: ReplayContract::NeverReplay,
         }),
+        "experiment.open" => Some(ToolSpec {
+            name: "experiment.open",
+            description: "Open a stateful experiment against one hypothesis and one base checkpoint.",
+            dispatch: DispatchTarget::Worker,
+            replay: ReplayContract::NeverReplay,
+        }),
+        "experiment.list" => Some(ToolSpec {
+            name: "experiment.list",
+            description: "List currently open experiments, optionally narrowed to one frontier.",
+            dispatch: DispatchTarget::Worker,
+            replay: ReplayContract::Convergent,
+        }),
+        "experiment.read" => Some(ToolSpec {
+            name: "experiment.read",
+            description: "Read one currently open experiment by id.",
+            dispatch: DispatchTarget::Worker,
+            replay: ReplayContract::Convergent,
+        }),
         "experiment.close" => Some(ToolSpec {
             name: "experiment.close",
-            description: "Atomically close a core-path experiment with typed run dimensions, preregistered metric observations, candidate checkpoint capture, note, and verdict.",
+            description: "Close one open experiment with typed run dimensions, preregistered metric observations, candidate checkpoint capture, optional analysis, note, and verdict.",
             dispatch: DispatchTarget::Worker,
             replay: ReplayContract::NeverReplay,
         }),
@@ -268,19 +286,22 @@ pub(crate) fn tool_definitions() -> Vec<Value> {
         "frontier.status",
         "frontier.init",
         "node.create",
-        "change.record",
+        "hypothesis.record",
         "node.list",
         "node.read",
         "node.annotate",
         "node.archive",
         "note.quick",
-        "research.record",
+        "source.record",
         "metric.define",
         "run.dimension.define",
         "run.dimension.list",
         "metric.keys",
         "metric.best",
         "metric.migrate",
+        "experiment.open",
+        "experiment.list",
+        "experiment.read",
         "experiment.close",
         "skill.list",
         "skill.show",
@@ -414,29 +435,26 @@ fn input_schema(name: &str) -> Value {
                 "class": node_class_schema(),
                 "frontier_id": { "type": "string" },
                 "title": { "type": "string" },
-                "summary": { "type": "string", "description": "Required for `note` and `research` nodes." },
+                "summary": { "type": "string", "description": "Required for `note` and `source` nodes." },
                 "tags": { "type": "array", "items": tag_name_schema(), "description": "Required for `note` nodes; optional for other classes." },
-                "payload": { "type": "object", "description": "`note` and `research` nodes require a non-empty string `body` field." },
+                "payload": { "type": "object", "description": "`note` and `source` nodes require a non-empty string `body` field." },
                 "annotations": { "type": "array", "items": annotation_schema() },
                 "parents": { "type": "array", "items": { "type": "string" } }
             },
             "required": ["class", "title"],
             "additionalProperties": false
         }),
-        "change.record" => json!({
+        "hypothesis.record" => json!({
             "type": "object",
             "properties": {
                 "frontier_id": { "type": "string" },
                 "title": { "type": "string" },
                 "summary": { "type": "string" },
                 "body": { "type": "string" },
-                "hypothesis": { "type": "string" },
-                "base_checkpoint_id": { "type": "string" },
-                "benchmark_suite": { "type": "string" },
                 "annotations": { "type": "array", "items": annotation_schema() },
                 "parents": { "type": "array", "items": { "type": "string" } }
             },
-            "required": ["frontier_id", "title", "body"],
+            "required": ["frontier_id", "title", "summary", "body"],
             "additionalProperties": false
         }),
         "node.list" => json!({
@@ -483,7 +501,7 @@ fn input_schema(name: &str) -> Value {
             "required": ["title", "summary", "body", "tags"],
             "additionalProperties": false
         }),
-        "research.record" => json!({
+        "source.record" => json!({
             "type": "object",
             "properties": {
                 "frontier_id": { "type": "string" },
@@ -540,12 +558,37 @@ fn input_schema(name: &str) -> Value {
             "required": ["key"],
             "additionalProperties": false
         }),
-        "experiment.close" => json!({
+        "experiment.open" => json!({
             "type": "object",
             "properties": {
                 "frontier_id": { "type": "string" },
                 "base_checkpoint_id": { "type": "string" },
-                "change_node_id": { "type": "string" },
+                "hypothesis_node_id": { "type": "string" },
+                "title": { "type": "string" },
+                "summary": { "type": "string" }
+            },
+            "required": ["frontier_id", "base_checkpoint_id", "hypothesis_node_id", "title"],
+            "additionalProperties": false
+        }),
+        "experiment.list" => json!({
+            "type": "object",
+            "properties": {
+                "frontier_id": { "type": "string" }
+            },
+            "additionalProperties": false
+        }),
+        "experiment.read" => json!({
+            "type": "object",
+            "properties": {
+                "experiment_id": { "type": "string" }
+            },
+            "required": ["experiment_id"],
+            "additionalProperties": false
+        }),
+        "experiment.close" => json!({
+            "type": "object",
+            "properties": {
+                "experiment_id": { "type": "string" },
                 "candidate_summary": { "type": "string" },
                 "run": run_schema(),
                 "primary_metric": metric_value_schema(),
@@ -554,12 +597,10 @@ fn input_schema(name: &str) -> Value {
                 "verdict": verdict_schema(),
                 "decision_title": { "type": "string" },
                 "decision_rationale": { "type": "string" },
-                "analysis_node_id": { "type": "string" }
+                "analysis": analysis_schema()
             },
             "required": [
-                "frontier_id",
-                "base_checkpoint_id",
-                "change_node_id",
+                "experiment_id",
                 "candidate_summary",
                 "run",
                 "primary_metric",
@@ -612,6 +653,19 @@ fn annotation_schema() -> Value {
     })
 }
 
+fn analysis_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "title": { "type": "string" },
+            "summary": { "type": "string" },
+            "body": { "type": "string" }
+        },
+        "required": ["title", "summary", "body"],
+        "additionalProperties": false
+    })
+}
+
 fn tag_name_schema() -> Value {
     json!({
         "type": "string",
@@ -622,7 +676,7 @@ fn tag_name_schema() -> Value {
 fn node_class_schema() -> Value {
     json!({
         "type": "string",
-        "enum": ["contract", "change", "run", "analysis", "decision", "research", "enabling", "note"]
+        "enum": ["contract", "hypothesis", "run", "analysis", "decision", "source", "note"]
     })
 }
 
@@ -638,7 +692,7 @@ fn metric_source_schema() -> Value {
         "type": "string",
         "enum": [
             "run_metric",
-            "change_payload",
+            "hypothesis_payload",
             "run_payload",
             "analysis_payload",
             "decision_payload"

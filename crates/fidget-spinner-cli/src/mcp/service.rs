@@ -11,10 +11,10 @@ use fidget_spinner_core::{
 };
 use fidget_spinner_store_sqlite::{
     CloseExperimentRequest, CreateFrontierRequest, CreateNodeRequest, DefineMetricRequest,
-    DefineRunDimensionRequest, EdgeAttachment, EdgeAttachmentDirection, ExperimentReceipt,
-    ListNodesQuery, MetricBestQuery, MetricFieldSource, MetricKeyQuery, MetricKeySummary,
-    MetricRankOrder, NodeSummary, ProjectStore, RemoveSchemaFieldRequest, StoreError,
-    UpsertSchemaFieldRequest,
+    DefineRunDimensionRequest, EdgeAttachment, EdgeAttachmentDirection, ExperimentAnalysisDraft,
+    ExperimentReceipt, ListNodesQuery, MetricBestQuery, MetricFieldSource, MetricKeyQuery,
+    MetricKeySummary, MetricRankOrder, NodeSummary, OpenExperimentRequest, OpenExperimentSummary,
+    ProjectStore, RemoveSchemaFieldRequest, StoreError, UpsertSchemaFieldRequest,
 };
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
@@ -303,51 +303,43 @@ impl WorkerService {
                     "tools/call:node.create",
                 )
             }
-            "change.record" => {
-                let args = deserialize::<ChangeRecordToolArgs>(arguments)?;
-                let mut fields = Map::new();
-                let _ = fields.insert("body".to_owned(), Value::String(args.body));
-                if let Some(hypothesis) = args.hypothesis {
-                    let _ = fields.insert("hypothesis".to_owned(), Value::String(hypothesis));
-                }
-                if let Some(base_checkpoint_id) = args.base_checkpoint_id {
-                    let _ = fields.insert(
-                        "base_checkpoint_id".to_owned(),
-                        Value::String(base_checkpoint_id),
-                    );
-                }
-                if let Some(benchmark_suite) = args.benchmark_suite {
-                    let _ =
-                        fields.insert("benchmark_suite".to_owned(), Value::String(benchmark_suite));
-                }
+            "hypothesis.record" => {
+                let args = deserialize::<HypothesisRecordToolArgs>(arguments)?;
                 let node = self
                     .store
                     .add_node(CreateNodeRequest {
-                        class: NodeClass::Change,
+                        class: NodeClass::Hypothesis,
                         frontier_id: Some(
                             crate::parse_frontier_id(&args.frontier_id)
-                                .map_err(store_fault("tools/call:change.record"))?,
+                                .map_err(store_fault("tools/call:hypothesis.record"))?,
                         ),
                         title: NonEmptyText::new(args.title)
-                            .map_err(store_fault("tools/call:change.record"))?,
-                        summary: args
-                            .summary
-                            .map(NonEmptyText::new)
-                            .transpose()
-                            .map_err(store_fault("tools/call:change.record"))?,
+                            .map_err(store_fault("tools/call:hypothesis.record"))?,
+                        summary: Some(
+                            NonEmptyText::new(args.summary)
+                                .map_err(store_fault("tools/call:hypothesis.record"))?,
+                        ),
                         tags: None,
-                        payload: NodePayload::with_schema(self.store.schema().schema_ref(), fields),
+                        payload: NodePayload::with_schema(
+                            self.store.schema().schema_ref(),
+                            crate::json_object(json!({ "body": args.body }))
+                                .map_err(store_fault("tools/call:hypothesis.record"))?,
+                        ),
                         annotations: tool_annotations(args.annotations)
-                            .map_err(store_fault("tools/call:change.record"))?,
+                            .map_err(store_fault("tools/call:hypothesis.record"))?,
                         attachments: lineage_attachments(args.parents)
-                            .map_err(store_fault("tools/call:change.record"))?,
+                            .map_err(store_fault("tools/call:hypothesis.record"))?,
                     })
-                    .map_err(store_fault("tools/call:change.record"))?;
+                    .map_err(store_fault("tools/call:hypothesis.record"))?;
                 tool_success(
-                    created_node_output("recorded change", &node, "tools/call:change.record")?,
+                    created_node_output(
+                        "recorded hypothesis",
+                        &node,
+                        "tools/call:hypothesis.record",
+                    )?,
                     presentation,
                     FaultStage::Worker,
-                    "tools/call:change.record",
+                    "tools/call:hypothesis.record",
                 )
             }
             "node.list" => {
@@ -498,44 +490,45 @@ impl WorkerService {
                     "tools/call:note.quick",
                 )
             }
-            "research.record" => {
-                let args = deserialize::<ResearchRecordToolArgs>(arguments)?;
+            "source.record" => {
+                let args = deserialize::<SourceRecordToolArgs>(arguments)?;
                 let node = self
                     .store
                     .add_node(CreateNodeRequest {
-                        class: NodeClass::Research,
+                        class: NodeClass::Source,
                         frontier_id: args
                             .frontier_id
                             .as_deref()
                             .map(crate::parse_frontier_id)
                             .transpose()
-                            .map_err(store_fault("tools/call:research.record"))?,
+                            .map_err(store_fault("tools/call:source.record"))?,
                         title: NonEmptyText::new(args.title)
-                            .map_err(store_fault("tools/call:research.record"))?,
+                            .map_err(store_fault("tools/call:source.record"))?,
                         summary: Some(
                             NonEmptyText::new(args.summary)
-                                .map_err(store_fault("tools/call:research.record"))?,
+                                .map_err(store_fault("tools/call:source.record"))?,
                         ),
-                        tags: Some(
-                            parse_tag_set(args.tags)
-                                .map_err(store_fault("tools/call:research.record"))?,
-                        ),
+                        tags: args
+                            .tags
+                            .map(parse_tag_set)
+                            .transpose()
+                            .map_err(store_fault("tools/call:source.record"))?,
                         payload: NodePayload::with_schema(
                             self.store.schema().schema_ref(),
                             crate::json_object(json!({ "body": args.body }))
-                                .map_err(store_fault("tools/call:research.record"))?,
+                                .map_err(store_fault("tools/call:source.record"))?,
                         ),
                         annotations: tool_annotations(args.annotations)
-                            .map_err(store_fault("tools/call:research.record"))?,
+                            .map_err(store_fault("tools/call:source.record"))?,
                         attachments: lineage_attachments(args.parents)
-                            .map_err(store_fault("tools/call:research.record"))?,
+                            .map_err(store_fault("tools/call:source.record"))?,
                     })
-                    .map_err(store_fault("tools/call:research.record"))?;
+                    .map_err(store_fault("tools/call:source.record"))?;
                 tool_success(
-                    created_node_output("recorded research", &node, "tools/call:research.record")?,
+                    created_node_output("recorded source", &node, "tools/call:source.record")?,
                     presentation,
                     FaultStage::Worker,
-                    "tools/call:research.record",
+                    "tools/call:source.record",
                 )
             }
             "metric.define" => {
@@ -702,10 +695,74 @@ impl WorkerService {
                     "tools/call:metric.migrate",
                 )
             }
+            "experiment.open" => {
+                let args = deserialize::<ExperimentOpenToolArgs>(arguments)?;
+                let item = self
+                    .store
+                    .open_experiment(OpenExperimentRequest {
+                        frontier_id: crate::parse_frontier_id(&args.frontier_id)
+                            .map_err(store_fault("tools/call:experiment.open"))?,
+                        base_checkpoint_id: crate::parse_checkpoint_id(&args.base_checkpoint_id)
+                            .map_err(store_fault("tools/call:experiment.open"))?,
+                        hypothesis_node_id: crate::parse_node_id(&args.hypothesis_node_id)
+                            .map_err(store_fault("tools/call:experiment.open"))?,
+                        title: NonEmptyText::new(args.title)
+                            .map_err(store_fault("tools/call:experiment.open"))?,
+                        summary: args
+                            .summary
+                            .map(NonEmptyText::new)
+                            .transpose()
+                            .map_err(store_fault("tools/call:experiment.open"))?,
+                    })
+                    .map_err(store_fault("tools/call:experiment.open"))?;
+                tool_success(
+                    experiment_open_output(
+                        &item,
+                        "tools/call:experiment.open",
+                        "opened experiment",
+                    )?,
+                    presentation,
+                    FaultStage::Worker,
+                    "tools/call:experiment.open",
+                )
+            }
+            "experiment.list" => {
+                let args = deserialize::<ExperimentListToolArgs>(arguments)?;
+                let items = self
+                    .store
+                    .list_open_experiments(
+                        args.frontier_id
+                            .as_deref()
+                            .map(crate::parse_frontier_id)
+                            .transpose()
+                            .map_err(store_fault("tools/call:experiment.list"))?,
+                    )
+                    .map_err(store_fault("tools/call:experiment.list"))?;
+                tool_success(
+                    experiment_list_output(items.as_slice())?,
+                    presentation,
+                    FaultStage::Worker,
+                    "tools/call:experiment.list",
+                )
+            }
+            "experiment.read" => {
+                let args = deserialize::<ExperimentReadToolArgs>(arguments)?;
+                let item = self
+                    .store
+                    .read_open_experiment(
+                        crate::parse_experiment_id(&args.experiment_id)
+                            .map_err(store_fault("tools/call:experiment.read"))?,
+                    )
+                    .map_err(store_fault("tools/call:experiment.read"))?;
+                tool_success(
+                    experiment_open_output(&item, "tools/call:experiment.read", "open experiment")?,
+                    presentation,
+                    FaultStage::Worker,
+                    "tools/call:experiment.read",
+                )
+            }
             "experiment.close" => {
                 let args = deserialize::<ExperimentCloseToolArgs>(arguments)?;
-                let frontier_id = crate::parse_frontier_id(&args.frontier_id)
-                    .map_err(store_fault("tools/call:experiment.close"))?;
                 let snapshot = self
                     .store
                     .auto_capture_checkpoint(
@@ -728,10 +785,7 @@ impl WorkerService {
                 let receipt = self
                     .store
                     .close_experiment(CloseExperimentRequest {
-                        frontier_id,
-                        base_checkpoint_id: crate::parse_checkpoint_id(&args.base_checkpoint_id)
-                            .map_err(store_fault("tools/call:experiment.close"))?,
-                        change_node_id: crate::parse_node_id(&args.change_node_id)
+                        experiment_id: crate::parse_experiment_id(&args.experiment_id)
                             .map_err(store_fault("tools/call:experiment.close"))?,
                         candidate_summary: NonEmptyText::new(args.candidate_summary)
                             .map_err(store_fault("tools/call:experiment.close"))?,
@@ -776,15 +830,14 @@ impl WorkerService {
                         },
                         verdict: parse_verdict_name(&args.verdict)
                             .map_err(store_fault("tools/call:experiment.close"))?,
+                        analysis: args
+                            .analysis
+                            .map(experiment_analysis_from_wire)
+                            .transpose()
+                            .map_err(store_fault("tools/call:experiment.close"))?,
                         decision_title: NonEmptyText::new(args.decision_title)
                             .map_err(store_fault("tools/call:experiment.close"))?,
                         decision_rationale: NonEmptyText::new(args.decision_rationale)
-                            .map_err(store_fault("tools/call:experiment.close"))?,
-                        analysis_node_id: args
-                            .analysis_node_id
-                            .as_deref()
-                            .map(crate::parse_node_id)
-                            .transpose()
                             .map_err(store_fault("tools/call:experiment.close"))?,
                     })
                     .map_err(store_fault("tools/call:experiment.close"))?;
@@ -1296,6 +1349,7 @@ fn experiment_close_output(
         "candidate_checkpoint_id": receipt.experiment.candidate_checkpoint_id,
         "verdict": format!("{:?}", receipt.experiment.verdict).to_ascii_lowercase(),
         "run_id": receipt.run.run_id,
+        "hypothesis_node_id": receipt.experiment.hypothesis_node_id,
         "decision_node_id": receipt.decision_node.id,
         "dimensions": run_dimensions_value(&receipt.experiment.result.dimensions),
         "primary_metric": metric_value(store, &receipt.experiment.result.primary_metric)?,
@@ -1308,6 +1362,7 @@ fn experiment_close_output(
                 "closed experiment {} on frontier {}",
                 receipt.experiment.id, receipt.experiment.frontier_id
             ),
+            format!("hypothesis: {}", receipt.experiment.hypothesis_node_id),
             format!("candidate: {}", receipt.experiment.candidate_checkpoint_id),
             format!(
                 "verdict: {}",
@@ -1327,6 +1382,71 @@ fn experiment_close_output(
         None,
         FaultStage::Worker,
         "tools/call:experiment.close",
+    )
+}
+
+fn experiment_open_output(
+    item: &OpenExperimentSummary,
+    operation: &'static str,
+    action: &'static str,
+) -> Result<ToolOutput, FaultRecord> {
+    let concise = json!({
+        "experiment_id": item.id,
+        "frontier_id": item.frontier_id,
+        "base_checkpoint_id": item.base_checkpoint_id,
+        "hypothesis_node_id": item.hypothesis_node_id,
+        "title": item.title,
+        "summary": item.summary,
+    });
+    detailed_tool_output(
+        &concise,
+        item,
+        [
+            format!("{action} {}", item.id),
+            format!("frontier: {}", item.frontier_id),
+            format!("hypothesis: {}", item.hypothesis_node_id),
+            format!("base checkpoint: {}", item.base_checkpoint_id),
+            format!("title: {}", item.title),
+            item.summary
+                .as_ref()
+                .map(|summary| format!("summary: {summary}"))
+                .unwrap_or_else(|| "summary: <none>".to_owned()),
+        ]
+        .join("\n"),
+        None,
+        FaultStage::Worker,
+        operation,
+    )
+}
+
+fn experiment_list_output(items: &[OpenExperimentSummary]) -> Result<ToolOutput, FaultRecord> {
+    let concise = items
+        .iter()
+        .map(|item| {
+            json!({
+                "experiment_id": item.id,
+                "frontier_id": item.frontier_id,
+                "base_checkpoint_id": item.base_checkpoint_id,
+                "hypothesis_node_id": item.hypothesis_node_id,
+                "title": item.title,
+                "summary": item.summary,
+            })
+        })
+        .collect::<Vec<_>>();
+    let mut lines = vec![format!("{} open experiment(s)", items.len())];
+    lines.extend(items.iter().map(|item| {
+        format!(
+            "{} {} | hypothesis={} | checkpoint={}",
+            item.id, item.title, item.hypothesis_node_id, item.base_checkpoint_id,
+        )
+    }));
+    detailed_tool_output(
+        &concise,
+        &items,
+        lines.join("\n"),
+        None,
+        FaultStage::Worker,
+        "tools/call:experiment.list",
     )
 }
 
@@ -1392,8 +1512,8 @@ fn metric_best_output(
                 "order": item.order.as_str(),
                 "experiment_id": item.experiment_id,
                 "frontier_id": item.frontier_id,
-                "change_node_id": item.change_node_id,
-                "change_title": item.change_title,
+                "hypothesis_node_id": item.hypothesis_node_id,
+                "hypothesis_title": item.hypothesis_title,
                 "verdict": metric_verdict_name(item.verdict),
                 "candidate_checkpoint_id": item.candidate_checkpoint_id,
                 "candidate_commit_hash": item.candidate_commit_hash,
@@ -1412,7 +1532,7 @@ fn metric_best_output(
             item.key,
             item.value,
             item.source.as_str(),
-            item.change_title,
+            item.hypothesis_title,
             metric_verdict_name(item.verdict),
             item.candidate_commit_hash,
             item.candidate_checkpoint_id,
@@ -1775,7 +1895,7 @@ fn filtered_payload_fields(
     fields: &Map<String, Value>,
 ) -> impl Iterator<Item = (&String, &Value)> + '_ {
     fields.iter().filter(move |(name, _)| {
-        !matches!(class, NodeClass::Note | NodeClass::Research) || name.as_str() != "body"
+        !matches!(class, NodeClass::Note | NodeClass::Source) || name.as_str() != "body"
     })
 }
 
@@ -1817,7 +1937,7 @@ fn payload_value_preview(value: &Value) -> Value {
 }
 
 fn is_prose_node(class: NodeClass) -> bool {
-    matches!(class, NodeClass::Note | NodeClass::Research)
+    matches!(class, NodeClass::Note | NodeClass::Source)
 }
 
 fn truncated_inline_preview(text: &str, limit: usize) -> String {
@@ -2017,6 +2137,14 @@ fn metric_value_from_wire(raw: WireMetricValue) -> Result<MetricValue, StoreErro
     })
 }
 
+fn experiment_analysis_from_wire(raw: WireAnalysis) -> Result<ExperimentAnalysisDraft, StoreError> {
+    Ok(ExperimentAnalysisDraft {
+        title: NonEmptyText::new(raw.title)?,
+        summary: NonEmptyText::new(raw.summary)?,
+        body: NonEmptyText::new(raw.body)?,
+    })
+}
+
 fn metric_definition(store: &ProjectStore, key: &NonEmptyText) -> Result<MetricSpec, FaultRecord> {
     store
         .list_metric_definitions()
@@ -2071,12 +2199,11 @@ fn capture_code_snapshot(project_root: &Utf8Path) -> Result<CodeSnapshotRef, Sto
 fn parse_node_class_name(raw: &str) -> Result<NodeClass, StoreError> {
     match raw {
         "contract" => Ok(NodeClass::Contract),
-        "change" => Ok(NodeClass::Change),
+        "hypothesis" => Ok(NodeClass::Hypothesis),
         "run" => Ok(NodeClass::Run),
         "analysis" => Ok(NodeClass::Analysis),
         "decision" => Ok(NodeClass::Decision),
-        "research" => Ok(NodeClass::Research),
-        "enabling" => Ok(NodeClass::Enabling),
+        "source" => Ok(NodeClass::Source),
         "note" => Ok(NodeClass::Note),
         other => Err(crate::invalid_input(format!(
             "unknown node class `{other}`"
@@ -2091,7 +2218,7 @@ fn parse_metric_unit_name(raw: &str) -> Result<MetricUnit, StoreError> {
 fn parse_metric_source_name(raw: &str) -> Result<MetricFieldSource, StoreError> {
     match raw {
         "run_metric" => Ok(MetricFieldSource::RunMetric),
-        "change_payload" => Ok(MetricFieldSource::ChangePayload),
+        "hypothesis_payload" => Ok(MetricFieldSource::HypothesisPayload),
         "run_payload" => Ok(MetricFieldSource::RunPayload),
         "analysis_payload" => Ok(MetricFieldSource::AnalysisPayload),
         "decision_payload" => Ok(MetricFieldSource::DecisionPayload),
@@ -2234,14 +2361,11 @@ struct NodeCreateToolArgs {
 }
 
 #[derive(Debug, Deserialize)]
-struct ChangeRecordToolArgs {
+struct HypothesisRecordToolArgs {
     frontier_id: String,
     title: String,
-    summary: Option<String>,
+    summary: String,
     body: String,
-    hypothesis: Option<String>,
-    base_checkpoint_id: Option<String>,
-    benchmark_suite: Option<String>,
     #[serde(default)]
     annotations: Vec<WireAnnotation>,
     #[serde(default)]
@@ -2292,13 +2416,12 @@ struct QuickNoteToolArgs {
 }
 
 #[derive(Debug, Deserialize)]
-struct ResearchRecordToolArgs {
+struct SourceRecordToolArgs {
     frontier_id: Option<String>,
     title: String,
     summary: String,
     body: String,
-    #[serde(default)]
-    tags: Vec<String>,
+    tags: Option<Vec<String>>,
     #[serde(default)]
     annotations: Vec<WireAnnotation>,
     #[serde(default)]
@@ -2355,10 +2478,27 @@ struct MetricBestToolArgs {
 }
 
 #[derive(Debug, Deserialize)]
-struct ExperimentCloseToolArgs {
+struct ExperimentOpenToolArgs {
     frontier_id: String,
     base_checkpoint_id: String,
-    change_node_id: String,
+    hypothesis_node_id: String,
+    title: String,
+    summary: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct ExperimentListToolArgs {
+    frontier_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ExperimentReadToolArgs {
+    experiment_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct ExperimentCloseToolArgs {
+    experiment_id: String,
     candidate_summary: String,
     run: WireRun,
     primary_metric: WireMetricValue,
@@ -2368,7 +2508,7 @@ struct ExperimentCloseToolArgs {
     verdict: String,
     decision_title: String,
     decision_rationale: String,
-    analysis_node_id: Option<String>,
+    analysis: Option<WireAnalysis>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -2400,6 +2540,13 @@ struct WireRun {
     #[serde(default)]
     dimensions: BTreeMap<String, Value>,
     command: WireRunCommand,
+}
+
+#[derive(Debug, Deserialize)]
+struct WireAnalysis {
+    title: String,
+    summary: String,
+    body: String,
 }
 
 #[derive(Debug, Deserialize)]

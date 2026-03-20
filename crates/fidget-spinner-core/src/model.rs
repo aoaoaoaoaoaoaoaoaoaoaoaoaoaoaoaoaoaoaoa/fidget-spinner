@@ -117,12 +117,11 @@ pub type JsonObject = Map<String, Value>;
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 pub enum NodeClass {
     Contract,
-    Change,
+    Hypothesis,
     Run,
     Analysis,
     Decision,
-    Research,
-    Enabling,
+    Source,
     Note,
 }
 
@@ -131,12 +130,11 @@ impl NodeClass {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Contract => "contract",
-            Self::Change => "change",
+            Self::Hypothesis => "hypothesis",
             Self::Run => "run",
             Self::Analysis => "analysis",
             Self::Decision => "decision",
-            Self::Research => "research",
-            Self::Enabling => "enabling",
+            Self::Source => "source",
             Self::Note => "note",
         }
     }
@@ -144,10 +142,10 @@ impl NodeClass {
     #[must_use]
     pub const fn default_track(self) -> NodeTrack {
         match self {
-            Self::Contract | Self::Change | Self::Run | Self::Analysis | Self::Decision => {
+            Self::Contract | Self::Hypothesis | Self::Run | Self::Analysis | Self::Decision => {
                 NodeTrack::CorePath
             }
-            Self::Research | Self::Enabling | Self::Note => NodeTrack::OffPath,
+            Self::Source | Self::Note => NodeTrack::OffPath,
         }
     }
 }
@@ -867,6 +865,17 @@ pub struct ExperimentResult {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct OpenExperiment {
+    pub id: ExperimentId,
+    pub frontier_id: FrontierId,
+    pub base_checkpoint_id: CheckpointId,
+    pub hypothesis_node_id: NodeId,
+    pub title: NonEmptyText,
+    pub summary: Option<NonEmptyText>,
+    pub created_at: OffsetDateTime,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct FrontierNote {
     pub summary: NonEmptyText,
     pub next_hypotheses: Vec<NonEmptyText>,
@@ -878,11 +887,13 @@ pub struct CompletedExperiment {
     pub frontier_id: FrontierId,
     pub base_checkpoint_id: CheckpointId,
     pub candidate_checkpoint_id: CheckpointId,
-    pub change_node_id: NodeId,
+    pub hypothesis_node_id: NodeId,
     pub run_node_id: NodeId,
     pub run_id: RunId,
     pub analysis_node_id: Option<NodeId>,
     pub decision_node_id: NodeId,
+    pub title: NonEmptyText,
+    pub summary: Option<NonEmptyText>,
     pub result: ExperimentResult,
     pub note: FrontierNote,
     pub verdict: FrontierVerdict,
@@ -934,7 +945,7 @@ mod tests {
             version: 1,
             fields: vec![ProjectFieldSpec {
                 name: NonEmptyText::new("hypothesis")?,
-                node_classes: BTreeSet::from([NodeClass::Change]),
+                node_classes: BTreeSet::from([NodeClass::Hypothesis]),
                 presence: FieldPresence::Required,
                 severity: DiagnosticSeverity::Warning,
                 role: FieldRole::ProjectionGate,
@@ -943,7 +954,7 @@ mod tests {
             }],
         };
         let payload = NodePayload::with_schema(schema.schema_ref(), JsonObject::new());
-        let diagnostics = schema.validate_node(NodeClass::Change, &payload);
+        let diagnostics = schema.validate_node(NodeClass::Hypothesis, &payload);
 
         assert_eq!(diagnostics.admission, super::AdmissionState::Admitted);
         assert_eq!(diagnostics.items.len(), 1);
@@ -979,13 +990,13 @@ mod tests {
     }
 
     #[test]
-    fn research_nodes_default_to_off_path() -> Result<(), CoreError> {
+    fn source_nodes_default_to_off_path() -> Result<(), CoreError> {
         let payload = NodePayload {
             schema: None,
             fields: JsonObject::from_iter([("topic".to_owned(), json!("ideas"))]),
         };
         let node = DagNode::new(
-            NodeClass::Research,
+            NodeClass::Source,
             None,
             NonEmptyText::new("feature scouting")?,
             None,
