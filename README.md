@@ -124,10 +124,12 @@ cargo run -p fidget-spinner-cli -- frontier create \
 Write the frontier brief:
 
 ```bash
-cargo run -p fidget-spinner-cli -- frontier update-brief \
+cargo run -p fidget-spinner-cli -- frontier update \
   --project . \
   --frontier native-mip \
-  --situation "Root LP spend is understood; node-local LP churn is the active frontier."
+  --objective "Drive braid-rail LP cash-out" \
+  --situation "Root LP spend is understood; node-local LP churn is the active frontier." \
+  --scoreboard-metric nodes_solved
 ```
 
 Record a hypothesis:
@@ -188,12 +190,29 @@ Inspect live metrics:
 cargo run -p fidget-spinner-cli -- metric keys --project . --frontier native-mip --scope live
 ```
 
+Inspect scoreboard-grade metrics:
+
+```bash
+cargo run -p fidget-spinner-cli -- metric keys --project . --frontier native-mip --scope scoreboard
+```
+
 ```bash
 cargo run -p fidget-spinner-cli -- metric best \
   --project . \
   --frontier native-mip \
   --hypothesis node-local-loop \
   --key nodes_solved
+```
+
+Find the nearest accepted, kept, rejected, and champion comparators for one slice:
+
+```bash
+cargo run -p fidget-spinner-cli -- experiment nearest \
+  --project . \
+  --frontier native-mip \
+  --metric nodes_solved \
+  --dimension instance=4x5-braid \
+  --dimension duration_s=20
 ```
 
 ## MCP Surface
@@ -222,7 +241,7 @@ The main model-facing tools are:
 - `frontier.list`
 - `frontier.read`
 - `frontier.open`
-- `frontier.brief.update`
+- `frontier.update`
 - `frontier.history`
 - `hypothesis.record`
 - `hypothesis.list`
@@ -234,6 +253,7 @@ The main model-facing tools are:
 - `experiment.read`
 - `experiment.update`
 - `experiment.close`
+- `experiment.nearest`
 - `experiment.history`
 - `artifact.record`
 - `artifact.list`
@@ -250,6 +270,7 @@ The main model-facing tools are:
 
 - frontier brief
 - active tags
+- scoreboard metric keys
 - live metric keys
 - active hypotheses with deduped current state
 - open experiments

@@ -6,10 +6,10 @@ use fidget_spinner_core::{
     RunDimensionValue, TagRecord,
 };
 use fidget_spinner_store_sqlite::{
-    ArtifactDetail, ArtifactSummary, EntityHistoryEntry, ExperimentDetail, ExperimentSummary,
-    FrontierOpenProjection, FrontierSummary, HypothesisCurrentState, HypothesisDetail,
-    MetricBestEntry, MetricKeySummary, MetricObservationSummary, ProjectStore, StoreError,
-    VertexSummary,
+    ArtifactDetail, ArtifactSummary, EntityHistoryEntry, ExperimentDetail, ExperimentNearestHit,
+    ExperimentNearestResult, ExperimentSummary, FrontierOpenProjection, FrontierSummary,
+    HypothesisCurrentState, HypothesisDetail, MetricBestEntry, MetricKeySummary,
+    MetricObservationSummary, ProjectStore, StoreError, VertexSummary,
 };
 use libmcp::{
     ProjectionError, SelectorProjection, StructuredProjection, SurfaceKind, SurfacePolicy,
@@ -56,6 +56,7 @@ pub(crate) struct FrontierBriefProjection {
     pub(crate) situation: Option<String>,
     pub(crate) roadmap: Vec<RoadmapItemProjection>,
     pub(crate) unknowns: Vec<String>,
+    pub(crate) scoreboard_metric_keys: Vec<String>,
     pub(crate) revision: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) updated_at: Option<TimestampText>,
@@ -106,6 +107,7 @@ pub(crate) struct FrontierListOutput {
 pub(crate) struct FrontierOpenOutput {
     pub(crate) frontier: FrontierOpenFrontierProjection,
     pub(crate) active_tags: Vec<String>,
+    pub(crate) scoreboard_metrics: Vec<MetricKeySummaryProjection>,
     pub(crate) active_metric_keys: Vec<MetricKeySummaryProjection>,
     pub(crate) active_hypotheses: Vec<HypothesisCurrentStateProjection>,
     pub(crate) open_experiments: Vec<ExperimentSummaryProjection>,
@@ -519,6 +521,32 @@ pub(crate) struct MetricBestOutput {
 }
 
 #[derive(Clone, Serialize)]
+pub(crate) struct ExperimentNearestHitProjection {
+    pub(crate) experiment: ExperimentSummaryProjection,
+    pub(crate) hypothesis: HypothesisSummaryProjection,
+    pub(crate) dimensions: BTreeMap<String, Value>,
+    pub(crate) reasons: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) metric_value: Option<MetricObservationSummaryProjection>,
+}
+
+#[derive(Clone, Serialize, libmcp::ToolProjection)]
+#[libmcp(kind = "read")]
+pub(crate) struct ExperimentNearestOutput {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) metric: Option<MetricKeySummaryProjection>,
+    pub(crate) target_dimensions: BTreeMap<String, Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) accepted: Option<ExperimentNearestHitProjection>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) kept: Option<ExperimentNearestHitProjection>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) rejected: Option<ExperimentNearestHitProjection>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) champion: Option<ExperimentNearestHitProjection>,
+}
+
+#[derive(Clone, Serialize)]
 pub(crate) struct TagRecordProjection {
     pub(crate) name: String,
     pub(crate) description: String,
@@ -648,6 +676,11 @@ pub(crate) fn frontier_open(projection: &FrontierOpenProjection) -> FrontierOpen
             .active_tags
             .iter()
             .map(ToString::to_string)
+            .collect(),
+        scoreboard_metrics: projection
+            .scoreboard_metric_keys
+            .iter()
+            .map(metric_key_summary)
             .collect(),
         active_metric_keys: projection
             .active_metric_keys
@@ -863,6 +896,17 @@ pub(crate) fn metric_best(entries: &[MetricBestEntry]) -> MetricBestOutput {
     }
 }
 
+pub(crate) fn experiment_nearest(result: &ExperimentNearestResult) -> ExperimentNearestOutput {
+    ExperimentNearestOutput {
+        metric: result.metric.as_ref().map(metric_key_summary),
+        target_dimensions: dimension_map(&result.target_dimensions),
+        accepted: result.accepted.as_ref().map(experiment_nearest_hit),
+        kept: result.kept.as_ref().map(experiment_nearest_hit),
+        rejected: result.rejected.as_ref().map(experiment_nearest_hit),
+        champion: result.champion.as_ref().map(experiment_nearest_hit),
+    }
+}
+
 pub(crate) fn tag_record(tag: &TagRecord) -> TagRecordOutput {
     TagRecordOutput {
         record: tag_record_projection(tag),
@@ -963,6 +1007,11 @@ fn frontier_brief_projection(
         situation: brief.situation.as_ref().map(ToString::to_string),
         roadmap,
         unknowns: brief.unknowns.iter().map(ToString::to_string).collect(),
+        scoreboard_metric_keys: brief
+            .scoreboard_metric_keys
+            .iter()
+            .map(ToString::to_string)
+            .collect(),
         revision: brief.revision,
         updated_at: brief.updated_at.map(timestamp_value),
     }
@@ -1139,6 +1188,16 @@ fn metric_best_entry(entry: &MetricBestEntry) -> MetricBestEntryProjection {
         hypothesis: hypothesis_summary(&entry.hypothesis),
         value: entry.value,
         dimensions: dimension_map(&entry.dimensions),
+    }
+}
+
+fn experiment_nearest_hit(hit: &ExperimentNearestHit) -> ExperimentNearestHitProjection {
+    ExperimentNearestHitProjection {
+        experiment: experiment_summary(&hit.experiment),
+        hypothesis: hypothesis_summary(&hit.hypothesis),
+        dimensions: dimension_map(&hit.dimensions),
+        reasons: hit.reasons.iter().map(ToString::to_string).collect(),
+        metric_value: hit.metric_value.as_ref().map(metric_observation_summary),
     }
 }
 

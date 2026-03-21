@@ -176,6 +176,7 @@ body lives elsewhere.
 
 - frontier brief
 - active tags
+- scoreboard metric keys
 - live metric keys
 - active hypotheses with deduped current state
 - open experiments
@@ -215,7 +216,7 @@ The current model-facing surface is:
 - `frontier.list`
 - `frontier.read`
 - `frontier.open`
-- `frontier.brief.update`
+- `frontier.update`
 - `frontier.history`
 - `hypothesis.record`
 - `hypothesis.list`
@@ -227,6 +228,7 @@ The current model-facing surface is:
 - `experiment.read`
 - `experiment.update`
 - `experiment.close`
+- `experiment.nearest`
 - `experiment.history`
 - `artifact.record`
 - `artifact.list`

@@ -96,8 +96,8 @@ const TOOL_SPECS: &[ToolSpec] = &[
         replay: ReplayContract::Convergent,
     },
     ToolSpec {
-        name: "frontier.brief.update",
-        description: "Replace or patch the singleton frontier brief.",
+        name: "frontier.update",
+        description: "Patch frontier objective and grounding state.",
         dispatch: DispatchTarget::Worker,
         replay: ReplayContract::NeverReplay,
     },
@@ -166,6 +166,12 @@ const TOOL_SPECS: &[ToolSpec] = &[
         description: "Close one open experiment with typed dimensions, structured metrics, verdict, rationale, and optional analysis.",
         dispatch: DispatchTarget::Worker,
         replay: ReplayContract::NeverReplay,
+    },
+    ToolSpec {
+        name: "experiment.nearest",
+        description: "Find the nearest accepted, kept, rejected, and champion comparators for one slice.",
+        dispatch: DispatchTarget::Worker,
+        replay: ReplayContract::Convergent,
     },
     ToolSpec {
         name: "experiment.history",
@@ -353,12 +359,16 @@ fn tool_input_schema(name: &str) -> Value {
             &[("frontier", selector_schema("Frontier UUID or slug."))],
             &["frontier"],
         ),
-        "frontier.brief.update" => object_schema(
+        "frontier.update" => object_schema(
             &[
                 ("frontier", selector_schema("Frontier UUID or slug.")),
                 (
                     "expected_revision",
                     integer_schema("Optimistic concurrency guard."),
+                ),
+                (
+                    "objective",
+                    string_schema("Optional replacement frontier objective."),
                 ),
                 (
                     "situation",
@@ -368,6 +378,10 @@ fn tool_input_schema(name: &str) -> Value {
                 (
                     "unknowns",
                     string_array_schema("Ordered frontier unknowns."),
+                ),
+                (
+                    "scoreboard_metric_keys",
+                    string_array_schema("Ordered frontier scoreboard metric keys."),
                 ),
             ],
             &["frontier"],
@@ -517,6 +531,36 @@ fn tool_input_schema(name: &str) -> Value {
                 "rationale",
             ],
         ),
+        "experiment.nearest" => object_schema(
+            &[
+                (
+                    "frontier",
+                    selector_schema("Optional frontier UUID or slug."),
+                ),
+                (
+                    "hypothesis",
+                    selector_schema("Optional hypothesis UUID or slug."),
+                ),
+                (
+                    "experiment",
+                    selector_schema("Optional experiment UUID or slug used as an anchor."),
+                ),
+                (
+                    "metric",
+                    string_schema("Optional metric key used to choose the champion."),
+                ),
+                ("dimensions", run_dimensions_schema()),
+                ("tags", string_array_schema("Require all listed tags.")),
+                (
+                    "order",
+                    enum_string_schema(
+                        &["asc", "desc"],
+                        "Optional explicit champion ranking direction.",
+                    ),
+                ),
+            ],
+            &[],
+        ),
         "artifact.record" => object_schema(
             &[
                 (
@@ -631,7 +675,10 @@ fn tool_input_schema(name: &str) -> Value {
                 ),
                 (
                     "scope",
-                    enum_string_schema(&["live", "visible", "all"], "Registry slice to enumerate."),
+                    enum_string_schema(
+                        &["live", "scoreboard", "visible", "all"],
+                        "Registry slice to enumerate.",
+                    ),
                 ),
             ],
             &[],

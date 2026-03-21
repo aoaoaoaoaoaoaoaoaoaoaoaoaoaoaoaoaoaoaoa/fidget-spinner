@@ -226,11 +226,14 @@ fn cold_start_exposes_bound_surface_and_new_toolset() -> TestResult {
     let tools = harness.tools_list()?;
     let tool_names = tool_names(&tools);
     assert!(tool_names.contains(&"frontier.open"));
+    assert!(tool_names.contains(&"frontier.update"));
     assert!(tool_names.contains(&"hypothesis.record"));
     assert!(tool_names.contains(&"experiment.close"));
+    assert!(tool_names.contains(&"experiment.nearest"));
     assert!(tool_names.contains(&"artifact.record"));
     assert!(!tool_names.contains(&"node.list"));
     assert!(!tool_names.contains(&"research.record"));
+    assert!(!tool_names.contains(&"frontier.brief.update"));
 
     let health = harness.call_tool(3, "system.health", json!({}))?;
     assert_tool_ok(&health);
@@ -389,6 +392,246 @@ fn frontier_open_is_the_grounding_surface_for_live_state() -> TestResult {
     );
     assert!(content.get("artifacts").is_none());
     assert!(active_hypotheses[0]["hypothesis"].get("body").is_none());
+    Ok(())
+}
+
+#[test]
+fn frontier_update_mutates_objective_and_scoreboard_grounding() -> TestResult {
+    let project_root = temp_project_root("frontier_update")?;
+    init_project(&project_root)?;
+
+    let mut harness = McpHarness::spawn(Some(&project_root))?;
+    let _ = harness.initialize()?;
+    harness.notify_initialized()?;
+
+    assert_tool_ok(&harness.call_tool(
+        70,
+        "metric.define",
+        json!({
+            "key": "nodes_solved",
+            "unit": "count",
+            "objective": "maximize",
+            "visibility": "canonical",
+        }),
+    )?);
+    assert_tool_ok(&harness.call_tool(
+        71,
+        "frontier.create",
+        json!({
+            "label": "LP root frontier",
+            "objective": "Initial root push",
+            "slug": "lp-root",
+        }),
+    )?);
+
+    let updated = harness.call_tool_full(
+        72,
+        "frontier.update",
+        json!({
+            "frontier": "lp-root",
+            "objective": "Drive structural LP cash-out on parity rails",
+            "situation": "Structural LP churn is the active hill.",
+            "unknowns": ["How far queued structural reuse can cash out below root."],
+            "scoreboard_metric_keys": ["nodes_solved"],
+        }),
+    )?;
+    assert_tool_ok(&updated);
+    let updated_content = tool_content(&updated);
+    assert_eq!(
+        updated_content["record"]["objective"].as_str(),
+        Some("Drive structural LP cash-out on parity rails")
+    );
+    assert_eq!(
+        must_some(
+            updated_content["record"]["brief"]["scoreboard_metric_keys"]
+                .as_array()
+                .and_then(|items| items.first())
+                .and_then(Value::as_str),
+            "frontier scoreboard metric key",
+        )?,
+        "nodes_solved"
+    );
+
+    let frontier_open =
+        harness.call_tool_full(73, "frontier.open", json!({ "frontier": "lp-root" }))?;
+    assert_tool_ok(&frontier_open);
+    let open_content = tool_content(&frontier_open);
+    assert_eq!(
+        open_content["frontier"]["objective"].as_str(),
+        Some("Drive structural LP cash-out on parity rails")
+    );
+    assert_eq!(
+        must_some(
+            open_content["scoreboard_metrics"]
+                .as_array()
+                .and_then(|items| items.first()),
+            "frontier scoreboard metrics entry",
+        )?["key"]
+            .as_str(),
+        Some("nodes_solved")
+    );
+
+    let scoreboard = harness.call_tool_full(
+        74,
+        "metric.keys",
+        json!({
+            "frontier": "lp-root",
+            "scope": "scoreboard",
+        }),
+    )?;
+    assert_tool_ok(&scoreboard);
+    assert_eq!(
+        must_some(
+            tool_content(&scoreboard)["metrics"]
+                .as_array()
+                .and_then(|items| items.first()),
+            "scoreboard metric entry",
+        )?["key"]
+            .as_str(),
+        Some("nodes_solved")
+    );
+
+    Ok(())
+}
+
+#[test]
+fn experiment_nearest_finds_structural_buckets_and_champion() -> TestResult {
+    let project_root = temp_project_root("experiment_nearest")?;
+    init_project(&project_root)?;
+
+    let mut harness = McpHarness::spawn(Some(&project_root))?;
+    let _ = harness.initialize()?;
+    harness.notify_initialized()?;
+
+    assert_tool_ok(&harness.call_tool(
+        80,
+        "metric.define",
+        json!({
+            "key": "nodes_solved",
+            "unit": "count",
+            "objective": "maximize",
+            "visibility": "canonical",
+        }),
+    )?);
+    assert_tool_ok(&harness.call_tool(
+        81,
+        "run.dimension.define",
+        json!({"key": "instance", "value_type": "string"}),
+    )?);
+    assert_tool_ok(&harness.call_tool(
+        82,
+        "run.dimension.define",
+        json!({"key": "profile", "value_type": "string"}),
+    )?);
+    assert_tool_ok(&harness.call_tool(
+        83,
+        "run.dimension.define",
+        json!({"key": "duration_s", "value_type": "numeric"}),
+    )?);
+    assert_tool_ok(&harness.call_tool(
+        84,
+        "frontier.create",
+        json!({
+            "label": "Comparator frontier",
+            "objective": "Keep exact-slice comparators cheap to find",
+            "slug": "comparators",
+        }),
+    )?);
+    assert_tool_ok(&harness.call_tool(
+        85,
+        "frontier.update",
+        json!({
+            "frontier": "comparators",
+            "scoreboard_metric_keys": ["nodes_solved"],
+        }),
+    )?);
+    assert_tool_ok(&harness.call_tool(
+        86,
+        "hypothesis.record",
+        json!({
+            "frontier": "comparators",
+            "slug": "structural-loop",
+            "title": "Structural loop",
+            "summary": "Compare exact-slice structural LP lines.",
+            "body": "Thread structural LP reuse through the same 4x5 parity slice so exact-slice comparators remain easy to recover and dead branches stay visible before the next iteration starts.",
+        }),
+    )?);
+
+    for (id, slug, verdict, value, duration_s) in [
+        (87_u64, "exact-kept", "kept", 111.0, 60),
+        (89_u64, "exact-accepted", "accepted", 125.0, 60),
+        (91_u64, "exact-rejected", "rejected", 98.0, 60),
+        (93_u64, "different-duration", "accepted", 140.0, 20),
+    ] {
+        assert_tool_ok(&harness.call_tool(
+            id,
+            "experiment.open",
+            json!({
+                "hypothesis": "structural-loop",
+                "slug": slug,
+                "title": format!("{slug} rail"),
+                "summary": format!("{slug} summary"),
+            }),
+        )?);
+        assert_tool_ok(&harness.call_tool(
+            id + 1,
+            "experiment.close",
+            json!({
+                "experiment": slug,
+                "backend": "manual",
+                "command": {"argv": [slug]},
+                "dimensions": {
+                    "instance": "4x5",
+                    "profile": "parity",
+                    "duration_s": duration_s,
+                },
+                "primary_metric": {"key": "nodes_solved", "value": value},
+                "verdict": verdict,
+                "rationale": format!("{slug} outcome"),
+            }),
+        )?);
+    }
+
+    let nearest = harness.call_tool_full(
+        95,
+        "experiment.nearest",
+        json!({
+            "frontier": "comparators",
+            "dimensions": {
+                "instance": "4x5",
+                "profile": "parity",
+                "duration_s": 60,
+            },
+        }),
+    )?;
+    assert_tool_ok(&nearest);
+    let content = tool_content(&nearest);
+    assert_eq!(content["metric"]["key"].as_str(), Some("nodes_solved"));
+    assert_eq!(
+        content["accepted"]["experiment"]["slug"].as_str(),
+        Some("exact-accepted")
+    );
+    assert_eq!(
+        content["kept"]["experiment"]["slug"].as_str(),
+        Some("exact-kept")
+    );
+    assert_eq!(
+        content["rejected"]["experiment"]["slug"].as_str(),
+        Some("exact-rejected")
+    );
+    assert_eq!(
+        content["champion"]["experiment"]["slug"].as_str(),
+        Some("exact-accepted")
+    );
+    assert!(
+        must_some(
+            content["accepted"]["reasons"].as_array(),
+            "accepted comparator reasons",
+        )?
+        .iter()
+        .any(|reason| reason.as_str() == Some("exact dimension match"))
+    );
+
     Ok(())
 }
 

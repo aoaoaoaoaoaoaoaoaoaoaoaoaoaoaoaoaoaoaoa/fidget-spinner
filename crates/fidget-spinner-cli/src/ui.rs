@@ -428,19 +428,35 @@ fn render_frontier_tab_content(
             })
         }
         FrontierTab::Metrics => {
-            let metric_keys = if projection.active_metric_keys.is_empty() {
+            let other_metric_keys = if projection.active_metric_keys.is_empty() {
                 store.metric_keys(MetricKeysQuery {
                     frontier: Some(projection.frontier.slug.to_string()),
                     scope: MetricScope::Visible,
                 })?
             } else {
-                projection.active_metric_keys.clone()
+                projection
+                    .active_metric_keys
+                    .iter()
+                    .filter(|metric| {
+                        !projection
+                            .scoreboard_metric_keys
+                            .iter()
+                            .any(|scoreboard| scoreboard.key == metric.key)
+                    })
+                    .cloned()
+                    .collect()
             };
             let selected_metric = query
                 .metric
                 .as_deref()
                 .and_then(|selector| NonEmptyText::new(selector.to_owned()).ok())
-                .or_else(|| metric_keys.first().map(|metric| metric.key.clone()));
+                .or_else(|| {
+                    projection
+                        .scoreboard_metric_keys
+                        .first()
+                        .or_else(|| other_metric_keys.first())
+                        .map(|metric| metric.key.clone())
+                });
             let series = selected_metric
                 .as_ref()
                 .map(|metric| {
@@ -452,7 +468,8 @@ fn render_frontier_tab_content(
                 (render_frontier_header(&projection.frontier))
                 (render_metric_series_section(
                     &projection.frontier.slug,
-                    &metric_keys,
+                    &projection.scoreboard_metric_keys,
+                    &other_metric_keys,
                     selected_metric.as_ref(),
                     series.as_ref(),
                     &dimension_filters,
@@ -534,7 +551,8 @@ fn render_closed_hypothesis_grid(
 
 fn render_metric_series_section(
     frontier_slug: &Slug,
-    metric_keys: &[fidget_spinner_store_sqlite::MetricKeySummary],
+    scoreboard_metric_keys: &[fidget_spinner_store_sqlite::MetricKeySummary],
+    other_metric_keys: &[fidget_spinner_store_sqlite::MetricKeySummary],
     selected_metric: Option<&NonEmptyText>,
     series: Option<&FrontierMetricSeries>,
     dimension_filters: &BTreeMap<String, String>,
@@ -552,24 +570,53 @@ fn render_metric_series_section(
         p.prose {
             "Server-rendered SVG over the frontier’s closed experiment ledger. Choose a live metric, then walk to the underlying experiments deliberately."
         }
-        @if metric_keys.is_empty() {
+        @if scoreboard_metric_keys.is_empty() && other_metric_keys.is_empty() {
             p.muted { "No visible metrics registered for this frontier." }
         } @else {
-            div.metric-picker {
-                @for metric in metric_keys {
-                    @let href = frontier_tab_href(frontier_slug, FrontierTab::Metrics, Some(metric.key.as_str()));
-                    a
-                        href=(href)
-                        class={(if selected_metric.is_some_and(|selected| selected == &metric.key) {
-                            "metric-choice active"
-                        } else {
-                            "metric-choice"
-                        })}
-                    {
-                        span.metric-choice-key { (metric.key) }
-                        span.metric-choice-meta {
-                            (metric.objective.as_str()) " · "
-                            (metric.unit.as_str())
+            @if !scoreboard_metric_keys.is_empty() {
+                div.metric-picker-group {
+                    h3 { "Scoreboard" }
+                    div.metric-picker {
+                        @for metric in scoreboard_metric_keys {
+                            @let href = frontier_tab_href(frontier_slug, FrontierTab::Metrics, Some(metric.key.as_str()));
+                            a
+                                href=(href)
+                                class={(if selected_metric.is_some_and(|selected| selected == &metric.key) {
+                                    "metric-choice active"
+                                } else {
+                                    "metric-choice"
+                                })}
+                            {
+                                span.metric-choice-key { (metric.key) }
+                                span.metric-choice-meta {
+                                    (metric.objective.as_str()) " · "
+                                    (metric.unit.as_str())
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            @if !other_metric_keys.is_empty() {
+                div.metric-picker-group {
+                    h3 { "Other Live Metrics" }
+                    div.metric-picker {
+                        @for metric in other_metric_keys {
+                            @let href = frontier_tab_href(frontier_slug, FrontierTab::Metrics, Some(metric.key.as_str()));
+                            a
+                                href=(href)
+                                class={(if selected_metric.is_some_and(|selected| selected == &metric.key) {
+                                    "metric-choice active"
+                                } else {
+                                    "metric-choice"
+                                })}
+                            {
+                                span.metric-choice-key { (metric.key) }
+                                span.metric-choice-meta {
+                                    (metric.objective.as_str()) " · "
+                                    (metric.unit.as_str())
+                                }
+                            }
                         }
                     }
                 }
@@ -988,6 +1035,43 @@ fn render_frontier_active_sets(projection: &FrontierOpenProjection) -> Markup {
                     div.chip-row.tag-cloud {
                         @for tag in &projection.active_tags {
                             span.tag-chip { (tag) }
+                        }
+                    }
+                }
+            }
+            div.subcard {
+                h3 { "Scoreboard Metrics" }
+                @if projection.scoreboard_metric_keys.is_empty() {
+                    p.muted { "No frontier scoreboard metrics configured." }
+                } @else {
+                    div.table-scroll {
+                        table.metric-table {
+                            thead {
+                                tr {
+                                    th { "Key" }
+                                    th { "Unit" }
+                                    th { "Objective" }
+                                    th { "Refs" }
+                                }
+                            }
+                            tbody {
+                                @for metric in &projection.scoreboard_metric_keys {
+                                    tr {
+                                        td {
+                                            a href=(frontier_tab_href(
+                                                &projection.frontier.slug,
+                                                FrontierTab::Metrics,
+                                                Some(metric.key.as_str()),
+                                            )) {
+                                                (metric.key)
+                                            }
+                                        }
+                                        td { (metric.unit.as_str()) }
+                                        td { (metric.objective.as_str()) }
+                                        td { (metric.reference_count) }
+                                    }
+                                }
+                            }
                         }
                     }
                 }

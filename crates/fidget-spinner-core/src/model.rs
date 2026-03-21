@@ -595,6 +595,8 @@ pub struct FrontierBrief {
     pub situation: Option<NonEmptyText>,
     pub roadmap: Vec<FrontierRoadmapItem>,
     pub unknowns: Vec<NonEmptyText>,
+    #[serde(default)]
+    pub scoreboard_metric_keys: Vec<NonEmptyText>,
     pub revision: u64,
     pub updated_at: Option<OffsetDateTime>,
 }

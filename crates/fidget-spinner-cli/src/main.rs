@@ -21,8 +21,8 @@ use fidget_spinner_store_sqlite::{
     ExperimentOutcomePatch, FrontierRoadmapItemDraft, ListArtifactsQuery, ListExperimentsQuery,
     ListHypothesesQuery, MetricBestQuery, MetricKeysQuery, MetricRankOrder, MetricScope,
     OpenExperimentRequest, ProjectStore, STORE_DIR_NAME, StoreError, TextPatch,
-    UpdateArtifactRequest, UpdateExperimentRequest, UpdateFrontierBriefRequest,
-    UpdateHypothesisRequest, VertexSelector,
+    UpdateArtifactRequest, UpdateExperimentRequest, UpdateFrontierRequest, UpdateHypothesisRequest,
+    VertexSelector,
 };
 #[cfg(test)]
 use libmcp_testkit as _;
@@ -126,7 +126,7 @@ enum FrontierCommand {
     List(ProjectArg),
     Read(FrontierSelectorArgs),
     Open(FrontierSelectorArgs),
-    UpdateBrief(FrontierBriefUpdateArgs),
+    Update(FrontierUpdateArgs),
     History(FrontierSelectorArgs),
 }
 
@@ -146,6 +146,7 @@ enum ExperimentCommand {
     Read(ExperimentSelectorArgs),
     Update(ExperimentUpdateArgs),
     Close(ExperimentCloseArgs),
+    Nearest(ExperimentNearestArgs),
     History(ExperimentSelectorArgs),
 }
 
@@ -226,7 +227,7 @@ struct FrontierSelectorArgs {
 }
 
 #[derive(Args)]
-struct FrontierBriefUpdateArgs {
+struct FrontierUpdateArgs {
     #[command(flatten)]
     project: ProjectArg,
     #[arg(long)]
@@ -234,13 +235,47 @@ struct FrontierBriefUpdateArgs {
     #[arg(long)]
     expected_revision: Option<u64>,
     #[arg(long)]
+    objective: Option<String>,
+    #[command(flatten)]
+    situation: FrontierSituationPatchArgs,
+    #[command(flatten)]
+    unknowns: FrontierUnknownsPatchArgs,
+    #[command(flatten)]
+    roadmap: FrontierRoadmapPatchArgs,
+    #[command(flatten)]
+    scoreboard: FrontierScoreboardPatchArgs,
+}
+
+#[derive(Args)]
+struct FrontierSituationPatchArgs {
+    #[arg(long)]
     situation: Option<String>,
     #[arg(long)]
     clear_situation: bool,
+}
+
+#[derive(Args)]
+struct FrontierUnknownsPatchArgs {
     #[arg(long = "unknown")]
     unknowns: Vec<String>,
+    #[arg(long = "clear-unknowns")]
+    clear_unknowns: bool,
+}
+
+#[derive(Args)]
+struct FrontierRoadmapPatchArgs {
     #[arg(long = "roadmap")]
     roadmap: Vec<String>,
+    #[arg(long = "clear-roadmap")]
+    clear_roadmap: bool,
+}
+
+#[derive(Args)]
+struct FrontierScoreboardPatchArgs {
+    #[arg(long = "scoreboard-metric")]
+    scoreboard_metric_keys: Vec<String>,
+    #[arg(long = "clear-scoreboard")]
+    clear_scoreboard_metric_keys: bool,
 }
 
 #[derive(Args)]
@@ -415,6 +450,26 @@ struct ExperimentCloseArgs {
     analysis_summary: Option<String>,
     #[arg(long)]
     analysis_body: Option<String>,
+}
+
+#[derive(Args)]
+struct ExperimentNearestArgs {
+    #[command(flatten)]
+    project: ProjectArg,
+    #[arg(long)]
+    frontier: Option<String>,
+    #[arg(long)]
+    hypothesis: Option<String>,
+    #[arg(long)]
+    experiment: Option<String>,
+    #[arg(long)]
+    metric: Option<String>,
+    #[arg(long = "dimension")]
+    dimensions: Vec<String>,
+    #[arg(long = "tag")]
+    tags: Vec<String>,
+    #[arg(long, value_enum)]
+    order: Option<CliMetricRankOrder>,
 }
 
 #[derive(Args)]
@@ -599,6 +654,7 @@ enum CliMetricVisibility {
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
 enum CliMetricScope {
     Live,
+    Scoreboard,
     Visible,
     All,
 }
@@ -679,7 +735,7 @@ fn main() -> Result<(), StoreError> {
             FrontierCommand::Open(args) => {
                 print_json(&open_store(&args.project.project)?.frontier_open(&args.frontier)?)
             }
-            FrontierCommand::UpdateBrief(args) => run_frontier_brief_update(args),
+            FrontierCommand::Update(args) => run_frontier_update(args),
             FrontierCommand::History(args) => {
                 print_json(&open_store(&args.project.project)?.frontier_history(&args.frontier)?)
             }
@@ -703,6 +759,7 @@ fn main() -> Result<(), StoreError> {
             }
             ExperimentCommand::Update(args) => run_experiment_update(args),
             ExperimentCommand::Close(args) => run_experiment_close(args),
+            ExperimentCommand::Nearest(args) => run_experiment_nearest(args),
             ExperimentCommand::History(args) => print_json(
                 &open_store(&args.project.project)?.experiment_history(&args.experiment)?,
             ),
@@ -776,29 +833,43 @@ fn run_frontier_create(args: FrontierCreateArgs) -> Result<(), StoreError> {
     })?)
 }
 
-fn run_frontier_brief_update(args: FrontierBriefUpdateArgs) -> Result<(), StoreError> {
+fn run_frontier_update(args: FrontierUpdateArgs) -> Result<(), StoreError> {
     let mut store = open_store(&args.project.project)?;
-    let roadmap = if args.roadmap.is_empty() {
+    let roadmap = if args.roadmap.clear_roadmap {
+        Some(Vec::new())
+    } else if args.roadmap.roadmap.is_empty() {
         None
     } else {
         Some(
             args.roadmap
+                .roadmap
                 .into_iter()
                 .map(parse_roadmap_item)
                 .collect::<Result<Vec<_>, _>>()?,
         )
     };
-    let unknowns = if args.unknowns.is_empty() {
+    let unknowns = if args.unknowns.clear_unknowns {
+        Some(Vec::new())
+    } else if args.unknowns.unknowns.is_empty() {
         None
     } else {
-        Some(to_non_empty_texts(args.unknowns)?)
+        Some(to_non_empty_texts(args.unknowns.unknowns)?)
     };
-    print_json(&store.update_frontier_brief(UpdateFrontierBriefRequest {
+    let scoreboard_metric_keys = if args.scoreboard.clear_scoreboard_metric_keys {
+        Some(Vec::new())
+    } else if args.scoreboard.scoreboard_metric_keys.is_empty() {
+        None
+    } else {
+        Some(to_non_empty_texts(args.scoreboard.scoreboard_metric_keys)?)
+    };
+    print_json(&store.update_frontier(UpdateFrontierRequest {
         frontier: args.frontier,
         expected_revision: args.expected_revision,
-        situation: cli_text_patch(args.situation, args.clear_situation)?,
+        objective: args.objective.map(NonEmptyText::new).transpose()?,
+        situation: cli_text_patch(args.situation.situation, args.situation.clear_situation)?,
         roadmap,
         unknowns,
+        scoreboard_metric_keys,
     })?)
 }
 
@@ -931,6 +1002,21 @@ fn run_experiment_close(args: ExperimentCloseArgs) -> Result<(), StoreError> {
             verdict: args.verdict.into(),
             rationale: NonEmptyText::new(args.rationale)?,
             analysis,
+        })?,
+    )
+}
+
+fn run_experiment_nearest(args: ExperimentNearestArgs) -> Result<(), StoreError> {
+    let store = open_store(&args.project.project)?;
+    print_json(
+        &store.experiment_nearest(fidget_spinner_store_sqlite::ExperimentNearestQuery {
+            frontier: args.frontier,
+            hypothesis: args.hypothesis,
+            experiment: args.experiment,
+            metric: args.metric.map(NonEmptyText::new).transpose()?,
+            dimensions: parse_dimension_assignments(args.dimensions)?,
+            tags: parse_tag_set(args.tags)?,
+            order: args.order.map(Into::into),
         })?,
     )
 }
@@ -1414,6 +1500,7 @@ impl From<CliMetricScope> for MetricScope {
     fn from(value: CliMetricScope) -> Self {
         match value {
             CliMetricScope::Live => Self::Live,
+            CliMetricScope::Scoreboard => Self::Scoreboard,
             CliMetricScope::Visible => Self::Visible,
             CliMetricScope::All => Self::All,
         }

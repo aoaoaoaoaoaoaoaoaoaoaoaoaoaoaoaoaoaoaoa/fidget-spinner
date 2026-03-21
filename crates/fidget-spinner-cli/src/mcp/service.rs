@@ -14,11 +14,11 @@ use fidget_spinner_core::{
 use fidget_spinner_store_sqlite::{
     AttachmentSelector, CloseExperimentRequest, CreateArtifactRequest, CreateFrontierRequest,
     CreateHypothesisRequest, DefineMetricRequest, DefineRunDimensionRequest, EntityHistoryEntry,
-    ExperimentOutcomePatch, FrontierOpenProjection, FrontierRoadmapItemDraft, FrontierSummary,
-    ListArtifactsQuery, ListExperimentsQuery, ListHypothesesQuery, MetricBestEntry,
-    MetricBestQuery, MetricKeySummary, MetricKeysQuery, MetricRankOrder, MetricScope,
-    OpenExperimentRequest, ProjectStatus, ProjectStore, StoreError, TextPatch,
-    UpdateArtifactRequest, UpdateExperimentRequest, UpdateFrontierBriefRequest,
+    ExperimentNearestQuery, ExperimentOutcomePatch, FrontierOpenProjection,
+    FrontierRoadmapItemDraft, FrontierSummary, ListArtifactsQuery, ListExperimentsQuery,
+    ListHypothesesQuery, MetricBestEntry, MetricBestQuery, MetricKeySummary, MetricKeysQuery,
+    MetricRankOrder, MetricScope, OpenExperimentRequest, ProjectStatus, ProjectStore, StoreError,
+    TextPatch, UpdateArtifactRequest, UpdateExperimentRequest, UpdateFrontierRequest,
     UpdateHypothesisRequest, VertexSelector, VertexSummary,
 };
 use serde::Deserialize;
@@ -137,44 +137,58 @@ impl WorkerService {
                 let args = deserialize::<FrontierSelectorArgs>(arguments)?;
                 frontier_open_output(&lift!(self.store.frontier_open(&args.frontier)), &operation)?
             }
-            "frontier.brief.update" => {
-                let args = deserialize::<FrontierBriefUpdateArgs>(arguments)?;
+            "frontier.update" => {
+                let args = deserialize::<FrontierUpdateArgs>(arguments)?;
                 let frontier = lift!(
-                    self.store
-                        .update_frontier_brief(UpdateFrontierBriefRequest {
-                            frontier: args.frontier,
-                            expected_revision: args.expected_revision,
-                            situation: nullable_text_patch_from_wire(args.situation, &operation)?,
-                            roadmap: args
-                                .roadmap
-                                .map(|items| {
-                                    items
-                                        .into_iter()
-                                        .map(|item| {
-                                            Ok(FrontierRoadmapItemDraft {
-                                                rank: item.rank,
-                                                hypothesis: item.hypothesis,
-                                                summary: item
-                                                    .summary
-                                                    .map(NonEmptyText::new)
-                                                    .transpose()
-                                                    .map_err(store_fault(&operation))?,
-                                            })
+                    self.store.update_frontier(UpdateFrontierRequest {
+                        frontier: args.frontier,
+                        expected_revision: args.expected_revision,
+                        objective: args
+                            .objective
+                            .map(NonEmptyText::new)
+                            .transpose()
+                            .map_err(store_fault(&operation))?,
+                        situation: nullable_text_patch_from_wire(args.situation, &operation)?,
+                        roadmap: args
+                            .roadmap
+                            .map(|items| {
+                                items
+                                    .into_iter()
+                                    .map(|item| {
+                                        Ok(FrontierRoadmapItemDraft {
+                                            rank: item.rank,
+                                            hypothesis: item.hypothesis,
+                                            summary: item
+                                                .summary
+                                                .map(NonEmptyText::new)
+                                                .transpose()
+                                                .map_err(store_fault(&operation))?,
                                         })
-                                        .collect::<Result<Vec<_>, FaultRecord>>()
-                                })
-                                .transpose()?,
-                            unknowns: args
-                                .unknowns
-                                .map(|items| {
-                                    items
-                                        .into_iter()
-                                        .map(NonEmptyText::new)
-                                        .collect::<Result<Vec<_>, _>>()
-                                        .map_err(store_fault(&operation))
-                                })
-                                .transpose()?,
-                        })
+                                    })
+                                    .collect::<Result<Vec<_>, FaultRecord>>()
+                            })
+                            .transpose()?,
+                        unknowns: args
+                            .unknowns
+                            .map(|items| {
+                                items
+                                    .into_iter()
+                                    .map(NonEmptyText::new)
+                                    .collect::<Result<Vec<_>, _>>()
+                                    .map_err(store_fault(&operation))
+                            })
+                            .transpose()?,
+                        scoreboard_metric_keys: args
+                            .scoreboard_metric_keys
+                            .map(|items| {
+                                items
+                                    .into_iter()
+                                    .map(NonEmptyText::new)
+                                    .collect::<Result<Vec<_>, _>>()
+                                    .map_err(store_fault(&operation))
+                            })
+                            .transpose()?,
+                    })
                 );
                 frontier_record_output(&self.store, &frontier, &operation)?
             }
@@ -365,6 +379,32 @@ impl WorkerService {
                     })
                 );
                 experiment_record_output(&experiment, &operation)?
+            }
+            "experiment.nearest" => {
+                let args = deserialize::<ExperimentNearestArgs>(arguments)?;
+                experiment_nearest_output(
+                    &lift!(
+                        self.store.experiment_nearest(ExperimentNearestQuery {
+                            frontier: args.frontier,
+                            hypothesis: args.hypothesis,
+                            experiment: args.experiment,
+                            metric: args
+                                .metric
+                                .map(NonEmptyText::new)
+                                .transpose()
+                                .map_err(store_fault(&operation))?,
+                            dimensions: dimension_map_from_wire(args.dimensions)?,
+                            tags: args
+                                .tags
+                                .map(tags_to_set)
+                                .transpose()
+                                .map_err(store_fault(&operation))?
+                                .unwrap_or_default(),
+                            order: args.order,
+                        })
+                    ),
+                    &operation,
+                )?
             }
             "experiment.history" => {
                 let args = deserialize::<ExperimentSelectorArgs>(arguments)?;
@@ -583,12 +623,14 @@ struct FrontierSelectorArgs {
 }
 
 #[derive(Debug, Deserialize)]
-struct FrontierBriefUpdateArgs {
+struct FrontierUpdateArgs {
     frontier: String,
     expected_revision: Option<u64>,
+    objective: Option<String>,
     situation: Option<NullableStringArg>,
     roadmap: Option<Vec<FrontierRoadmapItemWire>>,
     unknowns: Option<Vec<String>>,
+    scoreboard_metric_keys: Option<Vec<String>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -683,6 +725,17 @@ struct ExperimentCloseArgs {
     verdict: FrontierVerdict,
     rationale: String,
     analysis: Option<ExperimentAnalysisWire>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ExperimentNearestArgs {
+    frontier: Option<String>,
+    hypothesis: Option<String>,
+    experiment: Option<String>,
+    metric: Option<String>,
+    dimensions: Option<Map<String, Value>>,
+    tags: Option<Vec<String>>,
+    order: Option<MetricRankOrder>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -835,6 +888,7 @@ where
             | StoreError::UnknownRoadmapHypothesis(_)
             | StoreError::ManualExperimentRequiresCommand
             | StoreError::MetricOrderRequired { .. }
+            | StoreError::MetricScopeRequiresFrontier { .. }
             | StoreError::UnknownDimensionFilter(_)
             | StoreError::DuplicateTag(_)
             | StoreError::DuplicateMetricDefinition(_)
@@ -1005,6 +1059,14 @@ fn json_value_to_dimension(value: Value) -> Result<RunDimensionValue, FaultRecor
     }
 }
 
+fn run_dimension_value_text(value: &RunDimensionValue) -> String {
+    match value {
+        RunDimensionValue::String(value) | RunDimensionValue::Timestamp(value) => value.to_string(),
+        RunDimensionValue::Numeric(value) => value.to_string(),
+        RunDimensionValue::Boolean(value) => value.to_string(),
+    }
+}
+
 fn project_status_output(
     status: &ProjectStatus,
     operation: &str,
@@ -1144,6 +1206,18 @@ fn frontier_record_output(
                 .join("; ")
         ));
     }
+    if !frontier.brief.scoreboard_metric_keys.is_empty() {
+        lines.push(format!(
+            "scoreboard metrics: {}",
+            frontier
+                .brief
+                .scoreboard_metric_keys
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
     projected_tool_output(
         &projection,
         lines.join("\n"),
@@ -1181,6 +1255,17 @@ fn frontier_open_output(
             "live metrics: {}",
             projection
                 .active_metric_keys
+                .iter()
+                .map(|metric| metric.key.to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
+    if !projection.scoreboard_metric_keys.is_empty() {
+        lines.push(format!(
+            "scoreboard metrics: {}",
+            projection
+                .scoreboard_metric_keys
                 .iter()
                 .map(|metric| metric.key.to_string())
                 .collect::<Vec<_>>()
@@ -1567,6 +1652,71 @@ fn metric_best_output(
     )
 }
 
+fn experiment_nearest_output(
+    result: &fidget_spinner_store_sqlite::ExperimentNearestResult,
+    operation: &str,
+) -> Result<ToolOutput, FaultRecord> {
+    let projection = projection::experiment_nearest(result);
+    let mut lines = Vec::new();
+    if !result.target_dimensions.is_empty() {
+        lines.push(format!(
+            "target slice: {}",
+            result
+                .target_dimensions
+                .iter()
+                .map(|(key, value)| format!("{key}={}", run_dimension_value_text(value)))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
+    if let Some(metric) = result.metric.as_ref() {
+        lines.push(format!(
+            "champion metric: {} [{} {}]",
+            metric.key,
+            metric.unit.as_str(),
+            metric.objective.as_str()
+        ));
+    }
+    for (label, hit) in [
+        ("accepted", result.accepted.as_ref()),
+        ("kept", result.kept.as_ref()),
+        ("rejected", result.rejected.as_ref()),
+        ("champion", result.champion.as_ref()),
+    ] {
+        if let Some(hit) = hit {
+            let suffix = hit
+                .metric_value
+                .as_ref()
+                .map_or_else(String::new, |metric| {
+                    format!(" | {}={}", metric.key, metric.value)
+                });
+            lines.push(format!(
+                "{}: {} / {}{}",
+                label, hit.experiment.slug, hit.hypothesis.slug, suffix
+            ));
+            lines.push(format!(
+                "  why: {}",
+                hit.reasons
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            ));
+        }
+    }
+    projected_tool_output(
+        &projection,
+        if lines.is_empty() {
+            "no comparator candidates".to_owned()
+        } else {
+            lines.join("\n")
+        },
+        None,
+        FaultStage::Worker,
+        operation,
+    )
+}
+
 fn run_dimension_definition_output(
     dimension: &fidget_spinner_core::RunDimensionDefinition,
     operation: &str,
@@ -1704,6 +1854,7 @@ mod legacy_projection_values {
                     "situation": frontier.brief.situation,
                     "roadmap": roadmap,
                     "unknowns": frontier.brief.unknowns,
+                    "scoreboard_metric_keys": frontier.brief.scoreboard_metric_keys,
                     "revision": frontier.brief.revision,
                     "updated_at": frontier.brief.updated_at.map(timestamp_value),
                 },
@@ -1749,11 +1900,17 @@ mod legacy_projection_values {
                     "situation": projection.frontier.brief.situation,
                     "roadmap": roadmap,
                     "unknowns": projection.frontier.brief.unknowns,
+                    "scoreboard_metric_keys": projection.frontier.brief.scoreboard_metric_keys,
                     "revision": projection.frontier.brief.revision,
                     "updated_at": projection.frontier.brief.updated_at.map(timestamp_value),
                 },
             },
             "active_tags": projection.active_tags,
+            "scoreboard_metrics": projection
+                .scoreboard_metric_keys
+                .iter()
+                .map(metric_key_summary_value)
+                .collect::<Vec<_>>(),
             "active_metric_keys": projection
                 .active_metric_keys
                 .iter()
