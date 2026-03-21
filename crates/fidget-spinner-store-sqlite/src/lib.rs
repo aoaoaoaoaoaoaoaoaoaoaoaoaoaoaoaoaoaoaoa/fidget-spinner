@@ -497,6 +497,7 @@ pub struct FrontierMetricPoint {
     pub value: f64,
     pub verdict: FrontierVerdict,
     pub closed_at: OffsetDateTime,
+    pub dimensions: BTreeMap<NonEmptyText, RunDimensionValue>,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -1424,6 +1425,7 @@ impl ProjectStore {
             .map(|(record, outcome, value)| {
                 Ok(FrontierMetricPoint {
                     closed_at: outcome.closed_at,
+                    dimensions: outcome.dimensions.clone(),
                     experiment: self.experiment_summary_from_record(record.clone())?,
                     hypothesis: self.hypothesis_summary_from_record(
                         self.hypothesis_by_id(record.hypothesis_id)?,

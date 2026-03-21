@@ -393,6 +393,67 @@ fn frontier_open_is_the_grounding_surface_for_live_state() -> TestResult {
 }
 
 #[test]
+fn registry_and_history_surfaces_render_timestamps_as_strings() -> TestResult {
+    let project_root = temp_project_root("timestamp_text")?;
+    init_project(&project_root)?;
+
+    let mut harness = McpHarness::spawn(Some(&project_root))?;
+    let _ = harness.initialize()?;
+    harness.notify_initialized()?;
+
+    let dimension = harness.call_tool_full(
+        19,
+        "run.dimension.define",
+        json!({
+            "key": "duration_s",
+            "value_type": "numeric",
+            "description": "Wallclock timeout in seconds.",
+        }),
+    )?;
+    assert_tool_ok(&dimension);
+    assert!(tool_content(&dimension)["record"]["created_at"].is_string());
+    assert!(tool_content(&dimension)["record"]["updated_at"].is_string());
+
+    let dimensions = harness.call_tool_full(20, "run.dimension.list", json!({}))?;
+    assert_tool_ok(&dimensions);
+    let listed = must_some(
+        tool_content(&dimensions)["dimensions"]
+            .as_array()
+            .and_then(|items| items.first()),
+        "defined run dimension in list",
+    )?;
+    assert!(listed["created_at"].is_string());
+    assert!(listed["updated_at"].is_string());
+
+    let frontier = harness.call_tool_full(
+        21,
+        "frontier.create",
+        json!({
+            "label": "alpha",
+            "objective": "Trace timestamp presentation discipline",
+        }),
+    )?;
+    assert_tool_ok(&frontier);
+    let frontier_slug = must_some(
+        tool_content(&frontier)["record"]["slug"].as_str(),
+        "frontier slug",
+    )?;
+
+    let history =
+        harness.call_tool_full(22, "frontier.history", json!({ "frontier": frontier_slug }))?;
+    assert_tool_ok(&history);
+    let history_entry = must_some(
+        tool_content(&history)["history"]
+            .as_array()
+            .and_then(|items| items.first()),
+        "frontier history entry",
+    )?;
+    assert!(history_entry["occurred_at"].is_string());
+
+    Ok(())
+}
+
+#[test]
 fn hypothesis_body_discipline_is_enforced_over_mcp() -> TestResult {
     let project_root = temp_project_root("single_paragraph")?;
     init_project(&project_root)?;

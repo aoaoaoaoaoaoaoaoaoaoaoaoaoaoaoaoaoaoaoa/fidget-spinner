@@ -2,15 +2,18 @@ use std::collections::BTreeMap;
 
 use fidget_spinner_core::{
     AttachmentTargetRef, CommandRecipe, ExperimentAnalysis, ExperimentOutcome, FrontierBrief,
-    FrontierRecord, MetricValue, NonEmptyText, RunDimensionValue,
+    FrontierRecord, MetricDefinition, MetricValue, NonEmptyText, RunDimensionDefinition,
+    RunDimensionValue, TagRecord,
 };
 use fidget_spinner_store_sqlite::{
-    ArtifactDetail, ArtifactSummary, ExperimentDetail, ExperimentSummary, FrontierOpenProjection,
-    FrontierSummary, HypothesisCurrentState, HypothesisDetail, MetricBestEntry, MetricKeySummary,
-    MetricObservationSummary, ProjectStore, StoreError, VertexSummary,
+    ArtifactDetail, ArtifactSummary, EntityHistoryEntry, ExperimentDetail, ExperimentSummary,
+    FrontierOpenProjection, FrontierSummary, HypothesisCurrentState, HypothesisDetail,
+    MetricBestEntry, MetricKeySummary, MetricObservationSummary, ProjectStore, StoreError,
+    VertexSummary,
 };
 use libmcp::{
     ProjectionError, SelectorProjection, StructuredProjection, SurfaceKind, SurfacePolicy,
+    TimestampText,
 };
 use serde::Serialize;
 use serde_json::Value;
@@ -44,7 +47,7 @@ pub(crate) struct FrontierSummaryProjection {
     pub(crate) status: String,
     pub(crate) active_hypothesis_count: u64,
     pub(crate) open_experiment_count: u64,
-    pub(crate) updated_at: String,
+    pub(crate) updated_at: TimestampText,
 }
 
 #[derive(Clone, Serialize)]
@@ -55,7 +58,7 @@ pub(crate) struct FrontierBriefProjection {
     pub(crate) unknowns: Vec<String>,
     pub(crate) revision: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) updated_at: Option<String>,
+    pub(crate) updated_at: Option<TimestampText>,
 }
 
 #[derive(Clone, Serialize)]
@@ -80,8 +83,8 @@ pub(crate) struct FrontierRecordProjection {
     pub(crate) objective: String,
     pub(crate) status: String,
     pub(crate) revision: u64,
-    pub(crate) created_at: String,
-    pub(crate) updated_at: String,
+    pub(crate) created_at: TimestampText,
+    pub(crate) updated_at: TimestampText,
     pub(crate) brief: FrontierBriefProjection,
 }
 
@@ -127,7 +130,7 @@ pub(crate) struct HypothesisSummaryProjection {
     pub(crate) open_experiment_count: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) latest_verdict: Option<String>,
-    pub(crate) updated_at: String,
+    pub(crate) updated_at: TimestampText,
 }
 
 #[derive(Clone, Serialize)]
@@ -139,8 +142,8 @@ pub(crate) struct HypothesisRecordProjection {
     pub(crate) body: String,
     pub(crate) tags: Vec<String>,
     pub(crate) revision: u64,
-    pub(crate) created_at: String,
-    pub(crate) updated_at: String,
+    pub(crate) created_at: TimestampText,
+    pub(crate) updated_at: TimestampText,
 }
 
 #[derive(Clone, Serialize)]
@@ -151,7 +154,7 @@ pub(crate) struct HypothesisReadRecordProjection {
     pub(crate) summary: String,
     pub(crate) tags: Vec<String>,
     pub(crate) revision: u64,
-    pub(crate) updated_at: String,
+    pub(crate) updated_at: TimestampText,
 }
 
 #[derive(Clone, Serialize)]
@@ -229,9 +232,9 @@ pub(crate) struct ExperimentSummaryProjection {
     pub(crate) verdict: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) primary_metric: Option<MetricObservationSummaryProjection>,
-    pub(crate) updated_at: String,
+    pub(crate) updated_at: TimestampText,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) closed_at: Option<String>,
+    pub(crate) closed_at: Option<TimestampText>,
 }
 
 #[derive(Clone, Serialize)]
@@ -246,8 +249,8 @@ pub(crate) struct ExperimentRecordProjection {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) outcome: Option<ExperimentOutcomeProjection>,
     pub(crate) revision: u64,
-    pub(crate) created_at: String,
-    pub(crate) updated_at: String,
+    pub(crate) created_at: TimestampText,
+    pub(crate) updated_at: TimestampText,
 }
 
 #[derive(Clone, Serialize)]
@@ -262,7 +265,7 @@ pub(crate) struct ExperimentReadRecordProjection {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) verdict: Option<String>,
     pub(crate) revision: u64,
-    pub(crate) updated_at: String,
+    pub(crate) updated_at: TimestampText,
 }
 
 #[derive(Clone, Serialize)]
@@ -329,7 +332,7 @@ pub(crate) struct ArtifactSummaryProjection {
     pub(crate) locator: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) media_type: Option<String>,
-    pub(crate) updated_at: String,
+    pub(crate) updated_at: TimestampText,
 }
 
 #[derive(Clone, Serialize)]
@@ -343,8 +346,8 @@ pub(crate) struct ArtifactRecordProjection {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) media_type: Option<String>,
     pub(crate) revision: u64,
-    pub(crate) created_at: String,
-    pub(crate) updated_at: String,
+    pub(crate) created_at: TimestampText,
+    pub(crate) updated_at: TimestampText,
 }
 
 #[derive(Clone, Serialize)]
@@ -358,7 +361,7 @@ pub(crate) struct ArtifactReadRecordProjection {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) media_type: Option<String>,
     pub(crate) revision: u64,
-    pub(crate) updated_at: String,
+    pub(crate) updated_at: TimestampText,
 }
 
 #[derive(Clone, Serialize)]
@@ -452,7 +455,7 @@ pub(crate) struct ExperimentOutcomeProjection {
     pub(crate) rationale: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) analysis: Option<ExperimentAnalysisProjection>,
-    pub(crate) closed_at: String,
+    pub(crate) closed_at: TimestampText,
 }
 
 #[derive(Clone, Serialize)]
@@ -484,7 +487,7 @@ pub(crate) struct VertexSummaryProjection {
     pub(crate) title: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) summary: Option<String>,
-    pub(crate) updated_at: String,
+    pub(crate) updated_at: TimestampText,
 }
 
 #[derive(Clone, Serialize)]
@@ -513,6 +516,82 @@ pub(crate) struct MetricKeysOutput {
 pub(crate) struct MetricBestOutput {
     pub(crate) count: usize,
     pub(crate) entries: Vec<MetricBestEntryProjection>,
+}
+
+#[derive(Clone, Serialize)]
+pub(crate) struct TagRecordProjection {
+    pub(crate) name: String,
+    pub(crate) description: String,
+    pub(crate) created_at: TimestampText,
+}
+
+#[derive(Clone, Serialize, libmcp::ToolProjection)]
+#[libmcp(kind = "mutation")]
+pub(crate) struct TagRecordOutput {
+    pub(crate) record: TagRecordProjection,
+}
+
+#[derive(Clone, Serialize, libmcp::ToolProjection)]
+#[libmcp(kind = "list")]
+pub(crate) struct TagListOutput {
+    pub(crate) count: usize,
+    pub(crate) tags: Vec<TagRecordProjection>,
+}
+
+#[derive(Clone, Serialize)]
+pub(crate) struct MetricDefinitionProjection {
+    pub(crate) key: String,
+    pub(crate) unit: String,
+    pub(crate) objective: String,
+    pub(crate) visibility: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) description: Option<String>,
+    pub(crate) created_at: TimestampText,
+    pub(crate) updated_at: TimestampText,
+}
+
+#[derive(Clone, Serialize, libmcp::ToolProjection)]
+#[libmcp(kind = "mutation")]
+pub(crate) struct MetricDefinitionOutput {
+    pub(crate) record: MetricDefinitionProjection,
+}
+
+#[derive(Clone, Serialize)]
+pub(crate) struct RunDimensionDefinitionProjection {
+    pub(crate) key: String,
+    pub(crate) value_type: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) description: Option<String>,
+    pub(crate) created_at: TimestampText,
+    pub(crate) updated_at: TimestampText,
+}
+
+#[derive(Clone, Serialize, libmcp::ToolProjection)]
+#[libmcp(kind = "mutation")]
+pub(crate) struct RunDimensionDefinitionOutput {
+    pub(crate) record: RunDimensionDefinitionProjection,
+}
+
+#[derive(Clone, Serialize, libmcp::ToolProjection)]
+#[libmcp(kind = "list")]
+pub(crate) struct RunDimensionListOutput {
+    pub(crate) count: usize,
+    pub(crate) dimensions: Vec<RunDimensionDefinitionProjection>,
+}
+
+#[derive(Clone, Serialize)]
+pub(crate) struct HistoryEntryProjection {
+    pub(crate) revision: u64,
+    pub(crate) event_kind: String,
+    pub(crate) occurred_at: TimestampText,
+    pub(crate) snapshot: Value,
+}
+
+#[derive(Clone, Serialize, libmcp::ToolProjection)]
+#[libmcp(kind = "list")]
+pub(crate) struct HistoryOutput {
+    pub(crate) count: usize,
+    pub(crate) history: Vec<HistoryEntryProjection>,
 }
 
 pub(crate) fn frontier_list(frontiers: &[FrontierSummary]) -> FrontierListOutput {
@@ -784,6 +863,50 @@ pub(crate) fn metric_best(entries: &[MetricBestEntry]) -> MetricBestOutput {
     }
 }
 
+pub(crate) fn tag_record(tag: &TagRecord) -> TagRecordOutput {
+    TagRecordOutput {
+        record: tag_record_projection(tag),
+    }
+}
+
+pub(crate) fn tag_list(tags: &[TagRecord]) -> TagListOutput {
+    TagListOutput {
+        count: tags.len(),
+        tags: tags.iter().map(tag_record_projection).collect(),
+    }
+}
+
+pub(crate) fn metric_definition(metric: &MetricDefinition) -> MetricDefinitionOutput {
+    MetricDefinitionOutput {
+        record: metric_definition_projection(metric),
+    }
+}
+
+pub(crate) fn run_dimension_definition(
+    dimension: &RunDimensionDefinition,
+) -> RunDimensionDefinitionOutput {
+    RunDimensionDefinitionOutput {
+        record: run_dimension_definition_projection(dimension),
+    }
+}
+
+pub(crate) fn run_dimension_list(dimensions: &[RunDimensionDefinition]) -> RunDimensionListOutput {
+    RunDimensionListOutput {
+        count: dimensions.len(),
+        dimensions: dimensions
+            .iter()
+            .map(run_dimension_definition_projection)
+            .collect(),
+    }
+}
+
+pub(crate) fn history(history: &[EntityHistoryEntry]) -> HistoryOutput {
+    HistoryOutput {
+        count: history.len(),
+        history: history.iter().map(history_entry_projection).collect(),
+    }
+}
+
 fn frontier_summary(frontier: &FrontierSummary) -> FrontierSummaryProjection {
     FrontierSummaryProjection {
         slug: frontier.slug.to_string(),
@@ -969,6 +1092,47 @@ fn metric_key_summary(metric: &MetricKeySummary) -> MetricKeySummaryProjection {
     }
 }
 
+fn tag_record_projection(tag: &TagRecord) -> TagRecordProjection {
+    TagRecordProjection {
+        name: tag.name.to_string(),
+        description: tag.description.to_string(),
+        created_at: timestamp_value(tag.created_at),
+    }
+}
+
+fn metric_definition_projection(metric: &MetricDefinition) -> MetricDefinitionProjection {
+    MetricDefinitionProjection {
+        key: metric.key.to_string(),
+        unit: metric.unit.as_str().to_owned(),
+        objective: metric.objective.as_str().to_owned(),
+        visibility: metric.visibility.as_str().to_owned(),
+        description: metric.description.as_ref().map(ToString::to_string),
+        created_at: timestamp_value(metric.created_at),
+        updated_at: timestamp_value(metric.updated_at),
+    }
+}
+
+fn run_dimension_definition_projection(
+    dimension: &RunDimensionDefinition,
+) -> RunDimensionDefinitionProjection {
+    RunDimensionDefinitionProjection {
+        key: dimension.key.to_string(),
+        value_type: dimension.value_type.as_str().to_owned(),
+        description: dimension.description.as_ref().map(ToString::to_string),
+        created_at: timestamp_value(dimension.created_at),
+        updated_at: timestamp_value(dimension.updated_at),
+    }
+}
+
+fn history_entry_projection(entry: &EntityHistoryEntry) -> HistoryEntryProjection {
+    HistoryEntryProjection {
+        revision: entry.revision,
+        event_kind: entry.event_kind.to_string(),
+        occurred_at: timestamp_value(entry.occurred_at),
+        snapshot: entry.snapshot.clone(),
+    }
+}
+
 fn metric_best_entry(entry: &MetricBestEntry) -> MetricBestEntryProjection {
     MetricBestEntryProjection {
         experiment: experiment_summary(&entry.experiment),
@@ -1127,10 +1291,8 @@ fn attachment_target(
     }
 }
 
-fn timestamp_value(timestamp: time::OffsetDateTime) -> String {
-    timestamp
-        .format(&time::format_description::well_known::Rfc3339)
-        .unwrap_or_else(|_| timestamp.unix_timestamp().to_string())
+fn timestamp_value(timestamp: time::OffsetDateTime) -> TimestampText {
+    TimestampText::from(timestamp)
 }
 
 fn store_fault(operation: &str) -> impl Fn(StoreError) -> FaultRecord + '_ {

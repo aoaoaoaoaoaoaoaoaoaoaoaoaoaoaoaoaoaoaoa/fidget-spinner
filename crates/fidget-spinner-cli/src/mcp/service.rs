@@ -26,8 +26,8 @@ use serde_json::{Map, Value, json};
 
 use crate::mcp::fault::{FaultKind, FaultRecord, FaultStage};
 use crate::mcp::output::{
-    ToolOutput, fallback_detailed_tool_output, fallback_tool_output, projected_tool_output,
-    split_presentation, tool_success,
+    ToolOutput, fallback_detailed_tool_output, projected_tool_output, split_presentation,
+    tool_success,
 };
 use crate::mcp::projection;
 use crate::mcp::protocol::{TRANSIENT_ONCE_ENV, TRANSIENT_ONCE_MARKER_ENV, WorkerOperation};
@@ -103,13 +103,7 @@ impl WorkerService {
                     TagName::new(args.name).map_err(store_fault(&operation))?,
                     NonEmptyText::new(args.description).map_err(store_fault(&operation))?,
                 ));
-                fallback_tool_output(
-                    &tag,
-                    &tag,
-                    libmcp::SurfaceKind::Mutation,
-                    FaultStage::Worker,
-                    &operation,
-                )?
+                tag_record_output(&tag, &operation)?
             }
             "tag.list" => tag_list_output(&lift!(self.store.list_tags()), &operation)?,
             "frontier.create" => {
@@ -471,13 +465,7 @@ impl WorkerService {
                             .map_err(store_fault(&operation))?,
                     })
                 );
-                fallback_tool_output(
-                    &metric,
-                    &metric,
-                    libmcp::SurfaceKind::Mutation,
-                    FaultStage::Worker,
-                    &operation,
-                )?
+                metric_definition_output(&metric, &operation)?
             }
             "metric.keys" => {
                 let args = deserialize::<MetricKeysArgs>(arguments)?;
@@ -517,23 +505,11 @@ impl WorkerService {
                             .map_err(store_fault(&operation))?,
                     })
                 );
-                fallback_tool_output(
-                    &dimension,
-                    &dimension,
-                    libmcp::SurfaceKind::Mutation,
-                    FaultStage::Worker,
-                    &operation,
-                )?
+                run_dimension_definition_output(&dimension, &operation)?
             }
             "run.dimension.list" => {
                 let dimensions = lift!(self.store.list_run_dimensions());
-                fallback_tool_output(
-                    &dimensions,
-                    &dimensions,
-                    libmcp::SurfaceKind::List,
-                    FaultStage::Worker,
-                    &operation,
-                )?
+                run_dimension_list_output(&dimensions, &operation)?
             }
             other => {
                 return Err(FaultRecord::new(
@@ -1064,17 +1040,27 @@ fn project_status_output(
     )
 }
 
+fn tag_record_output(
+    tag: &fidget_spinner_core::TagRecord,
+    operation: &str,
+) -> Result<ToolOutput, FaultRecord> {
+    let projection = projection::tag_record(tag);
+    projected_tool_output(
+        &projection,
+        format!("tag {} — {}", tag.name, tag.description),
+        None,
+        FaultStage::Worker,
+        operation,
+    )
+}
+
 fn tag_list_output(
     tags: &[fidget_spinner_core::TagRecord],
     operation: &str,
 ) -> Result<ToolOutput, FaultRecord> {
-    let concise = json!({
-        "count": tags.len(),
-        "tags": tags,
-    });
-    fallback_detailed_tool_output(
-        &concise,
-        &concise,
+    let projection = projection::tag_list(tags);
+    projected_tool_output(
+        &projection,
         if tags.is_empty() {
             "no tags".to_owned()
         } else {
@@ -1084,7 +1070,6 @@ fn tag_list_output(
                 .join("\n")
         },
         None,
-        libmcp::SurfaceKind::List,
         FaultStage::Worker,
         operation,
     )
@@ -1527,6 +1512,26 @@ fn metric_keys_output(
     )
 }
 
+fn metric_definition_output(
+    metric: &fidget_spinner_core::MetricDefinition,
+    operation: &str,
+) -> Result<ToolOutput, FaultRecord> {
+    let projection = projection::metric_definition(metric);
+    projected_tool_output(
+        &projection,
+        format!(
+            "metric {} [{} {} {}]",
+            metric.key,
+            metric.unit.as_str(),
+            metric.objective.as_str(),
+            metric.visibility.as_str()
+        ),
+        None,
+        FaultStage::Worker,
+        operation,
+    )
+}
+
 fn metric_best_output(
     entries: &[MetricBestEntry],
     operation: &str,
@@ -1562,14 +1567,63 @@ fn metric_best_output(
     )
 }
 
+fn run_dimension_definition_output(
+    dimension: &fidget_spinner_core::RunDimensionDefinition,
+    operation: &str,
+) -> Result<ToolOutput, FaultRecord> {
+    let projection = projection::run_dimension_definition(dimension);
+    projected_tool_output(
+        &projection,
+        format!(
+            "dimension {} [{}]",
+            dimension.key,
+            dimension.value_type.as_str()
+        ),
+        None,
+        FaultStage::Worker,
+        operation,
+    )
+}
+
+fn run_dimension_list_output(
+    dimensions: &[fidget_spinner_core::RunDimensionDefinition],
+    operation: &str,
+) -> Result<ToolOutput, FaultRecord> {
+    let projection = projection::run_dimension_list(dimensions);
+    projected_tool_output(
+        &projection,
+        if dimensions.is_empty() {
+            "no run dimensions".to_owned()
+        } else {
+            dimensions
+                .iter()
+                .map(|dimension| {
+                    format!(
+                        "{} [{}]{}",
+                        dimension.key,
+                        dimension.value_type.as_str(),
+                        dimension
+                            .description
+                            .as_ref()
+                            .map_or_else(String::new, |description| format!(" — {description}"))
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        },
+        None,
+        FaultStage::Worker,
+        operation,
+    )
+}
+
 fn history_output(
     history: &[EntityHistoryEntry],
     operation: &str,
 ) -> Result<ToolOutput, FaultRecord> {
-    let concise = json!({ "count": history.len(), "history": history });
-    fallback_detailed_tool_output(
-        &concise,
-        &concise,
+    let projection = projection::history(history);
+    projected_tool_output(
+        &projection,
         if history.is_empty() {
             "no history".to_owned()
         } else {
@@ -1585,7 +1639,6 @@ fn history_output(
                 .join("\n")
         },
         None,
-        libmcp::SurfaceKind::List,
         FaultStage::Worker,
         operation,
     )

@@ -118,21 +118,6 @@ pub(crate) fn projected_tool_output(
     ))
 }
 
-pub(crate) fn fallback_tool_output(
-    concise: &impl Serialize,
-    full: &impl Serialize,
-    kind: SurfaceKind,
-    stage: FaultStage,
-    operation: &str,
-) -> Result<ToolOutput, FaultRecord> {
-    let projection = FallbackJsonProjection::new(concise, full, kind)
-        .map_err(|error| projection_fault(error, stage, operation))?;
-    let concise_text = projection
-        .porcelain_projection(DetailLevel::Concise)
-        .map_err(|error| projection_fault(error, stage, operation))?;
-    projected_tool_output(&projection, concise_text, None, stage, operation)
-}
-
 pub(crate) fn fallback_detailed_tool_output(
     concise: &impl Serialize,
     full: &impl Serialize,

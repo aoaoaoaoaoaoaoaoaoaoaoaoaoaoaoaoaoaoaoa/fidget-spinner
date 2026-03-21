@@ -121,3 +121,8 @@ fix_command = [
   "--allow-dirty",
   "--allow-staged",
 ]
+
+[workspace.metadata.rust-starter.source_files]
+max_lines = 2500
+include = ["*.rs", "**/*.rs"]
+exclude = ["crates/fidget-spinner-store-sqlite/src/lib.rs"]

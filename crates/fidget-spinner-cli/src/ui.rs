@@ -1,3 +1,4 @@
+use std::collections::{BTreeMap, BTreeSet};
 use std::io;
 use std::net::SocketAddr;
 
@@ -55,6 +56,14 @@ enum FrontierTab {
 struct FrontierPageQuery {
     metric: Option<String>,
     tab: Option<String>,
+    #[serde(flatten)]
+    extra: BTreeMap<String, String>,
+}
+
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+struct DimensionFacet {
+    key: String,
+    values: Vec<String>,
 }
 
 struct AttachmentDisplay {
@@ -90,6 +99,23 @@ impl FrontierTab {
             Self::Closed => "Closed",
             Self::Metrics => "Metrics",
         }
+    }
+}
+
+impl FrontierPageQuery {
+    fn dimension_filters(&self) -> BTreeMap<String, String> {
+        self.extra
+            .iter()
+            .filter_map(|(key, value)| {
+                let value = value.trim();
+                (!value.is_empty())
+                    .then(|| {
+                        key.strip_prefix("dim.")
+                            .map(|dimension| (dimension.to_owned(), value.to_owned()))
+                    })
+                    .flatten()
+            })
+            .collect()
     }
 }
 
@@ -208,13 +234,7 @@ fn render_frontier_detail(
         projection.active_hypotheses.len(),
         projection.open_experiments.len()
     );
-    let content = render_frontier_tab_content(
-        &store,
-        &projection,
-        tab,
-        query.metric.as_deref(),
-        state.limit,
-    )?;
+    let content = render_frontier_tab_content(&store, &projection, tab, &query, state.limit)?;
     Ok(render_shell(
         &title,
         &shell,
@@ -225,6 +245,7 @@ fn render_frontier_detail(
             &projection.frontier.slug,
             tab,
             query.metric.as_deref(),
+            &query.dimension_filters(),
         )),
         content,
     ))
@@ -370,7 +391,7 @@ fn render_frontier_tab_content(
     store: &fidget_spinner_store_sqlite::ProjectStore,
     projection: &FrontierOpenProjection,
     tab: FrontierTab,
-    metric_selector: Option<&str>,
+    query: &FrontierPageQuery,
     limit: Option<u32>,
 ) -> Result<Markup, StoreError> {
     match tab {
@@ -415,7 +436,9 @@ fn render_frontier_tab_content(
             } else {
                 projection.active_metric_keys.clone()
             };
-            let selected_metric = metric_selector
+            let selected_metric = query
+                .metric
+                .as_deref()
                 .and_then(|selector| NonEmptyText::new(selector.to_owned()).ok())
                 .or_else(|| metric_keys.first().map(|metric| metric.key.clone()));
             let series = selected_metric
@@ -424,6 +447,7 @@ fn render_frontier_tab_content(
                     store.frontier_metric_series(projection.frontier.slug.as_str(), metric, true)
                 })
                 .transpose()?;
+            let dimension_filters = query.dimension_filters();
             Ok(html! {
                 (render_frontier_header(&projection.frontier))
                 (render_metric_series_section(
@@ -431,6 +455,7 @@ fn render_frontier_tab_content(
                     &metric_keys,
                     selected_metric.as_ref(),
                     series.as_ref(),
+                    &dimension_filters,
                     limit,
                 ))
             })
@@ -442,6 +467,7 @@ fn render_frontier_tab_bar(
     frontier_slug: &Slug,
     active_tab: FrontierTab,
     metric: Option<&str>,
+    dimension_filters: &BTreeMap<String, String>,
 ) -> Markup {
     const TABS: [FrontierTab; 4] = [
         FrontierTab::Brief,
@@ -452,7 +478,7 @@ fn render_frontier_tab_bar(
     html! {
         nav.tab-row aria-label="Frontier tabs" {
             @for tab in TABS {
-                @let href = frontier_tab_href(frontier_slug, tab, metric);
+                @let href = frontier_tab_href_with_filters(frontier_slug, tab, metric, dimension_filters);
                 a
                     href=(href)
                     class={(if tab == active_tab { "tab-chip active" } else { "tab-chip" })}
@@ -511,8 +537,15 @@ fn render_metric_series_section(
     metric_keys: &[fidget_spinner_store_sqlite::MetricKeySummary],
     selected_metric: Option<&NonEmptyText>,
     series: Option<&FrontierMetricSeries>,
+    dimension_filters: &BTreeMap<String, String>,
     limit: Option<u32>,
 ) -> Markup {
+    let facets = series
+        .map(|series| collect_dimension_facets(&series.points))
+        .unwrap_or_default();
+    let filtered_points = series
+        .map(|series| filter_metric_points(&series.points, dimension_filters))
+        .unwrap_or_default();
     html! {
     section.card {
         h2 { "Metrics" }
@@ -556,47 +589,59 @@ fn render_metric_series_section(
             @if let Some(description) = series.metric.description.as_ref() {
                 p.muted { (description) }
             }
-            @if series.points.is_empty() {
+            @if !facets.is_empty() {
+                (render_metric_filter_panel(
+                    frontier_slug,
+                    &series.metric.key,
+                    &facets,
+                    dimension_filters,
+                ))
+            }
+            @if filtered_points.is_empty() {
+                p.muted { "No closed experiments match the current filters." }
+            } @else if series.points.is_empty() {
                 p.muted { "No closed experiments for this metric yet." }
             } @else {
                 div.chart-frame {
-                    (PreEscaped(render_metric_chart_svg(series)))
+                    (PreEscaped(render_metric_chart_svg(&series.metric, &filtered_points)))
                 }
                 p.muted {
                     "x = close order, y = metric value. Point color tracks verdict."
                 }
-                table.metric-table {
-                    thead {
-                        tr {
-                            th { "#" }
-                            th { "Experiment" }
-                            th { "Hypothesis" }
-                            th { "Closed" }
-                            th { "Verdict" }
-                            th { "Value" }
-                        }
-                    }
-                    tbody {
-                        @for (index, point) in limit_items(&series.points, limit).iter().enumerate() {
+                div.table-scroll {
+                    table.metric-table {
+                        thead {
                             tr {
-                                td { ((index + 1).to_string()) }
-                                td {
-                                    a href=(experiment_href(&point.experiment.slug)) {
-                                        (point.experiment.title)
+                                th { "#" }
+                                th { "Experiment" }
+                                th { "Hypothesis" }
+                                th { "Closed" }
+                                th { "Verdict" }
+                                th { "Value" }
+                            }
+                        }
+                        tbody {
+                            @for (index, point) in limit_items(&filtered_points, limit).iter().copied().enumerate() {
+                                tr {
+                                    td { ((index + 1).to_string()) }
+                                    td {
+                                        a href=(experiment_href(&point.experiment.slug)) {
+                                            (point.experiment.title)
+                                        }
                                     }
-                                }
-                                td {
-                                    a href=(hypothesis_href(&point.hypothesis.slug)) {
-                                        (point.hypothesis.title)
+                                    td {
+                                        a href=(hypothesis_href(&point.hypothesis.slug)) {
+                                            (point.hypothesis.title)
+                                        }
                                     }
-                                }
-                                td { (format_timestamp(point.closed_at)) }
-                                td {
-                                    span class=(status_chip_classes(verdict_class(point.verdict))) {
-                                        (point.verdict.as_str())
+                                    td.nowrap { (format_timestamp(point.closed_at)) }
+                                    td {
+                                        span class=(status_chip_classes(verdict_class(point.verdict))) {
+                                            (point.verdict.as_str())
+                                        }
                                     }
+                                    td.nowrap { (format_metric_value(point.value, series.metric.unit)) }
                                 }
-                                td { (format_metric_value(point.value, series.metric.unit)) }
                             }
                         }
                     }
@@ -607,18 +652,80 @@ fn render_metric_series_section(
     }
 }
 
-fn render_metric_chart_svg(series: &FrontierMetricSeries) -> String {
+fn render_metric_filter_panel(
+    frontier_slug: &Slug,
+    metric_key: &NonEmptyText,
+    facets: &[DimensionFacet],
+    active_filters: &BTreeMap<String, String>,
+) -> Markup {
+    let clear_href = frontier_tab_href_with_filters(
+        frontier_slug,
+        FrontierTab::Metrics,
+        Some(metric_key.as_str()),
+        &BTreeMap::new(),
+    );
+    html! {
+    section.subcard {
+        h3 id="slice-filters" { "Slice Filters" }
+        form.filter-form method="get" action=(frontier_href(frontier_slug)) {
+            input type="hidden" name="tab" value="metrics";
+            input type="hidden" name="metric" value=(metric_key.as_str());
+            div.filter-form-grid {
+                @for facet in facets {
+                    label.filter-control id=(metric_filter_anchor_id(&facet.key)) {
+                        span.filter-label { (&facet.key) }
+                        select.filter-select name=(format!("dim.{}", facet.key)) {
+                            option
+                                value=""
+                                selected[active_filters.get(&facet.key).is_none()]
+                            { "all" }
+                            @for value in &facet.values {
+                                option
+                                    value=(value)
+                                    selected[active_filters.get(&facet.key) == Some(value)]
+                                { (value) }
+                            }
+                        }
+                    }
+                }
+            }
+            div.filter-actions {
+                button.filter-apply type="submit" { "Apply" }
+                a.clear-filter href=(clear_href) { "Clear all" }
+            }
+        }
+        @if active_filters.is_empty() {
+            p.muted { "No slice filters active." }
+        } @else {
+            div.chip-row {
+                @for (key, value) in active_filters {
+                    @let href = frontier_tab_href_with_filters(
+                        frontier_slug,
+                        FrontierTab::Metrics,
+                        Some(metric_key.as_str()),
+                        &remove_dimension_filter(active_filters, key),
+                    );
+                    a.metric-filter-chip.active href=(href) {
+                        (key) "=" (value) " ×"
+                    }
+                }
+            }
+        }
+    }
+    }
+}
+
+fn render_metric_chart_svg(
+    metric: &fidget_spinner_store_sqlite::MetricKeySummary,
+    points: &[&fidget_spinner_store_sqlite::FrontierMetricPoint],
+) -> String {
     let mut svg = String::new();
     {
         let root = SVGBackend::with_string(&mut svg, (960, 360)).into_drawing_area();
         if root.fill(&RGBColor(255, 250, 242)).is_err() {
             return chart_error_markup("chart fill failed");
         }
-        let values = series
-            .points
-            .iter()
-            .map(|point| point.value)
-            .collect::<Vec<_>>();
+        let values = points.iter().map(|point| point.value).collect::<Vec<_>>();
         let (mut min_value, mut max_value) = values
             .iter()
             .copied()
@@ -641,7 +748,7 @@ fn render_metric_chart_svg(series: &FrontierMetricSeries) -> String {
             min_value -= pad;
             max_value += pad;
         }
-        let x_end = i32::try_from(series.points.len().saturating_sub(1))
+        let x_end = i32::try_from(points.len().saturating_sub(1))
             .unwrap_or(0)
             .max(1);
         let mut chart = match ChartBuilder::on(&root)
@@ -649,7 +756,7 @@ fn render_metric_chart_svg(series: &FrontierMetricSeries) -> String {
             .x_label_area_size(32)
             .y_label_area_size(72)
             .caption(
-                format!("{} over closed experiments", series.metric.key),
+                format!("{} over closed experiments", metric.key),
                 ("Iosevka Web", 18).into_font().color(&BLACK),
             )
             .build_cartesian_2d(0_i32..x_end, min_value..max_value)
@@ -664,7 +771,7 @@ fn render_metric_chart_svg(series: &FrontierMetricSeries) -> String {
             .axis_style(RGBColor(103, 86, 63))
             .label_style(("Iosevka Web", 12).into_font().color(&RGBColor(79, 71, 58)))
             .x_desc("close order")
-            .y_desc(series.metric.unit.as_str())
+            .y_desc(metric.unit.as_str())
             .x_label_formatter(&|value| format!("{}", value + 1))
             .draw()
             .is_err()
@@ -672,8 +779,7 @@ fn render_metric_chart_svg(series: &FrontierMetricSeries) -> String {
             return chart_error_markup("mesh draw failed");
         }
 
-        let line_points = series
-            .points
+        let line_points = points
             .iter()
             .enumerate()
             .filter_map(|(index, point)| i32::try_from(index).ok().map(|x| (x, point.value)))
@@ -690,14 +796,13 @@ fn render_metric_chart_svg(series: &FrontierMetricSeries) -> String {
             return chart_error_markup("line draw failed");
         }
 
-        let points = series
-            .points
+        let plotted_points = points
             .iter()
             .enumerate()
-            .filter_map(|(index, point)| i32::try_from(index).ok().map(|x| (x, point)))
+            .filter_map(|(index, point)| i32::try_from(index).ok().map(|x| (x, *point)))
             .collect::<Vec<_>>();
         if chart
-            .draw_series(points.iter().map(|(x, point)| {
+            .draw_series(plotted_points.iter().map(|(x, point)| {
                 Circle::new(
                     (*x, point.value),
                     4,
@@ -709,7 +814,7 @@ fn render_metric_chart_svg(series: &FrontierMetricSeries) -> String {
             return chart_error_markup("point draw failed");
         }
         if chart
-            .draw_series(points.iter().map(|(x, point)| {
+            .draw_series(plotted_points.iter().map(|(x, point)| {
                 Text::new(
                     format!("{}", x + 1),
                     (*x, point.value),
@@ -892,30 +997,32 @@ fn render_frontier_active_sets(projection: &FrontierOpenProjection) -> Markup {
                 @if projection.active_metric_keys.is_empty() {
                     p.muted { "No live metrics." }
                 } @else {
-                    table.metric-table {
-                        thead {
-                            tr {
-                                th { "Key" }
-                                th { "Unit" }
-                                th { "Objective" }
-                                th { "Refs" }
-                            }
-                        }
-                        tbody {
-                            @for metric in &projection.active_metric_keys {
+                    div.table-scroll {
+                        table.metric-table {
+                            thead {
                                 tr {
-                                    td {
-                                        a href=(frontier_tab_href(
-                                            &projection.frontier.slug,
-                                            FrontierTab::Metrics,
-                                            Some(metric.key.as_str()),
-                                        )) {
-                                            (metric.key)
+                                    th { "Key" }
+                                    th { "Unit" }
+                                    th { "Objective" }
+                                    th { "Refs" }
+                                }
+                            }
+                            tbody {
+                                @for metric in &projection.active_metric_keys {
+                                    tr {
+                                        td {
+                                            a href=(frontier_tab_href(
+                                                &projection.frontier.slug,
+                                                FrontierTab::Metrics,
+                                                Some(metric.key.as_str()),
+                                            )) {
+                                                (metric.key)
+                                            }
                                         }
+                                        td { (metric.unit.as_str()) }
+                                        td { (metric.objective.as_str()) }
+                                        td { (metric.reference_count) }
                                     }
-                                    td { (metric.unit.as_str()) }
-                                    td { (metric.objective.as_str()) }
-                                    td { (metric.reference_count) }
                                 }
                             }
                         }
@@ -1093,13 +1200,15 @@ fn render_experiment_outcome(outcome: &ExperimentOutcome) -> Markup {
         @if !outcome.dimensions.is_empty() {
             section.subcard {
                 h3 { "Dimensions" }
-                table.metric-table {
-                    thead { tr { th { "Key" } th { "Value" } } }
-                    tbody {
-                        @for (key, value) in &outcome.dimensions {
-                            tr {
-                                td { (key) }
-                                td { (render_dimension_value(value)) }
+                div.table-scroll {
+                    table.metric-table {
+                        thead { tr { th { "Key" } th { "Value" } } }
+                        tbody {
+                            @for (key, value) in &outcome.dimensions {
+                                tr {
+                                    td { (key) }
+                                    td { (render_dimension_value(value)) }
+                                }
                             }
                         }
                     }
@@ -1148,13 +1257,15 @@ fn render_command_recipe(command: &fidget_spinner_core::CommandRecipe) -> Markup
             }
         }
         @if !command.env.is_empty() {
-            table.metric-table {
-                thead { tr { th { "Env" } th { "Value" } } }
-                tbody {
-                    @for (key, value) in &command.env {
-                        tr {
-                            td { (key) }
-                            td { (value) }
+            div.table-scroll {
+                table.metric-table {
+                    thead { tr { th { "Env" } th { "Value" } } }
+                    tbody {
+                        @for (key, value) in &command.env {
+                            tr {
+                                td { (key) }
+                                td { (value) }
+                            }
                         }
                     }
                 }
@@ -1172,18 +1283,20 @@ fn render_metric_panel(
     html! {
     section.subcard {
         h3 { (title) }
-        table.metric-table {
-            thead {
-                tr {
-                    th { "Key" }
-                    th { "Value" }
-                }
-            }
-            tbody {
-                @for metric in metrics {
+        div.table-scroll {
+            table.metric-table {
+                thead {
                     tr {
-                        td { (metric.key) }
-                        td { (format_metric_value(metric.value, metric_unit_for(metric, outcome))) }
+                        th { "Key" }
+                        th { "Value" }
+                    }
+                }
+                tbody {
+                    @for metric in metrics {
+                        tr {
+                            td { (metric.key) }
+                            td { (format_metric_value(metric.value, metric_unit_for(metric, outcome))) }
+                        }
                     }
                 }
             }
@@ -1565,6 +1678,15 @@ fn frontier_href(slug: &Slug) -> String {
 }
 
 fn frontier_tab_href(slug: &Slug, tab: FrontierTab, metric: Option<&str>) -> String {
+    frontier_tab_href_with_filters(slug, tab, metric, &BTreeMap::new())
+}
+
+fn frontier_tab_href_with_filters(
+    slug: &Slug,
+    tab: FrontierTab,
+    metric: Option<&str>,
+    dimension_filters: &BTreeMap<String, String>,
+) -> String {
     let mut href = format!(
         "/frontier/{}?tab={}",
         encode_path_segment(slug.as_str()),
@@ -1573,6 +1695,12 @@ fn frontier_tab_href(slug: &Slug, tab: FrontierTab, metric: Option<&str>) -> Str
     if let Some(metric) = metric.filter(|metric| !metric.trim().is_empty()) {
         href.push_str("&metric=");
         href.push_str(&encode_path_segment(metric));
+    }
+    for (key, value) in dimension_filters {
+        href.push_str("&dim.");
+        href.push_str(&encode_path_segment(key));
+        href.push('=');
+        href.push_str(&encode_path_segment(value));
     }
     href
 }
@@ -1684,6 +1812,73 @@ fn limit_items<T>(items: &[T], limit: Option<u32>) -> &[T] {
     &items[..end]
 }
 
+fn collect_dimension_facets(
+    points: &[fidget_spinner_store_sqlite::FrontierMetricPoint],
+) -> Vec<DimensionFacet> {
+    let mut values_by_key: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    for point in points {
+        for (key, value) in &point.dimensions {
+            let _ = values_by_key
+                .entry(key.to_string())
+                .or_default()
+                .insert(render_dimension_value(value));
+        }
+    }
+    values_by_key
+        .into_iter()
+        .map(|(key, values)| DimensionFacet {
+            key,
+            values: values.into_iter().collect(),
+        })
+        .collect()
+}
+
+fn filter_metric_points<'a>(
+    points: &'a [fidget_spinner_store_sqlite::FrontierMetricPoint],
+    dimension_filters: &BTreeMap<String, String>,
+) -> Vec<&'a fidget_spinner_store_sqlite::FrontierMetricPoint> {
+    points
+        .iter()
+        .filter(|point| point_matches_dimension_filters(point, dimension_filters))
+        .collect()
+}
+
+fn point_matches_dimension_filters(
+    point: &fidget_spinner_store_sqlite::FrontierMetricPoint,
+    dimension_filters: &BTreeMap<String, String>,
+) -> bool {
+    dimension_filters.iter().all(|(key, expected)| {
+        point.dimensions.iter().any(|(point_key, point_value)| {
+            point_key.as_str() == key && render_dimension_value(point_value) == *expected
+        })
+    })
+}
+
+fn remove_dimension_filter(
+    filters: &BTreeMap<String, String>,
+    key: &str,
+) -> BTreeMap<String, String> {
+    let mut next = filters.clone();
+    let _ = next.remove(key);
+    next
+}
+
+fn metric_filter_anchor_id(key: &str) -> String {
+    format!("filter-{}", sanitize_fragment_id(key))
+}
+
+fn sanitize_fragment_id(raw: &str) -> String {
+    raw.chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() {
+                character.to_ascii_lowercase()
+            } else {
+                '-'
+            }
+        })
+        .collect()
+}
+
 fn styles() -> &'static str {
     r#"
     :root {
@@ -1718,7 +1913,8 @@ fn styles() -> &'static str {
     }
     a:hover { text-decoration: underline; }
     .shell {
-        width: min(1360px, 100%);
+        width: 100%;
+        max-width: none;
         margin: 0 auto;
         padding: 24px 24px 40px;
         display: grid;
@@ -1995,6 +2191,71 @@ fn styles() -> &'static str {
         text-transform: uppercase;
         letter-spacing: 0.05em;
     }
+    .filter-form {
+        display: grid;
+        gap: 12px;
+    }
+    .filter-form-grid {
+        display: grid;
+        gap: 10px 12px;
+        grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    }
+    .filter-control {
+        display: grid;
+        gap: 6px;
+        min-width: 0;
+    }
+    .filter-label {
+        color: var(--muted);
+        font-size: 12px;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+    }
+    .filter-select {
+        width: 100%;
+        min-width: 0;
+        padding: 7px 9px;
+        border: 1px solid var(--border);
+        background: var(--panel);
+        color: var(--text);
+        font: inherit;
+    }
+    .filter-actions {
+        display: flex;
+        gap: 8px;
+        align-items: center;
+        flex-wrap: wrap;
+    }
+    .filter-apply {
+        padding: 7px 11px;
+        border: 1px solid var(--border-strong);
+        background: var(--accent-soft);
+        color: var(--text);
+        font: inherit;
+        cursor: pointer;
+    }
+    .metric-filter-chip {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        padding: 5px 9px;
+        border: 1px solid var(--border);
+        background: var(--panel);
+        color: var(--text);
+        font-size: 12px;
+        white-space: nowrap;
+    }
+    .metric-filter-chip.active {
+        border-color: var(--border-strong);
+        background: var(--accent-soft);
+        font-weight: 700;
+    }
+    .clear-filter {
+        color: var(--muted);
+        font-size: 12px;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+    }
     .link-chip {
         display: inline-grid;
         gap: 4px;
@@ -2039,10 +2300,13 @@ fn styles() -> &'static str {
     .status-neutral, .classless { color: #5f584d; border-color: var(--border-strong); background: var(--panel); }
     .status-archived { color: #7a756d; border-color: var(--border); background: var(--panel); }
     .metric-table {
-        width: 100%;
+        width: max-content;
+        min-width: 100%;
         border-collapse: collapse;
         font-size: 13px;
-        display: block;
+    }
+    .table-scroll {
+        width: 100%;
         overflow-x: auto;
     }
     .metric-table th,
@@ -2051,7 +2315,9 @@ fn styles() -> &'static str {
         border-top: 1px solid var(--border);
         text-align: left;
         vertical-align: top;
-        overflow-wrap: anywhere;
+        white-space: nowrap;
+        overflow-wrap: normal;
+        word-break: normal;
     }
     .metric-table th {
         color: var(--muted);
