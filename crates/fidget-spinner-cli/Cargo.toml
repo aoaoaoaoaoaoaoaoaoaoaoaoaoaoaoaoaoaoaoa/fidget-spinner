@@ -21,6 +21,7 @@ fidget-spinner-store-sqlite = { path = "../fidget-spinner-store-sqlite" }
 libmcp = { git = "https://git.swarm.moe/libmcp.git", rev = "bb92a05eb5446e07c6288e266bd06d7b5899eee5" }
 maud.workspace = true
 percent-encoding.workspace = true
+plotters.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 time.workspace = true

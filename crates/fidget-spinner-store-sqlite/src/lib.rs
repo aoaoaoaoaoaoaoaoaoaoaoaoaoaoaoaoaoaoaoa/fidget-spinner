@@ -490,6 +490,22 @@ pub struct FrontierOpenProjection {
     pub open_experiments: Vec<ExperimentSummary>,
 }
 
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct FrontierMetricPoint {
+    pub experiment: ExperimentSummary,
+    pub hypothesis: HypothesisSummary,
+    pub value: f64,
+    pub verdict: FrontierVerdict,
+    pub closed_at: OffsetDateTime,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct FrontierMetricSeries {
+    pub frontier: FrontierRecord,
+    pub metric: MetricKeySummary,
+    pub points: Vec<FrontierMetricPoint>,
+}
+
 pub struct ProjectStore {
     project_root: Utf8PathBuf,
     state_root: Utf8PathBuf,
@@ -1378,6 +1394,57 @@ impl ProjectStore {
             active_metric_keys,
             active_hypotheses,
             open_experiments,
+        })
+    }
+
+    pub fn frontier_metric_series(
+        &self,
+        frontier: &str,
+        key: &NonEmptyText,
+        include_rejected: bool,
+    ) -> Result<FrontierMetricSeries, StoreError> {
+        let frontier = self.resolve_frontier(frontier)?;
+        let definition = self
+            .metric_definition(key)?
+            .ok_or_else(|| StoreError::UnknownMetricDefinition(key.clone()))?;
+        let mut points = self
+            .load_experiment_records(Some(frontier.id), None, true)?
+            .into_iter()
+            .filter(|record| record.status == ExperimentStatus::Closed)
+            .filter_map(|record| {
+                let outcome = record.outcome.clone()?;
+                if !include_rejected && outcome.verdict == FrontierVerdict::Rejected {
+                    return None;
+                }
+                let metric = all_metrics(&outcome)
+                    .into_iter()
+                    .find(|metric| metric.key == *key)?;
+                Some((record, outcome, metric.value))
+            })
+            .map(|(record, outcome, value)| {
+                Ok(FrontierMetricPoint {
+                    closed_at: outcome.closed_at,
+                    experiment: self.experiment_summary_from_record(record.clone())?,
+                    hypothesis: self.hypothesis_summary_from_record(
+                        self.hypothesis_by_id(record.hypothesis_id)?,
+                    )?,
+                    value,
+                    verdict: outcome.verdict,
+                })
+            })
+            .collect::<Result<Vec<_>, StoreError>>()?;
+        points.sort_by_key(|point| point.closed_at);
+        Ok(FrontierMetricSeries {
+            metric: MetricKeySummary {
+                key: definition.key.clone(),
+                unit: definition.unit,
+                objective: definition.objective,
+                visibility: definition.visibility,
+                description: definition.description,
+                reference_count: self.metric_reference_count(Some(frontier.id), key)?,
+            },
+            frontier,
+            points,
         })
     }
 

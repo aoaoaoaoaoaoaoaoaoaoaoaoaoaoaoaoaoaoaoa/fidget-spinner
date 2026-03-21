@@ -62,6 +62,20 @@ symlinks in `~/.codex/skills`:
 
 The installed binary is `~/.local/bin/fidget-spinner-cli`.
 
+The installer also installs a user systemd service for the libgrid navigator at
+`http://127.0.0.1:8913/` and refreshes it on every reinstall:
+
+```bash
+systemctl --user status fidget-spinner-libgrid-ui.service
+journalctl --user -u fidget-spinner-libgrid-ui.service -f
+```
+
+You can override the default service target for one install with:
+
+```bash
+FIDGET_SPINNER_UI_PROJECT=/abs/path/to/project ./scripts/install-local.sh
+```
+
 ## Quickstart
 
 Initialize a project:

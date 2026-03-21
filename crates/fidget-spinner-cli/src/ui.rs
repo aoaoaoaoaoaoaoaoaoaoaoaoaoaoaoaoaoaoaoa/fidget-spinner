@@ -2,21 +2,28 @@ use std::io;
 use std::net::SocketAddr;
 
 use axum::Router;
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::get;
 use camino::Utf8PathBuf;
 use fidget_spinner_core::{
     AttachmentTargetRef, ExperimentAnalysis, ExperimentOutcome, ExperimentStatus, FrontierRecord,
-    FrontierVerdict, MetricUnit, RunDimensionValue, Slug, VertexRef,
+    FrontierVerdict, MetricUnit, NonEmptyText, RunDimensionValue, Slug, VertexRef,
 };
 use fidget_spinner_store_sqlite::{
-    ExperimentDetail, ExperimentSummary, FrontierOpenProjection, FrontierSummary,
-    HypothesisCurrentState, HypothesisDetail, ProjectStatus, StoreError, VertexSummary,
+    ExperimentDetail, ExperimentSummary, FrontierMetricSeries, FrontierOpenProjection,
+    FrontierSummary, HypothesisCurrentState, HypothesisDetail, ListExperimentsQuery,
+    ListHypothesesQuery, MetricKeysQuery, MetricScope, ProjectStatus, StoreError, VertexSummary,
 };
 use maud::{DOCTYPE, Markup, PreEscaped, html};
 use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
+use plotters::prelude::{
+    BLACK, ChartBuilder, Circle, IntoDrawingArea, LineSeries, PathElement, SVGBackend, ShapeStyle,
+    Text,
+};
+use plotters::style::{Color, IntoFont, RGBColor};
+use serde::Deserialize;
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
 use time::macros::format_description;
@@ -29,11 +36,61 @@ struct NavigatorState {
     limit: Option<u32>,
 }
 
+#[derive(Clone)]
+struct ShellFrame {
+    active_frontier_slug: Option<Slug>,
+    frontiers: Vec<FrontierSummary>,
+    project_status: ProjectStatus,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum FrontierTab {
+    Brief,
+    Open,
+    Closed,
+    Metrics,
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+struct FrontierPageQuery {
+    metric: Option<String>,
+    tab: Option<String>,
+}
+
 struct AttachmentDisplay {
     kind: &'static str,
     href: String,
     title: String,
     summary: Option<String>,
+}
+
+impl FrontierTab {
+    fn from_query(raw: Option<&str>) -> Self {
+        match raw {
+            Some("open") => Self::Open,
+            Some("closed") => Self::Closed,
+            Some("metrics") => Self::Metrics,
+            _ => Self::Brief,
+        }
+    }
+
+    const fn as_query(self) -> &'static str {
+        match self {
+            Self::Brief => "brief",
+            Self::Open => "open",
+            Self::Closed => "closed",
+            Self::Metrics => "metrics",
+        }
+    }
+
+    const fn label(self) -> &'static str {
+        match self {
+            Self::Brief => "Brief",
+            Self::Open => "Open",
+            Self::Closed => "Closed",
+            Self::Metrics => "Metrics",
+        }
+    }
 }
 
 pub(crate) fn serve(
@@ -74,8 +131,9 @@ async fn project_home(State(state): State<NavigatorState>) -> Response {
 async fn frontier_detail(
     State(state): State<NavigatorState>,
     Path(selector): Path<String>,
+    Query(query): Query<FrontierPageQuery>,
 ) -> Response {
-    render_response(render_frontier_detail(state, selector))
+    render_response(render_frontier_detail(state, selector, query))
 }
 
 async fn hypothesis_detail(
@@ -118,50 +176,65 @@ fn render_response(result: Result<Markup, StoreError>) -> Response {
 
 fn render_project_home(state: NavigatorState) -> Result<Markup, StoreError> {
     let store = open_store(state.project_root.as_std_path())?;
-    let project_status = store.status()?;
-    let frontiers = store.list_frontiers()?;
-    let title = format!("{} navigator", project_status.display_name);
+    let shell = load_shell_frame(&store, None)?;
+    let title = format!("{} navigator", shell.project_status.display_name);
     let content = html! {
-        (render_project_status(&project_status))
-        (render_frontier_grid(&frontiers, state.limit))
+        (render_project_status(&shell.project_status))
+        (render_frontier_grid(&shell.frontiers, state.limit))
     };
     Ok(render_shell(
         &title,
-        Some(&project_status.display_name.to_string()),
+        &shell,
+        true,
+        Some(&shell.project_status.display_name.to_string()),
+        None,
         None,
         content,
     ))
 }
 
-fn render_frontier_detail(state: NavigatorState, selector: String) -> Result<Markup, StoreError> {
+fn render_frontier_detail(
+    state: NavigatorState,
+    selector: String,
+    query: FrontierPageQuery,
+) -> Result<Markup, StoreError> {
     let store = open_store(state.project_root.as_std_path())?;
     let projection = store.frontier_open(&selector)?;
+    let shell = load_shell_frame(&store, Some(projection.frontier.slug.clone()))?;
+    let tab = FrontierTab::from_query(query.tab.as_deref());
     let title = format!("{} · frontier", projection.frontier.label);
     let subtitle = format!(
         "{} hypotheses active · {} experiments open",
         projection.active_hypotheses.len(),
         projection.open_experiments.len()
     );
-    let content = html! {
-        (render_frontier_header(&projection.frontier))
-        (render_frontier_brief(&projection))
-        (render_frontier_active_sets(&projection))
-        (render_hypothesis_current_state_grid(
-            &projection.active_hypotheses,
-            state.limit,
-        ))
-        (render_open_experiment_grid(
-            &projection.open_experiments,
-            state.limit,
-        ))
-    };
-    Ok(render_shell(&title, Some(&subtitle), None, content))
+    let content = render_frontier_tab_content(
+        &store,
+        &projection,
+        tab,
+        query.metric.as_deref(),
+        state.limit,
+    )?;
+    Ok(render_shell(
+        &title,
+        &shell,
+        false,
+        Some(&subtitle),
+        None,
+        Some(render_frontier_tab_bar(
+            &projection.frontier.slug,
+            tab,
+            query.metric.as_deref(),
+        )),
+        content,
+    ))
 }
 
 fn render_hypothesis_detail(state: NavigatorState, selector: String) -> Result<Markup, StoreError> {
     let store = open_store(state.project_root.as_std_path())?;
     let detail = store.read_hypothesis(&selector)?;
     let frontier = store.read_frontier(&detail.record.frontier_id.to_string())?;
+    let shell = load_shell_frame(&store, Some(frontier.slug.clone()))?;
     let title = format!("{} · hypothesis", detail.record.title);
     let subtitle = detail.record.summary.to_string();
     let content = html! {
@@ -182,8 +255,11 @@ fn render_hypothesis_detail(state: NavigatorState, selector: String) -> Result<M
     };
     Ok(render_shell(
         &title,
+        &shell,
+        true,
         Some(&subtitle),
         Some((frontier.label.as_str(), frontier_href(&frontier.slug))),
+        None,
         content,
     ))
 }
@@ -192,6 +268,7 @@ fn render_experiment_detail(state: NavigatorState, selector: String) -> Result<M
     let store = open_store(state.project_root.as_std_path())?;
     let detail = store.read_experiment(&selector)?;
     let frontier = store.read_frontier(&detail.record.frontier_id.to_string())?;
+    let shell = load_shell_frame(&store, Some(frontier.slug.clone()))?;
     let title = format!("{} · experiment", detail.record.title);
     let subtitle = detail.record.summary.as_ref().map_or_else(
         || detail.record.status.as_str().to_owned(),
@@ -212,8 +289,11 @@ fn render_experiment_detail(state: NavigatorState, selector: String) -> Result<M
     };
     Ok(render_shell(
         &title,
+        &shell,
+        true,
         Some(&subtitle),
         Some((frontier.label.as_str(), frontier_href(&frontier.slug))),
+        None,
         content,
     ))
 }
@@ -221,6 +301,7 @@ fn render_experiment_detail(state: NavigatorState, selector: String) -> Result<M
 fn render_artifact_detail(state: NavigatorState, selector: String) -> Result<Markup, StoreError> {
     let store = open_store(state.project_root.as_std_path())?;
     let detail = store.read_artifact(&selector)?;
+    let shell = load_shell_frame(&store, None)?;
     let attachments = detail
         .attachments
         .iter()
@@ -263,7 +344,411 @@ fn render_artifact_detail(state: NavigatorState, selector: String) -> Result<Mar
             }
         }
     };
-    Ok(render_shell(&title, Some(&subtitle), None, content))
+    Ok(render_shell(
+        &title,
+        &shell,
+        true,
+        Some(&subtitle),
+        None,
+        None,
+        content,
+    ))
+}
+
+fn load_shell_frame(
+    store: &fidget_spinner_store_sqlite::ProjectStore,
+    active_frontier_slug: Option<Slug>,
+) -> Result<ShellFrame, StoreError> {
+    Ok(ShellFrame {
+        active_frontier_slug,
+        frontiers: store.list_frontiers()?,
+        project_status: store.status()?,
+    })
+}
+
+fn render_frontier_tab_content(
+    store: &fidget_spinner_store_sqlite::ProjectStore,
+    projection: &FrontierOpenProjection,
+    tab: FrontierTab,
+    metric_selector: Option<&str>,
+    limit: Option<u32>,
+) -> Result<Markup, StoreError> {
+    match tab {
+        FrontierTab::Brief => Ok(html! {
+            (render_frontier_header(&projection.frontier))
+            (render_frontier_brief(projection))
+            (render_frontier_active_sets(projection))
+        }),
+        FrontierTab::Open => Ok(html! {
+            (render_frontier_header(&projection.frontier))
+            (render_hypothesis_current_state_grid(&projection.active_hypotheses, limit))
+            (render_open_experiment_grid(&projection.open_experiments, limit))
+        }),
+        FrontierTab::Closed => {
+            let closed_hypotheses = store
+                .list_hypotheses(ListHypothesesQuery {
+                    frontier: Some(projection.frontier.slug.to_string()),
+                    limit: None,
+                    ..ListHypothesesQuery::default()
+                })?
+                .into_iter()
+                .filter(|hypothesis| hypothesis.open_experiment_count == 0)
+                .collect::<Vec<_>>();
+            let closed_experiments = store.list_experiments(ListExperimentsQuery {
+                frontier: Some(projection.frontier.slug.to_string()),
+                status: Some(ExperimentStatus::Closed),
+                limit: None,
+                ..ListExperimentsQuery::default()
+            })?;
+            Ok(html! {
+                (render_frontier_header(&projection.frontier))
+                (render_closed_hypothesis_grid(&closed_hypotheses, limit))
+                (render_experiment_section("Closed Experiments", &closed_experiments, limit))
+            })
+        }
+        FrontierTab::Metrics => {
+            let metric_keys = if projection.active_metric_keys.is_empty() {
+                store.metric_keys(MetricKeysQuery {
+                    frontier: Some(projection.frontier.slug.to_string()),
+                    scope: MetricScope::Visible,
+                })?
+            } else {
+                projection.active_metric_keys.clone()
+            };
+            let selected_metric = metric_selector
+                .and_then(|selector| NonEmptyText::new(selector.to_owned()).ok())
+                .or_else(|| metric_keys.first().map(|metric| metric.key.clone()));
+            let series = selected_metric
+                .as_ref()
+                .map(|metric| {
+                    store.frontier_metric_series(projection.frontier.slug.as_str(), metric, true)
+                })
+                .transpose()?;
+            Ok(html! {
+                (render_frontier_header(&projection.frontier))
+                (render_metric_series_section(
+                    &projection.frontier.slug,
+                    &metric_keys,
+                    selected_metric.as_ref(),
+                    series.as_ref(),
+                    limit,
+                ))
+            })
+        }
+    }
+}
+
+fn render_frontier_tab_bar(
+    frontier_slug: &Slug,
+    active_tab: FrontierTab,
+    metric: Option<&str>,
+) -> Markup {
+    const TABS: [FrontierTab; 4] = [
+        FrontierTab::Brief,
+        FrontierTab::Open,
+        FrontierTab::Closed,
+        FrontierTab::Metrics,
+    ];
+    html! {
+        nav.tab-row aria-label="Frontier tabs" {
+            @for tab in TABS {
+                @let href = frontier_tab_href(frontier_slug, tab, metric);
+                a
+                    href=(href)
+                    class={(if tab == active_tab { "tab-chip active" } else { "tab-chip" })}
+                {
+                    (tab.label())
+                }
+            }
+        }
+    }
+}
+
+fn render_closed_hypothesis_grid(
+    hypotheses: &[fidget_spinner_store_sqlite::HypothesisSummary],
+    limit: Option<u32>,
+) -> Markup {
+    html! {
+    section.card {
+        h2 { "Closed Hypotheses" }
+        @if hypotheses.is_empty() {
+            p.muted { "No dormant hypotheses yet." }
+        } @else {
+            div.card-grid {
+                @for hypothesis in limit_items(hypotheses, limit) {
+                    article.mini-card {
+                        div.card-header {
+                            a.title-link href=(hypothesis_href(&hypothesis.slug)) {
+                                (hypothesis.title)
+                            }
+                            @if let Some(verdict) = hypothesis.latest_verdict {
+                                span class=(status_chip_classes(verdict_class(verdict))) {
+                                    (verdict.as_str())
+                                }
+                            }
+                        }
+                        p.prose { (hypothesis.summary) }
+                        @if !hypothesis.tags.is_empty() {
+                            div.chip-row {
+                                @for tag in &hypothesis.tags {
+                                    span.tag-chip { (tag) }
+                                }
+                            }
+                        }
+                        div.meta-row.muted {
+                            span { "updated " (format_timestamp(hypothesis.updated_at)) }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    }
+}
+
+fn render_metric_series_section(
+    frontier_slug: &Slug,
+    metric_keys: &[fidget_spinner_store_sqlite::MetricKeySummary],
+    selected_metric: Option<&NonEmptyText>,
+    series: Option<&FrontierMetricSeries>,
+    limit: Option<u32>,
+) -> Markup {
+    html! {
+    section.card {
+        h2 { "Metrics" }
+        p.prose {
+            "Server-rendered SVG over the frontier’s closed experiment ledger. Choose a live metric, then walk to the underlying experiments deliberately."
+        }
+        @if metric_keys.is_empty() {
+            p.muted { "No visible metrics registered for this frontier." }
+        } @else {
+            div.metric-picker {
+                @for metric in metric_keys {
+                    @let href = frontier_tab_href(frontier_slug, FrontierTab::Metrics, Some(metric.key.as_str()));
+                    a
+                        href=(href)
+                        class={(if selected_metric.is_some_and(|selected| selected == &metric.key) {
+                            "metric-choice active"
+                        } else {
+                            "metric-choice"
+                        })}
+                    {
+                        span.metric-choice-key { (metric.key) }
+                        span.metric-choice-meta {
+                            (metric.objective.as_str()) " · "
+                            (metric.unit.as_str())
+                        }
+                    }
+                }
+            }
+        }
+    }
+    @if let Some(series) = series {
+        section.card {
+            div.card-header {
+                h2 { "Plot" }
+                span.metric-pill {
+                    (series.metric.key) " · "
+                    (series.metric.objective.as_str()) " · "
+                    (series.metric.unit.as_str())
+                }
+            }
+            @if let Some(description) = series.metric.description.as_ref() {
+                p.muted { (description) }
+            }
+            @if series.points.is_empty() {
+                p.muted { "No closed experiments for this metric yet." }
+            } @else {
+                div.chart-frame {
+                    (PreEscaped(render_metric_chart_svg(series)))
+                }
+                p.muted {
+                    "x = close order, y = metric value. Point color tracks verdict."
+                }
+                table.metric-table {
+                    thead {
+                        tr {
+                            th { "#" }
+                            th { "Experiment" }
+                            th { "Hypothesis" }
+                            th { "Closed" }
+                            th { "Verdict" }
+                            th { "Value" }
+                        }
+                    }
+                    tbody {
+                        @for (index, point) in limit_items(&series.points, limit).iter().enumerate() {
+                            tr {
+                                td { ((index + 1).to_string()) }
+                                td {
+                                    a href=(experiment_href(&point.experiment.slug)) {
+                                        (point.experiment.title)
+                                    }
+                                }
+                                td {
+                                    a href=(hypothesis_href(&point.hypothesis.slug)) {
+                                        (point.hypothesis.title)
+                                    }
+                                }
+                                td { (format_timestamp(point.closed_at)) }
+                                td {
+                                    span class=(status_chip_classes(verdict_class(point.verdict))) {
+                                        (point.verdict.as_str())
+                                    }
+                                }
+                                td { (format_metric_value(point.value, series.metric.unit)) }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    }
+}
+
+fn render_metric_chart_svg(series: &FrontierMetricSeries) -> String {
+    let mut svg = String::new();
+    {
+        let root = SVGBackend::with_string(&mut svg, (960, 360)).into_drawing_area();
+        if root.fill(&RGBColor(255, 250, 242)).is_err() {
+            return chart_error_markup("chart fill failed");
+        }
+        let values = series
+            .points
+            .iter()
+            .map(|point| point.value)
+            .collect::<Vec<_>>();
+        let (mut min_value, mut max_value) = values
+            .iter()
+            .copied()
+            .fold((f64::INFINITY, f64::NEG_INFINITY), |(min, max), value| {
+                (min.min(value), max.max(value))
+            });
+        if !min_value.is_finite() || !max_value.is_finite() {
+            return chart_error_markup("metric values are non-finite");
+        }
+        if (max_value - min_value).abs() < f64::EPSILON {
+            let pad = if max_value.abs() < 1.0 {
+                1.0
+            } else {
+                max_value.abs() * 0.05
+            };
+            min_value -= pad;
+            max_value += pad;
+        } else {
+            let pad = (max_value - min_value) * 0.08;
+            min_value -= pad;
+            max_value += pad;
+        }
+        let x_end = i32::try_from(series.points.len().saturating_sub(1))
+            .unwrap_or(0)
+            .max(1);
+        let mut chart = match ChartBuilder::on(&root)
+            .margin(18)
+            .x_label_area_size(32)
+            .y_label_area_size(72)
+            .caption(
+                format!("{} over closed experiments", series.metric.key),
+                ("Iosevka Web", 18).into_font().color(&BLACK),
+            )
+            .build_cartesian_2d(0_i32..x_end, min_value..max_value)
+        {
+            Ok(chart) => chart,
+            Err(error) => return chart_error_markup(&format!("chart build failed: {error:?}")),
+        };
+        if chart
+            .configure_mesh()
+            .light_line_style(RGBColor(223, 209, 189).mix(0.6))
+            .bold_line_style(RGBColor(207, 190, 168).mix(0.8))
+            .axis_style(RGBColor(103, 86, 63))
+            .label_style(("Iosevka Web", 12).into_font().color(&RGBColor(79, 71, 58)))
+            .x_desc("close order")
+            .y_desc(series.metric.unit.as_str())
+            .x_label_formatter(&|value| format!("{}", value + 1))
+            .draw()
+            .is_err()
+        {
+            return chart_error_markup("mesh draw failed");
+        }
+
+        let line_points = series
+            .points
+            .iter()
+            .enumerate()
+            .filter_map(|(index, point)| i32::try_from(index).ok().map(|x| (x, point.value)))
+            .collect::<Vec<_>>();
+        if chart
+            .draw_series(LineSeries::new(line_points, &RGBColor(103, 86, 63)))
+            .map(|series| {
+                series.label("series").legend(|(x, y)| {
+                    PathElement::new(vec![(x, y), (x + 18, y)], RGBColor(103, 86, 63))
+                })
+            })
+            .is_err()
+        {
+            return chart_error_markup("line draw failed");
+        }
+
+        let points = series
+            .points
+            .iter()
+            .enumerate()
+            .filter_map(|(index, point)| i32::try_from(index).ok().map(|x| (x, point)))
+            .collect::<Vec<_>>();
+        if chart
+            .draw_series(points.iter().map(|(x, point)| {
+                Circle::new(
+                    (*x, point.value),
+                    4,
+                    ShapeStyle::from(&verdict_color(point.verdict)).filled(),
+                )
+            }))
+            .is_err()
+        {
+            return chart_error_markup("point draw failed");
+        }
+        if chart
+            .draw_series(points.iter().map(|(x, point)| {
+                Text::new(
+                    format!("{}", x + 1),
+                    (*x, point.value),
+                    ("Iosevka Web", 11)
+                        .into_font()
+                        .color(&verdict_color(point.verdict)),
+                )
+            }))
+            .is_err()
+        {
+            return chart_error_markup("label draw failed");
+        }
+        if root.present().is_err() {
+            return chart_error_markup("chart present failed");
+        }
+    }
+    svg
+}
+
+fn chart_error_markup(message: &str) -> String {
+    format!(
+        "<div class=\"chart-error\">chart render failed: {}</div>",
+        html_escape(message)
+    )
+}
+
+fn html_escape(raw: &str) -> String {
+    raw.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+}
+
+fn verdict_color(verdict: FrontierVerdict) -> RGBColor {
+    match verdict {
+        FrontierVerdict::Accepted => RGBColor(71, 102, 63),
+        FrontierVerdict::Kept => RGBColor(90, 105, 82),
+        FrontierVerdict::Parked => RGBColor(138, 98, 48),
+        FrontierVerdict::Rejected => RGBColor(138, 58, 52),
+    }
 }
 
 fn render_frontier_grid(frontiers: &[FrontierSummary], limit: Option<u32>) -> Markup {
@@ -354,16 +839,15 @@ fn render_frontier_brief(projection: &FrontierOpenProjection) -> Markup {
                     p.muted { "No roadmap ordering recorded." }
                 } @else {
                     ol.roadmap-list {
-                        @for item in &frontier.brief.roadmap {
-                            @let title = hypothesis_title_for_roadmap_item(projection, item.hypothesis_id);
-                            li {
-                                a href=(hypothesis_href_from_id(item.hypothesis_id)) {
-                                    (format!("{}.", item.rank)) " "
-                                    (title)
-                                }
-                                @if let Some(summary) = item.summary.as_ref() {
-                                    span.muted { " · " (summary) }
-                                }
+                                @for item in &frontier.brief.roadmap {
+                                    @let title = hypothesis_title_for_roadmap_item(projection, item.hypothesis_id);
+                                    li {
+                                        a href=(hypothesis_href_from_id(item.hypothesis_id)) {
+                                            (title)
+                                        }
+                                        @if let Some(summary) = item.summary.as_ref() {
+                                            span.muted { " · " (summary) }
+                                        }
                             }
                         }
                     }
@@ -390,13 +874,13 @@ fn render_frontier_active_sets(projection: &FrontierOpenProjection) -> Markup {
     html! {
     section.card {
         h2 { "Active Surface" }
-        div.split {
-            div.subcard {
+        div.stack {
+            div.subcard.compact-subcard {
                 h3 { "Active Tags" }
                 @if projection.active_tags.is_empty() {
                     p.muted { "No active tags." }
                 } @else {
-                    div.chip-row {
+                    div.chip-row.tag-cloud {
                         @for tag in &projection.active_tags {
                             span.tag-chip { (tag) }
                         }
@@ -420,7 +904,15 @@ fn render_frontier_active_sets(projection: &FrontierOpenProjection) -> Markup {
                         tbody {
                             @for metric in &projection.active_metric_keys {
                                 tr {
-                                    td { (metric.key) }
+                                    td {
+                                        a href=(frontier_tab_href(
+                                            &projection.frontier.slug,
+                                            FrontierTab::Metrics,
+                                            Some(metric.key.as_str()),
+                                        )) {
+                                            (metric.key)
+                                        }
+                                    }
                                     td { (metric.unit.as_str()) }
                                     td { (metric.objective.as_str()) }
                                     td { (metric.reference_count) }
@@ -914,8 +1406,11 @@ fn render_prose_block(title: &str, body: &str) -> Markup {
 
 fn render_shell(
     title: &str,
+    shell: &ShellFrame,
+    show_page_header: bool,
     subtitle: Option<&str>,
     breadcrumb: Option<(&str, String)>,
+    tab_bar: Option<Markup>,
     content: Markup,
 ) -> Markup {
     html! {
@@ -929,23 +1424,75 @@ fn render_shell(
             }
             body {
                 main.shell {
-                    header.page-header {
-                        div.eyebrow {
-                            a href="/" { "home" }
-                            @if let Some((label, href)) = breadcrumb {
-                                span.sep { "/" }
-                                a href=(href) { (label) }
+                    aside.sidebar {
+                        (render_sidebar(shell))
+                    }
+                    div.main-column {
+                        @if show_page_header {
+                            header.page-header {
+                                div.eyebrow {
+                                    a href="/" { "home" }
+                                    @if let Some((label, href)) = breadcrumb {
+                                        span.sep { "/" }
+                                        a href=(href) { (label) }
+                                    }
+                                }
+                                h1.page-title { (title) }
+                                @if let Some(subtitle) = subtitle {
+                                    p.page-subtitle { (subtitle) }
+                                }
                             }
                         }
-                        h1.page-title { (title) }
-                        @if let Some(subtitle) = subtitle {
-                            p.page-subtitle { (subtitle) }
+                        @if let Some(tab_bar) = tab_bar {
+                            (tab_bar)
                         }
+                        (content)
                     }
-                    (content)
                 }
             }
         }
+    }
+}
+
+fn render_sidebar(shell: &ShellFrame) -> Markup {
+    html! {
+    section.sidebar-panel {
+        div.sidebar-project {
+            a.sidebar-home href="/" { (&shell.project_status.display_name) }
+            p.sidebar-copy {
+                "Frontier-scoped navigator. Open one frontier, then walk hypotheses and experiments deliberately."
+            }
+        }
+        div.sidebar-section {
+            h2 { "Frontiers" }
+            @if shell.frontiers.is_empty() {
+                p.muted { "No frontiers yet." }
+            } @else {
+                nav.frontier-nav aria-label="Frontiers" {
+                    @for frontier in &shell.frontiers {
+                        a
+                            href=(frontier_href(&frontier.slug))
+                            class={(if shell
+                                .active_frontier_slug
+                                .as_ref()
+                                .is_some_and(|active| active == &frontier.slug)
+                            {
+                                "frontier-nav-link active"
+                            } else {
+                                "frontier-nav-link"
+                            })}
+                        {
+                            span.frontier-nav-title { (&frontier.label) }
+                            span.frontier-nav-meta {
+                                (frontier.active_hypothesis_count) " active · "
+                                (frontier.open_experiment_count) " open"
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
     }
 }
 
@@ -1015,6 +1562,19 @@ fn format_timestamp(value: OffsetDateTime) -> String {
 
 fn frontier_href(slug: &Slug) -> String {
     format!("/frontier/{}", encode_path_segment(slug.as_str()))
+}
+
+fn frontier_tab_href(slug: &Slug, tab: FrontierTab, metric: Option<&str>) -> String {
+    let mut href = format!(
+        "/frontier/{}?tab={}",
+        encode_path_segment(slug.as_str()),
+        tab.as_query()
+    );
+    if let Some(metric) = metric.filter(|metric| !metric.trim().is_empty()) {
+        href.push_str("&metric=");
+        href.push_str(&encode_path_segment(metric));
+    }
+    href
 }
 
 fn hypothesis_href(slug: &Slug) -> String {
@@ -1128,21 +1688,21 @@ fn styles() -> &'static str {
     r#"
     :root {
         color-scheme: light;
-        --bg: #f6f3ec;
-        --panel: #fffdf8;
-        --panel-2: #f3eee4;
-        --border: #d8d1c4;
-        --border-strong: #c8bfaf;
-        --text: #22201a;
-        --muted: #746e62;
-        --accent: #2d5c4d;
-        --accent-soft: #dbe8e2;
-        --tag: #ece5d8;
-        --accepted: #2f6b43;
-        --kept: #3d6656;
-        --parked: #8b5b24;
-        --rejected: #8a2f2f;
-        --shadow: rgba(74, 58, 32, 0.06);
+        --bg: #faf5ec;
+        --panel: #fffaf2;
+        --panel-2: #f6eee1;
+        --border: #dfd1bd;
+        --border-strong: #cfbea8;
+        --text: #241d16;
+        --muted: #6f6557;
+        --accent: #67563f;
+        --accent-soft: #ece2d2;
+        --tag: #efe5d7;
+        --accepted: #47663f;
+        --kept: #5a6952;
+        --parked: #8a6230;
+        --rejected: #8a3a34;
+        --shadow: rgba(83, 61, 33, 0.055);
     }
     * { box-sizing: border-box; }
     body {
@@ -1150,6 +1710,7 @@ fn styles() -> &'static str {
         background: var(--bg);
         color: var(--text);
         font: 15px/1.55 "Iosevka Web", "IBM Plex Mono", "SFMono-Regular", monospace;
+        overflow-x: hidden;
     }
     a {
         color: var(--accent);
@@ -1161,7 +1722,71 @@ fn styles() -> &'static str {
         margin: 0 auto;
         padding: 24px 24px 40px;
         display: grid;
+        gap: 20px;
+        grid-template-columns: 280px minmax(0, 1fr);
+        align-items: start;
+        min-width: 0;
+        overflow-x: clip;
+    }
+    .sidebar {
+        position: sticky;
+        top: 18px;
+        min-width: 0;
+    }
+    .sidebar-panel {
+        border: 1px solid var(--border);
+        background: var(--panel);
+        padding: 18px 16px;
+        display: grid;
+        gap: 16px;
+        box-shadow: 0 1px 0 var(--shadow);
+    }
+    .sidebar-project {
+        display: grid;
+        gap: 8px;
+    }
+    .sidebar-home {
+        color: var(--text);
+        font-size: 18px;
+        font-weight: 700;
+    }
+    .sidebar-copy {
+        margin: 0;
+        color: var(--muted);
+        font-size: 13px;
+        line-height: 1.5;
+    }
+    .sidebar-section {
+        display: grid;
+        gap: 10px;
+    }
+    .frontier-nav {
+        display: grid;
+        gap: 8px;
+    }
+    .frontier-nav-link {
+        display: grid;
+        gap: 4px;
+        padding: 10px 12px;
+        border: 1px solid var(--border);
+        background: var(--panel-2);
+    }
+    .frontier-nav-link.active {
+        border-color: var(--border-strong);
+        background: var(--accent-soft);
+    }
+    .frontier-nav-title {
+        color: var(--text);
+        font-weight: 700;
+    }
+    .frontier-nav-meta {
+        color: var(--muted);
+        font-size: 12px;
+    }
+    .main-column {
+        display: grid;
         gap: 18px;
+        min-width: 0;
     }
     .page-header {
         display: grid;
@@ -1170,6 +1795,7 @@ fn styles() -> &'static str {
         border: 1px solid var(--border);
         background: var(--panel);
         box-shadow: 0 1px 0 var(--shadow);
+        min-width: 0;
     }
     .eyebrow {
         display: flex;
@@ -1186,12 +1812,35 @@ fn styles() -> &'static str {
         font-size: clamp(22px, 3.8vw, 34px);
         line-height: 1.1;
         overflow-wrap: anywhere;
+        word-break: break-word;
     }
     .page-subtitle {
         margin: 0;
         color: var(--muted);
         max-width: 90ch;
         overflow-wrap: anywhere;
+    }
+    .tab-row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+    }
+    .tab-chip {
+        display: inline-flex;
+        align-items: center;
+        padding: 8px 12px;
+        border: 1px solid var(--border);
+        background: var(--panel);
+        color: var(--muted);
+        font-size: 13px;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+    }
+    .tab-chip.active {
+        color: var(--text);
+        border-color: var(--border-strong);
+        background: var(--accent-soft);
+        font-weight: 700;
     }
     .card {
         border: 1px solid var(--border);
@@ -1200,6 +1849,7 @@ fn styles() -> &'static str {
         display: grid;
         gap: 14px;
         box-shadow: 0 1px 0 var(--shadow);
+        min-width: 0;
     }
     .subcard {
         border: 1px solid var(--border);
@@ -1210,7 +1860,14 @@ fn styles() -> &'static str {
         min-width: 0;
         align-content: start;
     }
+    .compact-subcard {
+        justify-items: start;
+    }
     .block { display: grid; gap: 10px; }
+    .stack {
+        display: grid;
+        gap: 14px;
+    }
     .split {
         display: grid;
         gap: 16px;
@@ -1243,10 +1900,16 @@ fn styles() -> &'static str {
         font-weight: 700;
         color: var(--text);
         overflow-wrap: anywhere;
+        word-break: break-word;
+        flex: 1 1 auto;
+        min-width: 0;
     }
     h1, h2, h3 {
         margin: 0;
         line-height: 1.15;
+        overflow-wrap: anywhere;
+        word-break: break-word;
+        min-width: 0;
     }
     h2 { font-size: 19px; }
     h3 { font-size: 14px; color: #4f473a; }
@@ -1288,17 +1951,49 @@ fn styles() -> &'static str {
         flex-wrap: wrap;
         gap: 8px;
         align-items: flex-start;
+        align-content: flex-start;
+        justify-content: flex-start;
     }
+    .tag-cloud { max-width: 100%; }
     .tag-chip, .kind-chip, .status-chip, .metric-pill {
         display: inline-flex;
         align-items: center;
-        width: fit-content;
+        flex: 0 0 auto;
+        width: auto;
         max-width: 100%;
         border: 1px solid var(--border-strong);
         background: var(--tag);
         padding: 4px 8px;
         font-size: 12px;
         line-height: 1.2;
+        white-space: nowrap;
+    }
+    .metric-picker {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+    }
+    .metric-choice {
+        display: grid;
+        gap: 4px;
+        padding: 10px 12px;
+        border: 1px solid var(--border);
+        background: var(--panel-2);
+        min-width: 0;
+    }
+    .metric-choice.active {
+        border-color: var(--border-strong);
+        background: var(--accent-soft);
+    }
+    .metric-choice-key {
+        color: var(--text);
+        font-weight: 700;
+    }
+    .metric-choice-meta {
+        color: var(--muted);
+        font-size: 12px;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
     }
     .link-chip {
         display: inline-grid;
@@ -1336,17 +2031,19 @@ fn styles() -> &'static str {
         letter-spacing: 0.05em;
         font-weight: 700;
     }
-    .status-accepted { color: var(--accepted); border-color: rgba(47, 107, 67, 0.25); background: rgba(47, 107, 67, 0.08); }
-    .status-kept { color: var(--kept); border-color: rgba(61, 102, 86, 0.25); background: rgba(61, 102, 86, 0.08); }
-    .status-parked { color: var(--parked); border-color: rgba(139, 91, 36, 0.25); background: rgba(139, 91, 36, 0.09); }
-    .status-rejected { color: var(--rejected); border-color: rgba(138, 47, 47, 0.25); background: rgba(138, 47, 47, 0.09); }
-    .status-open, .status-exploring { color: var(--accent); border-color: rgba(45, 92, 77, 0.25); background: var(--accent-soft); }
+    .status-accepted { color: var(--accepted); border-color: color-mix(in srgb, var(--accepted) 24%, white); background: color-mix(in srgb, var(--accepted) 10%, white); }
+    .status-kept { color: var(--kept); border-color: color-mix(in srgb, var(--kept) 22%, white); background: color-mix(in srgb, var(--kept) 9%, white); }
+    .status-parked { color: var(--parked); border-color: color-mix(in srgb, var(--parked) 24%, white); background: color-mix(in srgb, var(--parked) 10%, white); }
+    .status-rejected { color: var(--rejected); border-color: color-mix(in srgb, var(--rejected) 24%, white); background: color-mix(in srgb, var(--rejected) 10%, white); }
+    .status-open, .status-exploring { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 22%, white); background: var(--accent-soft); }
     .status-neutral, .classless { color: #5f584d; border-color: var(--border-strong); background: var(--panel); }
     .status-archived { color: #7a756d; border-color: var(--border); background: var(--panel); }
     .metric-table {
         width: 100%;
         border-collapse: collapse;
         font-size: 13px;
+        display: block;
+        overflow-x: auto;
     }
     .metric-table th,
     .metric-table td {
@@ -1354,6 +2051,7 @@ fn styles() -> &'static str {
         border-top: 1px solid var(--border);
         text-align: left;
         vertical-align: top;
+        overflow-wrap: anywhere;
     }
     .metric-table th {
         color: var(--muted);
@@ -1365,6 +2063,21 @@ fn styles() -> &'static str {
     .related-block {
         display: grid;
         gap: 8px;
+    }
+    .chart-frame {
+        border: 1px solid var(--border);
+        background: var(--panel-2);
+        padding: 10px;
+        overflow-x: auto;
+    }
+    .chart-frame svg {
+        display: block;
+        width: 100%;
+        height: auto;
+    }
+    .chart-error {
+        color: var(--rejected);
+        font-size: 13px;
     }
     .roadmap-list, .simple-list {
         margin: 0;
@@ -1387,6 +2100,14 @@ fn styles() -> &'static str {
         font-size: 0.95em;
         background: var(--panel-2);
         padding: 0.05rem 0.3rem;
+    }
+    @media (max-width: 980px) {
+        .shell {
+            grid-template-columns: 1fr;
+        }
+        .sidebar {
+            position: static;
+        }
     }
     @media (max-width: 720px) {
         .shell { padding: 12px; }

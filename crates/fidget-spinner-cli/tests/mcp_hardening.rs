@@ -13,6 +13,7 @@ use libmcp as _;
 use libmcp_testkit::assert_no_opaque_ids;
 use maud as _;
 use percent_encoding as _;
+use plotters as _;
 use serde as _;
 use serde_json::{Value, json};
 use time as _;
