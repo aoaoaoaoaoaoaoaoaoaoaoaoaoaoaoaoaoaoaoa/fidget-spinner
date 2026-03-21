@@ -10,7 +10,7 @@ use axum::routing::get;
 use camino::Utf8PathBuf;
 use fidget_spinner_core::{
     AttachmentTargetRef, ExperimentAnalysis, ExperimentOutcome, ExperimentStatus, FrontierRecord,
-    FrontierVerdict, MetricUnit, NonEmptyText, RunDimensionValue, Slug, VertexRef,
+    FrontierVerdict, KnownMetricUnit, MetricUnit, NonEmptyText, RunDimensionValue, Slug, VertexRef,
 };
 use fidget_spinner_store_sqlite::{
     ExperimentDetail, ExperimentSummary, FrontierMetricSeries, FrontierOpenProjection,
@@ -640,7 +640,7 @@ fn render_metric_series_section(
                                             (point.verdict.as_str())
                                         }
                                     }
-                                    td.nowrap { (format_metric_value(point.value, series.metric.unit)) }
+                                    td.nowrap { (format_metric_value(point.value, &series.metric.unit)) }
                                 }
                             }
                         }
@@ -1295,7 +1295,7 @@ fn render_metric_panel(
                     @for metric in metrics {
                         tr {
                             td { (metric.key) }
-                            td { (format_metric_value(metric.value, metric_unit_for(metric, outcome))) }
+                            td { (format_metric_value(metric.value, &metric_unit_for(metric, outcome))) }
                         }
                     }
                 }
@@ -1310,9 +1310,9 @@ fn metric_unit_for(
     outcome: &ExperimentOutcome,
 ) -> MetricUnit {
     if metric.key == outcome.primary_metric.key {
-        return MetricUnit::Custom;
+        return MetricUnit::scalar();
     }
-    MetricUnit::Custom
+    MetricUnit::scalar()
 }
 
 fn render_vertex_relation_sections(
@@ -1424,7 +1424,7 @@ fn render_experiment_card(experiment: &ExperimentSummary) -> Markup {
             div.meta-row {
                 span.metric-pill {
                     (metric.key) ": "
-                    (format_metric_value(metric.value, metric.unit))
+                    (format_metric_value(metric.value, &metric.unit))
                 }
             }
         }
@@ -1449,7 +1449,7 @@ fn render_experiment_summary_line(experiment: &ExperimentSummary) -> Markup {
         @if let Some(metric) = experiment.primary_metric.as_ref() {
             span.metric-pill {
                 (metric.key) ": "
-                (format_metric_value(metric.value, metric.unit))
+                (format_metric_value(metric.value, &metric.unit))
             }
         }
     }
@@ -1627,13 +1627,23 @@ fn render_dimension_value(value: &RunDimensionValue) -> String {
     }
 }
 
-fn format_metric_value(value: f64, unit: MetricUnit) -> String {
-    match unit {
-        MetricUnit::Bytes => format!("{} B", format_integerish(value)),
-        MetricUnit::Seconds => format!("{value:.3} s"),
-        MetricUnit::Count => format_integerish(value),
-        MetricUnit::Ratio => format!("{value:.4}"),
-        MetricUnit::Custom => format_float(value),
+fn format_metric_value(value: f64, unit: &MetricUnit) -> String {
+    match unit.known_kind() {
+        Some(KnownMetricUnit::Bytes) => format!("{} B", format_integerish(value)),
+        Some(KnownMetricUnit::Seconds) => format!("{value:.3} s"),
+        Some(KnownMetricUnit::Milliseconds) => format!("{value:.3} ms"),
+        Some(KnownMetricUnit::Microseconds) => format!("{} us", format_integerish(value)),
+        Some(KnownMetricUnit::Nanoseconds) => format!("{} ns", format_integerish(value)),
+        Some(KnownMetricUnit::Count) => format_integerish(value),
+        Some(KnownMetricUnit::Ratio) => format!("{value:.4}"),
+        Some(KnownMetricUnit::Percent) => format!("{value:.2}%"),
+        Some(KnownMetricUnit::Scalar) | None => {
+            if unit.as_str() == "scalar" {
+                format_float(value)
+            } else {
+                format!("{} {}", format_float(value), unit.as_str())
+            }
+        }
     }
 }
 

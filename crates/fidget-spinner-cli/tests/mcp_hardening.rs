@@ -454,6 +454,64 @@ fn registry_and_history_surfaces_render_timestamps_as_strings() -> TestResult {
 }
 
 #[test]
+fn metric_define_accepts_builtin_and_custom_unit_tokens() -> TestResult {
+    let project_root = temp_project_root("metric_units")?;
+    init_project(&project_root)?;
+
+    let mut harness = McpHarness::spawn(Some(&project_root))?;
+    let _ = harness.initialize()?;
+    harness.notify_initialized()?;
+
+    let microseconds = harness.call_tool_full(
+        23,
+        "metric.define",
+        json!({
+            "key": "oracle_solve_wallclock_micros",
+            "unit": "micros",
+            "objective": "minimize",
+            "visibility": "canonical",
+        }),
+    )?;
+    assert_tool_ok(&microseconds);
+    assert_eq!(
+        tool_content(&microseconds)["record"]["unit"].as_str(),
+        Some("microseconds")
+    );
+
+    let custom = harness.call_tool_full(
+        24,
+        "metric.define",
+        json!({
+            "key": "root_lp_objective_last",
+            "unit": "objective",
+            "objective": "minimize",
+            "visibility": "canonical",
+        }),
+    )?;
+    assert_tool_ok(&custom);
+    assert_eq!(
+        tool_content(&custom)["record"]["unit"].as_str(),
+        Some("objective")
+    );
+
+    let placeholder = harness.call_tool(
+        25,
+        "metric.define",
+        json!({
+            "key": "bad_custom_placeholder",
+            "unit": "custom",
+            "objective": "minimize",
+        }),
+    )?;
+    assert_tool_error(&placeholder);
+    assert!(
+        must_some(tool_error_message(&placeholder), "metric unit error")?.contains("metric unit")
+    );
+
+    Ok(())
+}
+
+#[test]
 fn hypothesis_body_discipline_is_enforced_over_mcp() -> TestResult {
     let project_root = temp_project_root("single_paragraph")?;
     init_project(&project_root)?;

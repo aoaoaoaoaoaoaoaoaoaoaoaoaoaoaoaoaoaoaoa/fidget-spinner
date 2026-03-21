@@ -4,6 +4,12 @@ use thiserror::Error;
 pub enum CoreError {
     #[error("text values must not be blank")]
     EmptyText,
+    #[error("metric units must not be blank")]
+    EmptyMetricUnit,
+    #[error(
+        "invalid metric unit `{0}`; expected a built-in unit like `microseconds` or a lowercase ascii token"
+    )]
+    InvalidMetricUnit(String),
     #[error("tag names must not be blank")]
     EmptyTagName,
     #[error(

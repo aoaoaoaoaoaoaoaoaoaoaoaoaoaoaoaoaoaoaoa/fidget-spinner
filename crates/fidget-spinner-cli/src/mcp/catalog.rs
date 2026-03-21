@@ -601,9 +601,8 @@ fn tool_input_schema(name: &str) -> Value {
                 ("key", string_schema("Metric key.")),
                 (
                     "unit",
-                    enum_string_schema(
-                        &["seconds", "bytes", "count", "ratio", "custom"],
-                        "Metric unit.",
+                    string_schema(
+                        "Metric unit token. Builtins include `scalar`, `count`, `ratio`, `percent`, `bytes`, `nanoseconds`, `microseconds`, `milliseconds`, and `seconds`; custom lowercase ascii tokens are also allowed.",
                     ),
                 ),
                 (

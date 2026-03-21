@@ -493,8 +493,8 @@ struct MetricDefineArgs {
     project: ProjectArg,
     #[arg(long)]
     key: String,
-    #[arg(long, value_enum)]
-    unit: CliMetricUnit,
+    #[arg(long)]
+    unit: String,
     #[arg(long, value_enum)]
     objective: CliOptimizationObjective,
     #[arg(long, value_enum, default_value_t = CliMetricVisibility::Canonical)]
@@ -579,15 +579,6 @@ struct SkillInstallArgs {
 struct SkillShowArgs {
     #[arg(long)]
     name: Option<String>,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
-enum CliMetricUnit {
-    Seconds,
-    Bytes,
-    Count,
-    Ratio,
-    Custom,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
@@ -995,7 +986,7 @@ fn run_metric_define(args: MetricDefineArgs) -> Result<(), StoreError> {
     let mut store = open_store(&args.project.project)?;
     print_json(&store.define_metric(DefineMetricRequest {
         key: NonEmptyText::new(args.key)?,
-        unit: args.unit.into(),
+        unit: MetricUnit::new(args.unit)?,
         objective: args.objective.into(),
         visibility: args.visibility.into(),
         description: args.description.map(NonEmptyText::new).transpose()?,
@@ -1396,18 +1387,6 @@ pub(crate) fn to_pretty_json(value: &impl Serialize) -> Result<String, StoreErro
 fn print_json(value: &impl Serialize) -> Result<(), StoreError> {
     println!("{}", to_pretty_json(value)?);
     Ok(())
-}
-
-impl From<CliMetricUnit> for MetricUnit {
-    fn from(value: CliMetricUnit) -> Self {
-        match value {
-            CliMetricUnit::Seconds => Self::Seconds,
-            CliMetricUnit::Bytes => Self::Bytes,
-            CliMetricUnit::Count => Self::Count,
-            CliMetricUnit::Ratio => Self::Ratio,
-            CliMetricUnit::Custom => Self::Custom,
-        }
-    }
 }
 
 impl From<CliOptimizationObjective> for OptimizationObjective {

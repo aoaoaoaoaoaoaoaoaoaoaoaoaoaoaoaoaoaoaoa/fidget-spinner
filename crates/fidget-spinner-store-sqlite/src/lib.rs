@@ -3033,19 +3033,12 @@ fn parse_frontier_status(raw: &str) -> Result<FrontierStatus, rusqlite::Error> {
 }
 
 fn parse_metric_unit(raw: &str) -> Result<MetricUnit, rusqlite::Error> {
-    match raw {
-        "seconds" => Ok(MetricUnit::Seconds),
-        "bytes" => Ok(MetricUnit::Bytes),
-        "count" => Ok(MetricUnit::Count),
-        "ratio" => Ok(MetricUnit::Ratio),
-        "custom" => Ok(MetricUnit::Custom),
-        _ => Err(to_sql_conversion_error(StoreError::Json(
-            serde_json::Error::io(io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("invalid metric unit `{raw}`"),
-            )),
-        ))),
-    }
+    MetricUnit::new(raw).map_err(|error| {
+        to_sql_conversion_error(StoreError::Json(serde_json::Error::io(io::Error::new(
+            io::ErrorKind::InvalidData,
+            error.to_string(),
+        ))))
+    })
 }
 
 fn parse_optimization_objective(raw: &str) -> Result<OptimizationObjective, rusqlite::Error> {

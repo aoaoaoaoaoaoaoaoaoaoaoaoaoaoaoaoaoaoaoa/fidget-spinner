@@ -165,27 +165,127 @@ impl FrontierStatus {
     }
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum MetricUnit {
-    Seconds,
-    Bytes,
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub enum KnownMetricUnit {
+    Scalar,
     Count,
     Ratio,
-    Custom,
+    Percent,
+    Bytes,
+    Nanoseconds,
+    Microseconds,
+    Milliseconds,
+    Seconds,
 }
 
-impl MetricUnit {
+impl KnownMetricUnit {
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
-            Self::Seconds => "seconds",
-            Self::Bytes => "bytes",
+            Self::Scalar => "scalar",
             Self::Count => "count",
             Self::Ratio => "ratio",
-            Self::Custom => "custom",
+            Self::Percent => "percent",
+            Self::Bytes => "bytes",
+            Self::Nanoseconds => "nanoseconds",
+            Self::Microseconds => "microseconds",
+            Self::Milliseconds => "milliseconds",
+            Self::Seconds => "seconds",
         }
     }
+
+    fn parse_alias(raw: &str) -> Option<Self> {
+        match raw {
+            "1" | "scalar" | "unitless" | "dimensionless" => Some(Self::Scalar),
+            "count" | "counts" => Some(Self::Count),
+            "ratio" | "fraction" => Some(Self::Ratio),
+            "%" | "percent" | "percentage" | "pct" => Some(Self::Percent),
+            "bytes" | "byte" | "b" | "by" => Some(Self::Bytes),
+            "nanoseconds" | "nanosecond" | "ns" => Some(Self::Nanoseconds),
+            "microseconds" | "microsecond" | "us" | "µs" | "micros" => Some(Self::Microseconds),
+            "milliseconds" | "millisecond" | "ms" | "millis" => Some(Self::Milliseconds),
+            "seconds" | "second" | "s" | "sec" | "secs" => Some(Self::Seconds),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct MetricUnit(String);
+
+impl MetricUnit {
+    pub fn new(value: impl Into<String>) -> Result<Self, CoreError> {
+        let raw = value.into();
+        let normalized = normalize_metric_unit(&raw)?;
+        Ok(Self(normalized))
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    #[must_use]
+    pub fn known_kind(&self) -> Option<KnownMetricUnit> {
+        KnownMetricUnit::parse_alias(&self.0)
+    }
+
+    #[must_use]
+    pub fn scalar() -> Self {
+        Self(KnownMetricUnit::Scalar.as_str().to_owned())
+    }
+}
+
+impl TryFrom<String> for MetricUnit {
+    type Error = CoreError;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        Self::new(value)
+    }
+}
+
+impl From<MetricUnit> for String {
+    fn from(value: MetricUnit) -> Self {
+        value.0
+    }
+}
+
+impl Display for MetricUnit {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
+fn normalize_metric_unit(raw: &str) -> Result<String, CoreError> {
+    let normalized = raw.trim().to_ascii_lowercase();
+    if normalized.is_empty() {
+        return Err(CoreError::EmptyMetricUnit);
+    }
+    if let Some(unit) = KnownMetricUnit::parse_alias(&normalized) {
+        return Ok(unit.as_str().to_owned());
+    }
+    if normalized == "custom" {
+        return Err(CoreError::InvalidMetricUnit(normalized));
+    }
+    let mut previous_was_separator = true;
+    let mut has_alphanumeric = false;
+    for character in normalized.chars() {
+        if character.is_ascii_lowercase() || character.is_ascii_digit() {
+            previous_was_separator = false;
+            has_alphanumeric = true;
+            continue;
+        }
+        if matches!(character, '-' | '_' | '/' | '.') && !previous_was_separator {
+            previous_was_separator = true;
+            continue;
+        }
+        return Err(CoreError::InvalidMetricUnit(normalized));
+    }
+    if !has_alphanumeric || previous_was_separator {
+        return Err(CoreError::InvalidMetricUnit(normalized));
+    }
+    Ok(normalized)
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
@@ -355,6 +455,50 @@ impl RunDimensionDefinition {
             created_at: now,
             updated_at: now,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{KnownMetricUnit, MetricUnit};
+
+    #[test]
+    fn metric_unit_normalizes_known_aliases() {
+        let microseconds = MetricUnit::new("micros");
+        assert!(microseconds.is_ok());
+        let microseconds = match microseconds {
+            Ok(value) => value,
+            Err(_) => return,
+        };
+        assert_eq!(microseconds.as_str(), "microseconds");
+        assert_eq!(
+            microseconds.known_kind(),
+            Some(KnownMetricUnit::Microseconds)
+        );
+
+        let percent = MetricUnit::new("%");
+        assert!(percent.is_ok());
+        let percent = match percent {
+            Ok(value) => value,
+            Err(_) => return,
+        };
+        assert_eq!(percent.as_str(), "percent");
+        assert_eq!(percent.known_kind(), Some(KnownMetricUnit::Percent));
+    }
+
+    #[test]
+    fn metric_unit_accepts_real_custom_tokens_and_rejects_placeholder_custom() {
+        let objective = MetricUnit::new("objective");
+        assert!(objective.is_ok());
+        let objective = match objective {
+            Ok(value) => value,
+            Err(_) => return,
+        };
+        assert_eq!(objective.as_str(), "objective");
+        assert_eq!(objective.known_kind(), None);
+
+        let placeholder = MetricUnit::new("custom");
+        assert!(placeholder.is_err());
     }
 }
 
