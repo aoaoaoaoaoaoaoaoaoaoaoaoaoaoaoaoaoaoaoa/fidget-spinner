@@ -21,7 +21,9 @@ use crate::mcp::catalog::{
     DispatchTarget, list_resources, resource_spec, tool_definitions, tool_spec,
 };
 use crate::mcp::fault::{FaultKind, FaultRecord, FaultStage};
-use crate::mcp::output::{ToolOutput, detailed_tool_output, split_presentation, tool_success};
+use crate::mcp::output::{
+    ToolOutput, fallback_detailed_tool_output, split_presentation, tool_success,
+};
 use crate::mcp::protocol::{
     CRASH_ONCE_ENV, FORCE_ROLLOUT_ENV, HOST_STATE_ENV, HostRequestId, HostStateSeed,
     PROTOCOL_VERSION, ProjectBindingSeed, SERVER_NAME, WorkerOperation, WorkerSpawnConfig,
@@ -749,7 +751,7 @@ fn project_bind_output(status: &ProjectBindStatus) -> Result<ToolOutput, FaultRe
     if status.requested_path != status.project_root {
         let _ = concise.insert("requested_path".to_owned(), json!(status.requested_path));
     }
-    detailed_tool_output(
+    fallback_detailed_tool_output(
         &Value::Object(concise),
         status,
         [
@@ -766,6 +768,7 @@ fn project_bind_output(status: &ProjectBindStatus) -> Result<ToolOutput, FaultRe
         ]
         .join("\n"),
         None,
+        libmcp::SurfaceKind::Mutation,
         FaultStage::Host,
         "tools/call:project.bind",
     )
@@ -787,18 +790,19 @@ fn skill_list_output() -> Result<ToolOutput, FaultRecord> {
             .iter()
             .map(|skill| format!("{}: {}", skill.name, skill.description)),
     );
-    detailed_tool_output(
+    fallback_detailed_tool_output(
         &concise,
         &json!({ "skills": skills }),
         lines.join("\n"),
         None,
+        libmcp::SurfaceKind::List,
         FaultStage::Host,
         "tools/call:skill.list",
     )
 }
 
 fn skill_show_output(skill: crate::bundled_skill::BundledSkill) -> Result<ToolOutput, FaultRecord> {
-    detailed_tool_output(
+    fallback_detailed_tool_output(
         &json!({
             "name": skill.name,
             "resource_uri": skill.resource_uri,
@@ -812,6 +816,7 @@ fn skill_show_output(skill: crate::bundled_skill::BundledSkill) -> Result<ToolOu
         }),
         skill.body,
         None,
+        libmcp::SurfaceKind::Read,
         FaultStage::Host,
         "tools/call:skill.show",
     )
@@ -874,11 +879,12 @@ fn system_health_output(health: &HealthSnapshot) -> Result<ToolOutput, FaultReco
             ""
         }
     ));
-    detailed_tool_output(
+    fallback_detailed_tool_output(
         &Value::Object(concise),
         health,
         lines.join("\n"),
         None,
+        libmcp::SurfaceKind::Ops,
         FaultStage::Host,
         "tools/call:system.health",
     )
@@ -976,11 +982,12 @@ fn system_telemetry_output(telemetry: &ServerTelemetry) -> Result<ToolOutput, Fa
     if let Some(fault) = telemetry.last_fault.as_ref() {
         lines.push(format!("last fault: {} {}", fault.operation, fault.message));
     }
-    detailed_tool_output(
+    fallback_detailed_tool_output(
         &Value::Object(concise),
         telemetry,
         lines.join("\n"),
         None,
+        libmcp::SurfaceKind::Ops,
         FaultStage::Host,
         "tools/call:system.telemetry",
     )

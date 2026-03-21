@@ -278,7 +278,7 @@ fn render_frontier_grid(frontiers: &[FrontierSummary], limit: Option<u32>) -> Ma
                     article.mini-card {
                         div.card-header {
                             a.title-link href=(frontier_href(&frontier.slug)) { (frontier.label) }
-                            span.status-chip class=(frontier_status_class(frontier.status.as_str())) {
+                            span class=(status_chip_classes(frontier_status_class(frontier.status.as_str()))) {
                                 (frontier.status.as_str())
                             }
                         }
@@ -325,7 +325,7 @@ fn render_frontier_header(frontier: &FrontierRecord) -> Markup {
         p.prose { (frontier.objective) }
         div.meta-row {
             span { "slug " code { (frontier.slug) } }
-            span.status-chip class=(frontier_status_class(frontier.status.as_str())) {
+            span class=(status_chip_classes(frontier_status_class(frontier.status.as_str()))) {
                 (frontier.status.as_str())
             }
             span.muted { "updated " (format_timestamp(frontier.updated_at)) }
@@ -453,7 +453,7 @@ fn render_hypothesis_current_state_grid(
                                 (state.hypothesis.title)
                             }
                             @if let Some(verdict) = state.hypothesis.latest_verdict {
-                                span.status-chip class=(verdict_class(verdict)) {
+                                span class=(status_chip_classes(verdict_class(verdict))) {
                                     (verdict.as_str())
                                 }
                             }
@@ -527,7 +527,7 @@ fn render_hypothesis_header(detail: &HypothesisDetail, frontier: &FrontierRecord
             span { "frontier " a href=(frontier_href(&frontier.slug)) { (frontier.label) } }
             span { "slug " code { (detail.record.slug) } }
             @if detail.record.archived {
-                span.status-chip.archived { "archived" }
+                span class="status-chip status-archived" { "archived" }
             }
             span.muted { "updated " (format_timestamp(detail.record.updated_at)) }
         }
@@ -560,7 +560,7 @@ fn render_experiment_header(detail: &ExperimentDetail, frontier: &FrontierRecord
                     (detail.owning_hypothesis.title)
                 }
             }
-            span.status-chip class=(experiment_status_class(detail.record.status)) {
+            span class=(status_chip_classes(experiment_status_class(detail.record.status))) {
                 (detail.record.status.as_str())
             }
             @if let Some(verdict) = detail
@@ -569,7 +569,7 @@ fn render_experiment_header(detail: &ExperimentDetail, frontier: &FrontierRecord
                 .as_ref()
                 .map(|outcome| outcome.verdict)
             {
-                span.status-chip class=(verdict_class(verdict)) { (verdict.as_str()) }
+                span class=(status_chip_classes(verdict_class(verdict))) { (verdict.as_str()) }
             }
             span.muted { "updated " (format_timestamp(detail.record.updated_at)) }
         }
@@ -763,7 +763,7 @@ fn render_artifact_section(
                     article.mini-card {
                         div.card-header {
                             a.title-link href=(artifact_href(&artifact.slug)) { (artifact.label) }
-                            span.status-chip.classless { (artifact.kind.as_str()) }
+                            span class="status-chip classless" { (artifact.kind.as_str()) }
                         }
                         @if let Some(summary) = artifact.summary.as_ref() {
                             p.prose { (summary) }
@@ -805,11 +805,11 @@ fn render_experiment_card(experiment: &ExperimentSummary) -> Markup {
     article.mini-card {
         div.card-header {
             a.title-link href=(experiment_href(&experiment.slug)) { (experiment.title) }
-            span.status-chip class=(experiment_status_class(experiment.status)) {
+            span class=(status_chip_classes(experiment_status_class(experiment.status))) {
                 (experiment.status.as_str())
             }
             @if let Some(verdict) = experiment.verdict {
-                span.status-chip class=(verdict_class(verdict)) { (verdict.as_str()) }
+                span class=(status_chip_classes(verdict_class(verdict))) { (verdict.as_str()) }
             }
         }
         @if let Some(summary) = experiment.summary.as_ref() {
@@ -854,9 +854,14 @@ fn render_experiment_summary_line(experiment: &ExperimentSummary) -> Markup {
 fn render_experiment_link_chip(experiment: &ExperimentSummary) -> Markup {
     html! {
         a.link-chip href=(experiment_href(&experiment.slug)) {
-            span { (experiment.title) }
-            @if let Some(verdict) = experiment.verdict {
-                span.status-chip class=(verdict_class(verdict)) { (verdict.as_str()) }
+            span.link-chip-main {
+                span.link-chip-title { (experiment.title) }
+                @if let Some(verdict) = experiment.verdict {
+                    span class=(status_chip_classes(verdict_class(verdict))) { (verdict.as_str()) }
+                }
+            }
+            @if experiment.verdict.is_none() && experiment.status == ExperimentStatus::Open {
+                span.link-chip-summary { "open experiment" }
             }
         }
     }
@@ -873,10 +878,12 @@ fn render_vertex_chip(summary: &VertexSummary) -> Markup {
     };
     html! {
         a.link-chip href=(href) {
-            span.kind-chip { (kind) }
-            span { (summary.title) }
+            span.link-chip-main {
+                span.kind-chip { (kind) }
+                span.link-chip-title { (summary.title) }
+            }
             @if let Some(summary_text) = summary.summary.as_ref() {
-                span.muted { " — " (summary_text) }
+                span.link-chip-summary { (summary_text) }
             }
         }
     }
@@ -885,10 +892,12 @@ fn render_vertex_chip(summary: &VertexSummary) -> Markup {
 fn render_attachment_chip(attachment: &AttachmentDisplay) -> Markup {
     html! {
         a.link-chip href=(&attachment.href) {
-            span.kind-chip { (attachment.kind) }
-            span { (&attachment.title) }
+            span.link-chip-main {
+                span.kind-chip { (attachment.kind) }
+                span.link-chip-title { (&attachment.title) }
+            }
             @if let Some(summary) = attachment.summary.as_ref() {
-                span.muted { " — " (summary) }
+                span.link-chip-summary { (summary) }
             }
         }
     }
@@ -1091,6 +1100,10 @@ fn experiment_status_class(status: ExperimentStatus) -> &'static str {
     }
 }
 
+fn status_chip_classes(extra_class: &str) -> String {
+    format!("status-chip {extra_class}")
+}
+
 fn verdict_class(verdict: FrontierVerdict) -> &'static str {
     match verdict {
         FrontierVerdict::Accepted => "status-accepted",
@@ -1114,25 +1127,29 @@ fn limit_items<T>(items: &[T], limit: Option<u32>) -> &[T] {
 fn styles() -> &'static str {
     r#"
     :root {
-        color-scheme: dark;
-        --bg: #091019;
-        --panel: #0f1823;
-        --panel-2: #131f2d;
-        --border: #1e3850;
-        --text: #d8e6f3;
-        --muted: #87a0b8;
-        --accent: #6dc7ff;
-        --accepted: #7ce38b;
-        --kept: #8de0c0;
-        --parked: #d9c17d;
-        --rejected: #ee7a7a;
+        color-scheme: light;
+        --bg: #f6f3ec;
+        --panel: #fffdf8;
+        --panel-2: #f3eee4;
+        --border: #d8d1c4;
+        --border-strong: #c8bfaf;
+        --text: #22201a;
+        --muted: #746e62;
+        --accent: #2d5c4d;
+        --accent-soft: #dbe8e2;
+        --tag: #ece5d8;
+        --accepted: #2f6b43;
+        --kept: #3d6656;
+        --parked: #8b5b24;
+        --rejected: #8a2f2f;
+        --shadow: rgba(74, 58, 32, 0.06);
     }
     * { box-sizing: border-box; }
     body {
         margin: 0;
         background: var(--bg);
         color: var(--text);
-        font: 15px/1.5 "Iosevka Web", "Iosevka", "JetBrains Mono", monospace;
+        font: 15px/1.55 "Iosevka Web", "IBM Plex Mono", "SFMono-Regular", monospace;
     }
     a {
         color: var(--accent);
@@ -1140,92 +1157,102 @@ fn styles() -> &'static str {
     }
     a:hover { text-decoration: underline; }
     .shell {
-        width: min(1500px, 100%);
+        width: min(1360px, 100%);
         margin: 0 auto;
-        padding: 20px;
+        padding: 24px 24px 40px;
         display: grid;
-        gap: 16px;
+        gap: 18px;
     }
     .page-header {
         display: grid;
-        gap: 8px;
-        padding: 16px 18px;
+        gap: 10px;
+        padding: 18px 20px;
         border: 1px solid var(--border);
         background: var(--panel);
+        box-shadow: 0 1px 0 var(--shadow);
     }
     .eyebrow {
         display: flex;
         gap: 10px;
+        flex-wrap: wrap;
         color: var(--muted);
         font-size: 13px;
         text-transform: uppercase;
         letter-spacing: 0.05em;
     }
-    .sep { color: #4d6478; }
+    .sep { color: #a08d70; }
     .page-title {
         margin: 0;
         font-size: clamp(22px, 3.8vw, 34px);
         line-height: 1.1;
+        overflow-wrap: anywhere;
     }
     .page-subtitle {
         margin: 0;
         color: var(--muted);
         max-width: 90ch;
+        overflow-wrap: anywhere;
     }
     .card {
         border: 1px solid var(--border);
         background: var(--panel);
-        padding: 16px 18px;
+        padding: 18px 20px;
         display: grid;
-        gap: 12px;
+        gap: 14px;
+        box-shadow: 0 1px 0 var(--shadow);
     }
     .subcard {
-        border: 1px solid #1a2b3c;
+        border: 1px solid var(--border);
         background: var(--panel-2);
         padding: 12px 14px;
         display: grid;
         gap: 10px;
         min-width: 0;
+        align-content: start;
     }
     .block { display: grid; gap: 10px; }
     .split {
         display: grid;
         gap: 16px;
         grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+        align-items: start;
     }
     .card-grid {
         display: grid;
         gap: 12px;
-        grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+        grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+        align-items: start;
     }
     .mini-card {
-        border: 1px solid #1a2b3c;
+        border: 1px solid var(--border);
         background: var(--panel-2);
         padding: 12px 14px;
         display: grid;
         gap: 9px;
         min-width: 0;
+        align-content: start;
     }
     .card-header {
         display: flex;
         gap: 10px;
-        align-items: center;
+        align-items: flex-start;
         flex-wrap: wrap;
     }
     .title-link {
         font-size: 16px;
         font-weight: 700;
-        color: #f2f8ff;
+        color: var(--text);
+        overflow-wrap: anywhere;
     }
     h1, h2, h3 {
         margin: 0;
         line-height: 1.15;
     }
     h2 { font-size: 19px; }
-    h3 { font-size: 14px; color: #c9d8e6; }
+    h3 { font-size: 14px; color: #4f473a; }
     .prose {
         margin: 0;
-        color: #dce9f6;
+        color: var(--text);
         max-width: 92ch;
         white-space: pre-wrap;
     }
@@ -1233,14 +1260,14 @@ fn styles() -> &'static str {
     .meta-row {
         display: flex;
         flex-wrap: wrap;
-        gap: 14px;
+        gap: 8px 14px;
         align-items: center;
         font-size: 13px;
     }
     .kv-grid {
         display: grid;
         gap: 10px 14px;
-        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+        grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
     }
     .kv {
         display: grid;
@@ -1260,18 +1287,44 @@ fn styles() -> &'static str {
         display: flex;
         flex-wrap: wrap;
         gap: 8px;
+        align-items: flex-start;
     }
-    .tag-chip, .kind-chip, .status-chip, .metric-pill, .link-chip {
-        border: 1px solid #24425b;
-        background: rgba(109, 199, 255, 0.06);
+    .tag-chip, .kind-chip, .status-chip, .metric-pill {
+        display: inline-flex;
+        align-items: center;
+        width: fit-content;
+        max-width: 100%;
+        border: 1px solid var(--border-strong);
+        background: var(--tag);
         padding: 4px 8px;
         font-size: 12px;
         line-height: 1.2;
     }
     .link-chip {
-        display: inline-flex;
-        gap: 8px;
-        align-items: center;
+        display: inline-grid;
+        gap: 4px;
+        align-content: start;
+        max-width: min(100%, 72ch);
+        padding: 8px 10px;
+        border: 1px solid var(--border);
+        background: var(--panel);
+        min-width: 0;
+    }
+    .link-chip-main {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px 8px;
+        align-items: flex-start;
+        min-width: 0;
+    }
+    .link-chip-title {
+        overflow-wrap: anywhere;
+    }
+    .link-chip-summary {
+        color: var(--muted);
+        font-size: 12px;
+        line-height: 1.4;
+        overflow-wrap: anywhere;
     }
     .kind-chip {
         color: var(--muted);
@@ -1283,14 +1336,13 @@ fn styles() -> &'static str {
         letter-spacing: 0.05em;
         font-weight: 700;
     }
-    .status-accepted { color: var(--accepted); border-color: rgba(124, 227, 139, 0.35); }
-    .status-kept { color: var(--kept); border-color: rgba(141, 224, 192, 0.35); }
-    .status-parked { color: var(--parked); border-color: rgba(217, 193, 125, 0.35); }
-    .status-rejected { color: var(--rejected); border-color: rgba(238, 122, 122, 0.35); }
-    .status-open { color: var(--accent); border-color: rgba(109, 199, 255, 0.35); }
-    .status-exploring { color: var(--accent); border-color: rgba(109, 199, 255, 0.35); }
-    .status-neutral, .classless { color: #a7c0d4; border-color: #2a4358; }
-    .status-archived { color: #7f8da0; border-color: #2b3540; }
+    .status-accepted { color: var(--accepted); border-color: rgba(47, 107, 67, 0.25); background: rgba(47, 107, 67, 0.08); }
+    .status-kept { color: var(--kept); border-color: rgba(61, 102, 86, 0.25); background: rgba(61, 102, 86, 0.08); }
+    .status-parked { color: var(--parked); border-color: rgba(139, 91, 36, 0.25); background: rgba(139, 91, 36, 0.09); }
+    .status-rejected { color: var(--rejected); border-color: rgba(138, 47, 47, 0.25); background: rgba(138, 47, 47, 0.09); }
+    .status-open, .status-exploring { color: var(--accent); border-color: rgba(45, 92, 77, 0.25); background: var(--accent-soft); }
+    .status-neutral, .classless { color: #5f584d; border-color: var(--border-strong); background: var(--panel); }
+    .status-archived { color: #7a756d; border-color: var(--border); background: var(--panel); }
     .metric-table {
         width: 100%;
         border-collapse: collapse;
@@ -1299,7 +1351,7 @@ fn styles() -> &'static str {
     .metric-table th,
     .metric-table td {
         padding: 7px 8px;
-        border-top: 1px solid #1b2d3e;
+        border-top: 1px solid var(--border);
         text-align: left;
         vertical-align: top;
     }
@@ -1320,22 +1372,28 @@ fn styles() -> &'static str {
         display: grid;
         gap: 6px;
     }
+    .roadmap-list li, .simple-list li {
+        overflow-wrap: anywhere;
+    }
     .code-block {
         white-space: pre-wrap;
         overflow-wrap: anywhere;
-        border: 1px solid #1a2b3c;
-        background: #0b131c;
+        border: 1px solid var(--border);
+        background: var(--panel-2);
         padding: 12px 14px;
     }
     code {
         font-family: inherit;
         font-size: 0.95em;
+        background: var(--panel-2);
+        padding: 0.05rem 0.3rem;
     }
     @media (max-width: 720px) {
         .shell { padding: 12px; }
         .card, .page-header { padding: 14px; }
         .subcard, .mini-card { padding: 12px; }
         .card-grid, .split, .kv-grid { grid-template-columns: 1fr; }
+        .page-title { font-size: 18px; }
     }
     "#
 }

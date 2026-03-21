@@ -10,6 +10,7 @@ use camino::Utf8PathBuf;
 use fidget_spinner_core::{NonEmptyText, Slug};
 use fidget_spinner_store_sqlite::{CreateFrontierRequest, ProjectStore};
 use libmcp as _;
+use libmcp_testkit::assert_no_opaque_ids;
 use maud as _;
 use percent_encoding as _;
 use serde as _;
@@ -338,6 +339,7 @@ fn frontier_open_is_the_grounding_surface_for_live_state() -> TestResult {
         harness.call_tool_full(18, "frontier.open", json!({"frontier": "lp-root"}))?;
     assert_tool_ok(&frontier_open);
     let content = tool_content(&frontier_open);
+    assert_no_opaque_ids(content).map_err(|error| io::Error::other(error.to_string()))?;
     assert_eq!(content["frontier"]["slug"].as_str(), Some("lp-root"));
     assert_eq!(
         must_some(content["active_tags"].as_array(), "active tags array")?
@@ -363,6 +365,7 @@ fn frontier_open_is_the_grounding_surface_for_live_state() -> TestResult {
         active_hypotheses[0]["hypothesis"]["slug"].as_str(),
         Some("node-local-loop")
     );
+    assert!(active_hypotheses[0]["hypothesis"].get("id").is_none());
     assert_eq!(
         active_hypotheses[0]["latest_closed_experiment"]["slug"].as_str(),
         Some("baseline-20s")
@@ -374,6 +377,14 @@ fn frontier_open_is_the_grounding_surface_for_live_state() -> TestResult {
         )?[0]["slug"]
             .as_str(),
         Some("loop-20s")
+    );
+    assert!(
+        must_some(
+            content["open_experiments"].as_array(),
+            "open experiments array",
+        )?[0]
+            .get("hypothesis_id")
+            .is_none()
     );
     assert!(content.get("artifacts").is_none());
     assert!(active_hypotheses[0]["hypothesis"].get("body").is_none());
@@ -460,14 +471,20 @@ fn artifact_surface_preserves_reference_only() -> TestResult {
         harness.call_tool_full(33, "artifact.read", json!({"artifact": "lp-review-doc"}))?;
     assert_tool_ok(&artifact);
     let content = tool_content(&artifact);
+    assert_no_opaque_ids(content).map_err(|error| io::Error::other(error.to_string()))?;
     assert_eq!(
         content["record"]["locator"].as_str(),
         Some("/tmp/lp-review.md")
     );
+    assert_eq!(content["record"]["slug"].as_str(), Some("lp-review-doc"));
     assert!(content["record"].get("body").is_none());
     assert_eq!(
         must_some(content["attachments"].as_array(), "artifact attachments")?[0]["kind"].as_str(),
         Some("hypothesis")
+    );
+    assert_eq!(
+        must_some(content["attachments"].as_array(), "artifact attachments")?[0]["slug"].as_str(),
+        Some("sourced-hypothesis")
     );
     Ok(())
 }
@@ -595,6 +612,7 @@ fn experiment_close_drives_metric_best_and_analysis() -> TestResult {
     )?;
     assert_tool_ok(&detail);
     let content = tool_content(&detail);
+    assert_no_opaque_ids(content).map_err(|error| io::Error::other(error.to_string()))?;
     assert_eq!(
         content["record"]["outcome"]["verdict"].as_str(),
         Some("accepted")
@@ -603,6 +621,14 @@ fn experiment_close_drives_metric_best_and_analysis() -> TestResult {
         content["record"]["outcome"]["analysis"]["summary"].as_str(),
         Some("Node LP work is now the primary native sink.")
     );
+    assert_eq!(content["record"]["slug"].as_str(), Some("trace-node-reopt"));
+    assert!(content["record"].get("frontier_id").is_none());
+    assert!(content["record"].get("hypothesis_id").is_none());
+    assert_eq!(
+        content["owning_hypothesis"]["slug"].as_str(),
+        Some("reopt-dominance")
+    );
+    assert!(content["owning_hypothesis"].get("id").is_none());
     Ok(())
 }
 

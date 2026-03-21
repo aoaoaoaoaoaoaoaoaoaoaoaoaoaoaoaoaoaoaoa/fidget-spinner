@@ -1,14 +1,12 @@
 use libmcp::{
-    DetailLevel, JsonPorcelainConfig, RenderMode, render_json_porcelain,
-    with_presentation_properties,
+    DetailLevel, FallbackJsonProjection, JsonPorcelainConfig, ProjectionError, RenderMode,
+    SurfaceKind, ToolProjection, render_json_porcelain, with_presentation_properties,
 };
 use serde::Serialize;
 use serde_json::{Value, json};
 
 use crate::mcp::fault::{FaultKind, FaultRecord, FaultStage};
 
-const CONCISE_PORCELAIN_MAX_LINES: usize = 12;
-const CONCISE_PORCELAIN_MAX_INLINE_CHARS: usize = 160;
 const FULL_PORCELAIN_MAX_LINES: usize = 40;
 const FULL_PORCELAIN_MAX_INLINE_CHARS: usize = 512;
 
@@ -99,43 +97,54 @@ pub(crate) fn split_presentation(
     Ok((Presentation { render, detail }, Value::Object(object)))
 }
 
-pub(crate) fn tool_output(
-    value: &impl Serialize,
-    stage: FaultStage,
-    operation: &str,
-) -> Result<ToolOutput, FaultRecord> {
-    let structured = serde_json::to_value(value).map_err(|error| {
-        FaultRecord::new(FaultKind::Internal, stage, operation, error.to_string())
-    })?;
-    let concise_text = render_json_porcelain(&structured, concise_porcelain_config());
-    Ok(ToolOutput::from_values(
-        structured.clone(),
-        structured,
-        concise_text,
-        None,
-    ))
-}
-
-pub(crate) fn detailed_tool_output(
-    concise: &impl Serialize,
-    full: &impl Serialize,
+pub(crate) fn projected_tool_output(
+    projection: &impl ToolProjection,
     concise_text: impl Into<String>,
     full_text: Option<String>,
     stage: FaultStage,
     operation: &str,
 ) -> Result<ToolOutput, FaultRecord> {
-    let concise = serde_json::to_value(concise).map_err(|error| {
-        FaultRecord::new(FaultKind::Internal, stage, operation, error.to_string())
-    })?;
-    let full = serde_json::to_value(full).map_err(|error| {
-        FaultRecord::new(FaultKind::Internal, stage, operation, error.to_string())
-    })?;
+    let concise = projection
+        .concise_projection()
+        .map_err(|error| projection_fault(error, stage, operation))?;
+    let full = projection
+        .full_projection()
+        .map_err(|error| projection_fault(error, stage, operation))?;
     Ok(ToolOutput::from_values(
         concise,
         full,
         concise_text,
         full_text,
     ))
+}
+
+pub(crate) fn fallback_tool_output(
+    concise: &impl Serialize,
+    full: &impl Serialize,
+    kind: SurfaceKind,
+    stage: FaultStage,
+    operation: &str,
+) -> Result<ToolOutput, FaultRecord> {
+    let projection = FallbackJsonProjection::new(concise, full, kind)
+        .map_err(|error| projection_fault(error, stage, operation))?;
+    let concise_text = projection
+        .porcelain_projection(DetailLevel::Concise)
+        .map_err(|error| projection_fault(error, stage, operation))?;
+    projected_tool_output(&projection, concise_text, None, stage, operation)
+}
+
+pub(crate) fn fallback_detailed_tool_output(
+    concise: &impl Serialize,
+    full: &impl Serialize,
+    concise_text: impl Into<String>,
+    full_text: Option<String>,
+    kind: SurfaceKind,
+    stage: FaultStage,
+    operation: &str,
+) -> Result<ToolOutput, FaultRecord> {
+    let projection = FallbackJsonProjection::new(concise, full, kind)
+        .map_err(|error| projection_fault(error, stage, operation))?;
+    projected_tool_output(&projection, concise_text, full_text, stage, operation)
 }
 
 pub(crate) fn tool_success(
@@ -165,11 +174,8 @@ pub(crate) fn with_common_presentation(schema: Value) -> Value {
     with_presentation_properties(schema)
 }
 
-const fn concise_porcelain_config() -> JsonPorcelainConfig {
-    JsonPorcelainConfig {
-        max_lines: CONCISE_PORCELAIN_MAX_LINES,
-        max_inline_chars: CONCISE_PORCELAIN_MAX_INLINE_CHARS,
-    }
+fn projection_fault(error: ProjectionError, stage: FaultStage, operation: &str) -> FaultRecord {
+    FaultRecord::new(FaultKind::Internal, stage, operation, error.to_string())
 }
 
 const fn full_porcelain_config() -> JsonPorcelainConfig {

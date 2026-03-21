@@ -18,13 +18,16 @@ clap.workspace = true
 dirs.workspace = true
 fidget-spinner-core = { path = "../fidget-spinner-core" }
 fidget-spinner-store-sqlite = { path = "../fidget-spinner-store-sqlite" }
-libmcp = { git = "https://git.swarm.moe/libmcp.git", rev = "84e898d9ba699451d5d13fe384e7bbe220564bc1" }
+libmcp = { git = "https://git.swarm.moe/libmcp.git", rev = "bb92a05eb5446e07c6288e266bd06d7b5899eee5" }
 maud.workspace = true
 percent-encoding.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 time.workspace = true
 tokio.workspace = true
+
+[dev-dependencies]
+libmcp-testkit = { git = "https://git.swarm.moe/libmcp.git", rev = "bb92a05eb5446e07c6288e266bd06d7b5899eee5", package = "libmcp-testkit" }
 
 [lints]
 workspace = true

@@ -24,6 +24,8 @@ use fidget_spinner_store_sqlite::{
     UpdateArtifactRequest, UpdateExperimentRequest, UpdateFrontierBriefRequest,
     UpdateHypothesisRequest, VertexSelector,
 };
+#[cfg(test)]
+use libmcp_testkit as _;
 use serde::Serialize;
 use serde_json::Value;
 
