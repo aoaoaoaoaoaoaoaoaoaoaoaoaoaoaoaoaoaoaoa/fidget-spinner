@@ -112,9 +112,10 @@ A closed experiment exists only when all of these exist together:
 - rationale
 - optional supporting metrics
 - optional analysis
+- commit hash captured from a clean git `HEAD`
 
 Closing an experiment is one atomic mutation, not a loose pile of lower-level
-writes.
+writes. Spinner must reject closes from a dirty worktree.
 
 ### 7. Live metrics are derived
 
@@ -162,6 +163,7 @@ A closed experiment stores:
 - verdict: `accepted | kept | parked | rejected`
 - rationale
 - optional analysis
+- closing commit hash
 - attached artifacts
 
 ### Artifact
@@ -192,15 +194,16 @@ MCP path.
 
 ## Storage
 
-Every project owns a private state root:
+Every project owns a private centralized state root:
 
 ```text
-<project root>/.fidget_spinner/
+~/.local/state/fidget-spinner/projects/<project>-<stable-id>/
     project.json
     state.sqlite
 ```
 
-There is no required global database.
+There is no required database service. The project root remains the binding
+identity, but Spinner state stays out of the git worktree.
 
 ## MVP Surface
 

@@ -1,12 +1,12 @@
 [Unit]
-Description=Fidget Spinner libgrid navigator
+Description=Fidget Spinner central navigator
 
 [Service]
 Type=simple
-WorkingDirectory=@UI_PROJECT_ROOT@
+WorkingDirectory=@UI_PATH@
 Environment=HOME=@HOME@
 Environment=PATH=@HOME@/.cargo/bin:@LOCAL_BIN_DIR@:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-ExecStart=@LOCAL_BIN_DIR@/fidget-spinner-cli ui serve --path @UI_PROJECT_ROOT@ --bind @UI_BIND@
+ExecStart=@LOCAL_BIN_DIR@/fidget-spinner-cli ui serve --path @UI_PATH@ --bind @UI_BIND@
 Restart=always
 RestartSec=3
 

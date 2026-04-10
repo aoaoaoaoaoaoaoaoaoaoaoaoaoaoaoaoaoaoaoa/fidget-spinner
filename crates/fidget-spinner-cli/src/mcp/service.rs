@@ -893,6 +893,9 @@ where
             | StoreError::DuplicateTag(_)
             | StoreError::DuplicateMetricDefinition(_)
             | StoreError::DuplicateRunDimension(_)
+            | StoreError::GitWorktreeRequired(_)
+            | StoreError::GitHeadRequired(_)
+            | StoreError::DirtyGitWorktree { .. }
             | StoreError::InvalidInput(_) => FaultKind::InvalidInput,
             StoreError::IncompatibleStoreFormatVersion { .. } => FaultKind::Unavailable,
             StoreError::Io(_)
@@ -901,6 +904,8 @@ where
             | StoreError::TimeParse(_)
             | StoreError::TimeFormat(_)
             | StoreError::Core(_)
+            | StoreError::GitSpawn { .. }
+            | StoreError::GitCommandFailed { .. }
             | StoreError::Uuid(_) => FaultKind::Internal,
         };
         FaultRecord::new(kind, FaultStage::Store, operation, error.to_string())
@@ -915,7 +920,7 @@ where
 }
 
 fn read_store_identity(project_root: &Utf8Path) -> Result<StoreIdentity, StoreError> {
-    let state_root = project_root.join(fidget_spinner_store_sqlite::STORE_DIR_NAME);
+    let state_root = fidget_spinner_store_sqlite::state_root_for_project_root(project_root)?;
     let config_path = state_root.join(fidget_spinner_store_sqlite::PROJECT_CONFIG_NAME);
     let database_path = state_root.join(fidget_spinner_store_sqlite::STATE_DB_NAME);
     if !config_path.exists() || !database_path.exists() {
@@ -1074,6 +1079,7 @@ fn project_status_output(
     let concise = json!({
         "display_name": status.display_name,
         "project_root": status.project_root,
+        "state_root": status.state_root,
         "frontier_count": status.frontier_count,
         "hypothesis_count": status.hypothesis_count,
         "experiment_count": status.experiment_count,
@@ -1086,6 +1092,7 @@ fn project_status_output(
         [
             format!("project {}", status.display_name),
             format!("root: {}", status.project_root),
+            format!("state: {}", status.state_root),
             format!("frontiers: {}", status.frontier_count),
             format!("hypotheses: {}", status.hypothesis_count),
             format!(
@@ -1418,6 +1425,13 @@ fn experiment_record_output(
             outcome.primary_metric.key,
             outcome.primary_metric.value
         );
+        if let Some(commit_hash) = outcome.commit_hash.as_ref() {
+            let _ = write!(
+                line,
+                " @{}",
+                &commit_hash.as_str()[..commit_hash.as_str().len().min(12)]
+            );
+        }
     } else {
         let _ = write!(line, " | open");
     }
@@ -1484,6 +1498,9 @@ fn experiment_detail_output(
             "primary metric: {}={}",
             outcome.primary_metric.key, outcome.primary_metric.value
         ));
+        if let Some(commit_hash) = outcome.commit_hash.as_ref() {
+            lines.push(format!("commit: {commit_hash}"));
+        }
         lines.push(format!("rationale: {}", outcome.rationale));
     }
     lines.push(format!(
@@ -2240,6 +2257,7 @@ mod legacy_projection_values {
             "verdict": outcome.verdict,
             "rationale": outcome.rationale,
             "analysis": outcome.analysis.as_ref().map(experiment_analysis_value),
+            "commit_hash": outcome.commit_hash.as_ref().map(ToString::to_string),
             "closed_at": timestamp_value(outcome.closed_at),
         })
     }

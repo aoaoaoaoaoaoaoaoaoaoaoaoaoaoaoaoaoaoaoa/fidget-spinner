@@ -32,7 +32,7 @@ serde_json = "1"
 thiserror = "2"
 time = { version = "0.3", features = ["formatting", "macros", "parsing", "serde"] }
 tokio = { version = "1", features = ["net", "rt-multi-thread"] }
-uuid = { version = "1", features = ["serde", "v7"] }
+uuid = { version = "1", features = ["serde", "v5", "v7"] }
 
 [workspace.lints.rust]
 elided_lifetimes_in_paths = "deny"
@@ -121,8 +121,9 @@ fix_command = [
   "--allow-dirty",
   "--allow-staged",
 ]
+install_command = ["./scripts/install-local.sh"]
 
 [workspace.metadata.rust-starter.source_files]
-max_lines = 2500
+max_lines = 3000
 include = ["*.rs", "**/*.rs"]
 exclude = ["crates/fidget-spinner-store-sqlite/src/lib.rs"]

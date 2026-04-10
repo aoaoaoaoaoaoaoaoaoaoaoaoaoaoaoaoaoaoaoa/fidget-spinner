@@ -1,14 +1,16 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io;
+use std::process::Command;
+use std::sync::OnceLock;
 
 use camino::{Utf8Path, Utf8PathBuf};
 use fidget_spinner_core::{
     ArtifactId, ArtifactKind, ArtifactRecord, AttachmentTargetRef, CommandRecipe, CoreError,
     ExecutionBackend, ExperimentAnalysis, ExperimentId, ExperimentOutcome, ExperimentRecord,
     ExperimentStatus, FieldValueType, FrontierBrief, FrontierId, FrontierRecord,
-    FrontierRoadmapItem, FrontierStatus, FrontierVerdict, HypothesisId, HypothesisRecord,
-    MetricDefinition, MetricUnit, MetricValue, MetricVisibility, NonEmptyText,
+    FrontierRoadmapItem, FrontierStatus, FrontierVerdict, GitCommitHash, HypothesisId,
+    HypothesisRecord, MetricDefinition, MetricUnit, MetricValue, MetricVisibility, NonEmptyText,
     OptimizationObjective, RunDimensionDefinition, RunDimensionValue, Slug, TagName, TagRecord,
     VertexRef,
 };
@@ -21,9 +23,14 @@ use time::format_description::well_known::Rfc3339;
 use uuid::Uuid;
 
 pub const STORE_DIR_NAME: &str = ".fidget_spinner";
+pub const GIT_DIR_NAME: &str = ".git";
 pub const STATE_DB_NAME: &str = "state.sqlite";
 pub const PROJECT_CONFIG_NAME: &str = "project.json";
 pub const CURRENT_STORE_FORMAT_VERSION: u32 = 4;
+pub const STATE_HOME_DIR_NAME: &str = "fidget-spinner";
+pub const PROJECT_STATE_DIR_NAME: &str = "projects";
+const PROJECT_ROOT_NAMESPACE: Uuid = Uuid::from_u128(0x0df3_58f4_3649_44f1_8f05_0bb2_4ebd_8d31);
+static STATE_HOME_OVERRIDE: OnceLock<Utf8PathBuf> = OnceLock::new();
 
 #[derive(Debug, Error)]
 pub enum StoreError {
@@ -91,6 +98,34 @@ pub enum StoreError {
     ExperimentAlreadyClosed(ExperimentId),
     #[error("experiment `{0}` is still open")]
     ExperimentStillOpen(ExperimentId),
+    #[error(
+        "closing an experiment requires a git worktree at `{0}` so Spinner can record a commit hash"
+    )]
+    GitWorktreeRequired(Utf8PathBuf),
+    #[error(
+        "closing an experiment requires a committed HEAD at `{0}`; make a fast commit before closing"
+    )]
+    GitHeadRequired(Utf8PathBuf),
+    #[error(
+        "closing an experiment requires a clean git worktree at `{project_root}`; make a fast commit before closing. Dirty entries:\n{status}"
+    )]
+    DirtyGitWorktree {
+        project_root: Utf8PathBuf,
+        status: String,
+    },
+    #[error("failed to spawn `{command}` while inspecting `{project_root}`: {source}")]
+    GitSpawn {
+        project_root: Utf8PathBuf,
+        command: String,
+        #[source]
+        source: io::Error,
+    },
+    #[error("git inspection failed at `{project_root}` while running `{command}`: {stderr}")]
+    GitCommandFailed {
+        project_root: Utf8PathBuf,
+        command: String,
+        stderr: String,
+    },
     #[error("influence edge crosses frontier scope")]
     CrossFrontierInfluence,
     #[error("self edges are not allowed")]
@@ -130,6 +165,7 @@ impl ProjectConfig {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct ProjectStatus {
     pub project_root: Utf8PathBuf,
+    pub state_root: Utf8PathBuf,
     pub display_name: NonEmptyText,
     pub store_format_version: u32,
     pub frontier_count: u64,
@@ -555,9 +591,9 @@ impl ProjectStore {
         project_root: impl AsRef<Utf8Path>,
         display_name: NonEmptyText,
     ) -> Result<Self, StoreError> {
-        let project_root = project_root.as_ref().to_path_buf();
+        let project_root = canonical_project_root(project_root.as_ref())?;
         fs::create_dir_all(project_root.as_std_path())?;
-        let state_root = state_root(&project_root);
+        let state_root = state_root_for_project_root(&project_root)?;
         fs::create_dir_all(state_root.as_std_path())?;
         let config = ProjectConfig::new(display_name);
         write_json_file(&state_root.join(PROJECT_CONFIG_NAME), &config)?;
@@ -581,8 +617,8 @@ impl ProjectStore {
     }
 
     pub fn open(project_root: impl AsRef<Utf8Path>) -> Result<Self, StoreError> {
-        let project_root = project_root.as_ref().to_path_buf();
-        let state_root = state_root(&project_root);
+        let project_root = canonical_project_root(project_root.as_ref())?;
+        let state_root = state_root_for_project_root(&project_root)?;
         if !state_root.exists() {
             return Err(StoreError::MissingProjectStore(project_root));
         }
@@ -631,6 +667,7 @@ impl ProjectStore {
     pub fn status(&self) -> Result<ProjectStatus, StoreError> {
         Ok(ProjectStatus {
             project_root: self.project_root.clone(),
+            state_root: self.state_root.clone(),
             display_name: self.config.display_name.clone(),
             store_format_version: self.config.store_format_version,
             frontier_count: count_rows(&self.connection, "frontiers")?,
@@ -1166,7 +1203,7 @@ impl ProjectStore {
             self.assert_known_tags(tags)?;
         }
         let outcome = match request.outcome {
-            Some(patch) => Some(self.materialize_outcome(&patch)?),
+            Some(patch) => Some(self.materialize_outcome(&patch, record.outcome.as_ref())?),
             None => record.outcome.clone(),
         };
         let updated = ExperimentRecord {
@@ -1236,16 +1273,19 @@ impl ProjectStore {
             request.expected_revision,
             record.revision,
         )?;
-        let outcome = self.materialize_outcome(&ExperimentOutcomePatch {
-            backend: request.backend,
-            command: request.command,
-            dimensions: request.dimensions,
-            primary_metric: request.primary_metric,
-            supporting_metrics: request.supporting_metrics,
-            verdict: request.verdict,
-            rationale: request.rationale,
-            analysis: request.analysis,
-        })?;
+        let outcome = self.materialize_outcome(
+            &ExperimentOutcomePatch {
+                backend: request.backend,
+                command: request.command,
+                dimensions: request.dimensions,
+                primary_metric: request.primary_metric,
+                supporting_metrics: request.supporting_metrics,
+                verdict: request.verdict,
+                rationale: request.rationale,
+                analysis: request.analysis,
+            },
+            None,
+        )?;
         let updated = ExperimentRecord {
             status: ExperimentStatus::Closed,
             outcome: Some(outcome),
@@ -2601,6 +2641,7 @@ impl ProjectStore {
     fn materialize_outcome(
         &self,
         patch: &ExperimentOutcomePatch,
+        existing: Option<&ExperimentOutcome>,
     ) -> Result<ExperimentOutcome, StoreError> {
         if patch.backend == ExecutionBackend::Manual && patch.command.argv.is_empty() {
             return Err(StoreError::ManualExperimentRequiresCommand);
@@ -2626,6 +2667,13 @@ impl ProjectStore {
                 .metric_definition(&metric.key)?
                 .ok_or_else(|| StoreError::UnknownMetricDefinition(metric.key.clone()))?;
         }
+        let (commit_hash, closed_at) = match existing {
+            Some(outcome) => (outcome.commit_hash.clone(), outcome.closed_at),
+            None => (
+                Some(capture_clean_git_commit(&self.project_root)?),
+                OffsetDateTime::now_utc(),
+            ),
+        };
         Ok(ExperimentOutcome {
             backend: patch.backend,
             command: patch.command.clone(),
@@ -2635,7 +2683,8 @@ impl ProjectStore {
             verdict: patch.verdict,
             rationale: patch.rationale.clone(),
             analysis: patch.analysis.clone(),
-            closed_at: OffsetDateTime::now_utc(),
+            commit_hash,
+            closed_at,
         })
     }
 
@@ -3335,6 +3384,84 @@ fn validate_hypothesis_body(body: &NonEmptyText) -> Result<(), StoreError> {
     Ok(())
 }
 
+fn capture_clean_git_commit(project_root: &Utf8Path) -> Result<GitCommitHash, StoreError> {
+    assert_git_worktree(project_root)?;
+
+    let head_output = run_git(project_root, &["rev-parse", "--verify", "HEAD"])?;
+    if !head_output.success {
+        return Err(StoreError::GitHeadRequired(project_root.to_path_buf()));
+    }
+    let commit_hash = GitCommitHash::new(head_output.stdout.trim().to_owned())?;
+
+    let status_output = run_git(
+        project_root,
+        &["status", "--porcelain=v1", "--untracked-files=all"],
+    )?;
+    if !status_output.success {
+        return Err(StoreError::GitCommandFailed {
+            project_root: project_root.to_path_buf(),
+            command: format_git_command(
+                project_root,
+                &["status", "--porcelain=v1", "--untracked-files=all"],
+            ),
+            stderr: status_output.stderr,
+        });
+    }
+    let status = status_output.stdout.trim();
+    if !status.is_empty() {
+        return Err(StoreError::DirtyGitWorktree {
+            project_root: project_root.to_path_buf(),
+            status: status.to_owned(),
+        });
+    }
+    Ok(commit_hash)
+}
+
+fn assert_git_worktree(project_root: &Utf8Path) -> Result<(), StoreError> {
+    let args = ["rev-parse", "--is-inside-work-tree"];
+    let output = run_git(project_root, &args)?;
+    if output.success && output.stdout.trim() == "true" {
+        return Ok(());
+    }
+    if output.stderr.contains("not a git repository") {
+        return Err(StoreError::GitWorktreeRequired(project_root.to_path_buf()));
+    }
+    Err(StoreError::GitCommandFailed {
+        project_root: project_root.to_path_buf(),
+        command: format_git_command(project_root, &args),
+        stderr: output.stderr,
+    })
+}
+
+fn run_git(project_root: &Utf8Path, args: &[&str]) -> Result<GitCommandOutput, StoreError> {
+    let command = format_git_command(project_root, args);
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(project_root.as_str())
+        .args(args)
+        .output()
+        .map_err(|source| StoreError::GitSpawn {
+            project_root: project_root.to_path_buf(),
+            command: command.clone(),
+            source,
+        })?;
+    Ok(GitCommandOutput {
+        success: output.status.success(),
+        stdout: String::from_utf8_lossy(&output.stdout).trim().to_owned(),
+        stderr: String::from_utf8_lossy(&output.stderr).trim().to_owned(),
+    })
+}
+
+fn format_git_command(project_root: &Utf8Path, args: &[&str]) -> String {
+    format!("git -C {} {}", project_root, args.join(" "))
+}
+
+struct GitCommandOutput {
+    success: bool,
+    stdout: String,
+    stderr: String,
+}
+
 fn parse_frontier_status(raw: &str) -> Result<FrontierStatus, rusqlite::Error> {
     match raw {
         "exploring" => Ok(FrontierStatus::Exploring),
@@ -3808,29 +3935,139 @@ fn decode_timestamp(raw: &str) -> Result<OffsetDateTime, time::error::Parse> {
     OffsetDateTime::parse(raw, &Rfc3339)
 }
 
-fn state_root(project_root: &Utf8Path) -> Utf8PathBuf {
+#[must_use]
+pub fn legacy_state_root(project_root: &Utf8Path) -> Utf8PathBuf {
     project_root.join(STORE_DIR_NAME)
 }
 
-#[must_use]
-pub fn discover_project_root(path: impl AsRef<Utf8Path>) -> Option<Utf8PathBuf> {
+pub fn state_root_for_project_root(project_root: &Utf8Path) -> Result<Utf8PathBuf, StoreError> {
+    let project_root = canonical_project_root(project_root)?;
+    Ok(spinner_state_home()?.join(project_store_dir_name(&project_root)))
+}
+
+pub fn install_state_home_override(path: impl AsRef<Utf8Path>) -> Result<(), StoreError> {
+    let state_home = canonicalize_utf8_path(path.as_ref())?;
+    STATE_HOME_OVERRIDE
+        .set(state_home)
+        .map_err(|_| StoreError::InvalidInput("state home override already installed".to_owned()))
+}
+
+pub fn discover_project_root(
+    path: impl AsRef<Utf8Path>,
+) -> Result<Option<Utf8PathBuf>, StoreError> {
     let mut cursor = discovery_start(path.as_ref());
     loop {
-        if state_root(&cursor).exists() {
-            return Some(cursor);
+        if state_root_for_project_root(&cursor)?.exists() {
+            return Ok(Some(canonical_project_root(&cursor)?));
         }
-        let parent = cursor.parent()?;
+        let Some(parent) = cursor.parent() else {
+            return Ok(None);
+        };
+        cursor = parent.to_path_buf();
+    }
+}
+
+pub fn preferred_project_root(path: impl AsRef<Utf8Path>) -> Result<Utf8PathBuf, StoreError> {
+    let start = discovery_start(path.as_ref());
+    let mut cursor = start.clone();
+    loop {
+        if has_git_marker(&cursor)? {
+            return canonical_project_root(&cursor);
+        }
+        let Some(parent) = cursor.parent() else {
+            return canonical_project_root(&start);
+        };
         cursor = parent.to_path_buf();
     }
 }
 
 fn discovery_start(path: &Utf8Path) -> Utf8PathBuf {
+    if matches!(path.file_name(), Some(STORE_DIR_NAME) | Some(GIT_DIR_NAME)) {
+        return path
+            .parent()
+            .map_or_else(|| path.to_path_buf(), Utf8Path::to_path_buf);
+    }
     match fs::metadata(path.as_std_path()) {
         Ok(metadata) if metadata.is_file() => path
             .parent()
             .map_or_else(|| path.to_path_buf(), Utf8Path::to_path_buf),
         _ => path.to_path_buf(),
     }
+}
+
+fn spinner_state_home() -> Result<Utf8PathBuf, StoreError> {
+    if let Some(path) = STATE_HOME_OVERRIDE.get() {
+        return Ok(path.join(STATE_HOME_DIR_NAME).join(PROJECT_STATE_DIR_NAME));
+    }
+    if let Some(path) = std::env::var_os("FIDGET_SPINNER_STATE_HOME") {
+        return Ok(utf8_path(std::path::PathBuf::from(path))
+            .join(STATE_HOME_DIR_NAME)
+            .join(PROJECT_STATE_DIR_NAME));
+    }
+    let state_root = dirs::state_dir()
+        .or_else(|| dirs::home_dir().map(|home| home.join(".local/state")))
+        .ok_or_else(|| StoreError::InvalidInput("state directory not found".to_owned()))?;
+    Ok(utf8_path(state_root)
+        .join(STATE_HOME_DIR_NAME)
+        .join(PROJECT_STATE_DIR_NAME))
+}
+
+fn project_store_dir_name(project_root: &Utf8Path) -> String {
+    let stem = project_root
+        .file_name()
+        .map_or_else(|| "project".to_owned(), sanitize_project_stem);
+    let identity = Uuid::new_v5(&PROJECT_ROOT_NAMESPACE, project_root.as_str().as_bytes());
+    format!("{stem}-{identity}")
+}
+
+fn sanitize_project_stem(raw: &str) -> String {
+    let sanitized = raw
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() {
+                character.to_ascii_lowercase()
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>();
+    let trimmed = sanitized.trim_matches('-');
+    if trimmed.is_empty() {
+        "project".to_owned()
+    } else {
+        trimmed.to_owned()
+    }
+}
+
+fn canonical_project_root(project_root: &Utf8Path) -> Result<Utf8PathBuf, StoreError> {
+    canonicalize_utf8_path(project_root)
+}
+
+fn canonicalize_utf8_path(path: &Utf8Path) -> Result<Utf8PathBuf, StoreError> {
+    match fs::canonicalize(path.as_std_path()) {
+        Ok(canonical) => Ok(utf8_path(canonical)),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            let Some(parent) = path.parent() else {
+                return Err(StoreError::from(error));
+            };
+            let canonical_parent = fs::canonicalize(parent.as_std_path())?;
+            Ok(utf8_path(canonical_parent).join(path.file_name().unwrap_or_default()))
+        }
+        Err(error) => Err(StoreError::from(error)),
+    }
+}
+
+fn has_git_marker(path: &Utf8Path) -> Result<bool, StoreError> {
+    let git_marker = path.join(".git");
+    match fs::metadata(git_marker.as_std_path()) {
+        Ok(_) => Ok(true),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(StoreError::from(error)),
+    }
+}
+
+fn utf8_path(path: impl Into<std::path::PathBuf>) -> Utf8PathBuf {
+    Utf8PathBuf::from(path.into().to_string_lossy().into_owned())
 }
 
 fn to_sql_conversion_error(error: StoreError) -> rusqlite::Error {

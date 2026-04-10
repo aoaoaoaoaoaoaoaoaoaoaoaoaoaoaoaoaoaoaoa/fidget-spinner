@@ -5,6 +5,7 @@ use std::fs;
 use std::io::{self, BufRead, BufReader, Write};
 use std::path::PathBuf;
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
+use std::sync::OnceLock;
 
 use camino::Utf8PathBuf;
 use fidget_spinner_core::{NonEmptyText, Slug};
@@ -21,6 +22,21 @@ use tokio as _;
 
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 
+fn ensure_test_state_home() -> TestResult<&'static Utf8PathBuf> {
+    static STATE_HOME: OnceLock<Result<Utf8PathBuf, String>> = OnceLock::new();
+    match STATE_HOME.get_or_init(|| {
+        let root = std::env::temp_dir().join("fidget_spinner_test_state_home");
+        fs::create_dir_all(&root).map_err(|error| format!("create temp state home: {error}"))?;
+        let root = Utf8PathBuf::from(root.to_string_lossy().into_owned());
+        fidget_spinner_store_sqlite::install_state_home_override(&root)
+            .map_err(|error| format!("install state home override: {error}"))?;
+        Ok(root)
+    }) {
+        Ok(path) => Ok(path),
+        Err(error) => Err(io::Error::other(error.clone()).into()),
+    }
+}
+
 fn must<T, E: std::fmt::Display, C: std::fmt::Display>(
     result: Result<T, E>,
     context: C,
@@ -33,6 +49,7 @@ fn must_some<T>(value: Option<T>, context: &str) -> TestResult<T> {
 }
 
 fn temp_project_root(name: &str) -> TestResult<Utf8PathBuf> {
+    let _ = ensure_test_state_home()?;
     let root = std::env::temp_dir().join(format!(
         "fidget_spinner_mcp_{name}_{}_{}",
         std::process::id(),
@@ -47,6 +64,7 @@ fn temp_project_root(name: &str) -> TestResult<Utf8PathBuf> {
 }
 
 fn init_project(root: &Utf8PathBuf) -> TestResult {
+    let _ = ensure_test_state_home()?;
     let _store = must(
         ProjectStore::init(
             root,
@@ -55,6 +73,64 @@ fn init_project(root: &Utf8PathBuf) -> TestResult {
         "init project store",
     )?;
     Ok(())
+}
+
+fn init_git_repository(root: &Utf8PathBuf) -> TestResult {
+    let status = must(
+        Command::new("git")
+            .arg("init")
+            .arg("-q")
+            .arg(root.as_str())
+            .status(),
+        "run git init",
+    )?;
+    if !status.success() {
+        return Err(io::Error::other("git init failed").into());
+    }
+    Ok(())
+}
+
+fn run_git(root: &Utf8PathBuf, args: &[&str]) -> TestResult<String> {
+    let output = must(
+        Command::new("git")
+            .arg("-C")
+            .arg(root.as_str())
+            .args(args)
+            .output(),
+        format!("run git {}", args.join(" ")),
+    )?;
+    if !output.status.success() {
+        return Err(io::Error::other(format!(
+            "git {} failed: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&output.stderr).trim()
+        ))
+        .into());
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
+}
+
+fn seed_clean_git_repository(root: &Utf8PathBuf) -> TestResult<String> {
+    init_git_repository(root)?;
+    must(
+        fs::write(root.join("seed.txt"), "seed\n"),
+        "write git seed file",
+    )?;
+    let _ = run_git(root, &["add", "seed.txt"])?;
+    let _ = run_git(
+        root,
+        &[
+            "-c",
+            "user.name=Fidget Spinner Tests",
+            "-c",
+            "user.email=fidget-spinner-tests@example.invalid",
+            "commit",
+            "-q",
+            "-m",
+            "seed",
+        ],
+    )?;
+    run_git(root, &["rev-parse", "HEAD"])
 }
 
 fn binary_path() -> PathBuf {
@@ -69,10 +145,12 @@ struct McpHarness {
 
 impl McpHarness {
     fn spawn(project_root: Option<&Utf8PathBuf>) -> TestResult<Self> {
+        let state_home = ensure_test_state_home()?;
         let mut command = Command::new(binary_path());
         let _ = command
             .arg("mcp")
             .arg("serve")
+            .env("FIDGET_SPINNER_STATE_HOME", state_home.as_str())
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit());
@@ -245,6 +323,12 @@ fn cold_start_exposes_bound_surface_and_new_toolset() -> TestResult {
         tool_content(&bind)["display_name"].as_str(),
         Some("mcp test project")
     );
+    let state_root = must_some(
+        tool_content(&bind)["state_root"].as_str(),
+        "bind state root",
+    )?;
+    assert!(!state_root.starts_with(project_root.as_str()));
+    assert!(state_root.contains("fidget-spinner/projects"));
 
     let rebound_health = harness.call_tool(5, "system.health", json!({}))?;
     assert_tool_ok(&rebound_health);
@@ -253,9 +337,30 @@ fn cold_start_exposes_bound_surface_and_new_toolset() -> TestResult {
 }
 
 #[test]
+fn binding_via_git_directory_resolves_repo_root() -> TestResult {
+    let project_root = temp_project_root("git_directory_bind")?;
+    init_git_repository(&project_root)?;
+    let git_dir = project_root.join(fidget_spinner_store_sqlite::GIT_DIR_NAME);
+
+    let mut harness = McpHarness::spawn(None)?;
+    let _ = harness.initialize()?;
+    harness.notify_initialized()?;
+
+    let bind = harness.bind_project(6, &git_dir)?;
+    assert_tool_ok(&bind);
+    assert_eq!(
+        tool_content(&bind)["project_root"].as_str(),
+        Some(project_root.as_str())
+    );
+    assert_eq!(tool_content(&bind)["frontier_count"].as_u64(), Some(0));
+    Ok(())
+}
+
+#[test]
 fn frontier_open_is_the_grounding_surface_for_live_state() -> TestResult {
     let project_root = temp_project_root("frontier_open")?;
     init_project(&project_root)?;
+    let _ = seed_clean_git_repository(&project_root)?;
 
     let mut harness = McpHarness::spawn(Some(&project_root))?;
     let _ = harness.initialize()?;
@@ -498,6 +603,7 @@ fn frontier_update_mutates_objective_and_scoreboard_grounding() -> TestResult {
 fn experiment_nearest_finds_structural_buckets_and_champion() -> TestResult {
     let project_root = temp_project_root("experiment_nearest")?;
     init_project(&project_root)?;
+    let _ = seed_clean_git_repository(&project_root)?;
 
     let mut harness = McpHarness::spawn(Some(&project_root))?;
     let _ = harness.initialize()?;
@@ -856,6 +962,7 @@ fn artifact_surface_preserves_reference_only() -> TestResult {
 fn experiment_close_drives_metric_best_and_analysis() -> TestResult {
     let project_root = temp_project_root("metric_best")?;
     init_project(&project_root)?;
+    let closing_commit = seed_clean_git_repository(&project_root)?;
 
     let mut harness = McpHarness::spawn(Some(&project_root))?;
     let _ = harness.initialize()?;
@@ -984,6 +1091,10 @@ fn experiment_close_drives_metric_best_and_analysis() -> TestResult {
         content["record"]["outcome"]["analysis"]["summary"].as_str(),
         Some("Node LP work is now the primary native sink.")
     );
+    assert_eq!(
+        content["record"]["outcome"]["commit_hash"].as_str(),
+        Some(closing_commit.as_str())
+    );
     assert_eq!(content["record"]["slug"].as_str(), Some("trace-node-reopt"));
     assert!(content["record"].get("frontier_id").is_none());
     assert!(content["record"].get("hypothesis_id").is_none());
@@ -992,6 +1103,87 @@ fn experiment_close_drives_metric_best_and_analysis() -> TestResult {
         Some("reopt-dominance")
     );
     assert!(content["owning_hypothesis"].get("id").is_none());
+    Ok(())
+}
+
+#[test]
+fn experiment_close_rejects_dirty_worktree() -> TestResult {
+    let project_root = temp_project_root("dirty_close")?;
+    init_project(&project_root)?;
+    let _ = seed_clean_git_repository(&project_root)?;
+
+    let mut harness = McpHarness::spawn(Some(&project_root))?;
+    let _ = harness.initialize()?;
+    harness.notify_initialized()?;
+
+    assert_tool_ok(&harness.call_tool(
+        50,
+        "metric.define",
+        json!({
+            "key": "nodes_solved",
+            "unit": "count",
+            "objective": "maximize",
+            "visibility": "canonical",
+        }),
+    )?);
+    assert_tool_ok(&harness.call_tool(
+        51,
+        "run.dimension.define",
+        json!({"key": "instance", "value_type": "string"}),
+    )?);
+    assert_tool_ok(&harness.call_tool(
+        52,
+        "frontier.create",
+        json!({
+            "label": "Dirty frontier",
+            "objective": "Reject dirty closes",
+            "slug": "dirty-frontier",
+        }),
+    )?);
+    assert_tool_ok(&harness.call_tool(
+        53,
+        "hypothesis.record",
+        json!({
+            "frontier": "dirty-frontier",
+            "slug": "dirty-hypothesis",
+            "title": "Dirty close rejection",
+            "summary": "A dirty worktree must block close.",
+            "body": "When the experiment implementation state is not committed, closing the experiment should fail so the ledger never records an unrecoverable slice.",
+        }),
+    )?);
+    assert_tool_ok(&harness.call_tool(
+        54,
+        "experiment.open",
+        json!({
+            "hypothesis": "dirty-hypothesis",
+            "slug": "dirty-run",
+            "title": "Dirty run",
+            "summary": "Leave the worktree dirty before closing.",
+        }),
+    )?);
+
+    must(
+        fs::write(project_root.join("dirty.txt"), "uncommitted\n"),
+        "write dirty worktree file",
+    )?;
+
+    let response = harness.call_tool_full(
+        55,
+        "experiment.close",
+        json!({
+            "experiment": "dirty-run",
+            "backend": "manual",
+            "command": {"argv": ["dirty-run"]},
+            "dimensions": {"instance": "4x5-braid"},
+            "primary_metric": {"key": "nodes_solved", "value": 13.0},
+            "verdict": "rejected",
+            "rationale": "Dirty worktree should abort the close.",
+        }),
+    )?;
+    assert_tool_error(&response);
+    let message = must_some(tool_error_message(&response), "dirty close error message")?;
+    assert!(message.contains("clean git worktree"));
+    assert!(message.contains("dirty.txt"));
     Ok(())
 }
 
@@ -1020,7 +1212,9 @@ fn already_bound_worker_refreshes_after_destructive_reseed() -> TestResult {
     assert_eq!(frontier_slugs(&alpha_list), vec!["alpha"]);
 
     must(
-        fs::remove_dir_all(project_root.join(fidget_spinner_store_sqlite::STORE_DIR_NAME)),
+        fs::remove_dir_all(fidget_spinner_store_sqlite::state_root_for_project_root(
+            &project_root,
+        )?),
         "remove project store",
     )?;
     init_project(&project_root)?;

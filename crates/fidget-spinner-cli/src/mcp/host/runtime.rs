@@ -643,13 +643,11 @@ fn binding_health(binding: Option<&ProjectBinding>) -> BindingHealth {
             bound: true,
             requested_path: Some(binding.requested_path.display().to_string()),
             project_root: Some(binding.project_root.display().to_string()),
-            state_root: Some(
-                binding
-                    .project_root
-                    .join(fidget_spinner_store_sqlite::STORE_DIR_NAME)
-                    .display()
-                    .to_string(),
-            ),
+            state_root: fidget_spinner_store_sqlite::state_root_for_project_root(
+                &crate::utf8_path(binding.project_root.clone()),
+            )
+            .ok()
+            .map(|state_root| state_root.to_string()),
         },
         None => BindingHealth {
             bound: false,

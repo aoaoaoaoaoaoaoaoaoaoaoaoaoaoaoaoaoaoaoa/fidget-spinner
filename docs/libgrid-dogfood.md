@@ -86,7 +86,8 @@ default-enumerated prose.
 
 1. Modify the worktree.
 2. Run the benchmark protocol.
-3. Close the experiment atomically with parsed metrics and an explicit verdict.
+3. Make a fast commit for the recoverable implementation state. Bypass heavy hooks if they get in the way; the point is recovery, not polish.
+4. Close the experiment atomically with parsed metrics and an explicit verdict.
 
 ### 4. Judge and continue
 
@@ -102,6 +103,7 @@ For `libgrid`, the minimum trustworthy record is:
 - primary metric
 - supporting metrics that materially explain the verdict
 - rationale
+- closing commit hash
 
 This is the minimum needed to prevent “I think this was faster” folklore.
 

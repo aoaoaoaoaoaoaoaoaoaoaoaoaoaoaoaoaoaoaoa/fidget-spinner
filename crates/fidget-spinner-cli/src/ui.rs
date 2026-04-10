@@ -18,7 +18,7 @@ use fidget_spinner_store_sqlite::{
     ListHypothesesQuery, MetricKeysQuery, MetricScope, ProjectStatus, StoreError, VertexSummary,
 };
 use maud::{DOCTYPE, Markup, PreEscaped, html};
-use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
+use percent_encoding::{NON_ALPHANUMERIC, percent_decode_str, utf8_percent_encode};
 use plotters::prelude::{
     BLACK, ChartBuilder, Circle, IntoDrawingArea, LineSeries, PathElement, SVGBackend, ShapeStyle,
     Text,
@@ -33,14 +33,39 @@ use crate::open_store;
 
 #[derive(Clone)]
 struct NavigatorState {
-    project_root: Utf8PathBuf,
+    scope: NavigatorScope,
     limit: Option<u32>,
+}
+
+#[derive(Clone)]
+pub(crate) enum NavigatorScope {
+    Single(Utf8PathBuf),
+    Multi {
+        scan_root: Utf8PathBuf,
+        project_roots: BTreeSet<Utf8PathBuf>,
+    },
 }
 
 #[derive(Clone)]
 struct ShellFrame {
     active_frontier_slug: Option<Slug>,
     frontiers: Vec<FrontierSummary>,
+    project_status: ProjectStatus,
+    base_href: String,
+    project_home_href: String,
+}
+
+#[derive(Clone)]
+struct ProjectRenderContext {
+    project_root: Utf8PathBuf,
+    base_href: String,
+    project_home_href: String,
+    limit: Option<u32>,
+}
+
+#[derive(Clone)]
+struct ProjectIndexItem {
+    project_root: Utf8PathBuf,
     project_status: ProjectStatus,
 }
 
@@ -120,7 +145,7 @@ impl FrontierPageQuery {
 }
 
 pub(crate) fn serve(
-    project_root: Utf8PathBuf,
+    scope: NavigatorScope,
     bind: SocketAddr,
     limit: Option<u32>,
 ) -> Result<(), StoreError> {
@@ -129,16 +154,27 @@ pub(crate) fn serve(
         .build()
         .map_err(StoreError::from)?;
     runtime.block_on(async move {
-        let state = NavigatorState {
-            project_root,
-            limit,
-        };
+        let state = NavigatorState { scope, limit };
         let app = Router::new()
-            .route("/", get(project_home))
-            .route("/frontier/{selector}", get(frontier_detail))
-            .route("/hypothesis/{selector}", get(hypothesis_detail))
-            .route("/experiment/{selector}", get(experiment_detail))
-            .route("/artifact/{selector}", get(artifact_detail))
+            .route("/", get(root_page))
+            .route("/project/{project}", get(project_home))
+            .route("/project/{project}/", get(project_home))
+            .route(
+                "/project/{project}/frontier/{selector}",
+                get(frontier_detail),
+            )
+            .route(
+                "/project/{project}/hypothesis/{selector}",
+                get(hypothesis_detail),
+            )
+            .route(
+                "/project/{project}/experiment/{selector}",
+                get(experiment_detail),
+            )
+            .route(
+                "/project/{project}/artifact/{selector}",
+                get(artifact_detail),
+            )
             .with_state(state.clone());
         let listener = tokio::net::TcpListener::bind(bind)
             .await
@@ -150,37 +186,64 @@ pub(crate) fn serve(
     })
 }
 
-async fn project_home(State(state): State<NavigatorState>) -> Response {
-    render_response(render_project_home(state))
+async fn root_page(State(state): State<NavigatorState>) -> Response {
+    render_response(match &state.scope {
+        NavigatorScope::Single(project_root) => render_project_home(ProjectRenderContext {
+            project_root: project_root.clone(),
+            base_href: "/".to_owned(),
+            project_home_href: ".".to_owned(),
+            limit: state.limit,
+        }),
+        NavigatorScope::Multi { .. } => render_project_index(state),
+    })
+}
+
+async fn project_home(
+    State(state): State<NavigatorState>,
+    Path(project): Path<String>,
+) -> Response {
+    render_response(resolve_project_context(&state, &project).and_then(render_project_home))
 }
 
 async fn frontier_detail(
     State(state): State<NavigatorState>,
-    Path(selector): Path<String>,
+    Path((project, selector)): Path<(String, String)>,
     Query(query): Query<FrontierPageQuery>,
 ) -> Response {
-    render_response(render_frontier_detail(state, selector, query))
+    render_response(
+        resolve_project_context(&state, &project)
+            .and_then(|context| render_frontier_detail(context, selector, query)),
+    )
 }
 
 async fn hypothesis_detail(
     State(state): State<NavigatorState>,
-    Path(selector): Path<String>,
+    Path((project, selector)): Path<(String, String)>,
 ) -> Response {
-    render_response(render_hypothesis_detail(state, selector))
+    render_response(
+        resolve_project_context(&state, &project)
+            .and_then(|context| render_hypothesis_detail(context, selector)),
+    )
 }
 
 async fn experiment_detail(
     State(state): State<NavigatorState>,
-    Path(selector): Path<String>,
+    Path((project, selector)): Path<(String, String)>,
 ) -> Response {
-    render_response(render_experiment_detail(state, selector))
+    render_response(
+        resolve_project_context(&state, &project)
+            .and_then(|context| render_experiment_detail(context, selector)),
+    )
 }
 
 async fn artifact_detail(
     State(state): State<NavigatorState>,
-    Path(selector): Path<String>,
+    Path((project, selector)): Path<(String, String)>,
 ) -> Response {
-    render_response(render_artifact_detail(state, selector))
+    render_response(
+        resolve_project_context(&state, &project)
+            .and_then(|context| render_artifact_detail(context, selector)),
+    )
 }
 
 fn render_response(result: Result<Markup, StoreError>) -> Response {
@@ -200,13 +263,118 @@ fn render_response(result: Result<Markup, StoreError>) -> Response {
     }
 }
 
-fn render_project_home(state: NavigatorState) -> Result<Markup, StoreError> {
-    let store = open_store(state.project_root.as_std_path())?;
-    let shell = load_shell_frame(&store, None)?;
+fn render_project_index(state: NavigatorState) -> Result<Markup, StoreError> {
+    let NavigatorScope::Multi {
+        scan_root,
+        project_roots,
+    } = state.scope
+    else {
+        return Err(StoreError::InvalidInput(
+            "project index requested for single-project navigator".to_owned(),
+        ));
+    };
+    let mut projects = project_roots
+        .into_iter()
+        .map(|project_root| {
+            let store = open_store(project_root.as_std_path())?;
+            Ok(ProjectIndexItem {
+                project_root,
+                project_status: store.status()?,
+            })
+        })
+        .collect::<Result<Vec<_>, StoreError>>()?;
+    projects.sort_by(|left, right| {
+        left.project_status
+            .display_name
+            .cmp(&right.project_status.display_name)
+            .then_with(|| left.project_root.cmp(&right.project_root))
+    });
+
+    Ok(html! {
+        (DOCTYPE)
+        html {
+            head {
+                meta charset="utf-8";
+                meta name="viewport" content="width=device-width, initial-scale=1";
+                title { "Fidget Spinner navigator" }
+                style { (PreEscaped(styles())) }
+            }
+            body {
+                main.index-shell {
+                    header.page-header {
+                        div.eyebrow { "home" }
+                        h1.page-title { "Fidget Spinner navigator" }
+                        p.page-subtitle {
+                            "Central project index rooted at "
+                            code { (scan_root.as_str()) }
+                        }
+                    }
+                    section.card {
+                        h2 { "Projects" }
+                        @if projects.is_empty() {
+                            p.muted { "No Spinner projects were discovered under this root." }
+                        } @else {
+                            div.card-grid {
+                                @for project in limit_items(&projects, state.limit) {
+                                    article.mini-card {
+                                        div.card-header {
+                                            a.title-link href=(project_root_href(&project.project_root)) {
+                                                (&project.project_status.display_name)
+                                            }
+                                        }
+                                        p.prose { (project.project_root.as_str()) }
+                                        div.meta-row {
+                                            span { (format!("{} frontiers", project.project_status.frontier_count)) }
+                                            span { (format!("{} hypotheses", project.project_status.hypothesis_count)) }
+                                        }
+                                        div.meta-row {
+                                            span { (format!("{} experiments", project.project_status.experiment_count)) }
+                                            span { (format!("{} open", project.project_status.open_experiment_count)) }
+                                        }
+                                        div.meta-row.muted {
+                                            span { (project.project_status.state_root.as_str()) }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    })
+}
+
+fn resolve_project_context(
+    state: &NavigatorState,
+    encoded_project_root: &str,
+) -> Result<ProjectRenderContext, StoreError> {
+    let project_root = decode_project_root(encoded_project_root)?;
+    match &state.scope {
+        NavigatorScope::Single(expected_root) if expected_root == &project_root => {}
+        NavigatorScope::Single(_) => {
+            return Err(StoreError::MissingProjectStore(project_root));
+        }
+        NavigatorScope::Multi { project_roots, .. } if project_roots.contains(&project_root) => {}
+        NavigatorScope::Multi { .. } => {
+            return Err(StoreError::MissingProjectStore(project_root));
+        }
+    }
+    Ok(ProjectRenderContext {
+        base_href: project_base_href(&project_root),
+        project_home_href: ".".to_owned(),
+        project_root,
+        limit: state.limit,
+    })
+}
+
+fn render_project_home(context: ProjectRenderContext) -> Result<Markup, StoreError> {
+    let store = open_store(context.project_root.as_std_path())?;
+    let shell = load_shell_frame(&store, None, &context)?;
     let title = format!("{} navigator", shell.project_status.display_name);
     let content = html! {
         (render_project_status(&shell.project_status))
-        (render_frontier_grid(&shell.frontiers, state.limit))
+        (render_frontier_grid(&shell.frontiers, context.limit))
     };
     Ok(render_shell(
         &title,
@@ -220,13 +388,13 @@ fn render_project_home(state: NavigatorState) -> Result<Markup, StoreError> {
 }
 
 fn render_frontier_detail(
-    state: NavigatorState,
+    context: ProjectRenderContext,
     selector: String,
     query: FrontierPageQuery,
 ) -> Result<Markup, StoreError> {
-    let store = open_store(state.project_root.as_std_path())?;
+    let store = open_store(context.project_root.as_std_path())?;
     let projection = store.frontier_open(&selector)?;
-    let shell = load_shell_frame(&store, Some(projection.frontier.slug.clone()))?;
+    let shell = load_shell_frame(&store, Some(projection.frontier.slug.clone()), &context)?;
     let tab = FrontierTab::from_query(query.tab.as_deref());
     let title = format!("{} · frontier", projection.frontier.label);
     let subtitle = format!(
@@ -234,7 +402,7 @@ fn render_frontier_detail(
         projection.active_hypotheses.len(),
         projection.open_experiments.len()
     );
-    let content = render_frontier_tab_content(&store, &projection, tab, &query, state.limit)?;
+    let content = render_frontier_tab_content(&store, &projection, tab, &query, context.limit)?;
     Ok(render_shell(
         &title,
         &shell,
@@ -251,27 +419,30 @@ fn render_frontier_detail(
     ))
 }
 
-fn render_hypothesis_detail(state: NavigatorState, selector: String) -> Result<Markup, StoreError> {
-    let store = open_store(state.project_root.as_std_path())?;
+fn render_hypothesis_detail(
+    context: ProjectRenderContext,
+    selector: String,
+) -> Result<Markup, StoreError> {
+    let store = open_store(context.project_root.as_std_path())?;
     let detail = store.read_hypothesis(&selector)?;
     let frontier = store.read_frontier(&detail.record.frontier_id.to_string())?;
-    let shell = load_shell_frame(&store, Some(frontier.slug.clone()))?;
+    let shell = load_shell_frame(&store, Some(frontier.slug.clone()), &context)?;
     let title = format!("{} · hypothesis", detail.record.title);
     let subtitle = detail.record.summary.to_string();
     let content = html! {
         (render_hypothesis_header(&detail, &frontier))
         (render_prose_block("Body", detail.record.body.as_str()))
-        (render_vertex_relation_sections(&detail.parents, &detail.children, state.limit))
-        (render_artifact_section(&detail.artifacts, state.limit))
+        (render_vertex_relation_sections(&detail.parents, &detail.children, context.limit))
+        (render_artifact_section(&detail.artifacts, context.limit))
         (render_experiment_section(
             "Open Experiments",
             &detail.open_experiments,
-            state.limit,
+            context.limit,
         ))
         (render_experiment_section(
             "Closed Experiments",
             &detail.closed_experiments,
-            state.limit,
+            context.limit,
         ))
     };
     Ok(render_shell(
@@ -285,11 +456,14 @@ fn render_hypothesis_detail(state: NavigatorState, selector: String) -> Result<M
     ))
 }
 
-fn render_experiment_detail(state: NavigatorState, selector: String) -> Result<Markup, StoreError> {
-    let store = open_store(state.project_root.as_std_path())?;
+fn render_experiment_detail(
+    context: ProjectRenderContext,
+    selector: String,
+) -> Result<Markup, StoreError> {
+    let store = open_store(context.project_root.as_std_path())?;
     let detail = store.read_experiment(&selector)?;
     let frontier = store.read_frontier(&detail.record.frontier_id.to_string())?;
-    let shell = load_shell_frame(&store, Some(frontier.slug.clone()))?;
+    let shell = load_shell_frame(&store, Some(frontier.slug.clone()), &context)?;
     let title = format!("{} · experiment", detail.record.title);
     let subtitle = detail.record.summary.as_ref().map_or_else(
         || detail.record.status.as_str().to_owned(),
@@ -297,8 +471,8 @@ fn render_experiment_detail(state: NavigatorState, selector: String) -> Result<M
     );
     let content = html! {
         (render_experiment_header(&detail, &frontier))
-        (render_vertex_relation_sections(&detail.parents, &detail.children, state.limit))
-        (render_artifact_section(&detail.artifacts, state.limit))
+        (render_vertex_relation_sections(&detail.parents, &detail.children, context.limit))
+        (render_artifact_section(&detail.artifacts, context.limit))
         @if let Some(outcome) = detail.record.outcome.as_ref() {
             (render_experiment_outcome(outcome))
         } @else {
@@ -319,10 +493,13 @@ fn render_experiment_detail(state: NavigatorState, selector: String) -> Result<M
     ))
 }
 
-fn render_artifact_detail(state: NavigatorState, selector: String) -> Result<Markup, StoreError> {
-    let store = open_store(state.project_root.as_std_path())?;
+fn render_artifact_detail(
+    context: ProjectRenderContext,
+    selector: String,
+) -> Result<Markup, StoreError> {
+    let store = open_store(context.project_root.as_std_path())?;
     let detail = store.read_artifact(&selector)?;
-    let shell = load_shell_frame(&store, None)?;
+    let shell = load_shell_frame(&store, None, &context)?;
     let attachments = detail
         .attachments
         .iter()
@@ -379,10 +556,13 @@ fn render_artifact_detail(state: NavigatorState, selector: String) -> Result<Mar
 fn load_shell_frame(
     store: &fidget_spinner_store_sqlite::ProjectStore,
     active_frontier_slug: Option<Slug>,
+    context: &ProjectRenderContext,
 ) -> Result<ShellFrame, StoreError> {
     Ok(ShellFrame {
         active_frontier_slug,
+        base_href: context.base_href.clone(),
         frontiers: store.list_frontiers()?,
+        project_home_href: context.project_home_href.clone(),
         project_status: store.status()?,
     })
 }
@@ -944,6 +1124,7 @@ fn render_project_status(status: &ProjectStatus) -> Markup {
         }
         div.kv-grid {
             (render_kv("Project root", status.project_root.as_str()))
+            (render_kv("State root", status.state_root.as_str()))
             (render_kv("Store format", &status.store_format_version.to_string()))
             (render_kv("Frontiers", &status.frontier_count.to_string()))
             (render_kv("Hypotheses", &status.hypothesis_count.to_string()))
@@ -1274,6 +1455,9 @@ fn render_experiment_outcome(outcome: &ExperimentOutcome) -> Markup {
         div.kv-grid {
             (render_kv("Verdict", outcome.verdict.as_str()))
             (render_kv("Backend", outcome.backend.as_str()))
+            @if let Some(commit_hash) = outcome.commit_hash.as_ref() {
+                (render_kv("Commit", commit_hash.as_str()))
+            }
             (render_kv("Closed", &format_timestamp(outcome.closed_at)))
         }
         (render_command_recipe(&outcome.command))
@@ -1616,6 +1800,7 @@ fn render_shell(
             head {
                 meta charset="utf-8";
                 meta name="viewport" content="width=device-width, initial-scale=1";
+                base href=(&shell.base_href);
                 title { (title) }
                 style { (PreEscaped(styles())) }
             }
@@ -1655,7 +1840,7 @@ fn render_sidebar(shell: &ShellFrame) -> Markup {
     html! {
     section.sidebar-panel {
         div.sidebar-project {
-            a.sidebar-home href="/" { (&shell.project_status.display_name) }
+            a.sidebar-home href=(&shell.project_home_href) { (&shell.project_status.display_name) }
             p.sidebar-copy {
                 "Frontier-scoped navigator. Open one frontier, then walk hypotheses and experiments deliberately."
             }
@@ -1767,8 +1952,23 @@ fn format_timestamp(value: OffsetDateTime) -> String {
     })
 }
 
+fn project_root_href(project_root: &Utf8PathBuf) -> String {
+    format!("/project/{}/", encode_path_segment(project_root.as_str()))
+}
+
+fn project_base_href(project_root: &Utf8PathBuf) -> String {
+    project_root_href(project_root)
+}
+
+fn decode_project_root(encoded: &str) -> Result<Utf8PathBuf, StoreError> {
+    let decoded = percent_decode_str(encoded)
+        .decode_utf8()
+        .map_err(|error| StoreError::InvalidInput(format!("invalid project path: {error}")))?;
+    Ok(Utf8PathBuf::from(decoded.into_owned()))
+}
+
 fn frontier_href(slug: &Slug) -> String {
-    format!("/frontier/{}", encode_path_segment(slug.as_str()))
+    format!("frontier/{}", encode_path_segment(slug.as_str()))
 }
 
 fn frontier_tab_href(slug: &Slug, tab: FrontierTab, metric: Option<&str>) -> String {
@@ -1782,7 +1982,7 @@ fn frontier_tab_href_with_filters(
     dimension_filters: &BTreeMap<String, String>,
 ) -> String {
     let mut href = format!(
-        "/frontier/{}?tab={}",
+        "frontier/{}?tab={}",
         encode_path_segment(slug.as_str()),
         tab.as_query()
     );
@@ -1800,11 +2000,11 @@ fn frontier_tab_href_with_filters(
 }
 
 fn hypothesis_href(slug: &Slug) -> String {
-    format!("/hypothesis/{}", encode_path_segment(slug.as_str()))
+    format!("hypothesis/{}", encode_path_segment(slug.as_str()))
 }
 
 fn hypothesis_href_from_id(id: fidget_spinner_core::HypothesisId) -> String {
-    format!("/hypothesis/{}", encode_path_segment(&id.to_string()))
+    format!("hypothesis/{}", encode_path_segment(&id.to_string()))
 }
 
 fn hypothesis_title_for_roadmap_item(
@@ -1820,11 +2020,11 @@ fn hypothesis_title_for_roadmap_item(
 }
 
 fn experiment_href(slug: &Slug) -> String {
-    format!("/experiment/{}", encode_path_segment(slug.as_str()))
+    format!("experiment/{}", encode_path_segment(slug.as_str()))
 }
 
 fn artifact_href(slug: &Slug) -> String {
-    format!("/artifact/{}", encode_path_segment(slug.as_str()))
+    format!("artifact/{}", encode_path_segment(slug.as_str()))
 }
 
 fn resolve_attachment_display(

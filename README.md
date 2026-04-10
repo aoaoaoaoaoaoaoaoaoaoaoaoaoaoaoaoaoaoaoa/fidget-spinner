@@ -61,19 +61,22 @@ symlinks in `~/.codex/skills`:
 ```
 
 The installed binary is `~/.local/bin/fidget-spinner-cli`.
+Successful `python3 check.py` and `python3 check.py deep` runs also invoke the
+local installer automatically after the requested checks pass.
 
-The installer also installs a user systemd service for the libgrid navigator at
+The installer also installs a user systemd service for the central navigator at
 `http://127.0.0.1:8913/` and refreshes it on every reinstall:
 
 ```bash
-systemctl --user status fidget-spinner-libgrid-ui.service
-journalctl --user -u fidget-spinner-libgrid-ui.service -f
+systemctl --user status fidget-spinner-ui.service
+journalctl --user -u fidget-spinner-ui.service -f
 ```
 
-You can override the default service target for one install with:
+By default it scans `~/programming/projects`. You can override the scan root for
+one install with:
 
 ```bash
-FIDGET_SPINNER_UI_PROJECT=/abs/path/to/project ./scripts/install-local.sh
+FIDGET_SPINNER_UI_PATH=/abs/path/to/projects ./scripts/install-local.sh
 ```
 
 ## Quickstart
@@ -171,6 +174,11 @@ cargo run -p fidget-spinner-cli -- experiment close \
   --rationale "Matched LP site traces isolate node reoptimization as the dominant native LP sink."
 ```
 
+`experiment close` only succeeds from a clean git worktree and records `HEAD`
+automatically in the closed outcome. Make a fast commit first; bypass
+heavyweight hooks if needed because the goal is recoverable experimental state,
+not production readiness.
+
 Record an external artifact by reference:
 
 ```bash
@@ -228,6 +236,11 @@ If the host starts unbound, bind it with:
 ```json
 {"name":"project.bind","arguments":{"path":"<project-root-or-nested-path>"}}
 ```
+
+Use the repo root, the repo’s `.git` directory, or any nested path inside the
+repo. Do not create `.fidget_spinner` directories by hand; Spinner state is
+centralized, not repo-local. If the repo does not have a Spinner store yet,
+`project.bind` will bootstrap one automatically in the centralized state path.
 
 The main model-facing tools are:
 
@@ -288,13 +301,13 @@ cargo run -p fidget-spinner-cli -- ui serve --path . --bind 127.0.0.1:8913
 `ui serve --path` accepts:
 
 - the project root
-- `.fidget_spinner/`
-- any descendant inside `.fidget_spinner/`
-- a parent containing exactly one descendant store
+- the project’s `.git/`
+- any descendant inside the project root
+- a parent scan root containing descendant Spinner projects, in which case the root page stays a central project index
 
 The navigator mirrors the product philosophy:
 
-- root page lists frontiers
+- root page lists projects when serving a scan root, otherwise frontiers
 - frontier page is the only overview
 - hypothesis / experiment / artifact pages are detail reads
 - local navigation happens card-to-card
@@ -302,21 +315,22 @@ The navigator mirrors the product philosophy:
 
 ## Store Layout
 
-Each initialized project gets:
+Each initialized project gets a centralized private state root:
 
 ```text
-.fidget_spinner/
+~/.local/state/fidget-spinner/projects/<project>-<stable-id>/
     project.json
     state.sqlite
 ```
 
-In git-backed projects `.fidget_spinner/` normally belongs in `.gitignore` or
-`.git/info/exclude`.
+The project root remains the binding identity, but the live ledger stays out of
+the git worktree.
 
 ## Doctrine
 
 - hypotheses are short and disciplined
 - experiments carry the real scientific record
+- closed experiments pin the recoverable implementation commit automatically
 - verdicts are explicit: `accepted`, `kept`, `parked`, `rejected`
 - artifacts keep large text and dumps off the token hot path
 - live metrics answer “what matters now?”, not “what has ever existed?”

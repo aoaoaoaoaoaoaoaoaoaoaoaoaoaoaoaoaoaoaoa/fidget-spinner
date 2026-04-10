@@ -4,6 +4,12 @@ use thiserror::Error;
 pub enum CoreError {
     #[error("text values must not be blank")]
     EmptyText,
+    #[error("git commit hashes must not be blank")]
+    EmptyGitCommitHash,
+    #[error(
+        "invalid git commit hash `{0}`; expected a lowercase hexadecimal object id with 40 or 64 digits"
+    )]
+    InvalidGitCommitHash(String),
     #[error("metric units must not be blank")]
     EmptyMetricUnit,
     #[error(

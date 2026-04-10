@@ -15,7 +15,7 @@ pub use crate::model::{
     ArtifactKind, ArtifactRecord, AttachmentTargetKind, AttachmentTargetRef, CommandRecipe,
     ExecutionBackend, ExperimentAnalysis, ExperimentOutcome, ExperimentRecord, ExperimentStatus,
     FieldValueType, FrontierBrief, FrontierRecord, FrontierRoadmapItem, FrontierStatus,
-    FrontierVerdict, HypothesisRecord, KnownMetricUnit, MetricDefinition, MetricUnit, MetricValue,
-    MetricVisibility, NonEmptyText, OptimizationObjective, RunDimensionDefinition,
-    RunDimensionValue, Slug, TagName, TagRecord, VertexKind, VertexRef,
+    FrontierVerdict, GitCommitHash, HypothesisRecord, KnownMetricUnit, MetricDefinition,
+    MetricUnit, MetricValue, MetricVisibility, NonEmptyText, OptimizationObjective,
+    RunDimensionDefinition, RunDimensionValue, Slug, TagName, TagRecord, VertexKind, VertexRef,
 };

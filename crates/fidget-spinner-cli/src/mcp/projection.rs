@@ -457,6 +457,8 @@ pub(crate) struct ExperimentOutcomeProjection {
     pub(crate) rationale: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) analysis: Option<ExperimentAnalysisProjection>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) commit_hash: Option<String>,
     pub(crate) closed_at: TimestampText,
 }
 
@@ -1226,6 +1228,10 @@ fn experiment_outcome(outcome: &ExperimentOutcome) -> ExperimentOutcomeProjectio
         verdict: outcome.verdict.as_str().to_owned(),
         rationale: outcome.rationale.to_string(),
         analysis: outcome.analysis.as_ref().map(experiment_analysis),
+        commit_hash: outcome
+            .commit_hash
+            .as_ref()
+            .map(|commit_hash| commit_hash.to_string()),
         closed_at: timestamp_value(outcome.closed_at),
     }
 }

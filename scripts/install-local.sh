@@ -8,8 +8,9 @@ LOCAL_ROOT="${1:-$HOME/.local}"
 SKILL_DEST_ROOT="${2:-$HOME/.codex/skills}"
 LOCAL_BIN_DIR="${LOCAL_ROOT}/bin"
 SYSTEMD_USER_DIR="${HOME}/.config/systemd/user"
-UI_SERVICE_NAME="${FIDGET_SPINNER_UI_SERVICE_NAME:-fidget-spinner-libgrid-ui.service}"
-UI_PROJECT_ROOT="${FIDGET_SPINNER_UI_PROJECT:-$HOME/programming/projects/libgrid/.worktrees/libgrid-lp-oracle-cutset}"
+UI_SERVICE_NAME="${FIDGET_SPINNER_UI_SERVICE_NAME:-fidget-spinner-ui.service}"
+LEGACY_UI_SERVICE_NAME="fidget-spinner-libgrid-ui.service"
+UI_PATH="${FIDGET_SPINNER_UI_PATH:-$HOME/programming/projects}"
 UI_BIND="${FIDGET_SPINNER_UI_BIND:-127.0.0.1:8913}"
 
 escape_sed_replacement() {
@@ -58,10 +59,21 @@ evict_conflicting_navigator() {
   return 1
 }
 
-install_libgrid_ui_service() {
-  if [[ ! -d "${UI_PROJECT_ROOT}" ]]; then
-    printf 'libgrid navigator root does not exist: %s\n' "${UI_PROJECT_ROOT}" >&2
-    return 1
+retire_legacy_ui_service() {
+  if [[ "${LEGACY_UI_SERVICE_NAME}" == "${UI_SERVICE_NAME}" ]]; then
+    return 0
+  fi
+  local legacy_service_path="${SYSTEMD_USER_DIR}/${LEGACY_UI_SERVICE_NAME}"
+  if command -v systemctl >/dev/null 2>&1; then
+    systemctl --user disable --now "${LEGACY_UI_SERVICE_NAME}" >/dev/null 2>&1 || true
+  fi
+  rm -f "${legacy_service_path}"
+}
+
+install_ui_service() {
+  if [[ ! -d "${UI_PATH}" ]]; then
+    printf 'navigator scan root does not exist; leaving user service untouched: %s\n' "${UI_PATH}" >&2
+    return 0
   fi
   if ! command -v systemctl >/dev/null 2>&1; then
     printf 'systemctl unavailable; skipping navigator service install\n' >&2
@@ -71,10 +83,11 @@ install_libgrid_ui_service() {
   local service_path="${SYSTEMD_USER_DIR}/${UI_SERVICE_NAME}"
   local template_path="${SYSTEMD_TEMPLATE_ROOT}/${UI_SERVICE_NAME}.in"
   mkdir -p "${SYSTEMD_USER_DIR}"
+  retire_legacy_ui_service
   sed \
     -e "s|@HOME@|$(escape_sed_replacement "${HOME}")|g" \
     -e "s|@LOCAL_BIN_DIR@|$(escape_sed_replacement "${LOCAL_BIN_DIR}")|g" \
-    -e "s|@UI_PROJECT_ROOT@|$(escape_sed_replacement "${UI_PROJECT_ROOT}")|g" \
+    -e "s|@UI_PATH@|$(escape_sed_replacement "${UI_PATH}")|g" \
     -e "s|@UI_BIND@|$(escape_sed_replacement "${UI_BIND}")|g" \
     "${template_path}" > "${service_path}"
   chmod 0644 "${service_path}"
@@ -109,6 +122,6 @@ printf 'installed binary: %s\n' "${LOCAL_BIN_DIR}/fidget-spinner-cli"
 
 install_skill_link "fidget-spinner"
 install_skill_link "frontier-loop"
-install_libgrid_ui_service
+install_ui_service
 
 printf 'mcp command: %s\n' "${LOCAL_BIN_DIR}/fidget-spinner-cli mcp serve"

@@ -146,6 +146,50 @@ impl Display for Slug {
     }
 }
 
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct GitCommitHash(String);
+
+impl GitCommitHash {
+    pub fn new(value: impl Into<String>) -> Result<Self, CoreError> {
+        let normalized = value.into().trim().to_ascii_lowercase();
+        if normalized.is_empty() {
+            return Err(CoreError::EmptyGitCommitHash);
+        }
+        if !matches!(normalized.len(), 40 | 64)
+            || !normalized.bytes().all(|byte| byte.is_ascii_hexdigit())
+        {
+            return Err(CoreError::InvalidGitCommitHash(normalized));
+        }
+        Ok(Self(normalized))
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl TryFrom<String> for GitCommitHash {
+    type Error = CoreError;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        Self::new(value)
+    }
+}
+
+impl From<GitCommitHash> for String {
+    fn from(value: GitCommitHash) -> Self {
+        value.0
+    }
+}
+
+impl Display for GitCommitHash {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
+        formatter.write_str(&self.0)
+    }
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FrontierStatus {
@@ -460,7 +504,7 @@ impl RunDimensionDefinition {
 
 #[cfg(test)]
 mod tests {
-    use super::{KnownMetricUnit, MetricUnit};
+    use super::{GitCommitHash, KnownMetricUnit, MetricUnit};
 
     #[test]
     fn metric_unit_normalizes_known_aliases() {
@@ -499,6 +543,23 @@ mod tests {
 
         let placeholder = MetricUnit::new("custom");
         assert!(placeholder.is_err());
+    }
+
+    #[test]
+    fn git_commit_hash_normalizes_case_and_rejects_bad_shapes() {
+        let sha1 = GitCommitHash::new("ABCDEF1234567890ABCDEF1234567890ABCDEF12");
+        assert!(sha1.is_ok());
+        let sha1 = match sha1 {
+            Ok(value) => value,
+            Err(_) => return,
+        };
+        assert_eq!(sha1.as_str(), "abcdef1234567890abcdef1234567890abcdef12");
+
+        let short = GitCommitHash::new("deadbeef");
+        assert!(short.is_err());
+
+        let non_hex = GitCommitHash::new("zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz");
+        assert!(non_hex.is_err());
     }
 }
 
@@ -662,6 +723,8 @@ pub struct ExperimentOutcome {
     pub verdict: FrontierVerdict,
     pub rationale: NonEmptyText,
     pub analysis: Option<ExperimentAnalysis>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub commit_hash: Option<GitCommitHash>,
     pub closed_at: OffsetDateTime,
 }
 

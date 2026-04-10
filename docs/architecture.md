@@ -25,7 +25,7 @@ spinner MCP host
     |   +-- navigator projections
     |
     v
-<project root>/.fidget_spinner/
+~/.local/state/fidget-spinner/projects/<project>-<stable-id>/
 ```
 
 There is no long-lived daemon yet. The CLI binary owns the stdio host and the
@@ -48,19 +48,19 @@ These are one release unit.
 
 ## Storage Topology
 
-Every initialized project owns a private state root:
+Every initialized project owns a private centralized state root:
 
 ```text
-<project root>/.fidget_spinner/
+~/.local/state/fidget-spinner/projects/<project>-<stable-id>/
     project.json
     state.sqlite
 ```
 
 Why this shape:
 
-- migrations stay local
-- backup and portability stay simple
-- no global store is required
+- git can no longer clobber the live ledger by accident
+- migrations stay local to one deterministic per-project path
+- no database service is required
 - git remains the code substrate instead of being mirrored into Spinner
 
 ## Canonical Types
@@ -110,6 +110,7 @@ The outcome contains:
 - verdict
 - rationale
 - optional analysis
+- closing commit hash captured from clean git `HEAD`
 
 ### Artifact
 

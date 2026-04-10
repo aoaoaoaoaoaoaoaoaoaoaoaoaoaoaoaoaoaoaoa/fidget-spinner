@@ -33,7 +33,14 @@ def load_workspace_metadata() -> dict[str, object]:
 
 def load_commands(metadata: dict[str, object]) -> dict[str, list[str]]:
     commands: dict[str, list[str]] = {}
-    for key in ("format_command", "clippy_command", "test_command", "doc_command", "fix_command"):
+    for key in (
+        "format_command",
+        "clippy_command",
+        "test_command",
+        "doc_command",
+        "fix_command",
+        "install_command",
+    ):
         value = metadata.get(key)
         if isinstance(value, list) and value and all(isinstance(part, str) for part in value):
             commands[key] = value
@@ -167,6 +174,9 @@ def main() -> None:
 
     if args.mode == "deep" and "doc_command" in commands:
         run("doc", commands["doc_command"])
+
+    if "install_command" in commands:
+        run("install", commands["install_command"])
 
 
 if __name__ == "__main__":

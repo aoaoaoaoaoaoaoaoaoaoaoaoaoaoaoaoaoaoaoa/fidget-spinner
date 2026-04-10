@@ -11,10 +11,14 @@ when the task is to inspect or mutate a frontier through the packaged MCP.
 Start every session by reading `system.health`.
 
 If the session is unbound, or bound to the wrong repo, call `project.bind`
-with the target project root or any nested path inside that project.
+with the target repo root, the repo’s `.git` directory, or any nested path
+inside that project.
 
-If the target root exists and is empty, `project.bind` will bootstrap the local
-store automatically.
+Do not create `.fidget_spinner` directories by hand. Spinner state is
+centralized under `~/.local/state/fidget-spinner/`, not stored in the repo.
+
+If the canonical project root does not have a Spinner store yet,
+`project.bind` will bootstrap it automatically in the centralized state path.
 
 Then read:
 
@@ -53,7 +57,7 @@ If you need more context, pull it from:
 - `experiment.open` once a hypothesis has a concrete slice and is ready to be tested
 - `experiment.list` or `experiment.read` when resuming a session and you need to recover open or recently closed state
 - `experiment.update` while the experiment is still live and its summary, tags, or influence parents need refinement
-- `experiment.close` only for an already-open experiment and only when you have measured result, verdict, and rationale; attach `analysis` only when the result needs interpretation beyond the rationale
+- `experiment.close` only for an already-open experiment and only when you have measured result, verdict, and rationale; it requires a clean git worktree and records `HEAD` automatically, so make a fast commit first and attach `analysis` only when the result needs interpretation beyond the rationale
 - `experiment.nearest` when you need the nearest accepted, kept, rejected, or champion comparator for one structural slice
 - `artifact.record` when preserving an external file, link, log, table, plot, dump, or bibliography by reference
 - `artifact.read` only to inspect metadata and attachments, never to read the body
@@ -70,8 +74,9 @@ If you need more context, pull it from:
 2. State the intended intervention with `hypothesis.record`.
 3. Open a live experiment with `experiment.open`.
 4. Do the work.
-5. Close the experiment with `experiment.close`, including dimensions, metrics, verdict, rationale, and optional analysis.
-6. Attach any large markdown, logs, tables, dumps, or links through `artifact.record` instead of bloating the ledger.
+5. Make a fast commit for the recoverable implementation state before closing the experiment. Bypass heavyweight hooks when necessary; the bar here is recoverability, not release readiness.
+6. Close the experiment with `experiment.close`, including dimensions, metrics, verdict, rationale, and optional analysis. Spinner will reject a dirty worktree and store the closing commit hash automatically.
+7. Attach any large markdown, logs, tables, dumps, or links through `artifact.record` instead of bloating the ledger.
 
 Do not dump a whole markdown tranche into Spinner. If it matters, attach it as
 an artifact and summarize the scientific upshot in the frontier brief,
@@ -92,7 +97,7 @@ hypothesis, or experiment outcome.
    smuggle planned work into the frontier brief.
 8. Experiments are the scientific record. If a fact matters later, it should
    usually live in a closed experiment outcome rather than in freeform text.
-9. The ledger is scientific, not git-forensic. Do not treat commit hashes as experiment identity.
+9. Spinner records the closing commit hash as a recoverability anchor, not as experiment identity.
 10. Porcelain is the terse triage surface. Use `detail=full` only when concise
    output stops being decision-sufficient.
 11. When the task becomes a true indefinite optimization push, pair this skill

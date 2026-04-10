@@ -12,7 +12,7 @@ Constraints that are part of the product:
 - frontier is scope and grounding, not a graph vertex
 - hypotheses and experiments are the true graph vertices
 - every experiment has one mandatory owning hypothesis
-- per-project state lives under `.fidget_spinner/`
+- per-project state lives in centralized per-user SQLite under `~/.local/state/fidget-spinner/`
 - the frontier brief is the one sanctioned freeform overview
 - artifacts are references only; Spinner never reads artifact bodies
 - slow intentional traversal beats giant context dumps
