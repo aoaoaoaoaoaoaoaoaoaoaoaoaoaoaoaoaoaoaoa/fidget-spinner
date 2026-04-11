@@ -33,6 +33,7 @@ use time::macros::format_description;
 use crate::open_store;
 
 const FAVICON_SVG: &str = include_str!("../../../assets/ui/favicon.svg");
+const METRIC_TABLE_LABEL_MAX_CHARS: usize = 40;
 
 #[derive(Clone)]
 struct NavigatorState {
@@ -865,14 +866,16 @@ fn render_metric_series_section(
                                 tr {
                                     td { ((index + 1).to_string()) }
                                     td {
-                                        a href=(experiment_href(&point.experiment.slug)) {
-                                            (point.experiment.title)
-                                        }
+                                        (render_metric_table_title_link(
+                                            &point.experiment.title,
+                                            &experiment_href(&point.experiment.slug),
+                                        ))
                                     }
                                     td {
-                                        a href=(hypothesis_href(&point.hypothesis.slug)) {
-                                            (point.hypothesis.title)
-                                        }
+                                        (render_metric_table_title_link(
+                                            &point.hypothesis.title,
+                                            &hypothesis_href(&point.hypothesis.slug),
+                                        ))
                                     }
                                     td.nowrap { (format_timestamp(point.closed_at)) }
                                     td {
@@ -1857,6 +1860,23 @@ fn render_favicon_links() -> Markup {
     }
 }
 
+fn render_metric_table_title_link(title: &NonEmptyText, href: &str) -> Markup {
+    let truncated = truncate_with_ascii_ellipsis(title.as_str(), METRIC_TABLE_LABEL_MAX_CHARS);
+    if truncated.was_truncated {
+        html! {
+            a href=(href) class="metric-table-link" title=(title.as_str()) {
+                (truncated.display)
+            }
+        }
+    } else {
+        html! {
+            a href=(href) class="metric-table-link" {
+                (truncated.display)
+            }
+        }
+    }
+}
+
 fn render_sidebar(shell: &ShellFrame) -> Markup {
     html! {
     section.sidebar-panel {
@@ -2192,6 +2212,32 @@ fn sanitize_fragment_id(raw: &str) -> String {
             }
         })
         .collect()
+}
+
+struct TruncatedText {
+    display: String,
+    was_truncated: bool,
+}
+
+fn truncate_with_ascii_ellipsis(raw: &str, max_chars: usize) -> TruncatedText {
+    let char_count = raw.chars().count();
+    if char_count <= max_chars {
+        return TruncatedText {
+            display: raw.to_owned(),
+            was_truncated: false,
+        };
+    }
+    if max_chars <= 3 {
+        return TruncatedText {
+            display: ".".repeat(max_chars),
+            was_truncated: true,
+        };
+    }
+    let display = raw.chars().take(max_chars - 3).collect::<String>() + "...";
+    TruncatedText {
+        display,
+        was_truncated: true,
+    }
 }
 
 fn styles() -> &'static str {
@@ -2641,6 +2687,14 @@ fn styles() -> &'static str {
         letter-spacing: 0.05em;
         font-size: 12px;
     }
+    .metric-table-link {
+        display: inline-block;
+        max-width: 40ch;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        vertical-align: top;
+    }
     .related-block {
         display: grid;
         gap: 8px;
@@ -2698,4 +2752,28 @@ fn styles() -> &'static str {
         .page-title { font-size: 18px; }
     }
     "#
+}
+
+#[cfg(test)]
+mod tests {
+    use super::truncate_with_ascii_ellipsis;
+
+    #[test]
+    fn truncate_with_ascii_ellipsis_leaves_short_text_alone() {
+        let truncated = truncate_with_ascii_ellipsis("short-title", 40);
+        assert_eq!(truncated.display, "short-title");
+        assert!(!truncated.was_truncated);
+    }
+
+    #[test]
+    fn truncate_with_ascii_ellipsis_clamps_to_requested_width() {
+        let truncated =
+            truncate_with_ascii_ellipsis("0123456789012345678901234567890123456789tail", 40);
+        assert_eq!(
+            truncated.display,
+            "0123456789012345678901234567890123456..."
+        );
+        assert!(truncated.was_truncated);
+        assert_eq!(truncated.display.chars().count(), 40);
+    }
 }
