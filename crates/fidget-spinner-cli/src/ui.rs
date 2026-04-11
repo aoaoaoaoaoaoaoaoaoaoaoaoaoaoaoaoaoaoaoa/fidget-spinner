@@ -3,9 +3,9 @@ use std::io;
 use std::net::SocketAddr;
 
 use axum::Router;
-use axum::extract::{Path, Query, State};
-use axum::http::StatusCode;
+use axum::extract::{Path, State};
 use axum::http::header::CONTENT_TYPE;
+use axum::http::{StatusCode, Uri};
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::get;
 use camino::Utf8PathBuf;
@@ -21,11 +21,10 @@ use fidget_spinner_store_sqlite::{
 use maud::{DOCTYPE, Markup, PreEscaped, html};
 use percent_encoding::{NON_ALPHANUMERIC, percent_decode_str, utf8_percent_encode};
 use plotters::prelude::{
-    BLACK, ChartBuilder, Circle, IntoDrawingArea, LineSeries, PathElement, SVGBackend, ShapeStyle,
-    Text,
+    BLACK, ChartBuilder, Circle, Cross, IntoDrawingArea, IntoLogRange, LineSeries, PathElement,
+    SVGBackend, SeriesLabelPosition, ShapeStyle,
 };
 use plotters::style::{Color, IntoFont, RGBColor};
-use serde::Deserialize;
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
 use time::macros::format_description;
@@ -88,11 +87,10 @@ enum FrontierTab {
     Metrics,
 }
 
-#[derive(Clone, Debug, Default, Deserialize)]
+#[derive(Clone, Debug, Default)]
 struct FrontierPageQuery {
-    metric: Option<String>,
+    metric: Vec<String>,
     tab: Option<String>,
-    #[serde(flatten)]
     extra: BTreeMap<String, String>,
 }
 
@@ -139,6 +137,43 @@ impl FrontierTab {
 }
 
 impl FrontierPageQuery {
+    fn parse(raw_query: Option<&str>) -> Result<Self, StoreError> {
+        let mut query = Self::default();
+        for segment in raw_query
+            .unwrap_or_default()
+            .split('&')
+            .filter(|segment| !segment.is_empty())
+        {
+            let (raw_key, raw_value) = segment.split_once('=').unwrap_or((segment, ""));
+            let key = decode_query_component(raw_key)?;
+            let value = decode_query_component(raw_value)?;
+            match key.as_str() {
+                "metric" => {
+                    let trimmed = value.trim();
+                    if !trimmed.is_empty() {
+                        query.metric.push(trimmed.to_owned());
+                    }
+                }
+                "tab" => {
+                    let trimmed = value.trim();
+                    if !trimmed.is_empty() {
+                        query.tab = Some(trimmed.to_owned());
+                    }
+                }
+                _ => {
+                    let _ = query.extra.insert(key, value);
+                }
+            }
+        }
+        Ok(query)
+    }
+
+    fn log_y_requested(&self) -> bool {
+        self.extra
+            .get("log_y")
+            .is_some_and(|value| matches!(value.as_str(), "1" | "true" | "on" | "yes"))
+    }
+
     fn dimension_filters(&self) -> BTreeMap<String, String> {
         self.extra
             .iter()
@@ -228,11 +263,13 @@ async fn project_home(
 async fn frontier_detail(
     State(state): State<NavigatorState>,
     Path((project, selector)): Path<(String, String)>,
-    Query(query): Query<FrontierPageQuery>,
+    uri: Uri,
 ) -> Response {
     render_response(
-        resolve_project_context(&state, &project)
-            .and_then(|context| render_frontier_detail(context, selector, query)),
+        resolve_project_context(&state, &project).and_then(|context| {
+            FrontierPageQuery::parse(uri.query())
+                .and_then(|query| render_frontier_detail(context, selector, query))
+        }),
     )
 }
 
@@ -416,6 +453,7 @@ fn render_frontier_detail(
     let store = open_store(context.project_root.as_std_path())?;
     let projection = store.frontier_open(&selector)?;
     let shell = load_shell_frame(&store, Some(projection.frontier.slug.clone()), &context)?;
+    let other_metric_keys_for_tab_bar = load_other_metric_keys(&store, &projection)?;
     let tab = FrontierTab::from_query(query.tab.as_deref());
     let title = format!("{} · frontier", projection.frontier.label);
     let subtitle = format!(
@@ -433,7 +471,14 @@ fn render_frontier_detail(
         Some(render_frontier_tab_bar(
             &projection.frontier.slug,
             tab,
-            query.metric.as_deref(),
+            &resolve_selected_metric_keys(
+                &query.metric,
+                &visible_metric_catalog(
+                    &projection.scoreboard_metric_keys,
+                    &other_metric_keys_for_tab_bar,
+                ),
+            ),
+            query.log_y_requested(),
             &query.dimension_filters(),
         )),
         content,
@@ -629,41 +674,20 @@ fn render_frontier_tab_content(
             })
         }
         FrontierTab::Metrics => {
-            let other_metric_keys = if projection.active_metric_keys.is_empty() {
-                store.metric_keys(MetricKeysQuery {
-                    frontier: Some(projection.frontier.slug.to_string()),
-                    scope: MetricScope::Visible,
-                })?
-            } else {
-                projection
-                    .active_metric_keys
-                    .iter()
-                    .filter(|metric| {
-                        !projection
-                            .scoreboard_metric_keys
-                            .iter()
-                            .any(|scoreboard| scoreboard.key == metric.key)
-                    })
-                    .cloned()
-                    .collect()
-            };
-            let selected_metric = query
-                .metric
-                .as_deref()
-                .and_then(|selector| NonEmptyText::new(selector.to_owned()).ok())
-                .or_else(|| {
-                    projection
-                        .scoreboard_metric_keys
-                        .first()
-                        .or_else(|| other_metric_keys.first())
-                        .map(|metric| metric.key.clone())
-                });
-            let series = selected_metric
-                .as_ref()
+            let other_metric_keys = load_other_metric_keys(store, projection)?;
+            let visible_metrics =
+                visible_metric_catalog(&projection.scoreboard_metric_keys, &other_metric_keys);
+            let selected_metrics = resolve_selected_metric_keys(&query.metric, &visible_metrics);
+            let series = selected_metrics
+                .iter()
                 .map(|metric| {
-                    store.frontier_metric_series(projection.frontier.slug.as_str(), metric, true)
+                    store.frontier_metric_series(
+                        projection.frontier.slug.as_str(),
+                        &metric.key,
+                        true,
+                    )
                 })
-                .transpose()?;
+                .collect::<Result<Vec<_>, StoreError>>()?;
             let dimension_filters = query.dimension_filters();
             Ok(html! {
                 (render_frontier_header(&projection.frontier))
@@ -671,9 +695,10 @@ fn render_frontier_tab_content(
                     &projection.frontier.slug,
                     &projection.scoreboard_metric_keys,
                     &other_metric_keys,
-                    selected_metric.as_ref(),
-                    series.as_ref(),
+                    &selected_metrics,
+                    &series,
                     &dimension_filters,
+                    query.log_y_requested(),
                     limit,
                 ))
             })
@@ -684,7 +709,8 @@ fn render_frontier_tab_content(
 fn render_frontier_tab_bar(
     frontier_slug: &Slug,
     active_tab: FrontierTab,
-    metric: Option<&str>,
+    selected_metrics: &[fidget_spinner_store_sqlite::MetricKeySummary],
+    log_y: bool,
     dimension_filters: &BTreeMap<String, String>,
 ) -> Markup {
     const TABS: [FrontierTab; 4] = [
@@ -696,7 +722,13 @@ fn render_frontier_tab_bar(
     html! {
         nav.tab-row aria-label="Frontier tabs" {
             @for tab in TABS {
-                @let href = frontier_tab_href_with_filters(frontier_slug, tab, metric, dimension_filters);
+                @let href = frontier_tab_href_with_query(
+                    frontier_slug,
+                    tab,
+                    selected_metrics,
+                    log_y,
+                    dimension_filters,
+                );
                 a
                     href=(href)
                     class={(if tab == active_tab { "tab-chip active" } else { "tab-chip" })}
@@ -705,6 +737,82 @@ fn render_frontier_tab_bar(
                 }
             }
         }
+    }
+}
+
+fn visible_metric_catalog(
+    scoreboard_metric_keys: &[fidget_spinner_store_sqlite::MetricKeySummary],
+    other_metric_keys: &[fidget_spinner_store_sqlite::MetricKeySummary],
+) -> Vec<fidget_spinner_store_sqlite::MetricKeySummary> {
+    scoreboard_metric_keys
+        .iter()
+        .chain(other_metric_keys.iter())
+        .cloned()
+        .collect()
+}
+
+fn load_other_metric_keys(
+    store: &fidget_spinner_store_sqlite::ProjectStore,
+    projection: &FrontierOpenProjection,
+) -> Result<Vec<fidget_spinner_store_sqlite::MetricKeySummary>, StoreError> {
+    let candidate_metrics = if projection.active_metric_keys.is_empty() {
+        store.metric_keys(MetricKeysQuery {
+            frontier: Some(projection.frontier.slug.to_string()),
+            scope: MetricScope::Visible,
+        })?
+    } else {
+        projection.active_metric_keys.clone()
+    };
+    Ok(candidate_metrics
+        .into_iter()
+        .filter(|metric| {
+            !projection
+                .scoreboard_metric_keys
+                .iter()
+                .any(|scoreboard| scoreboard.key == metric.key)
+        })
+        .collect())
+}
+
+fn resolve_selected_metric_keys(
+    requested_metrics: &[String],
+    visible_metrics: &[fidget_spinner_store_sqlite::MetricKeySummary],
+) -> Vec<fidget_spinner_store_sqlite::MetricKeySummary> {
+    let mut selected = Vec::new();
+    let mut seen = BTreeSet::new();
+    let mut family = None;
+    for requested in requested_metrics {
+        let selector = requested.trim();
+        if selector.is_empty() {
+            continue;
+        }
+        let Some(metric) = visible_metrics
+            .iter()
+            .find(|metric| metric.key.as_str() == selector)
+        else {
+            continue;
+        };
+        if !seen.insert(metric.key.clone()) {
+            continue;
+        }
+        let metric_family = MetricUnitFamily::from_unit(&metric.unit);
+        if family
+            .as_ref()
+            .is_some_and(|active_family| active_family != &metric_family)
+        {
+            continue;
+        }
+        let _ = family.get_or_insert(metric_family);
+        selected.push(metric.clone());
+    }
+    if selected.is_empty() {
+        visible_metrics
+            .first()
+            .cloned()
+            .into_iter()
+            .collect::<Vec<_>>()
+    } else {
+        selected
     }
 }
 
@@ -750,173 +858,143 @@ fn render_closed_hypothesis_grid(
     }
 }
 
+struct FilteredMetricSeries<'a> {
+    metric: &'a fidget_spinner_store_sqlite::MetricKeySummary,
+    points: Vec<&'a fidget_spinner_store_sqlite::FrontierMetricPoint>,
+}
+
+struct MetricChartSeries {
+    label: String,
+    color: RGBColor,
+    points: Vec<(i32, f64, FrontierVerdict)>,
+}
+
 fn render_metric_series_section(
     frontier_slug: &Slug,
     scoreboard_metric_keys: &[fidget_spinner_store_sqlite::MetricKeySummary],
     other_metric_keys: &[fidget_spinner_store_sqlite::MetricKeySummary],
-    selected_metric: Option<&NonEmptyText>,
-    series: Option<&FrontierMetricSeries>,
+    selected_metrics: &[fidget_spinner_store_sqlite::MetricKeySummary],
+    series: &[FrontierMetricSeries],
     dimension_filters: &BTreeMap<String, String>,
+    log_y: bool,
     limit: Option<u32>,
 ) -> Markup {
-    let facets = series
-        .map(|series| collect_dimension_facets(&series.points))
-        .unwrap_or_default();
-    let filtered_points = series
-        .map(|series| filter_metric_points(&series.points, dimension_filters))
-        .unwrap_or_default();
+    let facets = collect_dimension_facets_from_series(series);
+    let filtered_series = filter_metric_series(series, dimension_filters);
+    let plotted_series = filtered_series
+        .iter()
+        .filter(|series| !series.points.is_empty())
+        .collect::<Vec<_>>();
+    let table_series = plotted_series.first().copied();
+    let chart_axis = plotted_series
+        .first()
+        .map(|series| MetricChartAxis::from_metric(series.metric));
+    let can_use_log_y = chart_axis
+        .as_ref()
+        .is_some_and(|axis| metric_chart_supports_log_y(axis, &plotted_series));
+    let effective_log_y = log_y && can_use_log_y;
+    let no_metric_history =
+        selected_metrics.is_empty() || series.iter().all(|series| series.points.is_empty());
     html! {
     section.card {
-        h2 { "Metrics" }
-        p.prose {
-            "Server-rendered SVG over the frontier’s closed experiment ledger. Choose a live metric, then walk to the underlying experiments deliberately."
+        div.card-header.plot-card-header {
+            h2 { "Plot" }
+            div.plot-toolbar {
+                (render_metric_filter_popout(
+                    frontier_slug,
+                    selected_metrics,
+                    &facets,
+                    dimension_filters,
+                    log_y,
+                ))
+                (render_metric_selection_popout(
+                    frontier_slug,
+                    scoreboard_metric_keys,
+                    other_metric_keys,
+                    selected_metrics,
+                    dimension_filters,
+                    log_y,
+                    can_use_log_y,
+                ))
+            }
         }
         @if scoreboard_metric_keys.is_empty() && other_metric_keys.is_empty() {
             p.muted { "No visible metrics registered for this frontier." }
-        } @else {
-            @if !scoreboard_metric_keys.is_empty() {
-                div.metric-picker-group {
-                    h3 { "Scoreboard" }
-                    div.metric-picker {
-                        @for metric in scoreboard_metric_keys {
-                            @let href = frontier_tab_href(frontier_slug, FrontierTab::Metrics, Some(metric.key.as_str()));
-                            a
-                                href=(href)
-                                class={(if selected_metric.is_some_and(|selected| selected == &metric.key) {
-                                    "metric-choice active"
-                                } else {
-                                    "metric-choice"
-                                })}
-                            {
-                                span.metric-choice-key { (metric.key) }
-                                span.metric-choice-meta {
-                                    (metric.objective.as_str()) " · "
-                                    (metric.unit.as_str())
-                                }
-                            }
-                        }
+        } @else if no_metric_history {
+            p.muted { "No closed experiments for the current metric selection yet." }
+        } @else if plotted_series.is_empty() {
+            p.muted { "No closed experiments match the current filters." }
+        } @else if let Some(axis) = chart_axis.as_ref() {
+            div.chart-frame {
+                (PreEscaped(render_metric_chart_svg(axis, &plotted_series, effective_log_y)))
+            }
+            @if let Some(table_series) = table_series {
+                details.chart-table-details {
+                    summary {
+                        "Experiments · " (&table_series.metric.key) " · " (table_series.points.len())
                     }
-                }
-            }
-            @if !other_metric_keys.is_empty() {
-                div.metric-picker-group {
-                    h3 { "Other Live Metrics" }
-                    div.metric-picker {
-                        @for metric in other_metric_keys {
-                            @let href = frontier_tab_href(frontier_slug, FrontierTab::Metrics, Some(metric.key.as_str()));
-                            a
-                                href=(href)
-                                class={(if selected_metric.is_some_and(|selected| selected == &metric.key) {
-                                    "metric-choice active"
-                                } else {
-                                    "metric-choice"
-                                })}
-                            {
-                                span.metric-choice-key { (metric.key) }
-                                span.metric-choice-meta {
-                                    (metric.objective.as_str()) " · "
-                                    (metric.unit.as_str())
-                                }
+                    @let visible_points = limit_items(&table_series.points, limit);
+                    @let table_layout =
+                        MetricTableLayout::for_points(visible_points, &table_series.metric.unit);
+                    div.table-scroll {
+                        table.metric-table {
+                            colgroup {
+                                col style=(table_layout.width_style(table_layout.rank_chars));
+                                col style=(table_layout.width_style(table_layout.experiment_chars));
+                                col style=(table_layout.width_style(table_layout.hypothesis_chars));
+                                col style=(table_layout.width_style(table_layout.closed_chars));
+                                col style=(table_layout.width_style(table_layout.verdict_chars));
+                                col style=(table_layout.width_style(table_layout.value_chars));
                             }
-                        }
-                    }
-                }
-            }
-        }
-    }
-    @if let Some(series) = series {
-        section.card {
-            div.card-header {
-                h2 { "Plot" }
-                span.metric-pill {
-                    (series.metric.key) " · "
-                    (series.metric.objective.as_str()) " · "
-                    (series.metric.unit.as_str())
-                }
-            }
-            @if let Some(description) = series.metric.description.as_ref() {
-                p.muted { (description) }
-            }
-            @if !facets.is_empty() {
-                (render_metric_filter_panel(
-                    frontier_slug,
-                    &series.metric.key,
-                    &facets,
-                    dimension_filters,
-                ))
-            }
-            @if filtered_points.is_empty() {
-                p.muted { "No closed experiments match the current filters." }
-            } @else if series.points.is_empty() {
-                p.muted { "No closed experiments for this metric yet." }
-            } @else {
-                div.chart-frame {
-                    (PreEscaped(render_metric_chart_svg(&series.metric, &filtered_points)))
-                }
-                p.muted {
-                    "x = close order, y = metric value. Point color tracks verdict."
-                }
-                @let visible_points = limit_items(&filtered_points, limit);
-                @let table_layout =
-                    MetricTableLayout::for_points(visible_points, &series.metric.unit);
-                div.table-scroll {
-                    table.metric-table {
-                        colgroup {
-                            col style=(table_layout.width_style(table_layout.rank_chars));
-                            col style=(table_layout.width_style(table_layout.experiment_chars));
-                            col style=(table_layout.width_style(table_layout.hypothesis_chars));
-                            col style=(table_layout.width_style(table_layout.closed_chars));
-                            col style=(table_layout.width_style(table_layout.verdict_chars));
-                            col style=(table_layout.width_style(table_layout.value_chars));
-                        }
-                        thead {
-                            tr {
-                                th { "#" }
-                                th { "Experiment" }
-                                th { "Hypothesis" }
-                                th { "Closed" }
-                                th { "Verdict" }
-                                th { "Value" }
-                            }
-                        }
-                        tbody {
-                            @for (index, point) in visible_points.iter().copied().enumerate() {
+                            thead {
                                 tr {
-                                    td.metric-table-rank-cell {
-                                        span.metric-table-fixed-text { ((index + 1).to_string()) }
-                                    }
-                                    td.metric-table-title-cell {
-                                        (render_metric_table_title_link(
-                                            &point.experiment.title,
-                                            &experiment_href(&point.experiment.slug),
-                                            table_layout.experiment_chars,
-                                        ))
-                                    }
-                                    td.metric-table-title-cell {
-                                        (render_metric_table_title_link(
-                                            &point.hypothesis.title,
-                                            &hypothesis_href(&point.hypothesis.slug),
-                                            table_layout.hypothesis_chars,
-                                        ))
-                                    }
-                                    td.metric-table-closed-cell.nowrap {
-                                        span.metric-table-fixed-text {
-                                            (format_timestamp(point.closed_at))
+                                    th { "#" }
+                                    th { "Experiment" }
+                                    th { "Hypothesis" }
+                                    th { "Closed" }
+                                    th { "Verdict" }
+                                    th { "Value" }
+                                }
+                            }
+                            tbody {
+                                @for (index, point) in visible_points.iter().copied().enumerate() {
+                                    tr {
+                                        td.metric-table-rank-cell {
+                                            span.metric-table-fixed-text { ((index + 1).to_string()) }
                                         }
-                                    }
-                                    td.metric-table-verdict-cell {
-                                        span
-                                            class=(format!(
-                                                "{} metric-table-verdict-chip",
-                                                status_chip_classes(verdict_class(point.verdict)),
+                                        td.metric-table-title-cell {
+                                            (render_metric_table_title_link(
+                                                &point.experiment.title,
+                                                &experiment_href(&point.experiment.slug),
+                                                table_layout.experiment_chars,
                                             ))
-                                        {
-                                            (point.verdict.as_str())
                                         }
-                                    }
-                                    td.metric-table-value-cell.nowrap {
-                                        span.metric-table-fixed-text {
-                                            (format_metric_value(point.value, &series.metric.unit))
+                                        td.metric-table-title-cell {
+                                            (render_metric_table_title_link(
+                                                &point.hypothesis.title,
+                                                &hypothesis_href(&point.hypothesis.slug),
+                                                table_layout.hypothesis_chars,
+                                            ))
+                                        }
+                                        td.metric-table-closed-cell.nowrap {
+                                            span.metric-table-fixed-text {
+                                                (format_timestamp(point.closed_at))
+                                            }
+                                        }
+                                        td.metric-table-verdict-cell {
+                                            span
+                                                class=(format!(
+                                                    "{} metric-table-verdict-chip",
+                                                    status_chip_classes(verdict_class(point.verdict)),
+                                                ))
+                                            {
+                                                (point.verdict.as_str())
+                                            }
+                                        }
+                                        td.metric-table-value-cell.nowrap {
+                                            span.metric-table-fixed-text {
+                                                (format_metric_value(point.value, &table_series.metric.unit))
+                                            }
                                         }
                                     }
                                 }
@@ -930,181 +1008,349 @@ fn render_metric_series_section(
     }
 }
 
-fn render_metric_filter_panel(
+fn render_metric_filter_popout(
     frontier_slug: &Slug,
-    metric_key: &NonEmptyText,
+    selected_metrics: &[fidget_spinner_store_sqlite::MetricKeySummary],
     facets: &[DimensionFacet],
     active_filters: &BTreeMap<String, String>,
+    log_y: bool,
 ) -> Markup {
-    let clear_href = frontier_tab_href_with_filters(
+    let clear_href = frontier_tab_href_with_query(
         frontier_slug,
         FrontierTab::Metrics,
-        Some(metric_key.as_str()),
+        selected_metrics,
+        log_y,
         &BTreeMap::new(),
     );
+    let label = if active_filters.is_empty() {
+        "Filters".to_owned()
+    } else {
+        format!("Filters {}", active_filters.len())
+    };
     html! {
-    section.subcard {
-        h3 id="slice-filters" { "Slice Filters" }
-        form.filter-form method="get" action=(frontier_href(frontier_slug)) {
-            input type="hidden" name="tab" value="metrics";
-            input type="hidden" name="metric" value=(metric_key.as_str());
-            div.filter-form-grid {
-                @for facet in facets {
-                    label.filter-control id=(metric_filter_anchor_id(&facet.key)) {
-                        span.filter-label { (&facet.key) }
-                        select.filter-select name=(format!("dim.{}", facet.key)) {
-                            option
-                                value=""
-                                selected[active_filters.get(&facet.key).is_none()]
-                            { "all" }
-                            @for value in &facet.values {
-                                option
-                                    value=(value)
-                                    selected[active_filters.get(&facet.key) == Some(value)]
-                                { (value) }
+    details.control-popout {
+        summary.control-popout-toggle { (label) }
+        div.control-popout-panel {
+            h3 id="slice-filters" { "Slice Filters" }
+            @if facets.is_empty() {
+                p.muted { "No dimension filters for the current selection." }
+            } @else {
+                form.filter-form method="get" action=(frontier_href(frontier_slug)) {
+                    input type="hidden" name="tab" value="metrics";
+                    (render_metric_selection_hidden_inputs(selected_metrics))
+                    (render_log_hidden_input(log_y))
+                    div.filter-form-grid {
+                        @for facet in facets {
+                            label.filter-control id=(metric_filter_anchor_id(&facet.key)) {
+                                span.filter-label { (&facet.key) }
+                                select.filter-select name=(format!("dim.{}", facet.key)) {
+                                    option
+                                        value=""
+                                        selected[active_filters.get(&facet.key).is_none()]
+                                    { "all" }
+                                    @for value in &facet.values {
+                                        option
+                                            value=(value)
+                                            selected[active_filters.get(&facet.key) == Some(value)]
+                                        { (value) }
+                                    }
+                                }
                             }
                         }
                     }
+                    div.filter-actions {
+                        button.filter-apply type="submit" { "Apply" }
+                        a.clear-filter href=(clear_href) { "Clear all" }
+                    }
                 }
             }
-            div.filter-actions {
-                button.filter-apply type="submit" { "Apply" }
-                a.clear-filter href=(clear_href) { "Clear all" }
-            }
-        }
-        @if active_filters.is_empty() {
-            p.muted { "No slice filters active." }
-        } @else {
-            div.chip-row {
-                @for (key, value) in active_filters {
-                    @let href = frontier_tab_href_with_filters(
-                        frontier_slug,
-                        FrontierTab::Metrics,
-                        Some(metric_key.as_str()),
-                        &remove_dimension_filter(active_filters, key),
-                    );
-                    a.metric-filter-chip.active href=(href) {
-                        (key) "=" (value) " ×"
+            @if active_filters.is_empty() {
+                p.muted { "No slice filters active." }
+            } @else {
+                div.chip-row {
+                    @for (key, value) in active_filters {
+                        @let href = frontier_tab_href_with_query(
+                            frontier_slug,
+                            FrontierTab::Metrics,
+                            selected_metrics,
+                            log_y,
+                            &remove_dimension_filter(active_filters, key),
+                        );
+                        a.metric-filter-chip.active href=(href) {
+                            (key) "=" (value) " ×"
+                        }
                     }
                 }
             }
         }
     }
+    }
+}
+
+fn render_metric_selection_popout(
+    frontier_slug: &Slug,
+    scoreboard_metric_keys: &[fidget_spinner_store_sqlite::MetricKeySummary],
+    other_metric_keys: &[fidget_spinner_store_sqlite::MetricKeySummary],
+    selected_metrics: &[fidget_spinner_store_sqlite::MetricKeySummary],
+    dimension_filters: &BTreeMap<String, String>,
+    log_y: bool,
+    can_use_log_y: bool,
+) -> Markup {
+    let label = metric_popout_label(selected_metrics, log_y);
+    let selected_family = selected_metrics
+        .first()
+        .map(|metric| MetricUnitFamily::from_unit(&metric.unit));
+    html! {
+    details.control-popout {
+        summary.control-popout-toggle { (label) }
+        div.control-popout-panel.metric-popout-panel {
+            h3 { "Metrics" }
+            p.muted {
+                "Overlay identical units, or mix time-based metrics into the primary metric’s unit."
+            }
+            form.metric-picker-form method="get" action=(frontier_href(frontier_slug)) {
+                input type="hidden" name="tab" value="metrics";
+                (render_dimension_filter_hidden_inputs(dimension_filters))
+                div.metric-picker-groups {
+                    @if !scoreboard_metric_keys.is_empty() {
+                        section.metric-picker-group {
+                            h4 { "Scoreboard" }
+                            div.metric-picker-list {
+                                @for metric in scoreboard_metric_keys {
+                                    (render_metric_picker_option(
+                                        frontier_slug,
+                                        metric,
+                                        selected_metrics,
+                                        selected_family.as_ref(),
+                                        dimension_filters,
+                                        log_y,
+                                    ))
+                                }
+                            }
+                        }
+                    }
+                    @if !other_metric_keys.is_empty() {
+                        section.metric-picker-group {
+                            h4 { "Other" }
+                            div.metric-picker-list {
+                                @for metric in other_metric_keys {
+                                    (render_metric_picker_option(
+                                        frontier_slug,
+                                        metric,
+                                        selected_metrics,
+                                        selected_family.as_ref(),
+                                        dimension_filters,
+                                        log_y,
+                                    ))
+                                }
+                            }
+                        }
+                    }
+                }
+                div.metric-picker-options {
+                    label.metric-checkbox-row {
+                        input type="checkbox" name="log_y" value="1" checked[log_y];
+                        span.metric-checkbox-copy {
+                            span.metric-checkbox-title { "Log Y" }
+                            @if can_use_log_y {
+                                span.metric-checkbox-meta { "positive-only filtered values" }
+                            } @else {
+                                span.metric-checkbox-meta { "falls back to linear with zero or negative values" }
+                            }
+                        }
+                    }
+                }
+                div.filter-actions {
+                    button.filter-apply type="submit" { "Apply" }
+                }
+            }
+        }
+    }
+    }
+}
+
+fn render_metric_picker_option(
+    frontier_slug: &Slug,
+    metric: &fidget_spinner_store_sqlite::MetricKeySummary,
+    selected_metrics: &[fidget_spinner_store_sqlite::MetricKeySummary],
+    selected_family: Option<&MetricUnitFamily>,
+    dimension_filters: &BTreeMap<String, String>,
+    log_y: bool,
+) -> Markup {
+    let selected = selected_metrics
+        .iter()
+        .any(|selected_metric| selected_metric.key == metric.key);
+    let compatible = selected_family.is_none_or(|family| family.supports(&metric.unit));
+    if compatible || selected {
+        html! {
+            label class={(if selected {
+                "metric-checkbox-row selected"
+            } else {
+                "metric-checkbox-row"
+            })} {
+                input type="checkbox" name="metric" value=(metric.key.as_str()) checked[selected];
+                span.metric-checkbox-copy {
+                    span.metric-checkbox-title { (&metric.key) }
+                    span.metric-checkbox-meta {
+                        (metric.objective.as_str()) " · "
+                        (metric.unit.as_str())
+                    }
+                }
+            }
+        }
+    } else {
+        let replacement = std::slice::from_ref(metric);
+        let href = frontier_tab_href_with_query(
+            frontier_slug,
+            FrontierTab::Metrics,
+            replacement,
+            log_y,
+            dimension_filters,
+        );
+        html! {
+            a.metric-checkbox-row.incompatible href=(href) {
+                span.metric-checkbox-copy {
+                    span.metric-checkbox-title { (&metric.key) }
+                    span.metric-checkbox-meta {
+                        (metric.objective.as_str()) " · "
+                        (metric.unit.as_str()) " · switch"
+                    }
+                }
+            }
+        }
     }
 }
 
 fn render_metric_chart_svg(
-    metric: &fidget_spinner_store_sqlite::MetricKeySummary,
-    points: &[&fidget_spinner_store_sqlite::FrontierMetricPoint],
+    axis: &MetricChartAxis,
+    series: &[&FilteredMetricSeries<'_>],
+    log_y: bool,
 ) -> String {
     let mut svg = String::new();
     {
-        let root = SVGBackend::with_string(&mut svg, (960, 360)).into_drawing_area();
+        let root = SVGBackend::with_string(&mut svg, (1100, 420)).into_drawing_area();
         if root.fill(&RGBColor(255, 250, 242)).is_err() {
             return chart_error_markup("chart fill failed");
         }
-        let values = points.iter().map(|point| point.value).collect::<Vec<_>>();
-        let (mut min_value, mut max_value) = values
+        let chart_series = match build_metric_chart_series(axis, series) {
+            Some(series) if !series.is_empty() => series,
+            _ => return chart_error_markup("no plottable metric points"),
+        };
+        let values = chart_series
             .iter()
-            .copied()
-            .fold((f64::INFINITY, f64::NEG_INFINITY), |(min, max), value| {
-                (min.min(value), max.max(value))
-            });
-        if !min_value.is_finite() || !max_value.is_finite() {
+            .flat_map(|series| series.points.iter().map(|(_, value, _)| *value))
+            .collect::<Vec<_>>();
+        let Some((min_value, max_value)) = metric_chart_y_range(&values, log_y) else {
             return chart_error_markup("metric values are non-finite");
-        }
-        if (max_value - min_value).abs() < f64::EPSILON {
-            let pad = if max_value.abs() < 1.0 {
-                1.0
-            } else {
-                max_value.abs() * 0.05
-            };
-            min_value -= pad;
-            max_value += pad;
-        } else {
-            let pad = (max_value - min_value) * 0.08;
-            min_value -= pad;
-            max_value += pad;
-        }
-        let x_end = i32::try_from(points.len().saturating_sub(1))
+        };
+        let x_end = chart_series
+            .iter()
+            .flat_map(|series| series.points.iter().map(|(x, _, _)| *x))
+            .max()
             .unwrap_or(0)
             .max(1);
-        let mut chart = match ChartBuilder::on(&root)
-            .margin(18)
-            .x_label_area_size(32)
-            .y_label_area_size(72)
-            .caption(
-                format!("{} over closed experiments", metric.key),
-                ("Iosevka Web", 18).into_font().color(&BLACK),
-            )
-            .build_cartesian_2d(0_i32..x_end, min_value..max_value)
-        {
-            Ok(chart) => chart,
-            Err(error) => return chart_error_markup(&format!("chart build failed: {error:?}")),
-        };
-        if chart
-            .configure_mesh()
-            .light_line_style(RGBColor(223, 209, 189).mix(0.6))
-            .bold_line_style(RGBColor(207, 190, 168).mix(0.8))
-            .axis_style(RGBColor(103, 86, 63))
-            .label_style(("Iosevka Web", 12).into_font().color(&RGBColor(79, 71, 58)))
-            .x_desc("close order")
-            .y_desc(metric.unit.as_str())
-            .x_label_formatter(&|value| format!("{}", value + 1))
-            .draw()
-            .is_err()
-        {
-            return chart_error_markup("mesh draw failed");
+
+        macro_rules! draw_chart {
+            ($chart:expr) => {{
+                let chart = &mut $chart;
+                if chart
+                    .configure_mesh()
+                    .light_line_style(RGBColor(223, 209, 189).mix(0.6))
+                    .bold_line_style(RGBColor(207, 190, 168).mix(0.8))
+                    .axis_style(RGBColor(103, 86, 63))
+                    .label_style(("Iosevka Web", 12).into_font().color(&RGBColor(79, 71, 58)))
+                    .x_desc("close order")
+                    .y_desc(axis.unit.as_str())
+                    .x_label_formatter(&|value| format!("{}", value + 1))
+                    .draw()
+                    .is_err()
+                {
+                    return chart_error_markup("mesh draw failed");
+                }
+
+                for series in &chart_series {
+                    let line_points = series
+                        .points
+                        .iter()
+                        .map(|(x, value, _)| (*x, *value))
+                        .collect::<Vec<_>>();
+                    if chart
+                        .draw_series(LineSeries::new(line_points, &series.color))
+                        .map(|series_plot| {
+                            series_plot.label(series.label.clone()).legend(|(x, y)| {
+                                PathElement::new(vec![(x, y), (x + 18, y)], series.color)
+                            })
+                        })
+                        .is_err()
+                    {
+                        return chart_error_markup("line draw failed");
+                    }
+
+                    let accepted_points = series
+                        .points
+                        .iter()
+                        .filter(|(_, _, verdict)| *verdict != FrontierVerdict::Rejected)
+                        .map(|(x, value, _)| {
+                            Circle::new((*x, *value), 4, ShapeStyle::from(&series.color).filled())
+                        });
+                    if chart.draw_series(accepted_points).is_err() {
+                        return chart_error_markup("accepted marker draw failed");
+                    }
+
+                    let rejected_points = series
+                        .points
+                        .iter()
+                        .filter(|(_, _, verdict)| *verdict == FrontierVerdict::Rejected)
+                        .map(|(x, value, _)| {
+                            Cross::new(
+                                (*x, *value),
+                                6,
+                                ShapeStyle::from(&series.color).stroke_width(2),
+                            )
+                        });
+                    if chart.draw_series(rejected_points).is_err() {
+                        return chart_error_markup("rejected marker draw failed");
+                    }
+                }
+
+                if chart
+                    .configure_series_labels()
+                    .position(SeriesLabelPosition::UpperLeft)
+                    .background_style(RGBColor(255, 250, 242).mix(0.92))
+                    .border_style(RGBColor(207, 190, 168))
+                    .label_font(("Iosevka Web", 11).into_font().color(&BLACK))
+                    .draw()
+                    .is_err()
+                {
+                    return chart_error_markup("legend draw failed");
+                }
+            }};
         }
 
-        let line_points = points
-            .iter()
-            .enumerate()
-            .filter_map(|(index, point)| i32::try_from(index).ok().map(|x| (x, point.value)))
-            .collect::<Vec<_>>();
-        if chart
-            .draw_series(LineSeries::new(line_points, &RGBColor(103, 86, 63)))
-            .map(|series| {
-                series.label("series").legend(|(x, y)| {
-                    PathElement::new(vec![(x, y), (x + 18, y)], RGBColor(103, 86, 63))
-                })
-            })
-            .is_err()
-        {
-            return chart_error_markup("line draw failed");
+        if log_y {
+            let mut chart = match ChartBuilder::on(&root)
+                .margin(18)
+                .x_label_area_size(32)
+                .y_label_area_size(84)
+                .build_cartesian_2d(0_i32..x_end, (min_value..max_value).log_scale())
+            {
+                Ok(chart) => chart,
+                Err(error) => return chart_error_markup(&format!("chart build failed: {error:?}")),
+            };
+            draw_chart!(chart);
+        } else {
+            let mut chart = match ChartBuilder::on(&root)
+                .margin(18)
+                .x_label_area_size(32)
+                .y_label_area_size(84)
+                .build_cartesian_2d(0_i32..x_end, min_value..max_value)
+            {
+                Ok(chart) => chart,
+                Err(error) => return chart_error_markup(&format!("chart build failed: {error:?}")),
+            };
+            draw_chart!(chart);
         }
 
-        let plotted_points = points
-            .iter()
-            .enumerate()
-            .filter_map(|(index, point)| i32::try_from(index).ok().map(|x| (x, *point)))
-            .collect::<Vec<_>>();
-        if chart
-            .draw_series(plotted_points.iter().map(|(x, point)| {
-                Circle::new(
-                    (*x, point.value),
-                    4,
-                    ShapeStyle::from(&verdict_color(point.verdict)).filled(),
-                )
-            }))
-            .is_err()
-        {
-            return chart_error_markup("point draw failed");
-        }
-        if chart
-            .draw_series(plotted_points.iter().map(|(x, point)| {
-                Text::new(
-                    format!("{}", x + 1),
-                    (*x, point.value),
-                    ("Iosevka Web", 11)
-                        .into_font()
-                        .color(&verdict_color(point.verdict)),
-                )
-            }))
-            .is_err()
-        {
-            return chart_error_markup("label draw failed");
-        }
         if root.present().is_err() {
             return chart_error_markup("chart present failed");
         }
@@ -1123,15 +1369,6 @@ fn html_escape(raw: &str) -> String {
     raw.replace('&', "&amp;")
         .replace('<', "&lt;")
         .replace('>', "&gt;")
-}
-
-fn verdict_color(verdict: FrontierVerdict) -> RGBColor {
-    match verdict {
-        FrontierVerdict::Accepted => RGBColor(71, 102, 63),
-        FrontierVerdict::Kept => RGBColor(90, 105, 82),
-        FrontierVerdict::Parked => RGBColor(138, 98, 48),
-        FrontierVerdict::Rejected => RGBColor(138, 58, 52),
-    }
 }
 
 fn render_frontier_grid(frontiers: &[FrontierSummary], limit: Option<u32>) -> Markup {
@@ -1293,7 +1530,8 @@ fn render_frontier_active_sets(projection: &FrontierOpenProjection) -> Markup {
                                             a href=(frontier_tab_href(
                                                 &projection.frontier.slug,
                                                 FrontierTab::Metrics,
-                                                Some(metric.key.as_str()),
+                                                std::slice::from_ref(metric),
+                                                false,
                                             )) {
                                                 (metric.key)
                                             }
@@ -1330,7 +1568,8 @@ fn render_frontier_active_sets(projection: &FrontierOpenProjection) -> Markup {
                                             a href=(frontier_tab_href(
                                                 &projection.frontier.slug,
                                                 FrontierTab::Metrics,
-                                                Some(metric.key.as_str()),
+                                                std::slice::from_ref(metric),
+                                                false,
                                             )) {
                                                 (metric.key)
                                             }
@@ -2043,18 +2282,32 @@ fn decode_project_root(encoded: &str) -> Result<Utf8PathBuf, StoreError> {
     Ok(Utf8PathBuf::from(decoded.into_owned()))
 }
 
+fn decode_query_component(raw: &str) -> Result<String, StoreError> {
+    let plus_decoded = raw.replace('+', " ");
+    percent_decode_str(&plus_decoded)
+        .decode_utf8()
+        .map(|decoded| decoded.into_owned())
+        .map_err(|error| StoreError::InvalidInput(format!("invalid query string: {error}")))
+}
+
 fn frontier_href(slug: &Slug) -> String {
     format!("frontier/{}", encode_path_segment(slug.as_str()))
 }
 
-fn frontier_tab_href(slug: &Slug, tab: FrontierTab, metric: Option<&str>) -> String {
-    frontier_tab_href_with_filters(slug, tab, metric, &BTreeMap::new())
-}
-
-fn frontier_tab_href_with_filters(
+fn frontier_tab_href(
     slug: &Slug,
     tab: FrontierTab,
-    metric: Option<&str>,
+    selected_metrics: &[fidget_spinner_store_sqlite::MetricKeySummary],
+    log_y: bool,
+) -> String {
+    frontier_tab_href_with_query(slug, tab, selected_metrics, log_y, &BTreeMap::new())
+}
+
+fn frontier_tab_href_with_query(
+    slug: &Slug,
+    tab: FrontierTab,
+    selected_metrics: &[fidget_spinner_store_sqlite::MetricKeySummary],
+    log_y: bool,
     dimension_filters: &BTreeMap<String, String>,
 ) -> String {
     let mut href = format!(
@@ -2062,9 +2315,12 @@ fn frontier_tab_href_with_filters(
         encode_path_segment(slug.as_str()),
         tab.as_query()
     );
-    if let Some(metric) = metric.filter(|metric| !metric.trim().is_empty()) {
+    for metric in selected_metrics {
         href.push_str("&metric=");
-        href.push_str(&encode_path_segment(metric));
+        href.push_str(&encode_path_segment(metric.key.as_str()));
+    }
+    if log_y {
+        href.push_str("&log_y=1");
     }
     for (key, value) in dimension_filters {
         href.push_str("&dim.");
@@ -2182,16 +2438,91 @@ fn limit_items<T>(items: &[T], limit: Option<u32>) -> &[T] {
     &items[..end]
 }
 
-fn collect_dimension_facets(
-    points: &[fidget_spinner_store_sqlite::FrontierMetricPoint],
-) -> Vec<DimensionFacet> {
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum MetricUnitFamily {
+    Time,
+    Exact(MetricUnit),
+}
+
+impl MetricUnitFamily {
+    fn from_unit(unit: &MetricUnit) -> Self {
+        match unit.known_kind() {
+            Some(
+                KnownMetricUnit::Nanoseconds
+                | KnownMetricUnit::Microseconds
+                | KnownMetricUnit::Milliseconds
+                | KnownMetricUnit::Seconds,
+            ) => Self::Time,
+            _ => Self::Exact(unit.clone()),
+        }
+    }
+
+    fn supports(&self, unit: &MetricUnit) -> bool {
+        match self {
+            Self::Time => matches!(
+                unit.known_kind(),
+                Some(
+                    KnownMetricUnit::Nanoseconds
+                        | KnownMetricUnit::Microseconds
+                        | KnownMetricUnit::Milliseconds
+                        | KnownMetricUnit::Seconds
+                )
+            ),
+            Self::Exact(expected) => expected == unit,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct MetricChartAxis {
+    unit: MetricUnit,
+    family: MetricUnitFamily,
+}
+
+impl MetricChartAxis {
+    fn from_metric(metric: &fidget_spinner_store_sqlite::MetricKeySummary) -> Self {
+        Self {
+            family: MetricUnitFamily::from_unit(&metric.unit),
+            unit: metric.unit.clone(),
+        }
+    }
+
+    fn normalize_value(&self, value: f64, unit: &MetricUnit) -> Option<f64> {
+        match &self.family {
+            MetricUnitFamily::Time => convert_time_metric_value(value, unit, &self.unit),
+            MetricUnitFamily::Exact(expected) if expected == unit => Some(value),
+            MetricUnitFamily::Exact(_) => None,
+        }
+    }
+}
+
+fn convert_time_metric_value(value: f64, from: &MetricUnit, to: &MetricUnit) -> Option<f64> {
+    let nanoseconds = match from.known_kind()? {
+        KnownMetricUnit::Nanoseconds => value,
+        KnownMetricUnit::Microseconds => value * 1_000.0,
+        KnownMetricUnit::Milliseconds => value * 1_000_000.0,
+        KnownMetricUnit::Seconds => value * 1_000_000_000.0,
+        _ => return None,
+    };
+    Some(match to.known_kind()? {
+        KnownMetricUnit::Nanoseconds => nanoseconds,
+        KnownMetricUnit::Microseconds => nanoseconds / 1_000.0,
+        KnownMetricUnit::Milliseconds => nanoseconds / 1_000_000.0,
+        KnownMetricUnit::Seconds => nanoseconds / 1_000_000_000.0,
+        _ => return None,
+    })
+}
+
+fn collect_dimension_facets_from_series(series: &[FrontierMetricSeries]) -> Vec<DimensionFacet> {
     let mut values_by_key: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
-    for point in points {
-        for (key, value) in &point.dimensions {
-            let _ = values_by_key
-                .entry(key.to_string())
-                .or_default()
-                .insert(render_dimension_value(value));
+    for series in series {
+        for point in &series.points {
+            for (key, value) in &point.dimensions {
+                let _ = values_by_key
+                    .entry(key.to_string())
+                    .or_default()
+                    .insert(render_dimension_value(value));
+            }
         }
     }
     values_by_key
@@ -2199,6 +2530,19 @@ fn collect_dimension_facets(
         .map(|(key, values)| DimensionFacet {
             key,
             values: values.into_iter().collect(),
+        })
+        .collect()
+}
+
+fn filter_metric_series<'a>(
+    series: &'a [FrontierMetricSeries],
+    dimension_filters: &BTreeMap<String, String>,
+) -> Vec<FilteredMetricSeries<'a>> {
+    series
+        .iter()
+        .map(|series| FilteredMetricSeries {
+            metric: &series.metric,
+            points: filter_metric_points(&series.points, dimension_filters),
         })
         .collect()
 }
@@ -2224,6 +2568,32 @@ fn point_matches_dimension_filters(
     })
 }
 
+fn render_metric_selection_hidden_inputs(
+    selected_metrics: &[fidget_spinner_store_sqlite::MetricKeySummary],
+) -> Markup {
+    html! {
+        @for metric in selected_metrics {
+            input type="hidden" name="metric" value=(metric.key.as_str());
+        }
+    }
+}
+
+fn render_dimension_filter_hidden_inputs(filters: &BTreeMap<String, String>) -> Markup {
+    html! {
+        @for (key, value) in filters {
+            input type="hidden" name=(format!("dim.{key}")) value=(value);
+        }
+    }
+}
+
+fn render_log_hidden_input(log_y: bool) -> Markup {
+    html! {
+        @if log_y {
+            input type="hidden" name="log_y" value="1";
+        }
+    }
+}
+
 fn remove_dimension_filter(
     filters: &BTreeMap<String, String>,
     key: &str,
@@ -2235,6 +2605,135 @@ fn remove_dimension_filter(
 
 fn metric_filter_anchor_id(key: &str) -> String {
     format!("filter-{}", sanitize_fragment_id(key))
+}
+
+fn metric_popout_label(
+    selected_metrics: &[fidget_spinner_store_sqlite::MetricKeySummary],
+    log_y: bool,
+) -> String {
+    let mut label = if selected_metrics.len() <= 1 {
+        "Metric".to_owned()
+    } else {
+        format!("Metrics {}", selected_metrics.len())
+    };
+    if log_y {
+        label.push_str(" · log");
+    }
+    label
+}
+
+fn metric_chart_supports_log_y(
+    axis: &MetricChartAxis,
+    series: &[&FilteredMetricSeries<'_>],
+) -> bool {
+    let mut saw_value = false;
+    for series in series {
+        for point in &series.points {
+            let Some(value) = axis.normalize_value(point.value, &series.metric.unit) else {
+                return false;
+            };
+            saw_value = true;
+            if value <= 0.0 || !value.is_finite() {
+                return false;
+            }
+        }
+    }
+    saw_value
+}
+
+fn build_metric_chart_series(
+    axis: &MetricChartAxis,
+    series: &[&FilteredMetricSeries<'_>],
+) -> Option<Vec<MetricChartSeries>> {
+    let mut experiment_positions = BTreeMap::new();
+    let mut ordered_experiments = series
+        .iter()
+        .flat_map(|series| {
+            series
+                .points
+                .iter()
+                .map(|point| (point.closed_at, point.experiment.slug.as_str().to_owned()))
+        })
+        .collect::<Vec<_>>();
+    ordered_experiments.sort_by_key(|(closed_at, _)| *closed_at);
+    for (_, slug) in ordered_experiments {
+        let next_index = i32::try_from(experiment_positions.len()).ok()?;
+        let _ = experiment_positions.entry(slug).or_insert(next_index);
+    }
+
+    series
+        .iter()
+        .enumerate()
+        .map(|(index, series)| {
+            let points = series
+                .points
+                .iter()
+                .filter_map(|point| {
+                    let x = *experiment_positions.get(point.experiment.slug.as_str())?;
+                    let value = axis.normalize_value(point.value, &series.metric.unit)?;
+                    Some((x, value, point.verdict))
+                })
+                .collect::<Vec<_>>();
+            (!points.is_empty()).then(|| MetricChartSeries {
+                color: metric_chart_color(index),
+                label: series.metric.key.to_string(),
+                points,
+            })
+        })
+        .collect()
+}
+
+fn metric_chart_y_range(values: &[f64], log_y: bool) -> Option<(f64, f64)> {
+    let (mut min_value, mut max_value) = values
+        .iter()
+        .copied()
+        .fold((f64::INFINITY, f64::NEG_INFINITY), |(min, max), value| {
+            (min.min(value), max.max(value))
+        });
+    if !min_value.is_finite() || !max_value.is_finite() {
+        return None;
+    }
+    if log_y {
+        if min_value <= 0.0 {
+            return None;
+        }
+        if (max_value - min_value).abs() < f64::EPSILON {
+            min_value *= 0.8;
+            max_value *= 1.2;
+        } else {
+            min_value /= 1.18;
+            max_value *= 1.18;
+        }
+        return Some((min_value, max_value));
+    }
+    if (max_value - min_value).abs() < f64::EPSILON {
+        let pad = if max_value.abs() < 1.0 {
+            1.0
+        } else {
+            max_value.abs() * 0.05
+        };
+        min_value -= pad;
+        max_value += pad;
+    } else {
+        let pad = (max_value - min_value) * 0.08;
+        min_value -= pad;
+        max_value += pad;
+    }
+    Some((min_value, max_value))
+}
+
+fn metric_chart_color(index: usize) -> RGBColor {
+    const COLORS: [RGBColor; 8] = [
+        RGBColor(78, 121, 167),
+        RGBColor(242, 142, 43),
+        RGBColor(225, 87, 89),
+        RGBColor(118, 183, 178),
+        RGBColor(89, 161, 79),
+        RGBColor(237, 201, 72),
+        RGBColor(176, 122, 161),
+        RGBColor(255, 157, 167),
+    ];
+    COLORS[index % COLORS.len()]
 }
 
 fn sanitize_fragment_id(raw: &str) -> String {
@@ -2700,32 +3199,129 @@ fn styles() -> &'static str {
         line-height: 1.2;
         white-space: nowrap;
     }
-    .metric-picker {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 10px;
+    .plot-card-header {
+        align-items: center;
     }
-    .metric-choice {
-        display: grid;
-        gap: 4px;
-        padding: 10px 12px;
+    .plot-toolbar {
+        display: flex;
+        gap: 8px;
+        align-items: center;
+        flex-wrap: wrap;
+        margin-left: auto;
+    }
+    .control-popout {
+        position: relative;
+    }
+    .control-popout[open] {
+        z-index: 4;
+    }
+    .control-popout-toggle {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        padding: 7px 11px;
         border: 1px solid var(--border);
         background: var(--panel-2);
-        min-width: 0;
+        color: var(--text);
+        font-size: 12px;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        cursor: pointer;
+        list-style: none;
+        user-select: none;
     }
-    .metric-choice.active {
+    .control-popout-toggle::-webkit-details-marker {
+        display: none;
+    }
+    .control-popout[open] > .control-popout-toggle {
         border-color: var(--border-strong);
         background: var(--accent-soft);
     }
-    .metric-choice-key {
-        color: var(--text);
-        font-weight: 700;
+    .control-popout-panel {
+        position: absolute;
+        top: calc(100% + 8px);
+        right: 0;
+        width: min(520px, calc(100vw - 80px));
+        max-height: min(72vh, 640px);
+        overflow-y: auto;
+        border: 1px solid var(--border-strong);
+        background: var(--panel);
+        padding: 14px 16px;
+        display: grid;
+        gap: 12px;
+        box-shadow: 0 16px 36px rgba(83, 61, 33, 0.16);
     }
-    .metric-choice-meta {
+    .metric-popout-panel {
+        width: min(560px, calc(100vw - 80px));
+    }
+    .metric-picker-form,
+    .metric-picker-groups {
+        display: grid;
+        gap: 12px;
+    }
+    .metric-picker-group {
+        display: grid;
+        gap: 8px;
+    }
+    .metric-picker-group h4 {
+        margin: 0;
         color: var(--muted);
         font-size: 12px;
         text-transform: uppercase;
         letter-spacing: 0.05em;
+    }
+    .metric-picker-list {
+        display: grid;
+        gap: 6px;
+    }
+    .metric-checkbox-row {
+        display: grid;
+        grid-template-columns: auto minmax(0, 1fr);
+        gap: 10px;
+        align-items: start;
+        padding: 8px 10px;
+        border: 1px solid var(--border);
+        background: var(--panel-2);
+        min-width: 0;
+    }
+    .metric-checkbox-row:hover {
+        text-decoration: none;
+        border-color: var(--border-strong);
+    }
+    .metric-checkbox-row.selected {
+        border-color: var(--border-strong);
+        background: var(--accent-soft);
+    }
+    .metric-checkbox-row.incompatible {
+        opacity: 0.55;
+    }
+    .metric-checkbox-row input {
+        margin: 2px 0 0;
+    }
+    .metric-checkbox-copy {
+        display: grid;
+        gap: 3px;
+        min-width: 0;
+    }
+    .metric-checkbox-title {
+        color: var(--text);
+        font-weight: 700;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+    .metric-checkbox-meta {
+        color: var(--muted);
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        overflow-wrap: anywhere;
+    }
+    .metric-picker-options {
+        display: grid;
+        gap: 8px;
+        padding-top: 4px;
+        border-top: 1px solid var(--border);
     }
     .filter-form {
         display: grid;
@@ -2892,13 +3488,29 @@ fn styles() -> &'static str {
     .chart-frame {
         border: 1px solid var(--border);
         background: var(--panel-2);
-        padding: 10px;
-        overflow-x: auto;
+        padding: 8px;
+        overflow: hidden;
     }
     .chart-frame svg {
         display: block;
         width: 100%;
         height: auto;
+    }
+    .chart-table-details {
+        border-top: 1px solid var(--border);
+        padding-top: 10px;
+    }
+    .chart-table-details > summary {
+        color: var(--muted);
+        font-size: 12px;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        cursor: pointer;
+        user-select: none;
+    }
+    .chart-table-details[open] > summary {
+        margin-bottom: 10px;
+        color: var(--text);
     }
     .chart-error {
         color: var(--rejected);
@@ -2933,6 +3545,10 @@ fn styles() -> &'static str {
         .sidebar {
             position: static;
         }
+        .plot-toolbar {
+            width: 100%;
+            margin-left: 0;
+        }
     }
     @media (max-width: 720px) {
         .shell { padding: 12px; }
@@ -2940,6 +3556,21 @@ fn styles() -> &'static str {
         .subcard, .mini-card { padding: 12px; }
         .card-grid, .split, .kv-grid { grid-template-columns: 1fr; }
         .page-title { font-size: 18px; }
+        .control-popout {
+            width: 100%;
+        }
+        .control-popout-toggle {
+            width: 100%;
+            justify-content: center;
+        }
+        .control-popout-panel,
+        .metric-popout-panel {
+            position: static;
+            width: 100%;
+            max-height: none;
+            margin-top: 8px;
+            box-shadow: 0 1px 0 var(--shadow);
+        }
     }
     "#
 }
@@ -2947,9 +3578,23 @@ fn styles() -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::{
-        METRIC_TABLE_TITLE_MIN_BUDGET_CH, best_metric_table_title_split,
-        truncate_with_ascii_ellipsis, truncated_entry_count,
+        FrontierPageQuery, METRIC_TABLE_TITLE_MIN_BUDGET_CH, MetricChartAxis,
+        best_metric_table_title_split, resolve_selected_metric_keys, truncate_with_ascii_ellipsis,
+        truncated_entry_count,
     };
+    use fidget_spinner_core::{MetricUnit, MetricVisibility, NonEmptyText, OptimizationObjective};
+    use fidget_spinner_store_sqlite::MetricKeySummary;
+
+    fn test_metric(key: &str, unit: &str) -> MetricKeySummary {
+        MetricKeySummary {
+            key: NonEmptyText::new(key.to_owned()).expect("metric key"),
+            unit: MetricUnit::new(unit).expect("metric unit"),
+            objective: OptimizationObjective::Minimize,
+            visibility: MetricVisibility::Canonical,
+            description: None,
+            reference_count: 0,
+        }
+    }
 
     #[test]
     fn truncate_with_ascii_ellipsis_leaves_short_text_alone() {
@@ -3000,5 +3645,52 @@ mod tests {
             best_metric_table_title_split(&experiment_lengths, &hypothesis_lengths, 74);
         assert!(experiment_chars <= 45);
         assert!(hypothesis_chars >= 29);
+    }
+
+    #[test]
+    fn resolve_selected_metric_keys_drops_incompatible_follow_ons() {
+        let visible_metrics = vec![
+            test_metric("presolve_ms", "ms"),
+            test_metric("presolve_ms_gmean", "ms"),
+            test_metric("presolve_nz", "count"),
+        ];
+        let selected = resolve_selected_metric_keys(
+            &[
+                "presolve_ms".to_owned(),
+                "presolve_nz".to_owned(),
+                "presolve_ms_gmean".to_owned(),
+            ],
+            &visible_metrics,
+        );
+        assert_eq!(selected.len(), 2);
+        assert_eq!(selected[0].key.as_str(), "presolve_ms");
+        assert_eq!(selected[1].key.as_str(), "presolve_ms_gmean");
+    }
+
+    #[test]
+    fn metric_chart_axis_normalizes_time_units_into_primary_unit() {
+        let axis = MetricChartAxis::from_metric(&test_metric("presolve_ms", "ms"));
+        let seconds = MetricUnit::new("seconds").expect("seconds unit");
+        assert_eq!(axis.normalize_value(1.5, &seconds), Some(1500.0));
+    }
+
+    #[test]
+    fn frontier_page_query_accepts_legacy_single_metric_selector() {
+        let query = FrontierPageQuery::parse(Some("tab=metrics&metric=presolve_ms_gmean"))
+            .expect("query should parse");
+        assert_eq!(query.tab.as_deref(), Some("metrics"));
+        assert_eq!(query.metric, vec!["presolve_ms_gmean".to_owned()]);
+    }
+
+    #[test]
+    fn frontier_page_query_accepts_repeated_metric_selectors() {
+        let query =
+            FrontierPageQuery::parse(Some("metric=presolve_ms&metric=ingress_ms_gmean&log_y=1"))
+                .expect("query should parse");
+        assert_eq!(
+            query.metric,
+            vec!["presolve_ms".to_owned(), "ingress_ms_gmean".to_owned()]
+        );
+        assert!(query.log_y_requested());
     }
 }
