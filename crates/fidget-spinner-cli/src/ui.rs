@@ -897,6 +897,7 @@ fn render_metric_series_section(
         .iter()
         .filter(|series| !series.points.is_empty())
         .collect::<Vec<_>>();
+    let experiment_positions = collect_metric_experiment_positions(&plotted_series);
     let chart_axis = plotted_series
         .first()
         .map(|series| MetricChartAxis::from_metric(series.metric));
@@ -1008,9 +1009,14 @@ fn render_metric_series_section(
                                 }
                                 tbody {
                                     @for (index, point) in visible_points.iter().copied().enumerate() {
+                                        @let display_index = experiment_positions
+                                            .get(point.experiment.slug.as_str())
+                                            .copied()
+                                            .unwrap_or(index)
+                                            + 1;
                                         tr {
                                             td.metric-table-rank-cell {
-                                                span.metric-table-fixed-text { ((index + 1).to_string()) }
+                                                span.metric-table-fixed-text { (display_index.to_string()) }
                                             }
                                             td.metric-table-title-cell {
                                                 (render_metric_table_title_link(
@@ -2756,10 +2762,9 @@ fn metric_chart_supports_log_y(
     saw_value
 }
 
-fn build_metric_chart_series(
-    axis: &MetricChartAxis,
+fn collect_metric_experiment_positions(
     series: &[&FilteredMetricSeries<'_>],
-) -> Option<Vec<MetricChartSeries>> {
+) -> BTreeMap<String, usize> {
     let mut experiment_positions = BTreeMap::new();
     let mut ordered_experiments = series
         .iter()
@@ -2772,9 +2777,20 @@ fn build_metric_chart_series(
         .collect::<Vec<_>>();
     ordered_experiments.sort_by_key(|(closed_at, _)| *closed_at);
     for (_, slug) in ordered_experiments {
-        let next_index = i32::try_from(experiment_positions.len()).ok()?;
+        let next_index = experiment_positions.len();
         let _ = experiment_positions.entry(slug).or_insert(next_index);
     }
+    experiment_positions
+}
+
+fn build_metric_chart_series(
+    axis: &MetricChartAxis,
+    series: &[&FilteredMetricSeries<'_>],
+) -> Option<Vec<MetricChartSeries>> {
+    let experiment_positions = collect_metric_experiment_positions(series)
+        .into_iter()
+        .map(|(slug, index)| Some((slug, i32::try_from(index).ok()?)))
+        .collect::<Option<BTreeMap<_, _>>>()?;
 
     series
         .iter()
@@ -3734,11 +3750,22 @@ fn styles() -> &'static str {
 mod tests {
     use super::{
         FrontierPageQuery, METRIC_TABLE_TITLE_MIN_BUDGET_CH, MetricChartAxis,
-        best_metric_table_title_split, resolve_selected_metric_keys, truncate_with_ascii_ellipsis,
-        truncated_entry_count,
+        best_metric_table_title_split, render_metric_series_section, resolve_selected_metric_keys,
+        truncate_with_ascii_ellipsis, truncated_entry_count,
     };
-    use fidget_spinner_core::{MetricUnit, MetricVisibility, NonEmptyText, OptimizationObjective};
-    use fidget_spinner_store_sqlite::MetricKeySummary;
+    use std::collections::BTreeMap;
+
+    use fidget_spinner_core::{
+        ExperimentStatus, FrontierBrief, FrontierId, FrontierRecord, FrontierStatus,
+        FrontierVerdict, HypothesisId, MetricUnit, MetricVisibility, NonEmptyText,
+        OptimizationObjective, Slug,
+    };
+    use fidget_spinner_store_sqlite::{
+        ExperimentSummary, FrontierMetricPoint, FrontierMetricSeries, HypothesisSummary,
+        MetricKeySummary,
+    };
+    use time::OffsetDateTime;
+    use time::format_description::well_known::Rfc3339;
 
     fn test_metric(key: &str, unit: &str) -> MetricKeySummary {
         MetricKeySummary {
@@ -3748,6 +3775,82 @@ mod tests {
             visibility: MetricVisibility::Canonical,
             description: None,
             reference_count: 0,
+        }
+    }
+
+    fn test_timestamp(raw: &str) -> OffsetDateTime {
+        OffsetDateTime::parse(raw, &Rfc3339).expect("timestamp")
+    }
+
+    fn test_frontier() -> FrontierRecord {
+        let timestamp = test_timestamp("2026-04-11T00:00:00Z");
+        FrontierRecord {
+            id: FrontierId::fresh(),
+            slug: Slug::new("test-frontier").expect("frontier slug"),
+            label: NonEmptyText::new("Test frontier").expect("frontier label"),
+            objective: NonEmptyText::new("Test objective").expect("frontier objective"),
+            status: FrontierStatus::Exploring,
+            brief: FrontierBrief::default(),
+            revision: 1,
+            created_at: timestamp,
+            updated_at: timestamp,
+        }
+    }
+
+    fn test_hypothesis(frontier_id: FrontierId, slug: &str, title: &str) -> HypothesisSummary {
+        HypothesisSummary {
+            id: HypothesisId::fresh(),
+            slug: Slug::new(slug).expect("hypothesis slug"),
+            frontier_id,
+            archived: false,
+            title: NonEmptyText::new(title).expect("hypothesis title"),
+            summary: NonEmptyText::new(format!("{title} summary")).expect("hypothesis summary"),
+            tags: Vec::new(),
+            open_experiment_count: 0,
+            latest_verdict: None,
+            updated_at: test_timestamp("2026-04-11T00:00:00Z"),
+        }
+    }
+
+    fn test_experiment(
+        frontier_id: FrontierId,
+        hypothesis_id: HypothesisId,
+        slug: &str,
+        title: &str,
+        closed_at: OffsetDateTime,
+    ) -> ExperimentSummary {
+        ExperimentSummary {
+            id: fidget_spinner_core::ExperimentId::fresh(),
+            slug: Slug::new(slug).expect("experiment slug"),
+            frontier_id,
+            hypothesis_id,
+            archived: false,
+            title: NonEmptyText::new(title).expect("experiment title"),
+            summary: None,
+            tags: Vec::new(),
+            status: ExperimentStatus::Closed,
+            verdict: Some(FrontierVerdict::Accepted),
+            primary_metric: None,
+            updated_at: closed_at,
+            closed_at: Some(closed_at),
+        }
+    }
+
+    fn test_metric_point(
+        frontier_id: FrontierId,
+        hypothesis: &HypothesisSummary,
+        slug: &str,
+        title: &str,
+        value: f64,
+        closed_at: OffsetDateTime,
+    ) -> FrontierMetricPoint {
+        FrontierMetricPoint {
+            experiment: test_experiment(frontier_id, hypothesis.id, slug, title, closed_at),
+            hypothesis: hypothesis.clone(),
+            value,
+            verdict: FrontierVerdict::Accepted,
+            closed_at,
+            dimensions: BTreeMap::new(),
         }
     }
 
@@ -3849,5 +3952,90 @@ mod tests {
         );
         assert_eq!(query.table_metric.as_deref(), Some("ingress_ms_gmean"));
         assert!(query.log_y_requested());
+    }
+
+    #[test]
+    fn metric_table_indices_follow_chart_close_order_with_gaps() {
+        let frontier = test_frontier();
+        let hypothesis_one = test_hypothesis(frontier.id, "hyp-one", "Hypothesis One");
+        let hypothesis_two = test_hypothesis(frontier.id, "hyp-two", "Hypothesis Two");
+        let metric_a = test_metric("presolve_ms", "ms");
+        let metric_b = test_metric("ingress_ms_gmean", "ms");
+        let series = vec![
+            FrontierMetricSeries {
+                frontier: frontier.clone(),
+                metric: metric_a.clone(),
+                points: vec![
+                    test_metric_point(
+                        frontier.id,
+                        &hypothesis_one,
+                        "exp-a",
+                        "Experiment A",
+                        10.0,
+                        test_timestamp("2026-04-11T01:00:00Z"),
+                    ),
+                    test_metric_point(
+                        frontier.id,
+                        &hypothesis_one,
+                        "exp-c",
+                        "Experiment C",
+                        30.0,
+                        test_timestamp("2026-04-11T03:00:00Z"),
+                    ),
+                ],
+            },
+            FrontierMetricSeries {
+                frontier: frontier.clone(),
+                metric: metric_b.clone(),
+                points: vec![
+                    test_metric_point(
+                        frontier.id,
+                        &hypothesis_one,
+                        "exp-a",
+                        "Experiment A",
+                        100.0,
+                        test_timestamp("2026-04-11T01:00:00Z"),
+                    ),
+                    test_metric_point(
+                        frontier.id,
+                        &hypothesis_two,
+                        "exp-b",
+                        "Experiment B",
+                        200.0,
+                        test_timestamp("2026-04-11T02:00:00Z"),
+                    ),
+                    test_metric_point(
+                        frontier.id,
+                        &hypothesis_one,
+                        "exp-c",
+                        "Experiment C",
+                        300.0,
+                        test_timestamp("2026-04-11T03:00:00Z"),
+                    ),
+                ],
+            },
+        ];
+        let selected_metrics = vec![metric_a.clone(), metric_b];
+        let markup = render_metric_series_section(
+            &frontier.slug,
+            &selected_metrics,
+            &[],
+            &selected_metrics,
+            &series,
+            &BTreeMap::new(),
+            false,
+            Some(metric_a.key.as_str()),
+            None,
+        )
+        .into_string();
+        let rank_cell_one = "<td class=\"metric-table-rank-cell\"><span class=\"metric-table-fixed-text\">1</span></td>";
+        let rank_cell_two = "<td class=\"metric-table-rank-cell\"><span class=\"metric-table-fixed-text\">2</span></td>";
+        let rank_cell_three = "<td class=\"metric-table-rank-cell\"><span class=\"metric-table-fixed-text\">3</span></td>";
+        assert!(markup.contains(rank_cell_one));
+        assert!(markup.contains(rank_cell_three));
+        assert!(!markup.contains(rank_cell_two));
+        assert!(markup.contains(
+            "table_metric=presolve%5Fms\" class=\"metric-table-tab active\">presolve_ms</a>"
+        ));
     }
 }
