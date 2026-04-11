@@ -1035,7 +1035,7 @@ fn render_metric_filter_popout(
             @if facets.is_empty() {
                 p.muted { "No dimension filters for the current selection." }
             } @else {
-                form.filter-form method="get" action=(frontier_href(frontier_slug)) {
+                form.filter-form.auto-submit-form method="get" action=(frontier_href(frontier_slug)) {
                     input type="hidden" name="tab" value="metrics";
                     (render_metric_selection_hidden_inputs(selected_metrics))
                     (render_log_hidden_input(log_y))
@@ -1043,7 +1043,7 @@ fn render_metric_filter_popout(
                         @for facet in facets {
                             label.filter-control id=(metric_filter_anchor_id(&facet.key)) {
                                 span.filter-label { (&facet.key) }
-                                select.filter-select name=(format!("dim.{}", facet.key)) {
+                                select.filter-select data-auto-submit="true" name=(format!("dim.{}", facet.key)) {
                                     option
                                         value=""
                                         selected[active_filters.get(&facet.key).is_none()]
@@ -1059,7 +1059,6 @@ fn render_metric_filter_popout(
                         }
                     }
                     div.filter-actions {
-                        button.filter-apply type="submit" { "Apply" }
                         a.clear-filter href=(clear_href) { "Clear all" }
                     }
                 }
@@ -1104,64 +1103,64 @@ fn render_metric_selection_popout(
     details.control-popout {
         summary.control-popout-toggle { (label) }
         div.control-popout-panel.metric-popout-panel {
-            h3 { "Metrics" }
-            p.muted {
-                "Overlay identical units, or mix time-based metrics into the primary metric’s unit."
-            }
-            form.metric-picker-form method="get" action=(frontier_href(frontier_slug)) {
+            form.metric-picker-form.auto-submit-form method="get" action=(frontier_href(frontier_slug)) {
                 input type="hidden" name="tab" value="metrics";
                 (render_dimension_filter_hidden_inputs(dimension_filters))
-                div.metric-picker-groups {
-                    @if !scoreboard_metric_keys.is_empty() {
-                        section.metric-picker-group {
-                            h4 { "Scoreboard" }
-                            div.metric-picker-list {
-                                @for metric in scoreboard_metric_keys {
-                                    (render_metric_picker_option(
-                                        frontier_slug,
-                                        metric,
-                                        selected_metrics,
-                                        selected_family.as_ref(),
-                                        dimension_filters,
-                                        log_y,
-                                    ))
+                div.metric-popout-layout {
+                    div.metric-picker-main {
+                        @if !scoreboard_metric_keys.is_empty() {
+                            section.metric-picker-group {
+                                h4 { "Scoreboard" }
+                                div.metric-picker-list {
+                                    @for metric in scoreboard_metric_keys {
+                                        (render_metric_picker_option(
+                                            frontier_slug,
+                                            metric,
+                                            selected_metrics,
+                                            selected_family.as_ref(),
+                                            dimension_filters,
+                                            log_y,
+                                        ))
+                                    }
+                                }
+                            }
+                        }
+                        @if !other_metric_keys.is_empty() {
+                            details.metric-picker-disclosure {
+                                summary.metric-picker-disclosure-toggle {
+                                    "Other Metrics " (other_metric_keys.len())
+                                }
+                                div.metric-picker-list {
+                                    @for metric in other_metric_keys {
+                                        (render_metric_picker_option(
+                                            frontier_slug,
+                                            metric,
+                                            selected_metrics,
+                                            selected_family.as_ref(),
+                                            dimension_filters,
+                                            log_y,
+                                        ))
+                                    }
                                 }
                             }
                         }
                     }
-                    @if !other_metric_keys.is_empty() {
-                        section.metric-picker-group {
-                            h4 { "Other" }
-                            div.metric-picker-list {
-                                @for metric in other_metric_keys {
-                                    (render_metric_picker_option(
-                                        frontier_slug,
-                                        metric,
-                                        selected_metrics,
-                                        selected_family.as_ref(),
-                                        dimension_filters,
-                                        log_y,
-                                    ))
-                                }
+                    aside.metric-picker-sidecar {
+                        h4 { "Options" }
+                        label.metric-checkbox-row.metric-checkbox-row-compact title=(if can_use_log_y {
+                            "Positive-only filtered values. Toggles logarithmic scaling on the y axis."
+                        } else {
+                            "Logarithmic y scale is only available when all plotted values are strictly positive."
+                        }) {
+                            input type="checkbox" data-auto-submit="true" name="log_y" value="1" checked[log_y];
+                            span.metric-checkbox-copy {
+                                span.metric-checkbox-title { "Log Y" }
                             }
                         }
-                    }
-                }
-                div.metric-picker-options {
-                    label.metric-checkbox-row {
-                        input type="checkbox" name="log_y" value="1" checked[log_y];
-                        span.metric-checkbox-copy {
-                            span.metric-checkbox-title { "Log Y" }
-                            @if can_use_log_y {
-                                span.metric-checkbox-meta { "positive-only filtered values" }
-                            } @else {
-                                span.metric-checkbox-meta { "falls back to linear with zero or negative values" }
-                            }
+                        p.muted.compact-note {
+                            "Time metrics can overlay each other; everything else must match unit exactly."
                         }
                     }
-                }
-                div.filter-actions {
-                    button.filter-apply type="submit" { "Apply" }
                 }
             }
         }
@@ -1181,20 +1180,17 @@ fn render_metric_picker_option(
         .iter()
         .any(|selected_metric| selected_metric.key == metric.key);
     let compatible = selected_family.is_none_or(|family| family.supports(&metric.unit));
+    let detail = format!("{} · {}", metric.objective.as_str(), metric.unit.as_str());
     if compatible || selected {
         html! {
             label class={(if selected {
                 "metric-checkbox-row selected"
             } else {
                 "metric-checkbox-row"
-            })} {
-                input type="checkbox" name="metric" value=(metric.key.as_str()) checked[selected];
+            })} title=(detail) {
+                input type="checkbox" data-auto-submit="true" name="metric" value=(metric.key.as_str()) checked[selected];
                 span.metric-checkbox-copy {
                     span.metric-checkbox-title { (&metric.key) }
-                    span.metric-checkbox-meta {
-                        (metric.objective.as_str()) " · "
-                        (metric.unit.as_str())
-                    }
                 }
             }
         }
@@ -1208,13 +1204,9 @@ fn render_metric_picker_option(
             dimension_filters,
         );
         html! {
-            a.metric-checkbox-row.incompatible href=(href) {
+            a.metric-checkbox-row.incompatible href=(href) title=(format!("{detail} · click to switch metric family")) {
                 span.metric-checkbox-copy {
                     span.metric-checkbox-title { (&metric.key) }
-                    span.metric-checkbox-meta {
-                        (metric.objective.as_str()) " · "
-                        (metric.unit.as_str()) " · switch"
-                    }
                 }
             }
         }
@@ -2122,6 +2114,7 @@ fn render_shell(
                         (content)
                     }
                 }
+                script { (PreEscaped(interaction_script())) }
             }
         }
     }
@@ -2132,6 +2125,46 @@ fn render_favicon_links() -> Markup {
         link rel="icon" type="image/svg+xml" href="/favicon.svg";
         link rel="shortcut icon" href="/favicon.svg";
     }
+}
+
+fn interaction_script() -> &'static str {
+    r#"
+document.addEventListener("click", (event) => {
+    const target = event.target;
+    if (!(target instanceof Element)) {
+        return;
+    }
+    for (const popout of document.querySelectorAll("details.control-popout[open]")) {
+        if (!popout.contains(target)) {
+            popout.removeAttribute("open");
+        }
+    }
+});
+
+document.addEventListener("keydown", (event) => {
+    if (event.key !== "Escape") {
+        return;
+    }
+    for (const popout of document.querySelectorAll("details.control-popout[open]")) {
+        popout.removeAttribute("open");
+    }
+});
+
+document.addEventListener("change", (event) => {
+    const target = event.target;
+    if (!(target instanceof HTMLElement)) {
+        return;
+    }
+    if (!target.hasAttribute("data-auto-submit")) {
+        return;
+    }
+    const form = target.closest("form");
+    if (!(form instanceof HTMLFormElement)) {
+        return;
+    }
+    form.requestSubmit();
+});
+"#
 }
 
 fn render_metric_table_title_link(title: &NonEmptyText, href: &str, max_chars: usize) -> Markup {
@@ -3252,23 +3285,47 @@ fn styles() -> &'static str {
         box-shadow: 0 16px 36px rgba(83, 61, 33, 0.16);
     }
     .metric-popout-panel {
-        width: min(560px, calc(100vw - 80px));
+        width: min(760px, calc(100vw - 80px));
     }
     .metric-picker-form,
     .metric-picker-groups {
         display: grid;
         gap: 12px;
     }
+    .metric-popout-layout {
+        display: grid;
+        gap: 14px;
+        grid-template-columns: minmax(0, 1.6fr) minmax(180px, 0.8fr);
+        align-items: start;
+    }
+    .metric-picker-main,
+    .metric-picker-sidecar {
+        display: grid;
+        gap: 10px;
+    }
     .metric-picker-group {
         display: grid;
         gap: 8px;
     }
-    .metric-picker-group h4 {
+    .metric-picker-group h4,
+    .metric-picker-sidecar h4 {
         margin: 0;
         color: var(--muted);
         font-size: 12px;
         text-transform: uppercase;
         letter-spacing: 0.05em;
+    }
+    .metric-picker-disclosure {
+        display: grid;
+        gap: 8px;
+    }
+    .metric-picker-disclosure-toggle {
+        color: var(--muted);
+        font-size: 12px;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        cursor: pointer;
+        user-select: none;
     }
     .metric-picker-list {
         display: grid;
@@ -3277,9 +3334,9 @@ fn styles() -> &'static str {
     .metric-checkbox-row {
         display: grid;
         grid-template-columns: auto minmax(0, 1fr);
-        gap: 10px;
-        align-items: start;
-        padding: 8px 10px;
+        gap: 8px;
+        align-items: center;
+        padding: 6px 9px;
         border: 1px solid var(--border);
         background: var(--panel-2);
         min-width: 0;
@@ -3296,11 +3353,10 @@ fn styles() -> &'static str {
         opacity: 0.55;
     }
     .metric-checkbox-row input {
-        margin: 2px 0 0;
+        margin: 0;
     }
     .metric-checkbox-copy {
-        display: grid;
-        gap: 3px;
+        display: block;
         min-width: 0;
     }
     .metric-checkbox-title {
@@ -3310,18 +3366,12 @@ fn styles() -> &'static str {
         text-overflow: ellipsis;
         white-space: nowrap;
     }
-    .metric-checkbox-meta {
-        color: var(--muted);
-        font-size: 11px;
-        text-transform: uppercase;
-        letter-spacing: 0.05em;
-        overflow-wrap: anywhere;
+    .metric-checkbox-row-compact {
+        align-self: start;
     }
-    .metric-picker-options {
-        display: grid;
-        gap: 8px;
-        padding-top: 4px;
-        border-top: 1px solid var(--border);
+    .compact-note {
+        margin: 0;
+        font-size: 12px;
     }
     .filter-form {
         display: grid;
@@ -3570,6 +3620,9 @@ fn styles() -> &'static str {
             max-height: none;
             margin-top: 8px;
             box-shadow: 0 1px 0 var(--shadow);
+        }
+        .metric-popout-layout {
+            grid-template-columns: 1fr;
         }
     }
     "#
