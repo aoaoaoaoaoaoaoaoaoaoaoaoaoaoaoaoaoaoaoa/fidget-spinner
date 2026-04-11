@@ -33,7 +33,14 @@ use time::macros::format_description;
 use crate::open_store;
 
 const FAVICON_SVG: &str = include_str!("../../../assets/ui/favicon.svg");
-const METRIC_TABLE_LABEL_MAX_CHARS: usize = 40;
+const METRIC_TABLE_TOTAL_BUDGET_CH: usize = 120;
+const METRIC_TABLE_RANK_BUDGET_CH: usize = 4;
+const METRIC_TABLE_CLOSED_BUDGET_CH: usize = 16;
+const METRIC_TABLE_VERDICT_MIN_BUDGET_CH: usize = 9;
+const METRIC_TABLE_VERDICT_MAX_BUDGET_CH: usize = 11;
+const METRIC_TABLE_VALUE_MIN_BUDGET_CH: usize = 12;
+const METRIC_TABLE_VALUE_MAX_BUDGET_CH: usize = 20;
+const METRIC_TABLE_TITLE_MIN_BUDGET_CH: usize = 14;
 
 #[derive(Clone)]
 struct NavigatorState {
@@ -849,8 +856,19 @@ fn render_metric_series_section(
                 p.muted {
                     "x = close order, y = metric value. Point color tracks verdict."
                 }
+                @let visible_points = limit_items(&filtered_points, limit);
+                @let table_layout =
+                    MetricTableLayout::for_points(visible_points, &series.metric.unit);
                 div.table-scroll {
                     table.metric-table {
+                        colgroup {
+                            col style=(table_layout.width_style(table_layout.rank_chars));
+                            col style=(table_layout.width_style(table_layout.experiment_chars));
+                            col style=(table_layout.width_style(table_layout.hypothesis_chars));
+                            col style=(table_layout.width_style(table_layout.closed_chars));
+                            col style=(table_layout.width_style(table_layout.verdict_chars));
+                            col style=(table_layout.width_style(table_layout.value_chars));
+                        }
                         thead {
                             tr {
                                 th { "#" }
@@ -862,28 +880,45 @@ fn render_metric_series_section(
                             }
                         }
                         tbody {
-                            @for (index, point) in limit_items(&filtered_points, limit).iter().copied().enumerate() {
+                            @for (index, point) in visible_points.iter().copied().enumerate() {
                                 tr {
-                                    td { ((index + 1).to_string()) }
-                                    td {
+                                    td.metric-table-rank-cell {
+                                        span.metric-table-fixed-text { ((index + 1).to_string()) }
+                                    }
+                                    td.metric-table-title-cell {
                                         (render_metric_table_title_link(
                                             &point.experiment.title,
                                             &experiment_href(&point.experiment.slug),
+                                            table_layout.experiment_chars,
                                         ))
                                     }
-                                    td {
+                                    td.metric-table-title-cell {
                                         (render_metric_table_title_link(
                                             &point.hypothesis.title,
                                             &hypothesis_href(&point.hypothesis.slug),
+                                            table_layout.hypothesis_chars,
                                         ))
                                     }
-                                    td.nowrap { (format_timestamp(point.closed_at)) }
-                                    td {
-                                        span class=(status_chip_classes(verdict_class(point.verdict))) {
+                                    td.metric-table-closed-cell.nowrap {
+                                        span.metric-table-fixed-text {
+                                            (format_timestamp(point.closed_at))
+                                        }
+                                    }
+                                    td.metric-table-verdict-cell {
+                                        span
+                                            class=(format!(
+                                                "{} metric-table-verdict-chip",
+                                                status_chip_classes(verdict_class(point.verdict)),
+                                            ))
+                                        {
                                             (point.verdict.as_str())
                                         }
                                     }
-                                    td.nowrap { (format_metric_value(point.value, &series.metric.unit)) }
+                                    td.metric-table-value-cell.nowrap {
+                                        span.metric-table-fixed-text {
+                                            (format_metric_value(point.value, &series.metric.unit))
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -1860,8 +1895,8 @@ fn render_favicon_links() -> Markup {
     }
 }
 
-fn render_metric_table_title_link(title: &NonEmptyText, href: &str) -> Markup {
-    let truncated = truncate_with_ascii_ellipsis(title.as_str(), METRIC_TABLE_LABEL_MAX_CHARS);
+fn render_metric_table_title_link(title: &NonEmptyText, href: &str, max_chars: usize) -> Markup {
+    let truncated = truncate_with_ascii_ellipsis(title.as_str(), max_chars);
     if truncated.was_truncated {
         html! {
             a href=(href) class="metric-table-link" title=(title.as_str()) {
@@ -2217,6 +2252,132 @@ fn sanitize_fragment_id(raw: &str) -> String {
 struct TruncatedText {
     display: String,
     was_truncated: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct MetricTableLayout {
+    rank_chars: usize,
+    experiment_chars: usize,
+    hypothesis_chars: usize,
+    closed_chars: usize,
+    verdict_chars: usize,
+    value_chars: usize,
+}
+
+impl MetricTableLayout {
+    fn for_points(
+        points: &[&fidget_spinner_store_sqlite::FrontierMetricPoint],
+        unit: &MetricUnit,
+    ) -> Self {
+        let rank_chars = METRIC_TABLE_RANK_BUDGET_CH;
+        let closed_chars = METRIC_TABLE_CLOSED_BUDGET_CH;
+        let verdict_chars = fit_metric_table_fixed_column(
+            "Verdict",
+            points
+                .iter()
+                .map(|point| point.verdict.as_str().chars().count()),
+            METRIC_TABLE_VERDICT_MIN_BUDGET_CH,
+            METRIC_TABLE_VERDICT_MAX_BUDGET_CH,
+        );
+        let value_chars = fit_metric_table_fixed_column(
+            "Value",
+            points
+                .iter()
+                .map(|point| format_metric_value(point.value, unit).chars().count()),
+            METRIC_TABLE_VALUE_MIN_BUDGET_CH,
+            METRIC_TABLE_VALUE_MAX_BUDGET_CH,
+        );
+        let title_budget = METRIC_TABLE_TOTAL_BUDGET_CH
+            .saturating_sub(rank_chars + closed_chars + verdict_chars + value_chars);
+        let experiment_lengths = points
+            .iter()
+            .map(|point| point.experiment.title.as_str().chars().count())
+            .collect::<Vec<_>>();
+        let hypothesis_lengths = points
+            .iter()
+            .map(|point| point.hypothesis.title.as_str().chars().count())
+            .collect::<Vec<_>>();
+        let (experiment_chars, hypothesis_chars) =
+            best_metric_table_title_split(&experiment_lengths, &hypothesis_lengths, title_budget);
+        Self {
+            rank_chars,
+            experiment_chars,
+            hypothesis_chars,
+            closed_chars,
+            verdict_chars,
+            value_chars,
+        }
+    }
+
+    fn width_style(self, chars: usize) -> String {
+        format!(
+            "width: {:.4}%;",
+            (chars as f64 * 100.0) / METRIC_TABLE_TOTAL_BUDGET_CH as f64
+        )
+    }
+}
+
+fn fit_metric_table_fixed_column(
+    header: &str,
+    observed_lengths: impl Iterator<Item = usize>,
+    min_chars: usize,
+    max_chars: usize,
+) -> usize {
+    let floor = min_chars.max(header.chars().count());
+    observed_lengths
+        .max()
+        .unwrap_or(floor)
+        .clamp(floor, max_chars)
+}
+
+fn best_metric_table_title_split(
+    experiment_lengths: &[usize],
+    hypothesis_lengths: &[usize],
+    total_budget: usize,
+) -> (usize, usize) {
+    if total_budget <= METRIC_TABLE_TITLE_MIN_BUDGET_CH * 2 {
+        let experiment_chars = total_budget / 2;
+        return (
+            experiment_chars,
+            total_budget.saturating_sub(experiment_chars),
+        );
+    }
+
+    let candidate_bounds =
+        METRIC_TABLE_TITLE_MIN_BUDGET_CH..=(total_budget - METRIC_TABLE_TITLE_MIN_BUDGET_CH);
+    candidate_bounds
+        .map(|experiment_chars| {
+            let hypothesis_chars = total_budget - experiment_chars;
+            let truncated_entries = truncated_entry_count(experiment_lengths, experiment_chars)
+                + truncated_entry_count(hypothesis_lengths, hypothesis_chars);
+            let overflow_chars = truncated_overflow_chars(experiment_lengths, experiment_chars)
+                + truncated_overflow_chars(hypothesis_lengths, hypothesis_chars);
+            let imbalance = experiment_chars.abs_diff(hypothesis_chars);
+            (
+                (truncated_entries, overflow_chars, imbalance),
+                (experiment_chars, hypothesis_chars),
+            )
+        })
+        .min_by_key(|(score, _)| *score)
+        .map(|(_, split)| split)
+        .unwrap_or_else(|| {
+            let experiment_chars = total_budget / 2;
+            (
+                experiment_chars,
+                total_budget.saturating_sub(experiment_chars),
+            )
+        })
+}
+
+fn truncated_entry_count(lengths: &[usize], budget: usize) -> usize {
+    lengths.iter().filter(|&&length| length > budget).count()
+}
+
+fn truncated_overflow_chars(lengths: &[usize], budget: usize) -> usize {
+    lengths
+        .iter()
+        .map(|&length| length.saturating_sub(budget))
+        .sum()
 }
 
 fn truncate_with_ascii_ellipsis(raw: &str, max_chars: usize) -> TruncatedText {
@@ -2661,14 +2822,16 @@ fn styles() -> &'static str {
     .status-neutral, .classless { color: #5f584d; border-color: var(--border-strong); background: var(--panel); }
     .status-archived { color: #7a756d; border-color: var(--border); background: var(--panel); }
     .metric-table {
-        width: max-content;
-        min-width: 100%;
+        width: 100%;
+        min-width: 0;
         border-collapse: collapse;
+        table-layout: fixed;
         font-size: 13px;
     }
     .table-scroll {
         width: 100%;
-        overflow-x: auto;
+        min-width: 0;
+        overflow-x: hidden;
     }
     .metric-table th,
     .metric-table td {
@@ -2677,6 +2840,8 @@ fn styles() -> &'static str {
         text-align: left;
         vertical-align: top;
         white-space: nowrap;
+        min-width: 0;
+        overflow: hidden;
         overflow-wrap: normal;
         word-break: normal;
     }
@@ -2688,12 +2853,23 @@ fn styles() -> &'static str {
         font-size: 12px;
     }
     .metric-table-link {
-        display: inline-block;
-        max-width: 40ch;
+        display: block;
+        width: 100%;
         overflow: hidden;
         text-overflow: ellipsis;
         white-space: nowrap;
         vertical-align: top;
+    }
+    .metric-table-fixed-text {
+        display: block;
+        width: 100%;
+        overflow: hidden;
+        text-overflow: ellipsis;
+    }
+    .metric-table-verdict-chip {
+        max-width: 100%;
+        overflow: hidden;
+        text-overflow: ellipsis;
     }
     .related-block {
         display: grid;
@@ -2756,7 +2932,10 @@ fn styles() -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use super::truncate_with_ascii_ellipsis;
+    use super::{
+        METRIC_TABLE_TITLE_MIN_BUDGET_CH, best_metric_table_title_split,
+        truncate_with_ascii_ellipsis, truncated_entry_count,
+    };
 
     #[test]
     fn truncate_with_ascii_ellipsis_leaves_short_text_alone() {
@@ -2775,5 +2954,27 @@ mod tests {
         );
         assert!(truncated.was_truncated);
         assert_eq!(truncated.display.chars().count(), 40);
+    }
+
+    #[test]
+    fn best_metric_table_title_split_favors_the_more_constrained_column() {
+        let experiment_lengths = [58, 56, 54, 52];
+        let hypothesis_lengths = [18, 16, 14, 12];
+        let (experiment_chars, hypothesis_chars) =
+            best_metric_table_title_split(&experiment_lengths, &hypothesis_lengths, 52);
+        assert!(experiment_chars > hypothesis_chars);
+        assert!(hypothesis_chars >= METRIC_TABLE_TITLE_MIN_BUDGET_CH);
+        let truncated_entries = truncated_entry_count(&experiment_lengths, experiment_chars)
+            + truncated_entry_count(&hypothesis_lengths, hypothesis_chars);
+        assert_eq!(truncated_entries, 4);
+    }
+
+    #[test]
+    fn best_metric_table_title_split_preserves_minimum_widths() {
+        let (experiment_chars, hypothesis_chars) =
+            best_metric_table_title_split(&[120, 100], &[120, 100], 24);
+        assert_eq!(experiment_chars + hypothesis_chars, 24);
+        assert_eq!(experiment_chars, 12);
+        assert_eq!(hypothesis_chars, 12);
     }
 }
