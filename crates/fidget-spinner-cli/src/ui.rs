@@ -5,6 +5,7 @@ use std::net::SocketAddr;
 use axum::Router;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
+use axum::http::header::CONTENT_TYPE;
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::get;
 use camino::Utf8PathBuf;
@@ -30,6 +31,8 @@ use time::format_description::well_known::Rfc3339;
 use time::macros::format_description;
 
 use crate::open_store;
+
+const FAVICON_SVG: &str = include_str!("../../../assets/ui/favicon.svg");
 
 #[derive(Clone)]
 struct NavigatorState {
@@ -156,6 +159,8 @@ pub(crate) fn serve(
     runtime.block_on(async move {
         let state = NavigatorState { scope, limit };
         let app = Router::new()
+            .route("/favicon.svg", get(favicon_svg))
+            .route("/favicon.ico", get(favicon_svg))
             .route("/", get(root_page))
             .route("/project/{project}", get(project_home))
             .route("/project/{project}/", get(project_home))
@@ -184,6 +189,13 @@ pub(crate) fn serve(
             .await
             .map_err(|error| StoreError::Io(io::Error::other(error.to_string())))
     })
+}
+
+async fn favicon_svg() -> impl IntoResponse {
+    (
+        [(CONTENT_TYPE, "image/svg+xml; charset=utf-8")],
+        FAVICON_SVG,
+    )
 }
 
 async fn root_page(State(state): State<NavigatorState>) -> Response {
@@ -296,6 +308,7 @@ fn render_project_index(state: NavigatorState) -> Result<Markup, StoreError> {
             head {
                 meta charset="utf-8";
                 meta name="viewport" content="width=device-width, initial-scale=1";
+                (render_favicon_links())
                 title { "Fidget Spinner navigator" }
                 style { (PreEscaped(styles())) }
             }
@@ -1800,6 +1813,7 @@ fn render_shell(
             head {
                 meta charset="utf-8";
                 meta name="viewport" content="width=device-width, initial-scale=1";
+                (render_favicon_links())
                 base href=(&shell.base_href);
                 title { (title) }
                 style { (PreEscaped(styles())) }
@@ -1833,6 +1847,13 @@ fn render_shell(
                 }
             }
         }
+    }
+}
+
+fn render_favicon_links() -> Markup {
+    html! {
+        link rel="icon" type="image/svg+xml" href="/favicon.svg";
+        link rel="shortcut icon" href="/favicon.svg";
     }
 }
 
