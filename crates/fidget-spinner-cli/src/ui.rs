@@ -90,6 +90,7 @@ enum FrontierTab {
 #[derive(Clone, Debug, Default)]
 struct FrontierPageQuery {
     metric: Vec<String>,
+    table_metric: Option<String>,
     tab: Option<String>,
     extra: BTreeMap<String, String>,
 }
@@ -152,6 +153,12 @@ impl FrontierPageQuery {
                     let trimmed = value.trim();
                     if !trimmed.is_empty() {
                         query.metric.push(trimmed.to_owned());
+                    }
+                }
+                "table_metric" => {
+                    let trimmed = value.trim();
+                    if !trimmed.is_empty() {
+                        query.table_metric = Some(trimmed.to_owned());
                     }
                 }
                 "tab" => {
@@ -480,6 +487,7 @@ fn render_frontier_detail(
             ),
             query.log_y_requested(),
             &query.dimension_filters(),
+            query.table_metric.as_deref(),
         )),
         content,
     ))
@@ -699,6 +707,7 @@ fn render_frontier_tab_content(
                     &series,
                     &dimension_filters,
                     query.log_y_requested(),
+                    query.table_metric.as_deref(),
                     limit,
                 ))
             })
@@ -712,6 +721,7 @@ fn render_frontier_tab_bar(
     selected_metrics: &[fidget_spinner_store_sqlite::MetricKeySummary],
     log_y: bool,
     dimension_filters: &BTreeMap<String, String>,
+    table_metric: Option<&str>,
 ) -> Markup {
     const TABS: [FrontierTab; 4] = [
         FrontierTab::Brief,
@@ -728,6 +738,7 @@ fn render_frontier_tab_bar(
                     selected_metrics,
                     log_y,
                     dimension_filters,
+                    table_metric,
                 );
                 a
                     href=(href)
@@ -877,6 +888,7 @@ fn render_metric_series_section(
     series: &[FrontierMetricSeries],
     dimension_filters: &BTreeMap<String, String>,
     log_y: bool,
+    requested_table_metric: Option<&str>,
     limit: Option<u32>,
 ) -> Markup {
     let facets = collect_dimension_facets_from_series(series);
@@ -885,7 +897,6 @@ fn render_metric_series_section(
         .iter()
         .filter(|series| !series.points.is_empty())
         .collect::<Vec<_>>();
-    let table_series = plotted_series.first().copied();
     let chart_axis = plotted_series
         .first()
         .map(|series| MetricChartAxis::from_metric(series.metric));
@@ -895,6 +906,13 @@ fn render_metric_series_section(
     let effective_log_y = log_y && can_use_log_y;
     let no_metric_history =
         selected_metrics.is_empty() || series.iter().all(|series| series.points.is_empty());
+    let table_series = filtered_series
+        .iter()
+        .find(|series| {
+            requested_table_metric.is_some_and(|requested| series.metric.key.as_str() == requested)
+        })
+        .or_else(|| filtered_series.first());
+    let active_table_metric = table_series.map(|series| series.metric.key.as_str());
     html! {
     section.card {
         div.card-header.plot-card-header {
@@ -906,6 +924,7 @@ fn render_metric_series_section(
                     &facets,
                     dimension_filters,
                     log_y,
+                    active_table_metric,
                 ))
                 (render_metric_selection_popout(
                     frontier_slug,
@@ -915,6 +934,7 @@ fn render_metric_series_section(
                     dimension_filters,
                     log_y,
                     can_use_log_y,
+                    active_table_metric,
                 ))
             }
         }
@@ -929,71 +949,102 @@ fn render_metric_series_section(
                 (PreEscaped(render_metric_chart_svg(axis, &plotted_series, effective_log_y)))
             }
             @if let Some(table_series) = table_series {
-                details.chart-table-details {
-                    summary {
-                        "Experiments · " (&table_series.metric.key) " · " (table_series.points.len())
-                    }
-                    @let visible_points = limit_items(&table_series.points, limit);
-                    @let table_layout =
-                        MetricTableLayout::for_points(visible_points, &table_series.metric.unit);
-                    div.table-scroll {
-                        table.metric-table {
-                            colgroup {
-                                col style=(table_layout.width_style(table_layout.rank_chars));
-                                col style=(table_layout.width_style(table_layout.experiment_chars));
-                                col style=(table_layout.width_style(table_layout.hypothesis_chars));
-                                col style=(table_layout.width_style(table_layout.closed_chars));
-                                col style=(table_layout.width_style(table_layout.verdict_chars));
-                                col style=(table_layout.width_style(table_layout.value_chars));
-                            }
-                            thead {
-                                tr {
-                                    th { "#" }
-                                    th { "Experiment" }
-                                    th { "Hypothesis" }
-                                    th { "Closed" }
-                                    th { "Verdict" }
-                                    th { "Value" }
+                section.subcard.metric-table-section {
+                    div.metric-table-header {
+                        h3 { "Experiments" }
+                        @if filtered_series.len() > 1 {
+                            nav.metric-table-tabs aria-label="Experiment table metric" {
+                                @for metric_series in &filtered_series {
+                                    @let href = frontier_tab_href_with_query(
+                                        frontier_slug,
+                                        FrontierTab::Metrics,
+                                        selected_metrics,
+                                        log_y,
+                                        dimension_filters,
+                                        Some(metric_series.metric.key.as_str()),
+                                    );
+                                    a
+                                        href=(href)
+                                        class={(if metric_series.metric.key == table_series.metric.key {
+                                            "metric-table-tab active"
+                                        } else {
+                                            "metric-table-tab"
+                                        })}
+                                    {
+                                        (&metric_series.metric.key)
+                                    }
                                 }
                             }
-                            tbody {
-                                @for (index, point) in visible_points.iter().copied().enumerate() {
+                        }
+                    }
+                    p.muted.metric-table-caption {
+                        (&table_series.metric.key) " · " (table_series.points.len()) " rows"
+                    }
+                    @if table_series.points.is_empty() {
+                        p.muted { "No closed experiments match the current filters for this metric." }
+                    } @else {
+                        @let visible_points = limit_items(&table_series.points, limit);
+                        @let table_layout =
+                            MetricTableLayout::for_points(visible_points, &table_series.metric.unit);
+                        div.table-scroll {
+                            table.metric-table {
+                                colgroup {
+                                    col style=(table_layout.width_style(table_layout.rank_chars));
+                                    col style=(table_layout.width_style(table_layout.experiment_chars));
+                                    col style=(table_layout.width_style(table_layout.hypothesis_chars));
+                                    col style=(table_layout.width_style(table_layout.closed_chars));
+                                    col style=(table_layout.width_style(table_layout.verdict_chars));
+                                    col style=(table_layout.width_style(table_layout.value_chars));
+                                }
+                                thead {
                                     tr {
-                                        td.metric-table-rank-cell {
-                                            span.metric-table-fixed-text { ((index + 1).to_string()) }
-                                        }
-                                        td.metric-table-title-cell {
-                                            (render_metric_table_title_link(
-                                                &point.experiment.title,
-                                                &experiment_href(&point.experiment.slug),
-                                                table_layout.experiment_chars,
-                                            ))
-                                        }
-                                        td.metric-table-title-cell {
-                                            (render_metric_table_title_link(
-                                                &point.hypothesis.title,
-                                                &hypothesis_href(&point.hypothesis.slug),
-                                                table_layout.hypothesis_chars,
-                                            ))
-                                        }
-                                        td.metric-table-closed-cell.nowrap {
-                                            span.metric-table-fixed-text {
-                                                (format_timestamp(point.closed_at))
+                                        th { "#" }
+                                        th { "Experiment" }
+                                        th { "Hypothesis" }
+                                        th { "Closed" }
+                                        th { "Verdict" }
+                                        th { "Value" }
+                                    }
+                                }
+                                tbody {
+                                    @for (index, point) in visible_points.iter().copied().enumerate() {
+                                        tr {
+                                            td.metric-table-rank-cell {
+                                                span.metric-table-fixed-text { ((index + 1).to_string()) }
                                             }
-                                        }
-                                        td.metric-table-verdict-cell {
-                                            span
-                                                class=(format!(
-                                                    "{} metric-table-verdict-chip",
-                                                    status_chip_classes(verdict_class(point.verdict)),
+                                            td.metric-table-title-cell {
+                                                (render_metric_table_title_link(
+                                                    &point.experiment.title,
+                                                    &experiment_href(&point.experiment.slug),
+                                                    table_layout.experiment_chars,
                                                 ))
-                                            {
-                                                (point.verdict.as_str())
                                             }
-                                        }
-                                        td.metric-table-value-cell.nowrap {
-                                            span.metric-table-fixed-text {
-                                                (format_metric_value(point.value, &table_series.metric.unit))
+                                            td.metric-table-title-cell {
+                                                (render_metric_table_title_link(
+                                                    &point.hypothesis.title,
+                                                    &hypothesis_href(&point.hypothesis.slug),
+                                                    table_layout.hypothesis_chars,
+                                                ))
+                                            }
+                                            td.metric-table-closed-cell.nowrap {
+                                                span.metric-table-fixed-text {
+                                                    (format_timestamp(point.closed_at))
+                                                }
+                                            }
+                                            td.metric-table-verdict-cell {
+                                                span
+                                                    class=(format!(
+                                                        "{} metric-table-verdict-chip",
+                                                        status_chip_classes(verdict_class(point.verdict)),
+                                                    ))
+                                                {
+                                                    (point.verdict.as_str())
+                                                }
+                                            }
+                                            td.metric-table-value-cell.nowrap {
+                                                span.metric-table-fixed-text {
+                                                    (format_metric_value(point.value, &table_series.metric.unit))
+                                                }
                                             }
                                         }
                                     }
@@ -1014,6 +1065,7 @@ fn render_metric_filter_popout(
     facets: &[DimensionFacet],
     active_filters: &BTreeMap<String, String>,
     log_y: bool,
+    table_metric: Option<&str>,
 ) -> Markup {
     let clear_href = frontier_tab_href_with_query(
         frontier_slug,
@@ -1021,6 +1073,7 @@ fn render_metric_filter_popout(
         selected_metrics,
         log_y,
         &BTreeMap::new(),
+        table_metric,
     );
     let label = if active_filters.is_empty() {
         "Filters".to_owned()
@@ -1039,6 +1092,7 @@ fn render_metric_filter_popout(
                     input type="hidden" name="tab" value="metrics";
                     (render_metric_selection_hidden_inputs(selected_metrics))
                     (render_log_hidden_input(log_y))
+                    (render_table_metric_hidden_input(table_metric))
                     div.filter-form-grid {
                         @for facet in facets {
                             label.filter-control id=(metric_filter_anchor_id(&facet.key)) {
@@ -1074,6 +1128,7 @@ fn render_metric_filter_popout(
                             selected_metrics,
                             log_y,
                             &remove_dimension_filter(active_filters, key),
+                            table_metric,
                         );
                         a.metric-filter-chip.active href=(href) {
                             (key) "=" (value) " ×"
@@ -1094,6 +1149,7 @@ fn render_metric_selection_popout(
     dimension_filters: &BTreeMap<String, String>,
     log_y: bool,
     can_use_log_y: bool,
+    table_metric: Option<&str>,
 ) -> Markup {
     let label = metric_popout_label(selected_metrics, log_y);
     let selected_family = selected_metrics
@@ -1106,6 +1162,7 @@ fn render_metric_selection_popout(
             form.metric-picker-form.auto-submit-form method="get" action=(frontier_href(frontier_slug)) {
                 input type="hidden" name="tab" value="metrics";
                 (render_dimension_filter_hidden_inputs(dimension_filters))
+                (render_table_metric_hidden_input(table_metric))
                 div.metric-popout-layout {
                     div.metric-picker-main {
                         @if !scoreboard_metric_keys.is_empty() {
@@ -1202,6 +1259,7 @@ fn render_metric_picker_option(
             replacement,
             log_y,
             dimension_filters,
+            Some(metric.key.as_str()),
         );
         html! {
             a.metric-checkbox-row.incompatible href=(href) title=(format!("{detail} · click to switch metric family")) {
@@ -1524,6 +1582,7 @@ fn render_frontier_active_sets(projection: &FrontierOpenProjection) -> Markup {
                                                 FrontierTab::Metrics,
                                                 std::slice::from_ref(metric),
                                                 false,
+                                                Some(metric.key.as_str()),
                                             )) {
                                                 (metric.key)
                                             }
@@ -1562,6 +1621,7 @@ fn render_frontier_active_sets(projection: &FrontierOpenProjection) -> Markup {
                                                 FrontierTab::Metrics,
                                                 std::slice::from_ref(metric),
                                                 false,
+                                                Some(metric.key.as_str()),
                                             )) {
                                                 (metric.key)
                                             }
@@ -2332,8 +2392,16 @@ fn frontier_tab_href(
     tab: FrontierTab,
     selected_metrics: &[fidget_spinner_store_sqlite::MetricKeySummary],
     log_y: bool,
+    table_metric: Option<&str>,
 ) -> String {
-    frontier_tab_href_with_query(slug, tab, selected_metrics, log_y, &BTreeMap::new())
+    frontier_tab_href_with_query(
+        slug,
+        tab,
+        selected_metrics,
+        log_y,
+        &BTreeMap::new(),
+        table_metric,
+    )
 }
 
 fn frontier_tab_href_with_query(
@@ -2342,6 +2410,7 @@ fn frontier_tab_href_with_query(
     selected_metrics: &[fidget_spinner_store_sqlite::MetricKeySummary],
     log_y: bool,
     dimension_filters: &BTreeMap<String, String>,
+    table_metric: Option<&str>,
 ) -> String {
     let mut href = format!(
         "frontier/{}?tab={}",
@@ -2354,6 +2423,11 @@ fn frontier_tab_href_with_query(
     }
     if log_y {
         href.push_str("&log_y=1");
+    }
+    if let Some(table_metric) = table_metric.filter(|table_metric| !table_metric.trim().is_empty())
+    {
+        href.push_str("&table_metric=");
+        href.push_str(&encode_path_segment(table_metric));
     }
     for (key, value) in dimension_filters {
         href.push_str("&dim.");
@@ -2623,6 +2697,14 @@ fn render_log_hidden_input(log_y: bool) -> Markup {
     html! {
         @if log_y {
             input type="hidden" name="log_y" value="1";
+        }
+    }
+}
+
+fn render_table_metric_hidden_input(table_metric: Option<&str>) -> Markup {
+    html! {
+        @if let Some(table_metric) = table_metric.filter(|table_metric| !table_metric.trim().is_empty()) {
+            input type="hidden" name="table_metric" value=(table_metric);
         }
     }
 }
@@ -3546,21 +3628,41 @@ fn styles() -> &'static str {
         width: 100%;
         height: auto;
     }
-    .chart-table-details {
-        border-top: 1px solid var(--border);
-        padding-top: 10px;
+    .metric-table-section {
+        margin-top: 2px;
     }
-    .chart-table-details > summary {
+    .metric-table-header {
+        display: flex;
+        gap: 10px;
+        align-items: center;
+        justify-content: space-between;
+        flex-wrap: wrap;
+    }
+    .metric-table-tabs {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+    }
+    .metric-table-tab {
+        display: inline-flex;
+        align-items: center;
+        padding: 6px 10px;
+        border: 1px solid var(--border);
+        background: var(--panel);
         color: var(--muted);
         font-size: 12px;
         text-transform: uppercase;
         letter-spacing: 0.05em;
-        cursor: pointer;
-        user-select: none;
     }
-    .chart-table-details[open] > summary {
-        margin-bottom: 10px;
+    .metric-table-tab.active {
         color: var(--text);
+        border-color: var(--border-strong);
+        background: var(--accent-soft);
+        font-weight: 700;
+    }
+    .metric-table-caption {
+        margin: 0;
+        font-size: 12px;
     }
     .chart-error {
         color: var(--rejected);
@@ -3737,13 +3839,15 @@ mod tests {
 
     #[test]
     fn frontier_page_query_accepts_repeated_metric_selectors() {
-        let query =
-            FrontierPageQuery::parse(Some("metric=presolve_ms&metric=ingress_ms_gmean&log_y=1"))
-                .expect("query should parse");
+        let query = FrontierPageQuery::parse(Some(
+            "metric=presolve_ms&metric=ingress_ms_gmean&table_metric=ingress_ms_gmean&log_y=1",
+        ))
+        .expect("query should parse");
         assert_eq!(
             query.metric,
             vec!["presolve_ms".to_owned(), "ingress_ms_gmean".to_owned()]
         );
+        assert_eq!(query.table_metric.as_deref(), Some("ingress_ms_gmean"));
         assert!(query.log_y_requested());
     }
 }
