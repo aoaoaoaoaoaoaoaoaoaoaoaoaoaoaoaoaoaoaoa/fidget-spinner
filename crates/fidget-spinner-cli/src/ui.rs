@@ -32,6 +32,7 @@ use time::macros::format_description;
 use crate::open_store;
 
 const FAVICON_SVG: &str = include_str!("../../../assets/ui/favicon.svg");
+const UI_NAV_STATE_KEY: &str = "fidget-spinner-ui-nav-state";
 const METRIC_TABLE_TOTAL_BUDGET_CH: usize = 120;
 const METRIC_TABLE_RANK_BUDGET_CH: usize = 4;
 const METRIC_TABLE_CLOSED_BUDGET_CH: usize = 16;
@@ -915,7 +916,7 @@ fn render_metric_series_section(
         .or_else(|| filtered_series.first());
     let active_table_metric = table_series.map(|series| series.metric.key.as_str());
     html! {
-    section.card {
+    section.card id="metric-plot-card" {
         div.card-header.plot-card-header {
             h2 { "Plot" }
             div.plot-toolbar {
@@ -966,6 +967,7 @@ fn render_metric_series_section(
                                     );
                                     a
                                         href=(href)
+                                        data-preserve-viewport="true"
                                         class={(if metric_series.metric.key == table_series.metric.key {
                                             "metric-table-tab active"
                                         } else {
@@ -1087,14 +1089,14 @@ fn render_metric_filter_popout(
         format!("Filters {}", active_filters.len())
     };
     html! {
-    details.control-popout {
+    details.control-popout id="metric-filter-popout" data-preserve-open="true" {
         summary.control-popout-toggle { (label) }
         div.control-popout-panel {
             h3 id="slice-filters" { "Slice Filters" }
             @if facets.is_empty() {
                 p.muted { "No dimension filters for the current selection." }
             } @else {
-                form.filter-form.auto-submit-form method="get" action=(frontier_href(frontier_slug)) {
+                form.filter-form.auto-submit-form method="get" action=(frontier_href(frontier_slug)) data-preserve-viewport="true" {
                     input type="hidden" name="tab" value="metrics";
                     (render_metric_selection_hidden_inputs(selected_metrics))
                     (render_log_hidden_input(log_y))
@@ -1119,7 +1121,7 @@ fn render_metric_filter_popout(
                         }
                     }
                     div.filter-actions {
-                        a.clear-filter href=(clear_href) { "Clear all" }
+                        a.clear-filter href=(clear_href) data-preserve-viewport="true" { "Clear all" }
                     }
                 }
             }
@@ -1136,7 +1138,7 @@ fn render_metric_filter_popout(
                             &remove_dimension_filter(active_filters, key),
                             table_metric,
                         );
-                        a.metric-filter-chip.active href=(href) {
+                        a.metric-filter-chip.active href=(href) data-preserve-viewport="true" {
                             (key) "=" (value) " ×"
                         }
                     }
@@ -1162,10 +1164,10 @@ fn render_metric_selection_popout(
         .first()
         .map(|metric| MetricUnitFamily::from_unit(&metric.unit));
     html! {
-    details.control-popout {
+    details.control-popout id="metric-selection-popout" data-preserve-open="true" {
         summary.control-popout-toggle { (label) }
         div.control-popout-panel.metric-popout-panel {
-            form.metric-picker-form.auto-submit-form method="get" action=(frontier_href(frontier_slug)) {
+            form.metric-picker-form.auto-submit-form method="get" action=(frontier_href(frontier_slug)) data-preserve-viewport="true" {
                 input type="hidden" name="tab" value="metrics";
                 (render_dimension_filter_hidden_inputs(dimension_filters))
                 (render_table_metric_hidden_input(table_metric))
@@ -1189,7 +1191,7 @@ fn render_metric_selection_popout(
                             }
                         }
                         @if !other_metric_keys.is_empty() {
-                            details.metric-picker-disclosure {
+                            details.metric-picker-disclosure id="metric-other-metrics-disclosure" data-preserve-open="true" {
                                 summary.metric-picker-disclosure-toggle {
                                     "Other Metrics " (other_metric_keys.len())
                                 }
@@ -1268,7 +1270,7 @@ fn render_metric_picker_option(
             Some(metric.key.as_str()),
         );
         html! {
-            a.metric-checkbox-row.incompatible href=(href) title=(format!("{detail} · click to switch metric family")) {
+            a.metric-checkbox-row.incompatible href=(href) data-preserve-viewport="true" title=(format!("{detail} · click to switch metric family")) {
                 span.metric-checkbox-copy {
                     span.metric-checkbox-title { (&metric.key) }
                 }
@@ -2193,44 +2195,136 @@ fn render_favicon_links() -> Markup {
     }
 }
 
-fn interaction_script() -> &'static str {
-    r#"
-document.addEventListener("click", (event) => {
-    const target = event.target;
-    if (!(target instanceof Element)) {
+fn interaction_script() -> String {
+    format!(
+        r#"
+const UI_NAV_STATE_KEY = "{UI_NAV_STATE_KEY}";
+
+function stashViewportState() {{
+    try {{
+        const openDetails = Array.from(
+            document.querySelectorAll("details[data-preserve-open][open][id]")
+        ).map((details) => details.id);
+        sessionStorage.setItem(
+            UI_NAV_STATE_KEY,
+            JSON.stringify({{
+                path: window.location.pathname,
+                scrollX: window.scrollX,
+                scrollY: window.scrollY,
+                openDetails,
+            }})
+        );
+    }} catch (_error) {{
+        // Best-effort only. If sessionStorage is unavailable we degrade to normal reload behavior.
+    }}
+}}
+
+function restoreViewportState() {{
+    let rawState = null;
+    try {{
+        rawState = sessionStorage.getItem(UI_NAV_STATE_KEY);
+    }} catch (_error) {{
         return;
-    }
-    for (const popout of document.querySelectorAll("details.control-popout[open]")) {
-        if (!popout.contains(target)) {
+    }}
+    if (!rawState) {{
+        return;
+    }}
+    try {{
+        sessionStorage.removeItem(UI_NAV_STATE_KEY);
+    }} catch (_error) {{
+        // Ignore removal failure and keep going with restoration.
+    }}
+
+    let state = null;
+    try {{
+        state = JSON.parse(rawState);
+    }} catch (_error) {{
+        return;
+    }}
+    if (!state || state.path !== window.location.pathname) {{
+        return;
+    }}
+    if (Array.isArray(state.openDetails)) {{
+        for (const detailsId of state.openDetails) {{
+            const details = document.getElementById(detailsId);
+            if (details instanceof HTMLDetailsElement) {{
+                details.open = true;
+            }}
+        }}
+    }}
+    const scrollX = Number.isFinite(state.scrollX) ? state.scrollX : 0;
+    const scrollY = Number.isFinite(state.scrollY) ? state.scrollY : 0;
+    requestAnimationFrame(() => {{
+        window.scrollTo(scrollX, scrollY);
+        requestAnimationFrame(() => {{
+            window.scrollTo(scrollX, scrollY);
+        }});
+    }});
+}}
+
+restoreViewportState();
+
+document.addEventListener("click", (event) => {{
+    const target = event.target;
+    if (!(target instanceof Element)) {{
+        return;
+    }}
+    const navigationLink = target.closest("a[data-preserve-viewport=\"true\"]");
+    if (
+        navigationLink instanceof HTMLAnchorElement
+        && event.button === 0
+        && !event.defaultPrevented
+        && !event.metaKey
+        && !event.ctrlKey
+        && !event.shiftKey
+        && !event.altKey
+        && (!navigationLink.target || navigationLink.target === "_self")
+    ) {{
+        stashViewportState();
+    }}
+    for (const popout of document.querySelectorAll("details.control-popout[open]")) {{
+        if (!popout.contains(target)) {{
             popout.removeAttribute("open");
-        }
-    }
-});
+        }}
+    }}
+}});
 
-document.addEventListener("keydown", (event) => {
-    if (event.key !== "Escape") {
-        return;
-    }
-    for (const popout of document.querySelectorAll("details.control-popout[open]")) {
-        popout.removeAttribute("open");
-    }
-});
-
-document.addEventListener("change", (event) => {
+document.addEventListener("submit", (event) => {{
     const target = event.target;
-    if (!(target instanceof HTMLElement)) {
+    if (!(target instanceof HTMLFormElement)) {{
         return;
-    }
-    if (!target.hasAttribute("data-auto-submit")) {
+    }}
+    if (!target.hasAttribute("data-preserve-viewport")) {{
         return;
-    }
+    }}
+    stashViewportState();
+}});
+
+document.addEventListener("keydown", (event) => {{
+    if (event.key !== "Escape") {{
+        return;
+    }}
+    for (const popout of document.querySelectorAll("details.control-popout[open]")) {{
+        popout.removeAttribute("open");
+    }}
+}});
+
+document.addEventListener("change", (event) => {{
+    const target = event.target;
+    if (!(target instanceof HTMLElement)) {{
+        return;
+    }}
+    if (!target.hasAttribute("data-auto-submit")) {{
+        return;
+    }}
     const form = target.closest("form");
-    if (!(form instanceof HTMLFormElement)) {
+    if (!(form instanceof HTMLFormElement)) {{
         return;
-    }
+    }}
     form.requestSubmit();
-});
+}});
 "#
+    )
 }
 
 fn render_metric_table_title_link(title: &NonEmptyText, href: &str, max_chars: usize) -> Markup {
@@ -4034,8 +4128,10 @@ mod tests {
         assert!(markup.contains(rank_cell_one));
         assert!(markup.contains(rank_cell_three));
         assert!(!markup.contains(rank_cell_two));
-        assert!(markup.contains(
-            "table_metric=presolve%5Fms\" class=\"metric-table-tab active\">presolve_ms</a>"
-        ));
+        assert!(markup.contains("id=\"metric-selection-popout\""));
+        assert!(markup.contains("id=\"metric-filter-popout\""));
+        assert!(markup.contains("data-preserve-viewport=\"true\""));
+        assert!(markup.contains("table_metric=presolve%5Fms"));
+        assert!(markup.contains("class=\"metric-table-tab active\""));
     }
 }
