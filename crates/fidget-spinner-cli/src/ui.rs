@@ -40,7 +40,7 @@ const METRIC_TABLE_VERDICT_MIN_BUDGET_CH: usize = 9;
 const METRIC_TABLE_VERDICT_MAX_BUDGET_CH: usize = 11;
 const METRIC_TABLE_VALUE_MIN_BUDGET_CH: usize = 12;
 const METRIC_TABLE_VALUE_MAX_BUDGET_CH: usize = 20;
-const METRIC_TABLE_TITLE_MIN_BUDGET_CH: usize = 14;
+const METRIC_TABLE_TITLE_MIN_BUDGET_CH: usize = 22;
 
 #[derive(Clone)]
 struct NavigatorState {
@@ -2348,13 +2348,27 @@ fn best_metric_table_title_split(
     candidate_bounds
         .map(|experiment_chars| {
             let hypothesis_chars = total_budget - experiment_chars;
-            let truncated_entries = truncated_entry_count(experiment_lengths, experiment_chars)
-                + truncated_entry_count(hypothesis_lengths, hypothesis_chars);
+            let experiment_truncated_entries =
+                truncated_entry_count(experiment_lengths, experiment_chars);
+            let hypothesis_truncated_entries =
+                truncated_entry_count(hypothesis_lengths, hypothesis_chars);
+            let total_truncated_entries =
+                experiment_truncated_entries + hypothesis_truncated_entries;
+            let max_column_truncated_entries =
+                experiment_truncated_entries.max(hypothesis_truncated_entries);
+            let truncation_gap =
+                experiment_truncated_entries.abs_diff(hypothesis_truncated_entries);
             let overflow_chars = truncated_overflow_chars(experiment_lengths, experiment_chars)
                 + truncated_overflow_chars(hypothesis_lengths, hypothesis_chars);
             let imbalance = experiment_chars.abs_diff(hypothesis_chars);
             (
-                (truncated_entries, overflow_chars, imbalance),
+                (
+                    total_truncated_entries,
+                    max_column_truncated_entries,
+                    truncation_gap,
+                    overflow_chars,
+                    imbalance,
+                ),
                 (experiment_chars, hypothesis_chars),
             )
         })
@@ -2976,5 +2990,15 @@ mod tests {
         assert_eq!(experiment_chars + hypothesis_chars, 24);
         assert_eq!(experiment_chars, 12);
         assert_eq!(hypothesis_chars, 12);
+    }
+
+    #[test]
+    fn best_metric_table_title_split_penalizes_one_sided_starvation() {
+        let experiment_lengths = [62, 60, 58, 56, 54, 52];
+        let hypothesis_lengths = [34, 33, 32, 31, 30, 29];
+        let (experiment_chars, hypothesis_chars) =
+            best_metric_table_title_split(&experiment_lengths, &hypothesis_lengths, 74);
+        assert!(experiment_chars <= 45);
+        assert!(hypothesis_chars >= 29);
     }
 }
