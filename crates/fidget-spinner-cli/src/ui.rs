@@ -3547,9 +3547,9 @@ fn styles() -> &'static str {
         width: 100%;
         max-width: none;
         margin: 0 auto;
-        padding: 24px 24px 40px;
+        padding: 18px 20px 34px;
         display: grid;
-        gap: 20px;
+        gap: 16px;
         grid-template-columns: 280px minmax(0, 1fr);
         align-items: start;
         min-width: 0;
@@ -3563,9 +3563,9 @@ fn styles() -> &'static str {
     .sidebar-panel {
         border: 1px solid var(--border);
         background: var(--panel);
-        padding: 18px 16px;
+        padding: 14px;
         display: grid;
-        gap: 16px;
+        gap: 12px;
         box-shadow: 0 1px 0 var(--shadow);
     }
     .sidebar-project {
@@ -3612,13 +3612,13 @@ fn styles() -> &'static str {
     }
     .main-column {
         display: grid;
-        gap: 18px;
+        gap: 12px;
         min-width: 0;
     }
     .page-header {
         display: grid;
-        gap: 10px;
-        padding: 18px 20px;
+        gap: 6px;
+        padding: 12px 14px;
         border: 1px solid var(--border);
         background: var(--panel);
         box-shadow: 0 1px 0 var(--shadow);
@@ -3636,8 +3636,8 @@ fn styles() -> &'static str {
     .sep { color: #a08d70; }
     .page-title {
         margin: 0;
-        font-size: clamp(22px, 3.8vw, 34px);
-        line-height: 1.1;
+        font-size: clamp(18px, 1.9vw, 24px);
+        line-height: 1.15;
         overflow-wrap: anywhere;
         word-break: break-word;
     }
@@ -3672,18 +3672,18 @@ fn styles() -> &'static str {
     .card {
         border: 1px solid var(--border);
         background: var(--panel);
-        padding: 18px 20px;
+        padding: 14px 16px;
         display: grid;
-        gap: 14px;
+        gap: 10px;
         box-shadow: 0 1px 0 var(--shadow);
         min-width: 0;
     }
     .subcard {
         border: 1px solid var(--border);
         background: var(--panel-2);
-        padding: 12px 14px;
+        padding: 10px 12px;
         display: grid;
-        gap: 10px;
+        gap: 8px;
         min-width: 0;
         align-content: start;
     }
@@ -3738,8 +3738,8 @@ fn styles() -> &'static str {
         word-break: break-word;
         min-width: 0;
     }
-    h2 { font-size: 19px; }
-    h3 { font-size: 14px; color: #4f473a; }
+    h2 { font-size: 16px; }
+    h3 { font-size: 13px; color: #4f473a; }
     .prose {
         margin: 0;
         color: var(--text);
@@ -3750,14 +3750,14 @@ fn styles() -> &'static str {
     .meta-row {
         display: flex;
         flex-wrap: wrap;
-        gap: 8px 14px;
+        gap: 6px 12px;
         align-items: center;
         font-size: 13px;
     }
     .kv-grid {
         display: grid;
-        gap: 10px 14px;
-        grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+        gap: 6px 12px;
+        grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
     }
     .kv {
         display: grid;
