@@ -608,31 +608,18 @@ fn render_experiment_detail(
     let frontier = store.read_frontier(&detail.record.frontier_id.to_string())?;
     let shell = load_shell_frame(&store, Some(frontier.slug.clone()), &context)?;
     let title = format!("{} · experiment", detail.record.title);
-    let subtitle = detail.record.summary.as_ref().map_or_else(
-        || detail.record.status.as_str().to_owned(),
-        ToString::to_string,
-    );
     let content = html! {
         (render_experiment_header(&detail, &frontier))
-        (render_vertex_relation_sections(&detail.parents, &detail.children, context.limit))
-        (render_artifact_section(&detail.artifacts, context.limit))
         @if let Some(outcome) = detail.record.outcome.as_ref() {
             (render_experiment_outcome(outcome))
         } @else {
-            section.card {
-                h2 { "Outcome" }
-                p.muted { "Open experiment. No outcome recorded yet." }
-            }
+            (render_open_experiment_outcome())
         }
+        (render_artifact_section(&detail.artifacts, context.limit))
+        (render_vertex_relation_sections(&detail.parents, &detail.children, context.limit))
     };
     Ok(render_shell(
-        &title,
-        &shell,
-        true,
-        Some(&subtitle),
-        Some((frontier.label.as_str(), frontier_href(&frontier.slug))),
-        None,
-        content,
+        &title, &shell, false, None, None, None, content,
     ))
 }
 
@@ -1968,53 +1955,56 @@ fn render_experiment_header(detail: &ExperimentDetail, frontier: &FrontierRecord
 
 fn render_experiment_outcome(outcome: &ExperimentOutcome) -> Markup {
     html! {
-    section.card {
-        h2 { "Outcome" }
-        div.kv-grid {
-            (render_kv("Verdict", outcome.verdict.as_str()))
-            (render_kv("Backend", outcome.backend.as_str()))
-            @if let Some(commit_hash) = outcome.commit_hash.as_ref() {
-                (render_kv("Commit", commit_hash.as_str()))
-            }
-            (render_kv("Closed", &format_timestamp(outcome.closed_at)))
-        }
-        (render_command_recipe(&outcome.command))
-        (render_metric_panel("Primary metric", std::slice::from_ref(&outcome.primary_metric), outcome))
-        @if !outcome.supporting_metrics.is_empty() {
-            (render_metric_panel("Supporting metrics", &outcome.supporting_metrics, outcome))
-        }
-        @if !outcome.dimensions.is_empty() {
-            section.subcard {
-                h3 { "Dimensions" }
-                div.table-scroll {
-                    table.metric-table {
-                        thead { tr { th { "Key" } th { "Value" } } }
-                        tbody {
-                            @for (key, value) in &outcome.dimensions {
-                                tr {
-                                    td { (key) }
-                                    td { (render_dimension_value(value)) }
-                                }
-                            }
-                        }
+    section.card.experiment-outcome {
+        div.card-header.outcome-header {
+            h2 { "Outcome" }
+            div.fact-strip.outcome-verdict-strip {
+                span.fact {
+                    span.fact-label { "verdict" }
+                    span class=(status_chip_classes(verdict_class(outcome.verdict))) {
+                        (outcome.verdict.as_str())
                     }
                 }
             }
         }
-        section.subcard {
+        section.subcard.narrative-block {
             h3 { "Rationale" }
             p.prose { (outcome.rationale) }
         }
         @if let Some(analysis) = outcome.analysis.as_ref() {
             (render_experiment_analysis(analysis))
         }
+        (render_metric_panel("Primary metric", std::slice::from_ref(&outcome.primary_metric), outcome))
+        @if !outcome.supporting_metrics.is_empty() {
+            (render_metric_panel("Supporting metrics", &outcome.supporting_metrics, outcome))
+        }
+        (render_experiment_provenance(outcome))
+    }
+    }
+}
+
+fn render_open_experiment_outcome() -> Markup {
+    html! {
+    section.card.experiment-outcome {
+        div.card-header.outcome-header {
+            h2 { "Outcome" }
+            div.fact-strip.outcome-verdict-strip {
+                span.fact {
+                    span.fact-label { "state" }
+                    span class=(status_chip_classes(experiment_status_class(ExperimentStatus::Open))) {
+                        "open"
+                    }
+                }
+            }
+        }
+        p.muted { "No outcome recorded yet." }
     }
     }
 }
 
 fn render_experiment_analysis(analysis: &ExperimentAnalysis) -> Markup {
     html! {
-    section.subcard {
+    section.subcard.narrative-block {
         h3 { "Analysis" }
         p.prose { (analysis.summary) }
         div.code-block {
@@ -2024,9 +2014,39 @@ fn render_experiment_analysis(analysis: &ExperimentAnalysis) -> Markup {
     }
 }
 
+fn render_experiment_provenance(outcome: &ExperimentOutcome) -> Markup {
+    html! {
+    details.subcard.provenance-disclosure {
+        summary.provenance-summary {
+            span { "Provenance" }
+            span.provenance-summary-facts {
+                span { (outcome.backend.as_str()) }
+                @if let Some(commit_hash) = outcome.commit_hash.as_ref() {
+                    span { (short_commit_hash(commit_hash.as_str())) }
+                }
+                span { (format_timestamp(outcome.closed_at)) }
+            }
+        }
+        div.provenance-body {
+            div.fact-strip {
+                (render_fact("backend", outcome.backend.as_str()))
+                @if let Some(commit_hash) = outcome.commit_hash.as_ref() {
+                    (render_fact("commit", commit_hash.as_str()))
+                }
+                (render_fact("closed", &format_timestamp(outcome.closed_at)))
+            }
+            (render_command_recipe(&outcome.command))
+            @if !outcome.dimensions.is_empty() {
+                (render_dimension_ledger("Dimensions", &outcome.dimensions))
+            }
+        }
+    }
+    }
+}
+
 fn render_command_recipe(command: &fidget_spinner_core::CommandRecipe) -> Markup {
     html! {
-    section.subcard {
+    div.provenance-block {
         h3 { "Command" }
         div.kv-grid {
             (render_kv(
@@ -2052,6 +2072,30 @@ fn render_command_recipe(command: &fidget_spinner_core::CommandRecipe) -> Markup
                                 td { (key) }
                                 td { (value) }
                             }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    }
+}
+
+fn render_dimension_ledger(
+    title: &str,
+    dimensions: &BTreeMap<NonEmptyText, RunDimensionValue>,
+) -> Markup {
+    html! {
+    div.provenance-block {
+        h3 { (title) }
+        div.table-scroll {
+            table.metric-table {
+                thead { tr { th { "Key" } th { "Value" } } }
+                tbody {
+                    @for (key, value) in dimensions {
+                        tr {
+                            td { (key) }
+                            td { (render_dimension_value(value)) }
                         }
                     }
                 }
@@ -2106,15 +2150,16 @@ fn render_vertex_relation_sections(
     children: &[VertexSummary],
     limit: Option<u32>,
 ) -> Markup {
+    if parents.is_empty() && children.is_empty() {
+        return html! {};
+    }
     html! {
         section.card {
             h2 { "Influence Network" }
             div.split {
-                div.subcard {
-                    h3 { "Parents" }
-                    @if parents.is_empty() {
-                        p.muted { "No parent influences." }
-                    } @else {
+                @if !parents.is_empty() {
+                    div.subcard {
+                        h3 { "Parents" }
                         div.link-list {
                             @for parent in limit_items(parents, limit) {
                                 (render_vertex_chip(parent))
@@ -2122,11 +2167,9 @@ fn render_vertex_relation_sections(
                         }
                     }
                 }
-                div.subcard {
-                    h3 { "Children" }
-                    @if children.is_empty() {
-                        p.muted { "No downstream influences." }
-                    } @else {
+                @if !children.is_empty() {
+                    div.subcard {
+                        h3 { "Children" }
                         div.link-list {
                             @for child in limit_items(children, limit) {
                                 (render_vertex_chip(child))
@@ -2143,25 +2186,24 @@ fn render_artifact_section(
     artifacts: &[fidget_spinner_store_sqlite::ArtifactSummary],
     limit: Option<u32>,
 ) -> Markup {
+    if artifacts.is_empty() {
+        return html! {};
+    }
     html! {
     section.card {
         h2 { "Artifacts" }
-        @if artifacts.is_empty() {
-            p.muted { "No attached artifacts." }
-        } @else {
-            div.card-grid {
-                @for artifact in limit_items(artifacts, limit) {
-                    article.mini-card {
-                        div.card-header {
-                            a.title-link href=(artifact_href(&artifact.slug)) { (artifact.label) }
-                            span class="status-chip classless" { (artifact.kind.as_str()) }
-                        }
-                        @if let Some(summary) = artifact.summary.as_ref() {
-                            p.prose { (summary) }
-                        }
-                        div.meta-row {
-                            span.muted { (artifact.locator) }
-                        }
+        div.card-grid {
+            @for artifact in limit_items(artifacts, limit) {
+                article.mini-card {
+                    div.card-header {
+                        a.title-link href=(artifact_href(&artifact.slug)) { (artifact.label) }
+                        span class="status-chip classless" { (artifact.kind.as_str()) }
+                    }
+                    @if let Some(summary) = artifact.summary.as_ref() {
+                        p.prose { (summary) }
+                    }
+                    div.meta-row {
+                        span.muted { (artifact.locator) }
                     }
                 }
             }
@@ -2742,6 +2784,19 @@ fn render_kv(label: &str, value: &str) -> Markup {
             div.kv-value { (value) }
         }
     }
+}
+
+fn render_fact(label: &str, value: &str) -> Markup {
+    html! {
+        span.fact {
+            span.fact-label { (label) }
+            span.fact-value { (value) }
+        }
+    }
+}
+
+fn short_commit_hash(commit_hash: &str) -> &str {
+    commit_hash.get(..12).unwrap_or(commit_hash)
 }
 
 fn render_dimension_value(value: &RunDimensionValue) -> String {
@@ -3738,6 +3793,7 @@ fn styles() -> &'static str {
         word-break: break-word;
         min-width: 0;
     }
+    h1 { font-size: 18px; }
     h2 { font-size: 16px; }
     h3 { font-size: 13px; color: #4f473a; }
     .prose {
@@ -3772,6 +3828,84 @@ fn styles() -> &'static str {
     }
     .kv-value {
         overflow-wrap: anywhere;
+    }
+    .fact-strip {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px 16px;
+        align-items: center;
+        min-width: 0;
+    }
+    .fact {
+        display: inline-flex;
+        gap: 5px;
+        align-items: baseline;
+        min-width: 0;
+        white-space: nowrap;
+    }
+    .fact-label {
+        color: var(--muted);
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+    }
+    .fact-value {
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+    }
+    .outcome-header {
+        align-items: center;
+        justify-content: space-between;
+    }
+    .outcome-verdict-strip {
+        margin-left: auto;
+    }
+    .narrative-block {
+        background: color-mix(in srgb, var(--panel-2) 70%, var(--panel));
+    }
+    .provenance-disclosure {
+        align-content: start;
+    }
+    .provenance-summary {
+        display: flex;
+        gap: 8px 14px;
+        align-items: center;
+        justify-content: space-between;
+        cursor: pointer;
+        color: var(--muted);
+        font-size: 12px;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        user-select: none;
+    }
+    .provenance-summary::-webkit-details-marker {
+        display: none;
+    }
+    .provenance-summary::before {
+        content: ">";
+        color: var(--accent);
+    }
+    .provenance-disclosure[open] > .provenance-summary::before {
+        content: "v";
+    }
+    .provenance-summary-facts {
+        display: flex;
+        gap: 10px;
+        flex-wrap: wrap;
+        justify-content: flex-end;
+        color: var(--muted);
+        text-transform: none;
+        letter-spacing: normal;
+    }
+    .provenance-body {
+        display: grid;
+        gap: 10px;
+    }
+    .provenance-block {
+        display: grid;
+        gap: 8px;
+        min-width: 0;
     }
     .chip-row, .link-list {
         display: flex;

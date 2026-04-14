@@ -1,0 +1,50 @@
+# Fidget Spinner Spec
+
+## Navigator Design Language
+
+The navigator is an austere local-first experiment ledger for a power user who
+already knows the domain. It should read like a dense lab notebook: terse,
+forensic, and structurally navigable. It is not a marketing surface, a general
+dashboard, or a scrapbook.
+
+The UI optimizes for answer density per viewport. A page should make it cheap to
+answer, in order: what happened, why it happened, what changed, where the
+evidence lives, and what should be inspected next. Space spent on scaffolding,
+empty states, duplicated titles, or low-signal provenance is suspect until
+proven necessary.
+
+The information hierarchy is narrative first, evidence second, provenance last.
+Outcome pages should surface the decision and its rationale before numerical
+ledgers, command recipes, timestamps, backend names, or graph context. Metrics
+are evidence for a claim; they are not the claim. Commit hashes, dimensions,
+argv, env, and backend are provenance; they should remain available, but they
+should not seize the first screen.
+
+Experiment pages use this order:
+
+1. Compact experiment header: title, owning frontier, owning hypothesis, status,
+   verdict, tags, and a terse summary.
+2. Outcome, when present. Within outcome: verdict, rationale, analysis, metric
+   ledgers, then collapsed provenance.
+3. Artifacts, when present.
+4. Influence network, when present.
+
+Use these component primitives consistently:
+
+- Dense fact strips for short metadata runs such as verdict, primary metric,
+  closed timestamp, backend, and commit.
+- Narrative blocks for rationale, analysis summary/body, frontier situation, and
+  hypothesis body.
+- Metric ledgers for primary and supporting metrics.
+- Provenance disclosures for command recipe, dimensions, backend, commit, and
+  other recoverability details.
+- Chip rows for tags, status, verdicts, and compact categorical labels.
+- Link chips for traversing to hypotheses, experiments, and artifacts.
+- Section cards only when the section carries real content. Empty sections should
+  usually disappear instead of announcing absence.
+
+Typography should stay compact. Monospace hierarchy comes from placement,
+weight, and labels more than raw size. Large titles are a liability because they
+consume scarce vertical context. Default grids should not allocate vast empty
+columns around short values; short facts belong in fact strips, not sparse
+four-column panels.
