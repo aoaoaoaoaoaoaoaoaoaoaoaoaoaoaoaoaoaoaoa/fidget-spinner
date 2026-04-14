@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::io;
 use std::net::SocketAddr;
+use std::time::UNIX_EPOCH;
 
 use axum::Router;
 use axum::extract::{Path, State};
@@ -16,7 +17,8 @@ use fidget_spinner_core::{
 use fidget_spinner_store_sqlite::{
     ExperimentDetail, ExperimentSummary, FrontierMetricSeries, FrontierOpenProjection,
     FrontierSummary, HypothesisCurrentState, HypothesisDetail, ListExperimentsQuery,
-    ListHypothesesQuery, MetricKeysQuery, MetricScope, ProjectStatus, StoreError, VertexSummary,
+    ListHypothesesQuery, MetricKeysQuery, MetricScope, ProjectStatus, STATE_DB_NAME, StoreError,
+    VertexSummary,
 };
 use maud::{DOCTYPE, Markup, PreEscaped, html};
 use percent_encoding::{NON_ALPHANUMERIC, percent_decode_str, utf8_percent_encode};
@@ -58,6 +60,7 @@ struct ShellFrame {
     project_status: ProjectStatus,
     base_href: String,
     project_home_href: String,
+    refresh_token_href: String,
 }
 
 #[derive(Clone)]
@@ -65,7 +68,31 @@ struct ProjectRenderContext {
     project_root: Utf8PathBuf,
     base_href: String,
     project_home_href: String,
+    refresh_token_href: String,
     limit: Option<u32>,
+}
+
+impl ProjectRenderContext {
+    fn root(project_root: Utf8PathBuf, limit: Option<u32>) -> Self {
+        Self {
+            project_root,
+            base_href: "/".to_owned(),
+            project_home_href: ".".to_owned(),
+            refresh_token_href: "/refresh-token".to_owned(),
+            limit,
+        }
+    }
+
+    fn nested(project_root: Utf8PathBuf, limit: Option<u32>) -> Self {
+        let base_href = project_base_href(&project_root);
+        Self {
+            project_root,
+            refresh_token_href: format!("{base_href}refresh-token"),
+            base_href,
+            project_home_href: ".".to_owned(),
+            limit,
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -207,8 +234,13 @@ pub(crate) fn serve(
             .route("/favicon.svg", get(favicon_svg))
             .route("/favicon.ico", get(favicon_svg))
             .route("/", get(root_page))
+            .route("/refresh-token", get(root_project_refresh_token))
             .route("/project/{project}", get(project_home))
             .route("/project/{project}/", get(project_home))
+            .route(
+                "/project/{project}/refresh-token",
+                get(project_refresh_token),
+            )
             .route(
                 "/project/{project}/frontier/{selector}",
                 get(frontier_detail),
@@ -245,14 +277,21 @@ async fn favicon_svg() -> impl IntoResponse {
 
 async fn root_page(State(state): State<NavigatorState>) -> Response {
     render_response(match &state.scope {
-        NavigatorScope::Single(project_root) => render_project_home(ProjectRenderContext {
-            project_root: project_root.clone(),
-            base_href: "/".to_owned(),
-            project_home_href: ".".to_owned(),
-            limit: state.limit,
-        }),
+        NavigatorScope::Single(project_root) => render_project_home(ProjectRenderContext::root(
+            project_root.clone(),
+            state.limit,
+        )),
         NavigatorScope::Multi { .. } => render_project_index(state),
     })
+}
+
+async fn root_project_refresh_token(State(state): State<NavigatorState>) -> Response {
+    match &state.scope {
+        NavigatorScope::Single(project_root) => refresh_token_response(project_refresh_token_for(
+            &ProjectRenderContext::root(project_root.clone(), state.limit),
+        )),
+        NavigatorScope::Multi { .. } => (StatusCode::NOT_FOUND, "not found").into_response(),
+    }
 }
 
 async fn project_home(
@@ -260,6 +299,16 @@ async fn project_home(
     Path(project): Path<String>,
 ) -> Response {
     render_response(resolve_project_context(&state, &project).and_then(render_project_home))
+}
+
+async fn project_refresh_token(
+    State(state): State<NavigatorState>,
+    Path(project): Path<String>,
+) -> Response {
+    refresh_token_response(
+        resolve_project_context(&state, &project)
+            .and_then(|context| project_refresh_token_for(&context)),
+    )
 }
 
 async fn frontier_detail(
@@ -317,6 +366,20 @@ fn render_response(result: Result<Markup, StoreError>) -> Response {
         Err(error) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             format!("navigator render failed: {error}"),
+        )
+            .into_response(),
+    }
+}
+
+fn refresh_token_response(result: Result<String, StoreError>) -> Response {
+    match result {
+        Ok(token) => ([(CONTENT_TYPE, "text/plain; charset=utf-8")], token).into_response(),
+        Err(StoreError::MissingProjectStore(_)) => {
+            (StatusCode::NOT_FOUND, "not found".to_owned()).into_response()
+        }
+        Err(error) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("navigator refresh-token failed: {error}"),
         )
             .into_response(),
     }
@@ -420,12 +483,23 @@ fn resolve_project_context(
             return Err(StoreError::MissingProjectStore(project_root));
         }
     }
-    Ok(ProjectRenderContext {
-        base_href: project_base_href(&project_root),
-        project_home_href: ".".to_owned(),
-        project_root,
-        limit: state.limit,
-    })
+    Ok(ProjectRenderContext::nested(project_root, state.limit))
+}
+
+fn project_refresh_token_for(context: &ProjectRenderContext) -> Result<String, StoreError> {
+    let store = open_store(context.project_root.as_std_path())?;
+    let database_path = store.state_root().join(STATE_DB_NAME);
+    let metadata = std::fs::metadata(database_path.as_std_path())?;
+    let modified = metadata
+        .modified()?
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default();
+    Ok(format!(
+        "{}.{}:{}",
+        modified.as_secs(),
+        modified.subsec_nanos(),
+        metadata.len()
+    ))
 }
 
 fn render_project_home(context: ProjectRenderContext) -> Result<Markup, StoreError> {
@@ -633,6 +707,7 @@ fn load_shell_frame(
         frontiers: store.list_frontiers()?,
         project_home_href: context.project_home_href.clone(),
         project_status: store.status()?,
+        refresh_token_href: context.refresh_token_href.clone(),
     })
 }
 
@@ -938,10 +1013,9 @@ fn render_metric_series_section(
         } @else if let Some(axes) = chart_axes.as_ref() {
             div.chart-frame {
                 div.chart-action-row {
-                    button.plot-copy-png type="button" data-copy-plot-png="true" {
+                    button.plot-copy-png type="button" data-copy-plot-png="true" aria-live="polite" {
                         "Copy PNG"
                     }
-                    span.plot-copy-status aria-live="polite" {}
                 }
                 (PreEscaped(render_metric_chart_svg(axes, &plotted_series, effective_log_y)))
             }
@@ -981,7 +1055,8 @@ fn render_metric_series_section(
                     @if table_series.points.is_empty() {
                         p.muted { "No closed experiments match the current filters for this metric." }
                     } @else {
-                        @let visible_points = limit_items(&table_series.points, limit);
+                        @let table_points = recent_first_metric_points(&table_series.points);
+                        @let visible_points = limit_items(&table_points, limit);
                         @let table_layout = MetricTableLayout::for_points(visible_points);
                         div.table-scroll {
                             table.metric-table {
@@ -2249,7 +2324,7 @@ fn render_shell(
                 style { (PreEscaped(styles())) }
             }
             body {
-                main.shell {
+                main.shell data-refresh-token-url=(&shell.refresh_token_href) {
                     aside.sidebar {
                         (render_sidebar(shell))
                     }
@@ -2292,6 +2367,9 @@ fn interaction_script() -> String {
     format!(
         r#"
 const UI_NAV_STATE_KEY = "{UI_NAV_STATE_KEY}";
+const AUTO_REFRESH_INTERVAL_MS = 5000;
+const PLOT_COPY_RESET_MS = 1600;
+const plotCopyResetTimers = new WeakMap();
 
 function stashViewportState() {{
     try {{
@@ -2357,12 +2435,94 @@ function restoreViewportState() {{
 
 restoreViewportState();
 
-function setPlotCopyStatus(button, message, failed) {{
-    const frame = button.closest(".chart-frame");
-    const status = frame?.querySelector(".plot-copy-status");
-    if (status instanceof HTMLElement) {{
-        status.textContent = message;
-        status.toggleAttribute("data-failed", failed);
+function plotCopyOriginalLabel(button) {{
+    if (!button.dataset.copyLabel) {{
+        button.dataset.copyLabel = button.textContent?.trim() || "Copy PNG";
+    }}
+    return button.dataset.copyLabel;
+}}
+
+function cancelPlotCopyReset(button) {{
+    const existingTimer = plotCopyResetTimers.get(button);
+    if (existingTimer) {{
+        clearTimeout(existingTimer);
+        plotCopyResetTimers.delete(button);
+    }}
+}}
+
+function setPlotCopyButtonState(button, label, state, title) {{
+    cancelPlotCopyReset(button);
+    plotCopyOriginalLabel(button);
+    button.textContent = label;
+    button.toggleAttribute("data-copied", state === "copied");
+    button.toggleAttribute("data-failed", state === "failed");
+    if (title) {{
+        button.title = title;
+    }} else {{
+        button.removeAttribute("title");
+    }}
+}}
+
+function resetPlotCopyButton(button) {{
+    button.textContent = plotCopyOriginalLabel(button);
+    button.removeAttribute("data-copied");
+    button.removeAttribute("data-failed");
+    button.removeAttribute("title");
+}}
+
+function schedulePlotCopyReset(button) {{
+    cancelPlotCopyReset(button);
+    const timer = setTimeout(() => {{
+        resetPlotCopyButton(button);
+        plotCopyResetTimers.delete(button);
+    }}, PLOT_COPY_RESET_MS);
+    plotCopyResetTimers.set(button, timer);
+}}
+
+function autoRefreshRoot() {{
+    return document.querySelector("[data-refresh-token-url]");
+}}
+
+function autoRefreshDeferred() {{
+    return Boolean(
+        document.hidden
+        || document.querySelector("details.control-popout[open]")
+        || document.querySelector("button[data-copy-plot-png=\"true\"]:disabled")
+    );
+}}
+
+async function pollRefreshToken() {{
+    const root = autoRefreshRoot();
+    if (!(root instanceof HTMLElement) || autoRefreshDeferred()) {{
+        return;
+    }}
+    const tokenUrl = root.dataset.refreshTokenUrl;
+    if (!tokenUrl) {{
+        return;
+    }}
+    try {{
+        const response = await fetch(tokenUrl, {{
+            cache: "no-store",
+            headers: {{ "Accept": "text/plain" }},
+        }});
+        if (!response.ok) {{
+            return;
+        }}
+        const nextToken = (await response.text()).trim();
+        if (!nextToken) {{
+            return;
+        }}
+        const previousToken = root.dataset.refreshToken;
+        if (!previousToken) {{
+            root.dataset.refreshToken = nextToken;
+            return;
+        }}
+        if (previousToken !== nextToken) {{
+            stashViewportState();
+            window.location.reload();
+        }}
+    }} catch (_error) {{
+        // Auto-refresh must never degrade the navigator if the probe races shutdown.
     }}
 }}
 
@@ -2431,6 +2591,15 @@ async function copyPlotPng(button) {{
     ]);
 }}
 
+window.setInterval(pollRefreshToken, AUTO_REFRESH_INTERVAL_MS);
+window.addEventListener("focus", pollRefreshToken);
+document.addEventListener("visibilitychange", () => {{
+    if (!document.hidden) {{
+        pollRefreshToken();
+    }}
+}});
+pollRefreshToken();
+
 document.addEventListener("click", (event) => {{
     const target = event.target;
     if (!(target instanceof Element)) {{
@@ -2439,16 +2608,22 @@ document.addEventListener("click", (event) => {{
     const copyButton = target.closest("button[data-copy-plot-png=\"true\"]");
     if (copyButton instanceof HTMLButtonElement) {{
         copyButton.disabled = true;
-        setPlotCopyStatus(copyButton, "Copying...", false);
+        setPlotCopyButtonState(copyButton, "Copying...", "busy");
         copyPlotPng(copyButton)
             .then(() => {{
-                setPlotCopyStatus(copyButton, "Copied PNG", false);
+                setPlotCopyButtonState(copyButton, "Copied", "copied");
             }})
             .catch((error) => {{
-                setPlotCopyStatus(copyButton, error?.message || "Copy failed", true);
+                setPlotCopyButtonState(
+                    copyButton,
+                    "Copy failed",
+                    "failed",
+                    error?.message || "Copy failed"
+                );
             }})
             .finally(() => {{
                 copyButton.disabled = false;
+                schedulePlotCopyReset(copyButton);
             }});
         return;
     }}
@@ -3116,6 +3291,21 @@ fn collect_metric_experiment_positions(
         let _ = experiment_positions.entry(slug).or_insert(next_index);
     }
     experiment_positions
+}
+
+fn recent_first_metric_points<'a>(
+    points: &[&'a fidget_spinner_store_sqlite::FrontierMetricPoint],
+) -> Vec<&'a fidget_spinner_store_sqlite::FrontierMetricPoint> {
+    let mut points = points.to_vec();
+    points.sort_by(|left, right| {
+        right.closed_at.cmp(&left.closed_at).then_with(|| {
+            left.experiment
+                .slug
+                .as_str()
+                .cmp(right.experiment.slug.as_str())
+        })
+    });
+    points
 }
 
 fn build_metric_chart_series(
@@ -3942,7 +4132,6 @@ fn styles() -> &'static str {
         z-index: 2;
         display: flex;
         align-items: center;
-        gap: 8px;
     }
     .plot-copy-png {
         border: 1px solid var(--border-strong);
@@ -3960,20 +4149,11 @@ fn styles() -> &'static str {
         cursor: wait;
         opacity: 0.65;
     }
-    .plot-copy-status {
-        max-width: 24ch;
-        color: var(--muted);
-        background: color-mix(in srgb, var(--panel) 88%, white);
-        border: 1px solid var(--border);
-        padding: 5px 7px;
-        font-size: 12px;
-        line-height: 1.2;
-        box-shadow: 0 8px 18px rgba(83, 61, 33, 0.08);
+    .plot-copy-png[data-copied] {
+        color: var(--accepted);
+        border-color: color-mix(in srgb, var(--accepted) 24%, white);
     }
-    .plot-copy-status:empty {
-        display: none;
-    }
-    .plot-copy-status[data-failed] {
+    .plot-copy-png[data-failed] {
         color: var(--rejected);
         border-color: color-mix(in srgb, var(--rejected) 24%, white);
     }
@@ -4365,6 +4545,7 @@ mod tests {
         assert!(markup.contains("id=\"metric-filter-popout\""));
         assert!(markup.contains("data-preserve-viewport=\"true\""));
         assert!(markup.contains("data-copy-plot-png=\"true\""));
+        assert!(!markup.contains("plot-copy-status"));
         assert!(markup.contains("metric-table-fit-col"));
         assert!(markup.contains("metric-table-title-col"));
         assert!(markup.contains("presolve_nz"));
@@ -4374,5 +4555,10 @@ mod tests {
         assert!(!markup.contains("Experiment C With A Long Full Title..."));
         assert!(markup.contains("table_metric=presolve%5Fms"));
         assert!(markup.contains("class=\"metric-table-tab active\""));
+        let rank_three_offset = markup.find(rank_cell_three);
+        let rank_one_offset = markup.find(rank_cell_one);
+        assert!(
+            matches!((rank_three_offset, rank_one_offset), (Some(left), Some(right)) if left < right)
+        );
     }
 }
