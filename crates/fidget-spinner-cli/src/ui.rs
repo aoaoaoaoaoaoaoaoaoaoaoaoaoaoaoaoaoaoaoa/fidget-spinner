@@ -937,6 +937,12 @@ fn render_metric_series_section(
             p.muted { "No closed experiments match the current filters." }
         } @else if let Some(axes) = chart_axes.as_ref() {
             div.chart-frame {
+                div.chart-action-row {
+                    button.plot-copy-png type="button" data-copy-plot-png="true" {
+                        "Copy PNG"
+                    }
+                    span.plot-copy-status aria-live="polite" {}
+                }
                 (PreEscaped(render_metric_chart_svg(axes, &plotted_series, effective_log_y)))
             }
             @if let Some(table_series) = table_series {
@@ -2351,9 +2357,99 @@ function restoreViewportState() {{
 
 restoreViewportState();
 
+function setPlotCopyStatus(button, message, failed) {{
+    const frame = button.closest(".chart-frame");
+    const status = frame?.querySelector(".plot-copy-status");
+    if (status instanceof HTMLElement) {{
+        status.textContent = message;
+        status.toggleAttribute("data-failed", failed);
+    }}
+}}
+
+async function rasterizeSvgToPngBlob(svg) {{
+    const svgClone = svg.cloneNode(true);
+    if (svgClone instanceof SVGElement && !svgClone.getAttribute("xmlns")) {{
+        svgClone.setAttribute("xmlns", "http://www.w3.org/2000/svg");
+    }}
+    const viewBox = svg.viewBox?.baseVal;
+    const width = Math.ceil(
+        (viewBox && viewBox.width) || Number(svg.getAttribute("width")) || svg.clientWidth
+    );
+    const height = Math.ceil(
+        (viewBox && viewBox.height) || Number(svg.getAttribute("height")) || svg.clientHeight
+    );
+    if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {{
+        throw new Error("plot dimensions are unavailable");
+    }}
+
+    const svgText = new XMLSerializer().serializeToString(svgClone);
+    const svgBlob = new Blob([svgText], {{ type: "image/svg+xml;charset=utf-8" }});
+    const svgUrl = URL.createObjectURL(svgBlob);
+    try {{
+        const image = new Image();
+        const imageLoaded = new Promise((resolve, reject) => {{
+            image.onload = resolve;
+            image.onerror = () => reject(new Error("plot image rasterization failed"));
+        }});
+        image.src = svgUrl;
+        await imageLoaded;
+
+        const canvas = document.createElement("canvas");
+        canvas.width = width;
+        canvas.height = height;
+        const context = canvas.getContext("2d");
+        if (!context) {{
+            throw new Error("canvas rendering is unavailable");
+        }}
+        context.drawImage(image, 0, 0, width, height);
+        return await new Promise((resolve, reject) => {{
+            canvas.toBlob((blob) => {{
+                if (blob) {{
+                    resolve(blob);
+                }} else {{
+                    reject(new Error("PNG encoding failed"));
+                }}
+            }}, "image/png");
+        }});
+    }} finally {{
+        URL.revokeObjectURL(svgUrl);
+    }}
+}}
+
+async function copyPlotPng(button) {{
+    if (!navigator.clipboard || typeof ClipboardItem === "undefined") {{
+        throw new Error("PNG clipboard is unavailable in this browser");
+    }}
+    const frame = button.closest(".chart-frame");
+    const svg = frame?.querySelector("svg");
+    if (!(svg instanceof SVGSVGElement)) {{
+        throw new Error("plot SVG was not found");
+    }}
+    const pngBlob = await rasterizeSvgToPngBlob(svg);
+    await navigator.clipboard.write([
+        new ClipboardItem({{ "image/png": pngBlob }}),
+    ]);
+}}
+
 document.addEventListener("click", (event) => {{
     const target = event.target;
     if (!(target instanceof Element)) {{
+        return;
+    }}
+    const copyButton = target.closest("button[data-copy-plot-png=\"true\"]");
+    if (copyButton instanceof HTMLButtonElement) {{
+        copyButton.disabled = true;
+        setPlotCopyStatus(copyButton, "Copying...", false);
+        copyPlotPng(copyButton)
+            .then(() => {{
+                setPlotCopyStatus(copyButton, "Copied PNG", false);
+            }})
+            .catch((error) => {{
+                setPlotCopyStatus(copyButton, error?.message || "Copy failed", true);
+            }})
+            .finally(() => {{
+                copyButton.disabled = false;
+            }});
         return;
     }}
     const navigationLink = target.closest("a[data-preserve-viewport=\"true\"]");
@@ -3828,6 +3924,7 @@ fn styles() -> &'static str {
         gap: 8px;
     }
     .chart-frame {
+        position: relative;
         border: 1px solid var(--border);
         background: var(--panel-2);
         padding: 8px;
@@ -3837,6 +3934,48 @@ fn styles() -> &'static str {
         display: block;
         width: 100%;
         height: auto;
+    }
+    .chart-action-row {
+        position: absolute;
+        top: 14px;
+        right: 14px;
+        z-index: 2;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+    }
+    .plot-copy-png {
+        border: 1px solid var(--border-strong);
+        background: color-mix(in srgb, var(--panel) 92%, white);
+        color: var(--text);
+        padding: 6px 9px;
+        font: inherit;
+        font-size: 12px;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        cursor: pointer;
+        box-shadow: 0 8px 18px rgba(83, 61, 33, 0.12);
+    }
+    .plot-copy-png:disabled {
+        cursor: wait;
+        opacity: 0.65;
+    }
+    .plot-copy-status {
+        max-width: 24ch;
+        color: var(--muted);
+        background: color-mix(in srgb, var(--panel) 88%, white);
+        border: 1px solid var(--border);
+        padding: 5px 7px;
+        font-size: 12px;
+        line-height: 1.2;
+        box-shadow: 0 8px 18px rgba(83, 61, 33, 0.08);
+    }
+    .plot-copy-status:empty {
+        display: none;
+    }
+    .plot-copy-status[data-failed] {
+        color: var(--rejected);
+        border-color: color-mix(in srgb, var(--rejected) 24%, white);
     }
     .metric-table-section {
         margin-top: 2px;
@@ -4225,6 +4364,7 @@ mod tests {
         assert!(markup.contains("id=\"metric-selection-popout\""));
         assert!(markup.contains("id=\"metric-filter-popout\""));
         assert!(markup.contains("data-preserve-viewport=\"true\""));
+        assert!(markup.contains("data-copy-plot-png=\"true\""));
         assert!(markup.contains("metric-table-fit-col"));
         assert!(markup.contains("metric-table-title-col"));
         assert!(markup.contains("presolve_nz"));
