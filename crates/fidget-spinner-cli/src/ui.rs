@@ -786,7 +786,7 @@ fn resolve_selected_metric_keys(
 ) -> Vec<fidget_spinner_store_sqlite::MetricKeySummary> {
     let mut selected = Vec::new();
     let mut seen = BTreeSet::new();
-    let mut family = None;
+    let mut families = MetricAxisFamilies::default();
     for requested in requested_metrics {
         let selector = requested.trim();
         if selector.is_empty() {
@@ -802,13 +802,9 @@ fn resolve_selected_metric_keys(
             continue;
         }
         let metric_family = MetricUnitFamily::from_unit(&metric.unit);
-        if family
-            .as_ref()
-            .is_some_and(|active_family| active_family != &metric_family)
-        {
+        if !families.admit(metric_family) {
             continue;
         }
-        let _ = family.get_or_insert(metric_family);
         selected.push(metric.clone());
     }
     if selected.is_empty() {
@@ -872,6 +868,7 @@ struct FilteredMetricSeries<'a> {
 struct MetricChartSeries {
     label: String,
     color: RGBColor,
+    side: MetricAxisSide,
     points: Vec<(i32, f64, FrontierVerdict)>,
 }
 
@@ -893,12 +890,10 @@ fn render_metric_series_section(
         .filter(|series| !series.points.is_empty())
         .collect::<Vec<_>>();
     let experiment_positions = collect_metric_experiment_positions(&plotted_series);
-    let chart_axis = plotted_series
-        .first()
-        .map(|series| MetricChartAxis::from_metric(series.metric));
-    let can_use_log_y = chart_axis
+    let chart_axes = MetricAxisSet::from_series(&plotted_series);
+    let can_use_log_y = chart_axes
         .as_ref()
-        .is_some_and(|axis| metric_chart_supports_log_y(axis, &plotted_series));
+        .is_some_and(|axes| metric_chart_supports_log_y(axes, &plotted_series));
     let effective_log_y = log_y && can_use_log_y;
     let no_metric_history =
         selected_metrics.is_empty() || series.iter().all(|series| series.points.is_empty());
@@ -940,9 +935,9 @@ fn render_metric_series_section(
             p.muted { "No closed experiments for the current metric selection yet." }
         } @else if plotted_series.is_empty() {
             p.muted { "No closed experiments match the current filters." }
-        } @else if let Some(axis) = chart_axis.as_ref() {
+        } @else if let Some(axes) = chart_axes.as_ref() {
             div.chart-frame {
-                (PreEscaped(render_metric_chart_svg(axis, &plotted_series, effective_log_y)))
+                (PreEscaped(render_metric_chart_svg(axes, &plotted_series, effective_log_y)))
             }
             @if let Some(table_series) = table_series {
                 section.subcard.metric-table-section {
@@ -1151,9 +1146,7 @@ fn render_metric_selection_popout(
     table_metric: Option<&str>,
 ) -> Markup {
     let label = metric_popout_label(selected_metrics, log_y);
-    let selected_family = selected_metrics
-        .first()
-        .map(|metric| MetricUnitFamily::from_unit(&metric.unit));
+    let selected_families = MetricAxisFamilies::from_metrics(selected_metrics);
     html! {
     details.control-popout id="metric-selection-popout" data-preserve-open="true" {
         summary.control-popout-toggle { (label) }
@@ -1173,7 +1166,7 @@ fn render_metric_selection_popout(
                                             frontier_slug,
                                             metric,
                                             selected_metrics,
-                                            selected_family.as_ref(),
+                                            &selected_families,
                                             dimension_filters,
                                             log_y,
                                         ))
@@ -1192,7 +1185,7 @@ fn render_metric_selection_popout(
                                             frontier_slug,
                                             metric,
                                             selected_metrics,
-                                            selected_family.as_ref(),
+                                            &selected_families,
                                             dimension_filters,
                                             log_y,
                                         ))
@@ -1214,7 +1207,7 @@ fn render_metric_selection_popout(
                             }
                         }
                         p.muted.compact-note {
-                            "Time metrics can overlay each other; everything else must match unit exactly."
+                            "The first two unit families become left and right axes; later metrics must match one of them."
                         }
                     }
                 }
@@ -1228,14 +1221,14 @@ fn render_metric_picker_option(
     frontier_slug: &Slug,
     metric: &fidget_spinner_store_sqlite::MetricKeySummary,
     selected_metrics: &[fidget_spinner_store_sqlite::MetricKeySummary],
-    selected_family: Option<&MetricUnitFamily>,
+    selected_families: &MetricAxisFamilies,
     dimension_filters: &BTreeMap<String, String>,
     log_y: bool,
 ) -> Markup {
     let selected = selected_metrics
         .iter()
         .any(|selected_metric| selected_metric.key == metric.key);
-    let compatible = selected_family.is_none_or(|family| family.supports(&metric.unit));
+    let compatible = selected_families.supports(&metric.unit);
     let detail = format!("{} · {}", metric.objective.as_str(), metric.unit.as_str());
     if compatible || selected {
         html! {
@@ -1271,7 +1264,7 @@ fn render_metric_picker_option(
 }
 
 fn render_metric_chart_svg(
-    axis: &MetricChartAxis,
+    axes: &MetricAxisSet,
     series: &[&FilteredMetricSeries<'_>],
     log_y: bool,
 ) -> String {
@@ -1281,16 +1274,30 @@ fn render_metric_chart_svg(
         if root.fill(&RGBColor(255, 250, 242)).is_err() {
             return chart_error_markup("chart fill failed");
         }
-        let chart_series = match build_metric_chart_series(axis, series) {
+        let chart_series = match build_metric_chart_series(axes, series) {
             Some(series) if !series.is_empty() => series,
             _ => return chart_error_markup("no plottable metric points"),
         };
-        let values = chart_series
+        let primary_values = chart_series
             .iter()
+            .filter(|series| series.side == MetricAxisSide::Primary)
             .flat_map(|series| series.points.iter().map(|(_, value, _)| *value))
             .collect::<Vec<_>>();
-        let Some((min_value, max_value)) = metric_chart_y_range(&values, log_y) else {
+        let Some((primary_min, primary_max)) = metric_chart_y_range(&primary_values, log_y) else {
             return chart_error_markup("metric values are non-finite");
+        };
+        let secondary_values = chart_series
+            .iter()
+            .filter(|series| series.side == MetricAxisSide::Secondary)
+            .flat_map(|series| series.points.iter().map(|(_, value, _)| *value))
+            .collect::<Vec<_>>();
+        let secondary_range = if axes.secondary.is_some() {
+            let Some(range) = metric_chart_y_range(&secondary_values, log_y) else {
+                return chart_error_markup("secondary metric values are non-finite");
+            };
+            Some(range)
+        } else {
+            None
         };
         let x_end = chart_series
             .iter()
@@ -1299,32 +1306,16 @@ fn render_metric_chart_svg(
             .unwrap_or(0)
             .max(1);
 
-        macro_rules! draw_chart {
-            ($chart:expr) => {{
-                let chart = &mut $chart;
-                if chart
-                    .configure_mesh()
-                    .light_line_style(RGBColor(223, 209, 189).mix(0.6))
-                    .bold_line_style(RGBColor(207, 190, 168).mix(0.8))
-                    .axis_style(RGBColor(103, 86, 63))
-                    .label_style(("Iosevka Web", 12).into_font().color(&RGBColor(79, 71, 58)))
-                    .x_desc("close order")
-                    .y_desc(axis.unit.as_str())
-                    .x_label_formatter(&|value| format!("{}", value + 1))
-                    .draw()
-                    .is_err()
-                {
-                    return chart_error_markup("mesh draw failed");
-                }
-
-                for series in &chart_series {
+        macro_rules! draw_metric_side {
+            ($chart:expr, $method:ident, $side:expr) => {{
+                for series in chart_series.iter().filter(|series| series.side == $side) {
                     let line_points = series
                         .points
                         .iter()
                         .map(|(x, value, _)| (*x, *value))
                         .collect::<Vec<_>>();
-                    if chart
-                        .draw_series(LineSeries::new(line_points, &series.color))
+                    if $chart
+                        .$method(LineSeries::new(line_points, &series.color))
                         .map(|series_plot| {
                             series_plot.label(series.label.clone()).legend(|(x, y)| {
                                 PathElement::new(vec![(x, y), (x + 18, y)], series.color)
@@ -1342,7 +1333,7 @@ fn render_metric_chart_svg(
                         .map(|(x, value, _)| {
                             Circle::new((*x, *value), 4, ShapeStyle::from(&series.color).filled())
                         });
-                    if chart.draw_series(accepted_points).is_err() {
+                    if $chart.$method(accepted_points).is_err() {
                         return chart_error_markup("accepted marker draw failed");
                     }
 
@@ -1357,10 +1348,32 @@ fn render_metric_chart_svg(
                                 ShapeStyle::from(&series.color).stroke_width(2),
                             )
                         });
-                    if chart.draw_series(rejected_points).is_err() {
+                    if $chart.$method(rejected_points).is_err() {
                         return chart_error_markup("rejected marker draw failed");
                     }
                 }
+            }};
+        }
+
+        macro_rules! draw_primary_chart {
+            ($chart:expr) => {{
+                let chart = &mut $chart;
+                if chart
+                    .configure_mesh()
+                    .light_line_style(RGBColor(223, 209, 189).mix(0.6))
+                    .bold_line_style(RGBColor(207, 190, 168).mix(0.8))
+                    .axis_style(RGBColor(103, 86, 63))
+                    .label_style(("Iosevka Web", 12).into_font().color(&RGBColor(79, 71, 58)))
+                    .x_desc("close order")
+                    .y_desc(axes.primary.unit.as_str())
+                    .x_label_formatter(&|value| format!("{}", value + 1))
+                    .draw()
+                    .is_err()
+                {
+                    return chart_error_markup("mesh draw failed");
+                }
+
+                draw_metric_side!(chart, draw_series, MetricAxisSide::Primary);
 
                 if chart
                     .configure_series_labels()
@@ -1376,28 +1389,111 @@ fn render_metric_chart_svg(
             }};
         }
 
-        if log_y {
+        macro_rules! draw_dual_chart {
+            ($chart:expr) => {{
+                let chart = &mut $chart;
+                if chart
+                    .configure_mesh()
+                    .light_line_style(RGBColor(223, 209, 189).mix(0.6))
+                    .bold_line_style(RGBColor(207, 190, 168).mix(0.8))
+                    .axis_style(RGBColor(103, 86, 63))
+                    .label_style(("Iosevka Web", 12).into_font().color(&RGBColor(79, 71, 58)))
+                    .x_desc("close order")
+                    .y_desc(axes.primary.unit.as_str())
+                    .x_label_formatter(&|value| format!("{}", value + 1))
+                    .draw()
+                    .is_err()
+                {
+                    return chart_error_markup("mesh draw failed");
+                }
+
+                if let Some(secondary_axis) = axes.secondary.as_ref() {
+                    if chart
+                        .configure_secondary_axes()
+                        .axis_style(RGBColor(103, 86, 63))
+                        .label_style(("Iosevka Web", 12).into_font().color(&RGBColor(79, 71, 58)))
+                        .y_desc(secondary_axis.unit.as_str())
+                        .draw()
+                        .is_err()
+                    {
+                        return chart_error_markup("secondary axis draw failed");
+                    }
+                }
+
+                draw_metric_side!(chart, draw_series, MetricAxisSide::Primary);
+                draw_metric_side!(chart, draw_secondary_series, MetricAxisSide::Secondary);
+
+                if chart
+                    .configure_series_labels()
+                    .position(SeriesLabelPosition::UpperLeft)
+                    .background_style(RGBColor(255, 250, 242).mix(0.92))
+                    .border_style(RGBColor(207, 190, 168))
+                    .label_font(("Iosevka Web", 11).into_font().color(&BLACK))
+                    .draw()
+                    .is_err()
+                {
+                    return chart_error_markup("legend draw failed");
+                }
+            }};
+        }
+
+        if let Some((secondary_min, secondary_max)) = secondary_range {
+            if log_y {
+                let mut chart = match ChartBuilder::on(&root)
+                    .margin(18)
+                    .x_label_area_size(32)
+                    .y_label_area_size(84)
+                    .right_y_label_area_size(84)
+                    .build_cartesian_2d(0_i32..x_end, (primary_min..primary_max).log_scale())
+                {
+                    Ok(chart) => chart.set_secondary_coord(
+                        0_i32..x_end,
+                        (secondary_min..secondary_max).log_scale(),
+                    ),
+                    Err(error) => {
+                        return chart_error_markup(&format!("chart build failed: {error:?}"));
+                    }
+                };
+                draw_dual_chart!(chart);
+            } else {
+                let mut chart = match ChartBuilder::on(&root)
+                    .margin(18)
+                    .x_label_area_size(32)
+                    .y_label_area_size(84)
+                    .right_y_label_area_size(84)
+                    .build_cartesian_2d(0_i32..x_end, primary_min..primary_max)
+                {
+                    Ok(chart) => {
+                        chart.set_secondary_coord(0_i32..x_end, secondary_min..secondary_max)
+                    }
+                    Err(error) => {
+                        return chart_error_markup(&format!("chart build failed: {error:?}"));
+                    }
+                };
+                draw_dual_chart!(chart);
+            }
+        } else if log_y {
             let mut chart = match ChartBuilder::on(&root)
                 .margin(18)
                 .x_label_area_size(32)
                 .y_label_area_size(84)
-                .build_cartesian_2d(0_i32..x_end, (min_value..max_value).log_scale())
+                .build_cartesian_2d(0_i32..x_end, (primary_min..primary_max).log_scale())
             {
                 Ok(chart) => chart,
                 Err(error) => return chart_error_markup(&format!("chart build failed: {error:?}")),
             };
-            draw_chart!(chart);
+            draw_primary_chart!(chart);
         } else {
             let mut chart = match ChartBuilder::on(&root)
                 .margin(18)
                 .x_label_area_size(32)
                 .y_label_area_size(84)
-                .build_cartesian_2d(0_i32..x_end, min_value..max_value)
+                .build_cartesian_2d(0_i32..x_end, primary_min..primary_max)
             {
                 Ok(chart) => chart,
                 Err(error) => return chart_error_markup(&format!("chart build failed: {error:?}")),
             };
-            draw_chart!(chart);
+            draw_primary_chart!(chart);
         }
 
         if root.present().is_err() {
@@ -2633,6 +2729,23 @@ enum MetricUnitFamily {
     Exact(MetricUnit),
 }
 
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+struct MetricAxisFamilies {
+    families: Vec<MetricUnitFamily>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum MetricAxisSide {
+    Primary,
+    Secondary,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct MetricAxisSet {
+    primary: MetricChartAxis,
+    secondary: Option<MetricChartAxis>,
+}
+
 impl MetricUnitFamily {
     fn from_unit(unit: &MetricUnit) -> Self {
         match unit.known_kind() {
@@ -2662,6 +2775,31 @@ impl MetricUnitFamily {
     }
 }
 
+impl MetricAxisFamilies {
+    fn from_metrics(metrics: &[fidget_spinner_store_sqlite::MetricKeySummary]) -> Self {
+        let mut families = Self::default();
+        for metric in metrics {
+            let _ = families.admit(MetricUnitFamily::from_unit(&metric.unit));
+        }
+        families
+    }
+
+    fn admit(&mut self, family: MetricUnitFamily) -> bool {
+        if self.families.iter().any(|active| active == &family) {
+            return true;
+        }
+        if self.families.len() >= 2 {
+            return false;
+        }
+        self.families.push(family);
+        true
+    }
+
+    fn supports(&self, unit: &MetricUnit) -> bool {
+        self.families.len() < 2 || self.families.iter().any(|family| family.supports(unit))
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct MetricChartAxis {
     unit: MetricUnit,
@@ -2682,6 +2820,31 @@ impl MetricChartAxis {
             MetricUnitFamily::Exact(expected) if expected == unit => Some(value),
             MetricUnitFamily::Exact(_) => None,
         }
+    }
+}
+
+impl MetricAxisSet {
+    fn from_series(series: &[&FilteredMetricSeries<'_>]) -> Option<Self> {
+        let primary = MetricChartAxis::from_metric(series.first()?.metric);
+        let secondary = series
+            .iter()
+            .map(|series| MetricChartAxis::from_metric(series.metric))
+            .find(|axis| axis.family != primary.family);
+        Some(Self { primary, secondary })
+    }
+
+    fn axis_for_metric(
+        &self,
+        metric: &fidget_spinner_store_sqlite::MetricKeySummary,
+    ) -> Option<(MetricAxisSide, &MetricChartAxis)> {
+        let family = MetricUnitFamily::from_unit(&metric.unit);
+        if family == self.primary.family {
+            return Some((MetricAxisSide::Primary, &self.primary));
+        }
+        self.secondary
+            .as_ref()
+            .filter(|axis| axis.family == family)
+            .map(|axis| (MetricAxisSide::Secondary, axis))
     }
 }
 
@@ -2819,12 +2982,12 @@ fn metric_popout_label(
     label
 }
 
-fn metric_chart_supports_log_y(
-    axis: &MetricChartAxis,
-    series: &[&FilteredMetricSeries<'_>],
-) -> bool {
+fn metric_chart_supports_log_y(axes: &MetricAxisSet, series: &[&FilteredMetricSeries<'_>]) -> bool {
     let mut saw_value = false;
     for series in series {
+        let Some((_, axis)) = axes.axis_for_metric(series.metric) else {
+            return false;
+        };
         for point in &series.points {
             let Some(value) = axis.normalize_value(point.value, &series.metric.unit) else {
                 return false;
@@ -2860,7 +3023,7 @@ fn collect_metric_experiment_positions(
 }
 
 fn build_metric_chart_series(
-    axis: &MetricChartAxis,
+    axes: &MetricAxisSet,
     series: &[&FilteredMetricSeries<'_>],
 ) -> Option<Vec<MetricChartSeries>> {
     let experiment_positions = collect_metric_experiment_positions(series)
@@ -2872,6 +3035,7 @@ fn build_metric_chart_series(
         .iter()
         .enumerate()
         .map(|(index, series)| {
+            let (side, axis) = axes.axis_for_metric(series.metric)?;
             let points = series
                 .points
                 .iter()
@@ -2884,6 +3048,7 @@ fn build_metric_chart_series(
             (!points.is_empty()).then(|| MetricChartSeries {
                 color: metric_chart_color(index),
                 label: series.metric.key.to_string(),
+                side,
                 points,
             })
         })
@@ -3916,23 +4081,36 @@ mod tests {
     }
 
     #[test]
-    fn resolve_selected_metric_keys_drops_incompatible_follow_ons() {
+    fn resolve_selected_metric_keys_allows_two_unit_families() {
         let visible_metrics = vec![
             test_metric("presolve_ms", "ms"),
-            test_metric("presolve_ms_gmean", "ms"),
             test_metric("presolve_nz", "count"),
+            test_metric("report_bytes", "bytes"),
+            test_metric("presolve_ms_gmean", "ms"),
+            test_metric("presolve_rows", "count"),
         ];
         let selected = resolve_selected_metric_keys(
             &[
                 "presolve_ms".to_owned(),
                 "presolve_nz".to_owned(),
+                "report_bytes".to_owned(),
                 "presolve_ms_gmean".to_owned(),
+                "presolve_rows".to_owned(),
             ],
             &visible_metrics,
         );
-        assert_eq!(selected.len(), 2);
-        assert_eq!(selected[0].key.as_str(), "presolve_ms");
-        assert_eq!(selected[1].key.as_str(), "presolve_ms_gmean");
+        assert_eq!(
+            selected
+                .iter()
+                .map(|metric| metric.key.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "presolve_ms",
+                "presolve_nz",
+                "presolve_ms_gmean",
+                "presolve_rows"
+            ]
+        );
     }
 
     #[test]
@@ -3970,7 +4148,7 @@ mod tests {
         let hypothesis_one = test_hypothesis(frontier.id, "hyp-one", "Hypothesis One");
         let hypothesis_two = test_hypothesis(frontier.id, "hyp-two", "Hypothesis Two");
         let metric_a = test_metric("presolve_ms", "ms");
-        let metric_b = test_metric("ingress_ms_gmean", "ms");
+        let metric_b = test_metric("presolve_nz", "count");
         let series = vec![
             FrontierMetricSeries {
                 frontier: frontier.clone(),
@@ -4049,6 +4227,9 @@ mod tests {
         assert!(markup.contains("data-preserve-viewport=\"true\""));
         assert!(markup.contains("metric-table-fit-col"));
         assert!(markup.contains("metric-table-title-col"));
+        assert!(markup.contains("presolve_nz"));
+        assert!(markup.contains("count"));
+        assert!(!markup.contains("chart render failed"));
         assert!(markup.contains("Experiment C With A Long Full Title Kept In The DOM"));
         assert!(!markup.contains("Experiment C With A Long Full Title..."));
         assert!(markup.contains("table_metric=presolve%5Fms"));
