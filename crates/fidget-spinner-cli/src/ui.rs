@@ -2933,14 +2933,14 @@ fn render_frontier_sidebar_action(
                 summary.frontier-action-toggle aria-label=(format!("Archive {}", frontier.label)) {
                     "..."
                 }
-                form.frontier-action-form method="post" action=(format!("{}archive", frontier_href(&frontier.slug))) {
+                form.frontier-action-form method="post" action=(format!("{}/archive", frontier_href(&frontier.slug))) {
                     input type="hidden" name="expected_revision" value=(frontier.revision);
                     button.frontier-action-button type="submit" { "Archive" }
                 }
             }
         },
         FrontierSidebarAction::Unarchive => html! {
-            form.frontier-action-form method="post" action=(format!("{}unarchive", frontier_href(&frontier.slug))) {
+            form.frontier-action-form method="post" action=(format!("{}/unarchive", frontier_href(&frontier.slug))) {
                 input type="hidden" name="expected_revision" value=(frontier.revision);
                 button.frontier-action-button type="submit" { "Unarchive" }
             }
