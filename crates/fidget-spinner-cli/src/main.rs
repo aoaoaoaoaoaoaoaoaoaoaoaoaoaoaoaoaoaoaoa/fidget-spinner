@@ -12,15 +12,15 @@ use camino::{Utf8Path, Utf8PathBuf};
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use fidget_spinner_core::{
     ArtifactKind, CommandRecipe, ExecutionBackend, ExperimentAnalysis, ExperimentStatus,
-    FieldValueType, FrontierVerdict, MetricUnit, MetricVisibility, NonEmptyText,
+    FieldValueType, FrontierStatus, FrontierVerdict, MetricUnit, MetricVisibility, NonEmptyText,
     OptimizationObjective, RunDimensionValue, Slug, TagName,
 };
 use fidget_spinner_store_sqlite::{
     AttachmentSelector, CloseExperimentRequest, CreateArtifactRequest, CreateFrontierRequest,
     CreateHypothesisRequest, DefineMetricRequest, DefineRunDimensionRequest,
     ExperimentOutcomePatch, FrontierRoadmapItemDraft, ListArtifactsQuery, ListExperimentsQuery,
-    ListHypothesesQuery, MetricBestQuery, MetricKeysQuery, MetricRankOrder, MetricScope,
-    OpenExperimentRequest, ProjectStore, StoreError, TextPatch, UpdateArtifactRequest,
+    ListFrontiersQuery, ListHypothesesQuery, MetricBestQuery, MetricKeysQuery, MetricRankOrder,
+    MetricScope, OpenExperimentRequest, ProjectStore, StoreError, TextPatch, UpdateArtifactRequest,
     UpdateExperimentRequest, UpdateFrontierRequest, UpdateHypothesisRequest, VertexSelector,
 };
 #[cfg(test)]
@@ -122,7 +122,7 @@ enum TagCommand {
 #[derive(Subcommand)]
 enum FrontierCommand {
     Create(FrontierCreateArgs),
-    List(ProjectArg),
+    List(FrontierListArgs),
     Read(FrontierSelectorArgs),
     Open(FrontierSelectorArgs),
     Update(FrontierUpdateArgs),
@@ -218,6 +218,14 @@ struct FrontierCreateArgs {
 }
 
 #[derive(Args)]
+struct FrontierListArgs {
+    #[command(flatten)]
+    project: ProjectArg,
+    #[arg(long)]
+    include_archived: bool,
+}
+
+#[derive(Args)]
 struct FrontierSelectorArgs {
     #[command(flatten)]
     project: ProjectArg,
@@ -235,6 +243,8 @@ struct FrontierUpdateArgs {
     expected_revision: Option<u64>,
     #[arg(long)]
     objective: Option<String>,
+    #[arg(long, value_enum)]
+    status: Option<CliFrontierStatus>,
     #[command(flatten)]
     situation: FrontierSituationPatchArgs,
     #[command(flatten)]
@@ -707,6 +717,23 @@ enum CliExperimentStatus {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+enum CliFrontierStatus {
+    Exploring,
+    Paused,
+    Archived,
+}
+
+impl From<CliFrontierStatus> for FrontierStatus {
+    fn from(value: CliFrontierStatus) -> Self {
+        match value {
+            CliFrontierStatus::Exploring => Self::Exploring,
+            CliFrontierStatus::Paused => Self::Paused,
+            CliFrontierStatus::Archived => Self::Archived,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
 enum CliArchivePatch {
     Archive,
     Restore,
@@ -725,9 +752,11 @@ fn main() -> Result<(), StoreError> {
         },
         Command::Frontier { command } => match command {
             FrontierCommand::Create(args) => run_frontier_create(args),
-            FrontierCommand::List(args) => {
-                print_json(&open_store(&args.project)?.list_frontiers()?)
-            }
+            FrontierCommand::List(args) => print_json(
+                &open_store(&args.project.project)?.list_frontiers(ListFrontiersQuery {
+                    include_archived: args.include_archived,
+                })?,
+            ),
             FrontierCommand::Read(args) => {
                 print_json(&open_store(&args.project.project)?.read_frontier(&args.frontier)?)
             }
@@ -865,6 +894,7 @@ fn run_frontier_update(args: FrontierUpdateArgs) -> Result<(), StoreError> {
         frontier: args.frontier,
         expected_revision: args.expected_revision,
         objective: args.objective.map(NonEmptyText::new).transpose()?,
+        status: args.status.map(FrontierStatus::from),
         situation: cli_text_patch(args.situation.situation, args.situation.clear_situation)?,
         roadmap,
         unknowns,

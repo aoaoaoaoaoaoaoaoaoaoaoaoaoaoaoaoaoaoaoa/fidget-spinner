@@ -4,21 +4,22 @@ use std::net::SocketAddr;
 use std::time::UNIX_EPOCH;
 
 use axum::Router;
-use axum::extract::{Path, State};
+use axum::extract::{Form, Path, State};
 use axum::http::header::CONTENT_TYPE;
 use axum::http::{StatusCode, Uri};
-use axum::response::{Html, IntoResponse, Response};
-use axum::routing::get;
+use axum::response::{Html, IntoResponse, Redirect, Response};
+use axum::routing::{get, post};
 use camino::Utf8PathBuf;
 use fidget_spinner_core::{
     AttachmentTargetRef, ExperimentAnalysis, ExperimentOutcome, ExperimentStatus, FrontierRecord,
-    FrontierVerdict, KnownMetricUnit, MetricUnit, NonEmptyText, RunDimensionValue, Slug, VertexRef,
+    FrontierStatus, FrontierVerdict, KnownMetricUnit, MetricUnit, NonEmptyText, RunDimensionValue,
+    Slug, VertexRef,
 };
 use fidget_spinner_store_sqlite::{
     ExperimentDetail, ExperimentSummary, FrontierMetricSeries, FrontierOpenProjection,
     FrontierSummary, HypothesisCurrentState, HypothesisDetail, ListExperimentsQuery,
-    ListHypothesesQuery, MetricKeysQuery, MetricScope, ProjectStatus, STATE_DB_NAME, StoreError,
-    VertexSummary,
+    ListFrontiersQuery, ListHypothesesQuery, MetricKeysQuery, MetricScope, ProjectStatus,
+    STATE_DB_NAME, StoreError, UpdateFrontierRequest, VertexSummary,
 };
 use maud::{DOCTYPE, Markup, PreEscaped, html};
 use percent_encoding::{NON_ALPHANUMERIC, percent_decode_str, utf8_percent_encode};
@@ -27,6 +28,7 @@ use plotters::prelude::{
     SVGBackend, SeriesLabelPosition, ShapeStyle,
 };
 use plotters::style::{Color, IntoFont, RGBColor};
+use serde::Deserialize;
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
 use time::macros::format_description;
@@ -57,6 +59,7 @@ pub(crate) enum NavigatorScope {
 struct ShellFrame {
     active_frontier_slug: Option<Slug>,
     frontiers: Vec<FrontierSummary>,
+    archived_frontiers: Vec<FrontierSummary>,
     project_status: ProjectStatus,
     base_href: String,
     project_home_href: String,
@@ -246,6 +249,14 @@ pub(crate) fn serve(
                 get(frontier_detail),
             )
             .route(
+                "/project/{project}/frontier/{selector}/archive",
+                post(archive_frontier),
+            )
+            .route(
+                "/project/{project}/frontier/{selector}/unarchive",
+                post(unarchive_frontier),
+            )
+            .route(
                 "/project/{project}/hypothesis/{selector}",
                 get(hypothesis_detail),
             )
@@ -324,6 +335,45 @@ async fn frontier_detail(
     )
 }
 
+#[derive(Debug, Deserialize)]
+struct FrontierArchiveForm {
+    expected_revision: Option<u64>,
+}
+
+async fn archive_frontier(
+    State(state): State<NavigatorState>,
+    Path((project, selector)): Path<(String, String)>,
+    Form(form): Form<FrontierArchiveForm>,
+) -> Response {
+    frontier_status_mutation_response(resolve_project_context(&state, &project).and_then(
+        |context| {
+            update_frontier_status(
+                context,
+                selector,
+                form.expected_revision,
+                FrontierStatus::Archived,
+            )
+        },
+    ))
+}
+
+async fn unarchive_frontier(
+    State(state): State<NavigatorState>,
+    Path((project, selector)): Path<(String, String)>,
+    Form(form): Form<FrontierArchiveForm>,
+) -> Response {
+    frontier_status_mutation_response(resolve_project_context(&state, &project).and_then(
+        |context| {
+            update_frontier_status(
+                context,
+                selector,
+                form.expected_revision,
+                FrontierStatus::Exploring,
+            )
+        },
+    ))
+}
+
 async fn hypothesis_detail(
     State(state): State<NavigatorState>,
     Path((project, selector)): Path<(String, String)>,
@@ -380,6 +430,25 @@ fn refresh_token_response(result: Result<String, StoreError>) -> Response {
         Err(error) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             format!("navigator refresh-token failed: {error}"),
+        )
+            .into_response(),
+    }
+}
+
+fn frontier_status_mutation_response(result: Result<String, StoreError>) -> Response {
+    match result {
+        Ok(location) => Redirect::to(&location).into_response(),
+        Err(StoreError::RevisionMismatch { .. }) => (
+            StatusCode::CONFLICT,
+            "frontier changed before the archive request landed; reload and retry".to_owned(),
+        )
+            .into_response(),
+        Err(StoreError::UnknownFrontierSelector(_)) => {
+            (StatusCode::NOT_FOUND, "not found".to_owned()).into_response()
+        }
+        Err(error) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("frontier archive update failed: {error}"),
         )
             .into_response(),
     }
@@ -499,6 +568,30 @@ fn project_refresh_token_for(context: &ProjectRenderContext) -> Result<String, S
         modified.as_secs(),
         modified.subsec_nanos(),
         metadata.len()
+    ))
+}
+
+fn update_frontier_status(
+    context: ProjectRenderContext,
+    selector: String,
+    expected_revision: Option<u64>,
+    status: FrontierStatus,
+) -> Result<String, StoreError> {
+    let mut store = open_store(context.project_root.as_std_path())?;
+    let updated = store.update_frontier(UpdateFrontierRequest {
+        frontier: selector,
+        expected_revision,
+        objective: None,
+        status: Some(status),
+        situation: None,
+        roadmap: None,
+        unknowns: None,
+        scoreboard_metric_keys: None,
+    })?;
+    Ok(format!(
+        "{}{}",
+        context.base_href,
+        frontier_href(&updated.slug)
     ))
 }
 
@@ -688,10 +781,22 @@ fn load_shell_frame(
     active_frontier_slug: Option<Slug>,
     context: &ProjectRenderContext,
 ) -> Result<ShellFrame, StoreError> {
+    let mut active_frontiers = Vec::new();
+    let mut archived_frontiers = Vec::new();
+    for frontier in store.list_frontiers(ListFrontiersQuery {
+        include_archived: true,
+    })? {
+        if frontier.status == FrontierStatus::Archived {
+            archived_frontiers.push(frontier);
+        } else {
+            active_frontiers.push(frontier);
+        }
+    }
     Ok(ShellFrame {
         active_frontier_slug,
         base_href: context.base_href.clone(),
-        frontiers: store.list_frontiers()?,
+        frontiers: active_frontiers,
+        archived_frontiers,
         project_home_href: context.project_home_href.clone(),
         project_status: store.status()?,
         refresh_token_href: context.refresh_token_href.clone(),
@@ -2529,6 +2634,7 @@ function autoRefreshDeferred() {{
     return Boolean(
         document.hidden
         || document.querySelector("details.control-popout[open]")
+        || document.querySelector("details.frontier-action-menu[open]")
         || document.querySelector("button[data-copy-plot-png=\"true\"]:disabled")
     );
 }}
@@ -2682,7 +2788,7 @@ document.addEventListener("click", (event) => {{
     ) {{
         stashViewportState();
     }}
-    for (const popout of document.querySelectorAll("details.control-popout[open]")) {{
+    for (const popout of document.querySelectorAll("details.control-popout[open], details.frontier-action-menu[open]")) {{
         if (!popout.contains(target)) {{
             popout.removeAttribute("open");
         }}
@@ -2704,7 +2810,7 @@ document.addEventListener("keydown", (event) => {{
     if (event.key !== "Escape") {{
         return;
     }}
-    for (const popout of document.querySelectorAll("details.control-popout[open]")) {{
+    for (const popout of document.querySelectorAll("details.control-popout[open], details.frontier-action-menu[open]")) {{
         popout.removeAttribute("open");
     }}
 }});
@@ -2751,29 +2857,94 @@ fn render_sidebar(shell: &ShellFrame) -> Markup {
             } @else {
                 nav.frontier-nav aria-label="Frontiers" {
                     @for frontier in &shell.frontiers {
-                        a
-                            href=(frontier_href(&frontier.slug))
-                            class={(if shell
-                                .active_frontier_slug
-                                .as_ref()
-                                .is_some_and(|active| active == &frontier.slug)
-                            {
-                                "frontier-nav-link active"
-                            } else {
-                                "frontier-nav-link"
-                            })}
-                        {
-                            span.frontier-nav-title { (&frontier.label) }
-                            span.frontier-nav-meta {
-                                (frontier.active_hypothesis_count) " active · "
-                                (frontier.open_experiment_count) " open"
-                            }
+                        (render_sidebar_frontier_item(
+                            frontier,
+                            shell.active_frontier_slug.as_ref(),
+                            FrontierSidebarAction::Archive,
+                        ))
+                    }
+                }
+            }
+            @if !shell.archived_frontiers.is_empty() {
+                details.sidebar-archived {
+                    summary.sidebar-archived-toggle {
+                        "Archived (" (shell.archived_frontiers.len()) ")"
+                    }
+                    nav.frontier-nav.sidebar-archived-list aria-label="Archived frontiers" {
+                        @for frontier in &shell.archived_frontiers {
+                            (render_sidebar_frontier_item(
+                                frontier,
+                                shell.active_frontier_slug.as_ref(),
+                                FrontierSidebarAction::Unarchive,
+                            ))
                         }
                     }
                 }
             }
         }
     }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum FrontierSidebarAction {
+    Archive,
+    Unarchive,
+}
+
+fn render_sidebar_frontier_item(
+    frontier: &FrontierSummary,
+    active_frontier_slug: Option<&Slug>,
+    action: FrontierSidebarAction,
+) -> Markup {
+    let active = active_frontier_slug.is_some_and(|active| active == &frontier.slug);
+    html! {
+    div.frontier-nav-item {
+        a
+            href=(frontier_href(&frontier.slug))
+            class={(if active {
+                "frontier-nav-link active"
+            } else {
+                "frontier-nav-link"
+            })}
+        {
+            span.frontier-nav-title { (&frontier.label) }
+            span.frontier-nav-meta {
+                @if frontier.status == FrontierStatus::Archived {
+                    "archived"
+                } @else {
+                    (frontier.active_hypothesis_count) " active · "
+                    (frontier.open_experiment_count) " open"
+                }
+            }
+        }
+        (render_frontier_sidebar_action(frontier, action))
+    }
+    }
+}
+
+fn render_frontier_sidebar_action(
+    frontier: &FrontierSummary,
+    action: FrontierSidebarAction,
+) -> Markup {
+    match action {
+        FrontierSidebarAction::Archive => html! {
+            details.frontier-action-menu {
+                summary.frontier-action-toggle aria-label=(format!("Archive {}", frontier.label)) {
+                    "..."
+                }
+                form.frontier-action-form method="post" action=(format!("{}archive", frontier_href(&frontier.slug))) {
+                    input type="hidden" name="expected_revision" value=(frontier.revision);
+                    button.frontier-action-button type="submit" { "Archive" }
+                }
+            }
+        },
+        FrontierSidebarAction::Unarchive => html! {
+            form.frontier-action-form method="post" action=(format!("{}unarchive", frontier_href(&frontier.slug))) {
+                input type="hidden" name="expected_revision" value=(frontier.revision);
+                button.frontier-action-button type="submit" { "Unarchive" }
+            }
+        },
     }
 }
 
@@ -3646,12 +3817,20 @@ fn styles() -> &'static str {
         display: grid;
         gap: 8px;
     }
+    .frontier-nav-item {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        gap: 6px;
+        align-items: stretch;
+        min-width: 0;
+    }
     .frontier-nav-link {
         display: grid;
         gap: 4px;
         padding: 10px 12px;
         border: 1px solid var(--border);
         background: var(--panel-2);
+        min-width: 0;
     }
     .frontier-nav-link.active {
         border-color: var(--border-strong);
@@ -3664,6 +3843,70 @@ fn styles() -> &'static str {
     .frontier-nav-meta {
         color: var(--muted);
         font-size: 12px;
+    }
+    .frontier-action-menu {
+        position: relative;
+        align-self: stretch;
+    }
+    .frontier-action-toggle,
+    .frontier-action-button {
+        border: 1px solid var(--border);
+        background: var(--panel);
+        color: var(--muted);
+        font: inherit;
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        cursor: pointer;
+    }
+    .frontier-action-toggle {
+        display: grid;
+        place-items: center;
+        height: 100%;
+        min-width: 30px;
+        list-style: none;
+        user-select: none;
+    }
+    .frontier-action-toggle::-webkit-details-marker {
+        display: none;
+    }
+    .frontier-action-menu[open] > .frontier-action-toggle {
+        border-color: var(--border-strong);
+        color: var(--text);
+    }
+    .frontier-action-form {
+        display: grid;
+        margin: 0;
+    }
+    .frontier-action-menu .frontier-action-form {
+        position: absolute;
+        top: calc(100% + 4px);
+        right: 0;
+        z-index: 5;
+        box-shadow: 0 10px 24px rgba(83, 61, 33, 0.14);
+    }
+    .frontier-action-button {
+        padding: 7px 9px;
+        white-space: nowrap;
+    }
+    .frontier-action-button:hover {
+        color: var(--text);
+        border-color: var(--border-strong);
+    }
+    .sidebar-archived {
+        display: grid;
+        gap: 8px;
+    }
+    .sidebar-archived-toggle {
+        color: var(--muted);
+        cursor: pointer;
+        font-size: 12px;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        user-select: none;
+    }
+    .sidebar-archived-list {
+        margin-top: 8px;
     }
     .main-column {
         display: grid;

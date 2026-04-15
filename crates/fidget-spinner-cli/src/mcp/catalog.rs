@@ -335,8 +335,8 @@ fn tool_input_schema(name: &str) -> Value {
             )],
             &["path"],
         ),
-        "project.status" | "tag.list" | "frontier.list" | "run.dimension.list" | "skill.list"
-        | "system.health" | "system.telemetry" => empty_object_schema(),
+        "project.status" | "tag.list" | "run.dimension.list" | "skill.list" | "system.health"
+        | "system.telemetry" => empty_object_schema(),
         "tag.add" => object_schema(
             &[
                 ("name", string_schema("Repo-local tag token.")),
@@ -355,6 +355,13 @@ fn tool_input_schema(name: &str) -> Value {
             ],
             &["label", "objective"],
         ),
+        "frontier.list" => object_schema(
+            &[(
+                "include_archived",
+                boolean_schema("Include archived frontier scopes."),
+            )],
+            &[],
+        ),
         "frontier.read" | "frontier.open" | "frontier.history" => object_schema(
             &[("frontier", selector_schema("Frontier UUID or slug."))],
             &["frontier"],
@@ -369,6 +376,13 @@ fn tool_input_schema(name: &str) -> Value {
                 (
                     "objective",
                     string_schema("Optional replacement frontier objective."),
+                ),
+                (
+                    "status",
+                    enum_string_schema(
+                        &["exploring", "paused", "archived"],
+                        "Optional replacement frontier status.",
+                    ),
                 ),
                 (
                     "situation",

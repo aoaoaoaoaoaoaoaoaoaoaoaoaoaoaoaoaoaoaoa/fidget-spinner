@@ -26,7 +26,7 @@ pub const STORE_DIR_NAME: &str = ".fidget_spinner";
 pub const GIT_DIR_NAME: &str = ".git";
 pub const STATE_DB_NAME: &str = "state.sqlite";
 pub const PROJECT_CONFIG_NAME: &str = "project.json";
-pub const CURRENT_STORE_FORMAT_VERSION: u32 = 4;
+pub const CURRENT_STORE_FORMAT_VERSION: u32 = 5;
 pub const STATE_HOME_DIR_NAME: &str = "fidget-spinner";
 pub const PROJECT_STATE_DIR_NAME: &str = "projects";
 const PROJECT_ROOT_NAMESPACE: Uuid = Uuid::from_u128(0x0df3_58f4_3649_44f1_8f05_0bb2_4ebd_8d31);
@@ -206,6 +206,11 @@ pub enum AttachmentSelector {
     Experiment(String),
 }
 
+#[derive(Clone, Debug, Default)]
+pub struct ListFrontiersQuery {
+    pub include_archived: bool,
+}
+
 #[derive(Clone, Debug)]
 pub struct CreateFrontierRequest {
     pub label: NonEmptyText,
@@ -222,6 +227,7 @@ pub struct FrontierSummary {
     pub status: FrontierStatus,
     pub active_hypothesis_count: u64,
     pub open_experiment_count: u64,
+    pub revision: u64,
     pub updated_at: OffsetDateTime,
 }
 
@@ -243,6 +249,7 @@ pub struct UpdateFrontierRequest {
     pub frontier: String,
     pub expected_revision: Option<u64>,
     pub objective: Option<NonEmptyText>,
+    pub status: Option<FrontierStatus>,
     pub situation: Option<TextPatch<NonEmptyText>>,
     pub roadmap: Option<Vec<FrontierRoadmapItemDraft>>,
     pub unknowns: Option<Vec<NonEmptyText>>,
@@ -837,7 +844,10 @@ impl ProjectStore {
         Ok(record)
     }
 
-    pub fn list_frontiers(&self) -> Result<Vec<FrontierSummary>, StoreError> {
+    pub fn list_frontiers(
+        &self,
+        query: ListFrontiersQuery,
+    ) -> Result<Vec<FrontierSummary>, StoreError> {
         let mut statement = self.connection.prepare(
             "SELECT id, slug, label, objective, status, brief_json, revision, created_at, updated_at
              FROM frontiers
@@ -847,6 +857,7 @@ impl ProjectStore {
         rows.collect::<Result<Vec<_>, _>>()
             .map_err(StoreError::from)?
             .into_iter()
+            .filter(|record| query.include_archived || record.status != FrontierStatus::Archived)
             .map(|record| {
                 Ok(FrontierSummary {
                     active_hypothesis_count: self.active_hypothesis_count(record.id)?,
@@ -856,6 +867,7 @@ impl ProjectStore {
                     label: record.label,
                     objective: record.objective,
                     status: record.status,
+                    revision: record.revision,
                     updated_at: record.updated_at,
                 })
             })
@@ -924,6 +936,7 @@ impl ProjectStore {
         };
         let updated = FrontierRecord {
             objective: request.objective.unwrap_or(frontier.objective.clone()),
+            status: request.status.unwrap_or(frontier.status),
             brief,
             revision: frontier.revision.saturating_add(1),
             updated_at: now,
@@ -1967,7 +1980,7 @@ impl ProjectStore {
             Selector::Id(uuid) => self
                 .connection
                 .query_row(
-                    "SELECT id, slug, frontier_id, hypothesis_id, archived, title, summary, tags_json, status, outcome_json, revision, created_at, updated_at
+                    "SELECT id, slug, frontier_id, hypothesis_id, archived, title, summary, status, outcome_json, revision, created_at, updated_at
                      FROM experiments WHERE id = ?1",
                     params![uuid.to_string()],
                     decode_experiment_row,
@@ -1976,14 +1989,16 @@ impl ProjectStore {
             Selector::Slug(slug) => self
                 .connection
                 .query_row(
-                    "SELECT id, slug, frontier_id, hypothesis_id, archived, title, summary, tags_json, status, outcome_json, revision, created_at, updated_at
+                    "SELECT id, slug, frontier_id, hypothesis_id, archived, title, summary, status, outcome_json, revision, created_at, updated_at
                      FROM experiments WHERE slug = ?1",
                     params![slug.as_str()],
                     decode_experiment_row,
                 )
                 .optional()?,
         };
-        record.ok_or_else(|| StoreError::UnknownExperimentSelector(selector.to_owned()))
+        record
+            .ok_or_else(|| StoreError::UnknownExperimentSelector(selector.to_owned()))
+            .and_then(|record| self.hydrate_experiment_tags(record))
     }
 
     fn resolve_artifact(&self, selector: &str) -> Result<ArtifactRecord, StoreError> {
@@ -2153,7 +2168,7 @@ impl ProjectStore {
         hypothesis_id: Option<HypothesisId>,
         include_archived: bool,
     ) -> Result<Vec<ExperimentRecord>, StoreError> {
-        let base_sql = "SELECT id, slug, frontier_id, hypothesis_id, archived, title, summary, tags_json, status, outcome_json, revision, created_at, updated_at FROM experiments";
+        let base_sql = "SELECT id, slug, frontier_id, hypothesis_id, archived, title, summary, status, outcome_json, revision, created_at, updated_at FROM experiments";
         let records = match (frontier_id, hypothesis_id) {
             (Some(frontier_id), Some(hypothesis_id)) => {
                 let mut statement = self.connection.prepare(&format!(
@@ -2189,6 +2204,10 @@ impl ProjectStore {
                 rows.collect::<Result<Vec<_>, _>>()?
             }
         };
+        let records = records
+            .into_iter()
+            .map(|record| self.hydrate_experiment_tags(record))
+            .collect::<Result<Vec<_>, _>>()?;
         Ok(if include_archived {
             records
         } else {
@@ -2238,6 +2257,24 @@ impl ProjectStore {
             parse_tag_name(&row.get::<_, String>(0)?)
         })?;
         rows.collect::<Result<Vec<_>, _>>()
+    }
+
+    fn experiment_tags(&self, id: ExperimentId) -> Result<Vec<TagName>, rusqlite::Error> {
+        let mut statement = self.connection.prepare(
+            "SELECT tag_name FROM experiment_tags WHERE experiment_id = ?1 ORDER BY tag_name ASC",
+        )?;
+        let rows = statement.query_map(params![id.to_string()], |row| {
+            parse_tag_name(&row.get::<_, String>(0)?)
+        })?;
+        rows.collect::<Result<Vec<_>, _>>()
+    }
+
+    fn hydrate_experiment_tags(
+        &self,
+        mut record: ExperimentRecord,
+    ) -> Result<ExperimentRecord, StoreError> {
+        record.tags = self.experiment_tags(record.id)?;
+        Ok(record)
     }
 
     fn hypothesis_summary_from_record(
@@ -2844,7 +2881,6 @@ fn install_schema(connection: &Connection) -> Result<(), StoreError> {
             archived INTEGER NOT NULL,
             title TEXT NOT NULL,
             summary TEXT,
-            tags_json TEXT NOT NULL,
             status TEXT NOT NULL,
             outcome_json TEXT,
             revision INTEGER NOT NULL,
@@ -3048,8 +3084,8 @@ fn insert_experiment(
     experiment: &ExperimentRecord,
 ) -> Result<(), StoreError> {
     let _ = transaction.execute(
-        "INSERT INTO experiments (id, slug, frontier_id, hypothesis_id, archived, title, summary, tags_json, status, outcome_json, revision, created_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+        "INSERT INTO experiments (id, slug, frontier_id, hypothesis_id, archived, title, summary, status, outcome_json, revision, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
         params![
             experiment.id.to_string(),
             experiment.slug.as_str(),
@@ -3058,7 +3094,6 @@ fn insert_experiment(
             bool_to_sql(experiment.archived),
             experiment.title.as_str(),
             experiment.summary.as_ref().map(NonEmptyText::as_str),
-            encode_json(&experiment.tags)?,
             experiment.status.as_str(),
             experiment.outcome.as_ref().map(encode_json).transpose()?,
             experiment.revision,
@@ -3075,7 +3110,7 @@ fn update_experiment_row(
 ) -> Result<(), StoreError> {
     let _ = transaction.execute(
         "UPDATE experiments
-         SET slug = ?2, archived = ?3, title = ?4, summary = ?5, tags_json = ?6, status = ?7, outcome_json = ?8, revision = ?9, updated_at = ?10
+         SET slug = ?2, archived = ?3, title = ?4, summary = ?5, status = ?6, outcome_json = ?7, revision = ?8, updated_at = ?9
          WHERE id = ?1",
         params![
             experiment.id.to_string(),
@@ -3083,7 +3118,6 @@ fn update_experiment_row(
             bool_to_sql(experiment.archived),
             experiment.title.as_str(),
             experiment.summary.as_ref().map(NonEmptyText::as_str),
-            encode_json(&experiment.tags)?,
             experiment.status.as_str(),
             experiment.outcome.as_ref().map(encode_json).transpose()?,
             experiment.revision,
@@ -3299,15 +3333,15 @@ fn decode_experiment_row(row: &rusqlite::Row<'_>) -> Result<ExperimentRecord, ru
         archived: row.get::<_, i64>(4)? != 0,
         title: parse_non_empty_text(&row.get::<_, String>(5)?)?,
         summary: parse_optional_non_empty_text(row.get::<_, Option<String>>(6)?)?,
-        tags: decode_json(&row.get::<_, String>(7)?).map_err(to_sql_conversion_error)?,
-        status: parse_experiment_status(&row.get::<_, String>(8)?)?,
+        tags: Vec::new(),
+        status: parse_experiment_status(&row.get::<_, String>(7)?)?,
         outcome: row
-            .get::<_, Option<String>>(9)?
+            .get::<_, Option<String>>(8)?
             .map(|raw| decode_json(&raw).map_err(to_sql_conversion_error))
             .transpose()?,
-        revision: row.get(10)?,
-        created_at: parse_timestamp_sql(&row.get::<_, String>(11)?)?,
-        updated_at: parse_timestamp_sql(&row.get::<_, String>(12)?)?,
+        revision: row.get(9)?,
+        created_at: parse_timestamp_sql(&row.get::<_, String>(10)?)?,
+        updated_at: parse_timestamp_sql(&row.get::<_, String>(11)?)?,
     })
 }
 

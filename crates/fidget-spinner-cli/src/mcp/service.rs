@@ -8,18 +8,18 @@ use std::time::UNIX_EPOCH;
 use camino::{Utf8Path, Utf8PathBuf};
 use fidget_spinner_core::{
     ArtifactKind, AttachmentTargetRef, CommandRecipe, ExecutionBackend, ExperimentAnalysis,
-    ExperimentStatus, FieldValueType, FrontierVerdict, MetricUnit, MetricVisibility, NonEmptyText,
-    OptimizationObjective, RunDimensionValue, Slug, TagName,
+    ExperimentStatus, FieldValueType, FrontierStatus, FrontierVerdict, MetricUnit,
+    MetricVisibility, NonEmptyText, OptimizationObjective, RunDimensionValue, Slug, TagName,
 };
 use fidget_spinner_store_sqlite::{
     AttachmentSelector, CloseExperimentRequest, CreateArtifactRequest, CreateFrontierRequest,
     CreateHypothesisRequest, DefineMetricRequest, DefineRunDimensionRequest, EntityHistoryEntry,
     ExperimentNearestQuery, ExperimentOutcomePatch, FrontierOpenProjection,
     FrontierRoadmapItemDraft, FrontierSummary, ListArtifactsQuery, ListExperimentsQuery,
-    ListHypothesesQuery, MetricBestEntry, MetricBestQuery, MetricKeySummary, MetricKeysQuery,
-    MetricRankOrder, MetricScope, OpenExperimentRequest, ProjectStatus, ProjectStore, StoreError,
-    TextPatch, UpdateArtifactRequest, UpdateExperimentRequest, UpdateFrontierRequest,
-    UpdateHypothesisRequest, VertexSelector, VertexSummary,
+    ListFrontiersQuery, ListHypothesesQuery, MetricBestEntry, MetricBestQuery, MetricKeySummary,
+    MetricKeysQuery, MetricRankOrder, MetricScope, OpenExperimentRequest, ProjectStatus,
+    ProjectStore, StoreError, TextPatch, UpdateArtifactRequest, UpdateExperimentRequest,
+    UpdateFrontierRequest, UpdateHypothesisRequest, VertexSelector, VertexSummary,
 };
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
@@ -123,7 +123,13 @@ impl WorkerService {
                 frontier_record_output(&self.store, &frontier, &operation)?
             }
             "frontier.list" => {
-                frontier_list_output(&lift!(self.store.list_frontiers()), &operation)?
+                let args = deserialize::<FrontierListArgs>(arguments)?;
+                frontier_list_output(
+                    &lift!(self.store.list_frontiers(ListFrontiersQuery {
+                        include_archived: args.include_archived.unwrap_or(false),
+                    })),
+                    &operation,
+                )?
             }
             "frontier.read" => {
                 let args = deserialize::<FrontierSelectorArgs>(arguments)?;
@@ -148,6 +154,7 @@ impl WorkerService {
                             .map(NonEmptyText::new)
                             .transpose()
                             .map_err(store_fault(&operation))?,
+                        status: args.status,
                         situation: nullable_text_patch_from_wire(args.situation, &operation)?,
                         roadmap: args
                             .roadmap
@@ -618,6 +625,11 @@ struct FrontierCreateArgs {
 }
 
 #[derive(Debug, Deserialize)]
+struct FrontierListArgs {
+    include_archived: Option<bool>,
+}
+
+#[derive(Debug, Deserialize)]
 struct FrontierSelectorArgs {
     frontier: String,
 }
@@ -627,6 +639,7 @@ struct FrontierUpdateArgs {
     frontier: String,
     expected_revision: Option<u64>,
     objective: Option<String>,
+    status: Option<FrontierStatus>,
     situation: Option<NullableStringArg>,
     roadmap: Option<Vec<FrontierRoadmapItemWire>>,
     unknowns: Option<Vec<String>>,

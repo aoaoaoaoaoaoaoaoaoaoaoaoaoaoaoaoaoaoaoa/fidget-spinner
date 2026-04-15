@@ -1,6 +1,7 @@
 use axum as _;
 use clap as _;
 use dirs as _;
+use std::collections::BTreeSet;
 use std::fs;
 use std::io::{self, BufRead, BufReader, Write};
 use std::path::PathBuf;
@@ -8,8 +9,11 @@ use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::OnceLock;
 
 use camino::Utf8PathBuf;
-use fidget_spinner_core::{NonEmptyText, Slug};
-use fidget_spinner_store_sqlite::{CreateFrontierRequest, ProjectStore};
+use fidget_spinner_core::{FrontierStatus, NonEmptyText, Slug, TagName};
+use fidget_spinner_store_sqlite::{
+    CreateFrontierRequest, CreateHypothesisRequest, ListExperimentsQuery, ListFrontiersQuery,
+    OpenExperimentRequest, ProjectStore, UpdateFrontierRequest,
+};
 use libmcp as _;
 use libmcp_testkit::assert_no_opaque_ids;
 use maud as _;
@@ -333,6 +337,143 @@ fn cold_start_exposes_bound_surface_and_new_toolset() -> TestResult {
     let rebound_health = harness.call_tool(5, "system.health", json!({}))?;
     assert_tool_ok(&rebound_health);
     assert_eq!(tool_content(&rebound_health)["bound"].as_bool(), Some(true));
+    Ok(())
+}
+
+#[test]
+fn frontier_archive_hides_default_enumeration_without_breaking_direct_reads() -> TestResult {
+    let root = temp_project_root("frontier_archive_filter")?;
+    init_project(&root)?;
+    let mut store = must(ProjectStore::open(&root), "open store")?;
+    let frontier = must(
+        store.create_frontier(CreateFrontierRequest {
+            label: must(NonEmptyText::new("archive me"), "frontier label")?,
+            objective: must(
+                NonEmptyText::new("archive filter test"),
+                "frontier objective",
+            )?,
+            slug: Some(must(Slug::new("archive-me"), "frontier slug")?),
+        }),
+        "create frontier",
+    )?;
+
+    let archived = must(
+        store.update_frontier(UpdateFrontierRequest {
+            frontier: frontier.slug.to_string(),
+            expected_revision: Some(frontier.revision),
+            objective: None,
+            status: Some(FrontierStatus::Archived),
+            situation: None,
+            roadmap: None,
+            unknowns: None,
+            scoreboard_metric_keys: None,
+        }),
+        "archive frontier",
+    )?;
+    assert_eq!(archived.status, FrontierStatus::Archived);
+    assert!(
+        must(
+            store.list_frontiers(ListFrontiersQuery {
+                include_archived: false,
+            }),
+            "list active frontiers",
+        )?
+        .is_empty()
+    );
+    assert_eq!(
+        must(
+            store.list_frontiers(ListFrontiersQuery {
+                include_archived: true,
+            }),
+            "list all frontiers",
+        )?
+        .len(),
+        1
+    );
+    assert_eq!(
+        must(store.read_frontier("archive-me"), "read archived frontier")?.status,
+        FrontierStatus::Archived
+    );
+    assert_eq!(
+        must(store.frontier_open("archive-me"), "open archived frontier")?
+            .frontier
+            .status,
+        FrontierStatus::Archived
+    );
+    Ok(())
+}
+
+#[test]
+fn experiment_tags_are_loaded_from_the_junction_table() -> TestResult {
+    let root = temp_project_root("experiment_tags_junction")?;
+    init_project(&root)?;
+    let mut store = must(ProjectStore::open(&root), "open store")?;
+    let tag = must(TagName::new("junction-tag"), "tag name")?;
+    let _ = must(
+        store.register_tag(
+            tag.clone(),
+            must(NonEmptyText::new("junction tag"), "tag description")?,
+        ),
+        "register tag",
+    )?;
+    let frontier = must(
+        store.create_frontier(CreateFrontierRequest {
+            label: must(NonEmptyText::new("tag frontier"), "frontier label")?,
+            objective: must(NonEmptyText::new("tag test"), "frontier objective")?,
+            slug: Some(must(Slug::new("tag-frontier"), "frontier slug")?),
+        }),
+        "create frontier",
+    )?;
+    let hypothesis = must(
+        store.create_hypothesis(CreateHypothesisRequest {
+            frontier: frontier.slug.to_string(),
+            slug: Some(must(Slug::new("tag-hypothesis"), "hypothesis slug")?),
+            title: must(NonEmptyText::new("Tag hypothesis"), "hypothesis title")?,
+            summary: must(
+                NonEmptyText::new("Tag hypothesis summary"),
+                "hypothesis summary",
+            )?,
+            body: must(NonEmptyText::new("Tag hypothesis body."), "hypothesis body")?,
+            tags: BTreeSet::new(),
+            parents: Vec::new(),
+        }),
+        "create hypothesis",
+    )?;
+    let tags = BTreeSet::from([tag.clone()]);
+    let experiment = must(
+        store.open_experiment(OpenExperimentRequest {
+            hypothesis: hypothesis.slug.to_string(),
+            slug: Some(must(Slug::new("tag-experiment"), "experiment slug")?),
+            title: must(NonEmptyText::new("Tag experiment"), "experiment title")?,
+            summary: None,
+            tags,
+            parents: Vec::new(),
+        }),
+        "open experiment",
+    )?;
+
+    assert_eq!(
+        must(
+            store.read_experiment(experiment.slug.as_str()),
+            "read experiment"
+        )?
+        .record
+        .tags,
+        vec![tag.clone()]
+    );
+    assert_eq!(
+        must(
+            store.list_experiments(ListExperimentsQuery {
+                frontier: Some(frontier.slug.to_string()),
+                ..ListExperimentsQuery::default()
+            }),
+            "list experiments",
+        )?
+        .into_iter()
+        .next()
+        .and_then(|summary| summary.tags.into_iter().next()),
+        Some(tag)
+    );
     Ok(())
 }
 
