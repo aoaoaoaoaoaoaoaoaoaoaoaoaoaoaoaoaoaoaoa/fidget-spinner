@@ -2634,7 +2634,6 @@ function autoRefreshDeferred() {{
     return Boolean(
         document.hidden
         || document.querySelector("details.control-popout[open]")
-        || document.querySelector("details.frontier-action-menu[open]")
         || document.querySelector("button[data-copy-plot-png=\"true\"]:disabled")
     );
 }}
@@ -2788,7 +2787,7 @@ document.addEventListener("click", (event) => {{
     ) {{
         stashViewportState();
     }}
-    for (const popout of document.querySelectorAll("details.control-popout[open], details.frontier-action-menu[open]")) {{
+    for (const popout of document.querySelectorAll("details.control-popout[open]")) {{
         if (!popout.contains(target)) {{
             popout.removeAttribute("open");
         }}
@@ -2810,7 +2809,7 @@ document.addEventListener("keydown", (event) => {{
     if (event.key !== "Escape") {{
         return;
     }}
-    for (const popout of document.querySelectorAll("details.control-popout[open], details.frontier-action-menu[open]")) {{
+    for (const popout of document.querySelectorAll("details.control-popout[open]")) {{
         popout.removeAttribute("open");
     }}
 }});
@@ -2929,22 +2928,44 @@ fn render_frontier_sidebar_action(
 ) -> Markup {
     match action {
         FrontierSidebarAction::Archive => html! {
-            details.frontier-action-menu {
-                summary.frontier-action-toggle aria-label=(format!("Archive {}", frontier.label)) {
-                    "..."
-                }
-                form.frontier-action-form method="post" action=(format!("{}/archive", frontier_href(&frontier.slug))) {
-                    input type="hidden" name="expected_revision" value=(frontier.revision);
-                    button.frontier-action-button type="submit" { "Archive" }
+            form.frontier-action-form method="post" action=(format!("{}/archive", frontier_href(&frontier.slug))) {
+                input type="hidden" name="expected_revision" value=(frontier.revision);
+                button.frontier-action-button type="submit" aria-label=(format!("Archive {}", frontier.label)) title="Archive frontier" {
+                    (archive_icon())
                 }
             }
         },
         FrontierSidebarAction::Unarchive => html! {
             form.frontier-action-form method="post" action=(format!("{}/unarchive", frontier_href(&frontier.slug))) {
                 input type="hidden" name="expected_revision" value=(frontier.revision);
-                button.frontier-action-button type="submit" { "Unarchive" }
+                button.frontier-action-button type="submit" aria-label=(format!("Unarchive {}", frontier.label)) title="Unarchive frontier" {
+                    (unarchive_icon())
+                }
             }
         },
+    }
+}
+
+fn archive_icon() -> Markup {
+    html! {
+        svg.frontier-action-icon aria-hidden="true" viewBox="0 0 24 24" fill="none" {
+            path d="M4 7.5h16" {}
+            path d="M6 7.5v10a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2v-10" {}
+            path d="M7 4.5h10l1 3H6l1-3Z" {}
+            path d="M10 11h4" {}
+        }
+    }
+}
+
+fn unarchive_icon() -> Markup {
+    html! {
+        svg.frontier-action-icon aria-hidden="true" viewBox="0 0 24 24" fill="none" {
+            path d="M4 7.5h16" {}
+            path d="M6 7.5v10a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2v-10" {}
+            path d="M7 4.5h10l1 3H6l1-3Z" {}
+            path d="M12 15V10" {}
+            path d="M9.5 12.5 12 10l2.5 2.5" {}
+        }
     }
 }
 
@@ -3844,54 +3865,34 @@ fn styles() -> &'static str {
         color: var(--muted);
         font-size: 12px;
     }
-    .frontier-action-menu {
-        position: relative;
+    .frontier-action-form {
+        display: grid;
+        margin: 0;
         align-self: stretch;
     }
-    .frontier-action-toggle,
     .frontier-action-button {
         border: 1px solid var(--border);
         background: var(--panel);
         color: var(--muted);
-        font: inherit;
-        font-size: 11px;
-        text-transform: uppercase;
-        letter-spacing: 0.05em;
         cursor: pointer;
-    }
-    .frontier-action-toggle {
         display: grid;
         place-items: center;
         height: 100%;
         min-width: 30px;
-        list-style: none;
+        padding: 0;
         user-select: none;
-    }
-    .frontier-action-toggle::-webkit-details-marker {
-        display: none;
-    }
-    .frontier-action-menu[open] > .frontier-action-toggle {
-        border-color: var(--border-strong);
-        color: var(--text);
-    }
-    .frontier-action-form {
-        display: grid;
-        margin: 0;
-    }
-    .frontier-action-menu .frontier-action-form {
-        position: absolute;
-        top: calc(100% + 4px);
-        right: 0;
-        z-index: 5;
-        box-shadow: 0 10px 24px rgba(83, 61, 33, 0.14);
-    }
-    .frontier-action-button {
-        padding: 7px 9px;
-        white-space: nowrap;
     }
     .frontier-action-button:hover {
         color: var(--text);
         border-color: var(--border-strong);
+    }
+    .frontier-action-icon {
+        width: 17px;
+        height: 17px;
+        stroke: currentColor;
+        stroke-width: 1.8;
+        stroke-linecap: round;
+        stroke-linejoin: round;
     }
     .sidebar-archived {
         display: grid;
