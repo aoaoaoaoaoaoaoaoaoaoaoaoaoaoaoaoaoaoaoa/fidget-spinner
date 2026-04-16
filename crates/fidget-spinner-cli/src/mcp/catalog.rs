@@ -228,6 +228,24 @@ const TOOL_SPECS: &[ToolSpec] = &[
         replay: ReplayContract::Convergent,
     },
     ToolSpec {
+        name: "kpi.create",
+        description: "Create one mandatory frontier KPI from an ordered set of metric alternatives.",
+        dispatch: DispatchTarget::Worker,
+        replay: ReplayContract::NeverReplay,
+    },
+    ToolSpec {
+        name: "kpi.list",
+        description: "List mandatory KPIs for one frontier.",
+        dispatch: DispatchTarget::Worker,
+        replay: ReplayContract::Convergent,
+    },
+    ToolSpec {
+        name: "kpi.best",
+        description: "Rank closed experiments by one frontier KPI, resolving metric alternatives by precedence.",
+        dispatch: DispatchTarget::Worker,
+        replay: ReplayContract::Convergent,
+    },
+    ToolSpec {
         name: "run.dimension.define",
         description: "Register one typed run-dimension key.",
         dispatch: DispatchTarget::Worker,
@@ -392,10 +410,6 @@ fn tool_input_schema(name: &str) -> Value {
                 (
                     "unknowns",
                     string_array_schema("Ordered frontier unknowns."),
-                ),
-                (
-                    "scoreboard_metric_keys",
-                    string_array_schema("Ordered frontier scoreboard metric keys."),
                 ),
             ],
             &["frontier"],
@@ -671,6 +685,15 @@ fn tool_input_schema(name: &str) -> Value {
                     ),
                 ),
                 (
+                    "aggregation",
+                    enum_string_schema(
+                        &[
+                            "point", "mean", "geomean", "median", "p95", "min", "max", "sum",
+                        ],
+                        "Observation aggregation semantics. Defaults to point.",
+                    ),
+                ),
+                (
                     "visibility",
                     enum_string_schema(
                         &["canonical", "minor", "hidden", "archived"],
@@ -690,7 +713,7 @@ fn tool_input_schema(name: &str) -> Value {
                 (
                     "scope",
                     enum_string_schema(
-                        &["live", "scoreboard", "visible", "all"],
+                        &["kpi", "live", "visible", "all"],
                         "Registry slice to enumerate.",
                     ),
                 ),
@@ -720,6 +743,51 @@ fn tool_input_schema(name: &str) -> Value {
                 ),
             ],
             &["key"],
+        ),
+        "kpi.create" => object_schema(
+            &[
+                ("frontier", selector_schema("Owning frontier UUID or slug.")),
+                ("name", string_schema("Human-facing KPI name.")),
+                (
+                    "objective",
+                    enum_string_schema(
+                        &["minimize", "maximize", "target"],
+                        "KPI optimization objective.",
+                    ),
+                ),
+                ("description", string_schema("Optional description.")),
+                (
+                    "metric_keys",
+                    string_array_schema("Ordered metric alternatives, highest precedence first."),
+                ),
+            ],
+            &["frontier", "name", "objective", "metric_keys"],
+        ),
+        "kpi.list" => object_schema(
+            &[("frontier", selector_schema("Frontier UUID or slug."))],
+            &["frontier"],
+        ),
+        "kpi.best" => object_schema(
+            &[
+                ("frontier", selector_schema("Frontier UUID or slug.")),
+                (
+                    "kpi",
+                    string_schema("Optional KPI name. Required when frontier has multiple KPIs."),
+                ),
+                ("dimensions", run_dimensions_schema()),
+                (
+                    "include_rejected",
+                    boolean_schema("Include rejected experiments."),
+                ),
+                ("limit", integer_schema("Optional row cap.")),
+                (
+                    "strict",
+                    boolean_schema(
+                        "Require the highest-precedence metric rather than falling back.",
+                    ),
+                ),
+            ],
+            &["frontier"],
         ),
         "run.dimension.define" => object_schema(
             &[

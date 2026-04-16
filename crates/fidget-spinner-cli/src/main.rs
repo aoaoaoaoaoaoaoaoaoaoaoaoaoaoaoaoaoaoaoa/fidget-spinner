@@ -12,16 +12,18 @@ use camino::{Utf8Path, Utf8PathBuf};
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use fidget_spinner_core::{
     ArtifactKind, CommandRecipe, ExecutionBackend, ExperimentAnalysis, ExperimentStatus,
-    FieldValueType, FrontierStatus, FrontierVerdict, MetricUnit, MetricVisibility, NonEmptyText,
-    OptimizationObjective, RunDimensionValue, Slug, TagName,
+    FieldValueType, FrontierStatus, FrontierVerdict, MetricAggregation, MetricUnit,
+    MetricVisibility, NonEmptyText, OptimizationObjective, RunDimensionValue, Slug, TagName,
 };
 use fidget_spinner_store_sqlite::{
     AttachmentSelector, CloseExperimentRequest, CreateArtifactRequest, CreateFrontierRequest,
-    CreateHypothesisRequest, DefineMetricRequest, DefineRunDimensionRequest,
-    ExperimentOutcomePatch, FrontierRoadmapItemDraft, ListArtifactsQuery, ListExperimentsQuery,
-    ListFrontiersQuery, ListHypothesesQuery, MetricBestQuery, MetricKeysQuery, MetricRankOrder,
-    MetricScope, OpenExperimentRequest, ProjectStore, StoreError, TextPatch, UpdateArtifactRequest,
-    UpdateExperimentRequest, UpdateFrontierRequest, UpdateHypothesisRequest, VertexSelector,
+    CreateHypothesisRequest, CreateKpiRequest, DefineMetricRequest, DefineRunDimensionRequest,
+    DeleteMetricRequest, ExperimentOutcomePatch, FrontierRoadmapItemDraft, KpiBestQuery,
+    KpiListQuery, ListArtifactsQuery, ListExperimentsQuery, ListFrontiersQuery,
+    ListHypothesesQuery, MergeMetricRequest, MetricBestQuery, MetricKeysQuery, MetricRankOrder,
+    MetricScope, OpenExperimentRequest, ProjectStore, RenameMetricRequest, StoreError, TextPatch,
+    UpdateArtifactRequest, UpdateExperimentRequest, UpdateFrontierRequest, UpdateHypothesisRequest,
+    VertexSelector,
 };
 #[cfg(test)]
 use libmcp_testkit as _;
@@ -77,6 +79,11 @@ enum Command {
     Metric {
         #[command(subcommand)]
         command: MetricCommand,
+    },
+    /// Manage frontier KPI definitions and rankings.
+    Kpi {
+        #[command(subcommand)]
+        command: KpiCommand,
     },
     /// Define the typed dimension vocabulary used to slice experiments.
     Dimension {
@@ -163,6 +170,16 @@ enum MetricCommand {
     Define(MetricDefineArgs),
     Keys(MetricKeysArgs),
     Best(MetricBestArgs),
+    Rename(MetricRenameArgs),
+    Merge(MetricMergeArgs),
+    Delete(MetricDeleteArgs),
+}
+
+#[derive(Subcommand)]
+enum KpiCommand {
+    Create(KpiCreateArgs),
+    List(KpiListArgs),
+    Best(KpiBestArgs),
 }
 
 #[derive(Subcommand)]
@@ -251,8 +268,6 @@ struct FrontierUpdateArgs {
     unknowns: FrontierUnknownsPatchArgs,
     #[command(flatten)]
     roadmap: FrontierRoadmapPatchArgs,
-    #[command(flatten)]
-    scoreboard: FrontierScoreboardPatchArgs,
 }
 
 #[derive(Args)]
@@ -277,14 +292,6 @@ struct FrontierRoadmapPatchArgs {
     roadmap: Vec<String>,
     #[arg(long = "clear-roadmap")]
     clear_roadmap: bool,
-}
-
-#[derive(Args)]
-struct FrontierScoreboardPatchArgs {
-    #[arg(long = "scoreboard-metric")]
-    scoreboard_metric_keys: Vec<String>,
-    #[arg(long = "clear-scoreboard")]
-    clear_scoreboard_metric_keys: bool,
 }
 
 #[derive(Args)]
@@ -559,6 +566,8 @@ struct MetricDefineArgs {
     key: String,
     #[arg(long)]
     unit: String,
+    #[arg(long, value_enum, default_value_t = CliMetricAggregation::Point)]
+    aggregation: CliMetricAggregation,
     #[arg(long, value_enum)]
     objective: CliOptimizationObjective,
     #[arg(long, value_enum, default_value_t = CliMetricVisibility::Canonical)]
@@ -595,6 +604,76 @@ struct MetricBestArgs {
     limit: Option<u32>,
     #[arg(long, value_enum)]
     order: Option<CliMetricRankOrder>,
+}
+
+#[derive(Args)]
+struct MetricRenameArgs {
+    #[command(flatten)]
+    project: ProjectArg,
+    #[arg(long)]
+    metric: String,
+    #[arg(long)]
+    new_key: String,
+}
+
+#[derive(Args)]
+struct MetricMergeArgs {
+    #[command(flatten)]
+    project: ProjectArg,
+    #[arg(long)]
+    source: String,
+    #[arg(long)]
+    target: String,
+}
+
+#[derive(Args)]
+struct MetricDeleteArgs {
+    #[command(flatten)]
+    project: ProjectArg,
+    #[arg(long)]
+    metric: String,
+}
+
+#[derive(Args)]
+struct KpiCreateArgs {
+    #[command(flatten)]
+    project: ProjectArg,
+    #[arg(long)]
+    frontier: String,
+    #[arg(long)]
+    name: String,
+    #[arg(long, value_enum)]
+    objective: CliOptimizationObjective,
+    #[arg(long)]
+    description: Option<String>,
+    #[arg(long = "metric")]
+    metric_keys: Vec<String>,
+}
+
+#[derive(Args)]
+struct KpiListArgs {
+    #[command(flatten)]
+    project: ProjectArg,
+    #[arg(long)]
+    frontier: String,
+}
+
+#[derive(Args)]
+struct KpiBestArgs {
+    #[command(flatten)]
+    project: ProjectArg,
+    #[arg(long)]
+    frontier: String,
+    #[arg(long)]
+    kpi: Option<String>,
+    #[arg(long = "dimension")]
+    dimensions: Vec<String>,
+    #[arg(long)]
+    include_rejected: bool,
+    #[arg(long)]
+    limit: Option<u32>,
+    #[arg(long)]
+    strict: bool,
 }
 
 #[derive(Args)]
@@ -662,10 +741,22 @@ enum CliMetricVisibility {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
 enum CliMetricScope {
+    Kpi,
     Live,
-    Scoreboard,
     Visible,
     All,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+enum CliMetricAggregation {
+    Point,
+    Mean,
+    Geomean,
+    Median,
+    P95,
+    Min,
+    Max,
+    Sum,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
@@ -807,6 +898,14 @@ fn main() -> Result<(), StoreError> {
             MetricCommand::Define(args) => run_metric_define(args),
             MetricCommand::Keys(args) => run_metric_keys(args),
             MetricCommand::Best(args) => run_metric_best(args),
+            MetricCommand::Rename(args) => run_metric_rename(args),
+            MetricCommand::Merge(args) => run_metric_merge(args),
+            MetricCommand::Delete(args) => run_metric_delete(args),
+        },
+        Command::Kpi { command } => match command {
+            KpiCommand::Create(args) => run_kpi_create(args),
+            KpiCommand::List(args) => run_kpi_list(args),
+            KpiCommand::Best(args) => run_kpi_best(args),
         },
         Command::Dimension { command } => match command {
             DimensionCommand::Define(args) => run_dimension_define(args),
@@ -883,13 +982,6 @@ fn run_frontier_update(args: FrontierUpdateArgs) -> Result<(), StoreError> {
     } else {
         Some(to_non_empty_texts(args.unknowns.unknowns)?)
     };
-    let scoreboard_metric_keys = if args.scoreboard.clear_scoreboard_metric_keys {
-        Some(Vec::new())
-    } else if args.scoreboard.scoreboard_metric_keys.is_empty() {
-        None
-    } else {
-        Some(to_non_empty_texts(args.scoreboard.scoreboard_metric_keys)?)
-    };
     print_json(&store.update_frontier(UpdateFrontierRequest {
         frontier: args.frontier,
         expected_revision: args.expected_revision,
@@ -898,7 +990,6 @@ fn run_frontier_update(args: FrontierUpdateArgs) -> Result<(), StoreError> {
         situation: cli_text_patch(args.situation.situation, args.situation.clear_situation)?,
         roadmap,
         unknowns,
-        scoreboard_metric_keys,
     })?)
 }
 
@@ -1102,6 +1193,7 @@ fn run_metric_define(args: MetricDefineArgs) -> Result<(), StoreError> {
     print_json(&store.define_metric(DefineMetricRequest {
         key: NonEmptyText::new(args.key)?,
         unit: MetricUnit::new(args.unit)?,
+        aggregation: args.aggregation.into(),
         objective: args.objective.into(),
         visibility: args.visibility.into(),
         description: args.description.map(NonEmptyText::new).transpose()?,
@@ -1126,6 +1218,67 @@ fn run_metric_best(args: MetricBestArgs) -> Result<(), StoreError> {
         include_rejected: args.include_rejected,
         limit: args.limit,
         order: args.order.map(Into::into),
+    })?)
+}
+
+fn run_metric_rename(args: MetricRenameArgs) -> Result<(), StoreError> {
+    let mut store = open_store(&args.project.project)?;
+    print_json(&store.rename_metric(RenameMetricRequest {
+        metric: NonEmptyText::new(args.metric)?,
+        new_key: NonEmptyText::new(args.new_key)?,
+    })?)
+}
+
+fn run_metric_merge(args: MetricMergeArgs) -> Result<(), StoreError> {
+    let mut store = open_store(&args.project.project)?;
+    store.merge_metric(MergeMetricRequest {
+        source: NonEmptyText::new(args.source)?,
+        target: NonEmptyText::new(args.target)?,
+    })?;
+    print_json(&serde_json::json!({"merged": true}))
+}
+
+fn run_metric_delete(args: MetricDeleteArgs) -> Result<(), StoreError> {
+    let mut store = open_store(&args.project.project)?;
+    store.delete_metric(DeleteMetricRequest {
+        metric: NonEmptyText::new(args.metric)?,
+    })?;
+    print_json(&serde_json::json!({"deleted": true}))
+}
+
+fn run_kpi_create(args: KpiCreateArgs) -> Result<(), StoreError> {
+    let mut store = open_store(&args.project.project)?;
+    print_json(
+        &store.create_kpi(CreateKpiRequest {
+            frontier: args.frontier,
+            name: NonEmptyText::new(args.name)?,
+            objective: args.objective.into(),
+            description: args.description.map(NonEmptyText::new).transpose()?,
+            metric_keys: args
+                .metric_keys
+                .into_iter()
+                .map(NonEmptyText::new)
+                .collect::<Result<Vec<_>, _>>()?,
+        })?,
+    )
+}
+
+fn run_kpi_list(args: KpiListArgs) -> Result<(), StoreError> {
+    let store = open_store(&args.project.project)?;
+    print_json(&store.list_kpis(KpiListQuery {
+        frontier: args.frontier,
+    })?)
+}
+
+fn run_kpi_best(args: KpiBestArgs) -> Result<(), StoreError> {
+    let store = open_store(&args.project.project)?;
+    print_json(&store.kpi_best(KpiBestQuery {
+        frontier: args.frontier,
+        kpi: args.kpi,
+        dimensions: parse_dimension_assignments(args.dimensions)?,
+        include_rejected: args.include_rejected,
+        limit: args.limit,
+        strict: args.strict,
     })?)
 }
 
@@ -1515,10 +1668,25 @@ impl From<CliMetricVisibility> for MetricVisibility {
 impl From<CliMetricScope> for MetricScope {
     fn from(value: CliMetricScope) -> Self {
         match value {
+            CliMetricScope::Kpi => Self::Kpi,
             CliMetricScope::Live => Self::Live,
-            CliMetricScope::Scoreboard => Self::Scoreboard,
             CliMetricScope::Visible => Self::Visible,
             CliMetricScope::All => Self::All,
+        }
+    }
+}
+
+impl From<CliMetricAggregation> for MetricAggregation {
+    fn from(value: CliMetricAggregation) -> Self {
+        match value {
+            CliMetricAggregation::Point => Self::Point,
+            CliMetricAggregation::Mean => Self::Mean,
+            CliMetricAggregation::Geomean => Self::Geomean,
+            CliMetricAggregation::Median => Self::Median,
+            CliMetricAggregation::P95 => Self::P95,
+            CliMetricAggregation::Min => Self::Min,
+            CliMetricAggregation::Max => Self::Max,
+            CliMetricAggregation::Sum => Self::Sum,
         }
     }
 }

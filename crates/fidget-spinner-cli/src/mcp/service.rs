@@ -8,18 +8,20 @@ use std::time::UNIX_EPOCH;
 use camino::{Utf8Path, Utf8PathBuf};
 use fidget_spinner_core::{
     ArtifactKind, AttachmentTargetRef, CommandRecipe, ExecutionBackend, ExperimentAnalysis,
-    ExperimentStatus, FieldValueType, FrontierStatus, FrontierVerdict, MetricUnit,
-    MetricVisibility, NonEmptyText, OptimizationObjective, RunDimensionValue, Slug, TagName,
+    ExperimentStatus, FieldValueType, FrontierStatus, FrontierVerdict, MetricAggregation,
+    MetricUnit, MetricVisibility, NonEmptyText, OptimizationObjective, RunDimensionValue, Slug,
+    TagName,
 };
 use fidget_spinner_store_sqlite::{
     AttachmentSelector, CloseExperimentRequest, CreateArtifactRequest, CreateFrontierRequest,
-    CreateHypothesisRequest, DefineMetricRequest, DefineRunDimensionRequest, EntityHistoryEntry,
-    ExperimentNearestQuery, ExperimentOutcomePatch, FrontierOpenProjection,
-    FrontierRoadmapItemDraft, FrontierSummary, ListArtifactsQuery, ListExperimentsQuery,
-    ListFrontiersQuery, ListHypothesesQuery, MetricBestEntry, MetricBestQuery, MetricKeySummary,
-    MetricKeysQuery, MetricRankOrder, MetricScope, OpenExperimentRequest, ProjectStatus,
-    ProjectStore, StoreError, TextPatch, UpdateArtifactRequest, UpdateExperimentRequest,
-    UpdateFrontierRequest, UpdateHypothesisRequest, VertexSelector, VertexSummary,
+    CreateHypothesisRequest, CreateKpiRequest, DefineMetricRequest, DefineRunDimensionRequest,
+    EntityHistoryEntry, ExperimentNearestQuery, ExperimentOutcomePatch, FrontierOpenProjection,
+    FrontierRoadmapItemDraft, FrontierSummary, KpiBestEntry, KpiBestQuery, KpiListQuery,
+    KpiSummary, ListArtifactsQuery, ListExperimentsQuery, ListFrontiersQuery, ListHypothesesQuery,
+    MetricBestEntry, MetricBestQuery, MetricKeySummary, MetricKeysQuery, MetricRankOrder,
+    MetricScope, OpenExperimentRequest, ProjectStatus, ProjectStore, StoreError, TextPatch,
+    UpdateArtifactRequest, UpdateExperimentRequest, UpdateFrontierRequest, UpdateHypothesisRequest,
+    VertexSelector, VertexSummary,
 };
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
@@ -125,7 +127,7 @@ impl WorkerService {
             "frontier.list" => {
                 let args = deserialize::<FrontierListArgs>(arguments)?;
                 frontier_list_output(
-                    &lift!(self.store.list_frontiers(ListFrontiersQuery {
+                    &lift!(self.store.list_frontiers_from_mcp(ListFrontiersQuery {
                         include_archived: args.include_archived.unwrap_or(false),
                     })),
                     &operation,
@@ -177,16 +179,6 @@ impl WorkerService {
                             .transpose()?,
                         unknowns: args
                             .unknowns
-                            .map(|items| {
-                                items
-                                    .into_iter()
-                                    .map(NonEmptyText::new)
-                                    .collect::<Result<Vec<_>, _>>()
-                                    .map_err(store_fault(&operation))
-                            })
-                            .transpose()?,
-                        scoreboard_metric_keys: args
-                            .scoreboard_metric_keys
                             .map(|items| {
                                 items
                                     .into_iter()
@@ -367,27 +359,31 @@ impl WorkerService {
             "experiment.close" => {
                 let args = deserialize::<ExperimentCloseArgs>(arguments)?;
                 let experiment = lift!(
-                    self.store.close_experiment(CloseExperimentRequest {
-                        experiment: args.experiment,
-                        expected_revision: args.expected_revision,
-                        backend: args.backend,
-                        command: args.command,
-                        dimensions: dimension_map_from_wire(args.dimensions)?,
-                        primary_metric: metric_value_from_wire(args.primary_metric, &operation)?,
-                        supporting_metrics: args
-                            .supporting_metrics
-                            .unwrap_or_default()
-                            .into_iter()
-                            .map(|metric| metric_value_from_wire(metric, &operation))
-                            .collect::<Result<Vec<_>, _>>()?,
-                        verdict: args.verdict,
-                        rationale: NonEmptyText::new(args.rationale)
-                            .map_err(store_fault(&operation))?,
-                        analysis: args
-                            .analysis
-                            .map(|analysis| experiment_analysis_from_wire(analysis, &operation))
-                            .transpose()?,
-                    })
+                    self.store
+                        .close_experiment_from_mcp(CloseExperimentRequest {
+                            experiment: args.experiment,
+                            expected_revision: args.expected_revision,
+                            backend: args.backend,
+                            command: args.command,
+                            dimensions: dimension_map_from_wire(args.dimensions)?,
+                            primary_metric: metric_value_from_wire(
+                                args.primary_metric,
+                                &operation
+                            )?,
+                            supporting_metrics: args
+                                .supporting_metrics
+                                .unwrap_or_default()
+                                .into_iter()
+                                .map(|metric| metric_value_from_wire(metric, &operation))
+                                .collect::<Result<Vec<_>, _>>()?,
+                            verdict: args.verdict,
+                            rationale: NonEmptyText::new(args.rationale)
+                                .map_err(store_fault(&operation))?,
+                            analysis: args
+                                .analysis
+                                .map(|analysis| experiment_analysis_from_wire(analysis, &operation))
+                                .transpose()?,
+                        })
                 );
                 experiment_record_output(&experiment, &operation)?
             }
@@ -507,6 +503,7 @@ impl WorkerService {
                     self.store.define_metric(DefineMetricRequest {
                         key: NonEmptyText::new(args.key).map_err(store_fault(&operation))?,
                         unit: args.unit,
+                        aggregation: args.aggregation.unwrap_or(MetricAggregation::Point),
                         objective: args.objective,
                         visibility: args.visibility.unwrap_or(MetricVisibility::Canonical),
                         description: args
@@ -539,6 +536,51 @@ impl WorkerService {
                         include_rejected: args.include_rejected.unwrap_or(false),
                         limit: args.limit,
                         order: args.order,
+                    })),
+                    &operation,
+                )?
+            }
+            "kpi.create" => {
+                let args = deserialize::<KpiCreateArgs>(arguments)?;
+                let kpi = lift!(
+                    self.store.create_kpi(CreateKpiRequest {
+                        frontier: args.frontier,
+                        name: NonEmptyText::new(args.name).map_err(store_fault(&operation))?,
+                        objective: args.objective,
+                        description: args
+                            .description
+                            .map(NonEmptyText::new)
+                            .transpose()
+                            .map_err(store_fault(&operation))?,
+                        metric_keys: args
+                            .metric_keys
+                            .into_iter()
+                            .map(NonEmptyText::new)
+                            .collect::<Result<Vec<_>, _>>()
+                            .map_err(store_fault(&operation))?,
+                    })
+                );
+                kpi_record_output(&kpi, &operation)?
+            }
+            "kpi.list" => {
+                let args = deserialize::<KpiListArgs>(arguments)?;
+                kpi_list_output(
+                    &lift!(self.store.list_kpis(KpiListQuery {
+                        frontier: args.frontier,
+                    })),
+                    &operation,
+                )?
+            }
+            "kpi.best" => {
+                let args = deserialize::<KpiBestArgs>(arguments)?;
+                kpi_best_output(
+                    &lift!(self.store.kpi_best(KpiBestQuery {
+                        frontier: args.frontier,
+                        kpi: args.kpi,
+                        dimensions: dimension_map_from_wire(args.dimensions)?,
+                        include_rejected: args.include_rejected.unwrap_or(false),
+                        limit: args.limit,
+                        strict: args.strict.unwrap_or(false),
                     })),
                     &operation,
                 )?
@@ -647,7 +689,6 @@ struct FrontierUpdateArgs {
     situation: Option<NullableStringArg>,
     roadmap: Option<Vec<FrontierRoadmapItemWire>>,
     unknowns: Option<Vec<String>>,
-    scoreboard_metric_keys: Option<Vec<String>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -826,6 +867,7 @@ enum NullableStringArg {
 struct MetricDefineArgs {
     key: String,
     unit: MetricUnit,
+    aggregation: Option<MetricAggregation>,
     objective: OptimizationObjective,
     visibility: Option<MetricVisibility>,
     description: Option<String>,
@@ -846,6 +888,30 @@ struct MetricBestArgs {
     include_rejected: Option<bool>,
     limit: Option<u32>,
     order: Option<MetricRankOrder>,
+}
+
+#[derive(Debug, Deserialize)]
+struct KpiCreateArgs {
+    frontier: String,
+    name: String,
+    objective: OptimizationObjective,
+    description: Option<String>,
+    metric_keys: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct KpiListArgs {
+    frontier: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct KpiBestArgs {
+    frontier: String,
+    kpi: Option<String>,
+    dimensions: Option<Map<String, Value>>,
+    include_rejected: Option<bool>,
+    limit: Option<u32>,
+    strict: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -891,6 +957,7 @@ where
             | StoreError::UnknownTag(_)
             | StoreError::UnknownTagFamily(_)
             | StoreError::UnknownMetricDefinition(_)
+            | StoreError::UnknownKpi(_)
             | StoreError::UnknownRunDimension(_)
             | StoreError::UnknownFrontierSelector(_)
             | StoreError::UnknownHypothesisSelector(_)
@@ -911,12 +978,18 @@ where
             | StoreError::DuplicateTag(_)
             | StoreError::DuplicateTagFamily(_)
             | StoreError::DuplicateMetricDefinition(_)
+            | StoreError::DuplicateKpi(_)
+            | StoreError::EmptyKpi { .. }
+            | StoreError::KpiMetricObjectiveMismatch { .. }
+            | StoreError::KpiMetricDimensionMismatch { .. }
             | StoreError::DuplicateRunDimension(_)
             | StoreError::GitWorktreeRequired(_)
             | StoreError::GitHeadRequired(_)
             | StoreError::DirtyGitWorktree { .. }
             | StoreError::InvalidInput(_) => FaultKind::InvalidInput,
-            StoreError::PolicyViolation(_) => FaultKind::PolicyViolation,
+            StoreError::PolicyViolation(_)
+            | StoreError::MissingMandatoryKpi { .. }
+            | StoreError::MissingFrontierKpiContract { .. } => FaultKind::PolicyViolation,
             StoreError::IncompatibleStoreFormatVersion { .. } => FaultKind::Unavailable,
             StoreError::Io(_)
             | StoreError::Sql(_)
@@ -1252,18 +1325,6 @@ fn frontier_record_output(
                 .join("; ")
         ));
     }
-    if !frontier.brief.scoreboard_metric_keys.is_empty() {
-        lines.push(format!(
-            "scoreboard metrics: {}",
-            frontier
-                .brief
-                .scoreboard_metric_keys
-                .iter()
-                .map(ToString::to_string)
-                .collect::<Vec<_>>()
-                .join(", ")
-        ));
-    }
     projected_tool_output(
         &projection,
         lines.join("\n"),
@@ -1307,13 +1368,23 @@ fn frontier_open_output(
                 .join(", ")
         ));
     }
-    if !projection.scoreboard_metric_keys.is_empty() {
+    if !projection.kpis.is_empty() {
         lines.push(format!(
-            "scoreboard metrics: {}",
+            "KPIs: {}",
             projection
-                .scoreboard_metric_keys
+                .kpis
                 .iter()
-                .map(|metric| metric.key.to_string())
+                .map(|kpi| {
+                    format!(
+                        "{} ({})",
+                        kpi.name,
+                        kpi.metrics
+                            .iter()
+                            .map(|metric| metric.key.to_string())
+                            .collect::<Vec<_>>()
+                            .join(" | ")
+                    )
+                })
                 .collect::<Vec<_>>()
                 .join(", ")
         ));
@@ -1708,6 +1779,83 @@ fn metric_best_output(
     )
 }
 
+fn kpi_record_output(kpi: &KpiSummary, operation: &str) -> Result<ToolOutput, FaultRecord> {
+    let projection = projection::kpi_record(kpi);
+    projected_tool_output(
+        &projection,
+        format!("KPI {} [{}]", kpi.name, kpi_metric_names(kpi)),
+        None,
+        FaultStage::Worker,
+        operation,
+    )
+}
+
+fn kpi_list_output(kpis: &[KpiSummary], operation: &str) -> Result<ToolOutput, FaultRecord> {
+    let projection = projection::kpi_list(kpis);
+    projected_tool_output(
+        &projection,
+        if kpis.is_empty() {
+            "no KPIs".to_owned()
+        } else {
+            kpis.iter()
+                .map(|kpi| {
+                    format!(
+                        "{} [{}] {}",
+                        kpi.name,
+                        kpi.objective.as_str(),
+                        kpi_metric_names(kpi)
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        },
+        None,
+        FaultStage::Worker,
+        operation,
+    )
+}
+
+fn kpi_best_output(entries: &[KpiBestEntry], operation: &str) -> Result<ToolOutput, FaultRecord> {
+    let projection = projection::kpi_best(entries);
+    projected_tool_output(
+        &projection,
+        if entries.is_empty() {
+            "no matching experiments".to_owned()
+        } else {
+            entries
+                .iter()
+                .enumerate()
+                .map(|(index, entry)| {
+                    format!(
+                        "{}. {} / {} {}={} ({})",
+                        index + 1,
+                        entry.experiment.slug,
+                        entry.hypothesis.slug,
+                        entry.metric_key,
+                        entry.value,
+                        entry.experiment.verdict.map_or_else(
+                            || entry.experiment.status.as_str().to_owned(),
+                            |verdict| verdict.as_str().to_owned()
+                        )
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        },
+        None,
+        FaultStage::Worker,
+        operation,
+    )
+}
+
+fn kpi_metric_names(kpi: &KpiSummary) -> String {
+    kpi.metrics
+        .iter()
+        .map(|metric| metric.key.to_string())
+        .collect::<Vec<_>>()
+        .join(" | ")
+}
+
 fn experiment_nearest_output(
     result: &fidget_spinner_store_sqlite::ExperimentNearestResult,
     operation: &str,
@@ -1910,7 +2058,6 @@ mod legacy_projection_values {
                     "situation": frontier.brief.situation,
                     "roadmap": roadmap,
                     "unknowns": frontier.brief.unknowns,
-                    "scoreboard_metric_keys": frontier.brief.scoreboard_metric_keys,
                     "revision": frontier.brief.revision,
                     "updated_at": frontier.brief.updated_at.map(timestamp_value),
                 },
@@ -1956,17 +2103,12 @@ mod legacy_projection_values {
                     "situation": projection.frontier.brief.situation,
                     "roadmap": roadmap,
                     "unknowns": projection.frontier.brief.unknowns,
-                    "scoreboard_metric_keys": projection.frontier.brief.scoreboard_metric_keys,
                     "revision": projection.frontier.brief.revision,
                     "updated_at": projection.frontier.brief.updated_at.map(timestamp_value),
                 },
             },
             "active_tags": projection.active_tags,
-            "scoreboard_metrics": projection
-                .scoreboard_metric_keys
-                .iter()
-                .map(metric_key_summary_value)
-                .collect::<Vec<_>>(),
+            "kpis": projection.kpis.iter().map(kpi_summary_value).collect::<Vec<_>>(),
             "active_metric_keys": projection
                 .active_metric_keys
                 .iter()
@@ -2255,10 +2397,32 @@ mod legacy_projection_values {
         json!({
             "key": metric.key,
             "unit": metric.unit,
+            "dimension": metric.dimension,
+            "aggregation": metric.aggregation,
             "objective": metric.objective,
             "visibility": metric.visibility,
             "description": metric.description,
             "reference_count": metric.reference_count,
+        })
+    }
+
+    fn kpi_summary_value(kpi: &KpiSummary) -> Value {
+        json!({
+            "id": kpi.id.to_string(),
+            "name": kpi.name,
+            "objective": kpi.objective,
+            "description": kpi.description,
+            "revision": kpi.revision,
+            "metrics": kpi.metrics.iter().map(|metric| {
+                json!({
+                    "key": metric.key,
+                    "precedence": metric.precedence,
+                    "unit": metric.unit,
+                    "dimension": metric.dimension,
+                    "aggregation": metric.aggregation,
+                    "objective": metric.objective,
+                })
+            }).collect::<Vec<_>>(),
         })
     }
 
@@ -2278,6 +2442,7 @@ mod legacy_projection_values {
             "key": metric.key,
             "value": metric.value,
             "unit": metric.unit,
+            "dimension": metric.dimension,
             "objective": metric.objective,
         })
     }

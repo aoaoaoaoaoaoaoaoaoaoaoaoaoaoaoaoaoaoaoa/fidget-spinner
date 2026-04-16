@@ -131,8 +131,18 @@ cargo run -p fidget-spinner-cli -- frontier update \
   --project . \
   --frontier native-mip \
   --objective "Drive braid-rail LP cash-out" \
-  --situation "Root LP spend is understood; node-local LP churn is the active frontier." \
-  --scoreboard-metric nodes_solved
+  --situation "Root LP spend is understood; node-local LP churn is the active frontier."
+```
+
+Create the frontier KPI contract:
+
+```bash
+cargo run -p fidget-spinner-cli -- kpi create \
+  --project . \
+  --frontier native-mip \
+  --name "node throughput" \
+  --objective maximize \
+  --metric nodes_solved
 ```
 
 Record a hypothesis:
@@ -198,10 +208,10 @@ Inspect live metrics:
 cargo run -p fidget-spinner-cli -- metric keys --project . --frontier native-mip --scope live
 ```
 
-Inspect scoreboard-grade metrics:
+Inspect KPI metrics:
 
 ```bash
-cargo run -p fidget-spinner-cli -- metric keys --project . --frontier native-mip --scope scoreboard
+cargo run -p fidget-spinner-cli -- metric keys --project . --frontier native-mip --scope kpi
 ```
 
 ```bash
@@ -276,6 +286,9 @@ The main model-facing tools are:
 - `metric.define`
 - `metric.keys`
 - `metric.best`
+- `kpi.create`
+- `kpi.list`
+- `kpi.best`
 - `run.dimension.define`
 - `run.dimension.list`
 
@@ -283,7 +296,7 @@ The main model-facing tools are:
 
 - frontier brief
 - active tags
-- scoreboard metric keys
+- KPIs
 - live metric keys
 - active hypotheses with deduped current state
 - open experiments

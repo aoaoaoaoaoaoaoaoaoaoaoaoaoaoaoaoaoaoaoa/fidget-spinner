@@ -12,16 +12,18 @@ use axum::routing::{get, post};
 use camino::Utf8PathBuf;
 use fidget_spinner_core::{
     AttachmentTargetRef, ExperimentAnalysis, ExperimentOutcome, ExperimentStatus, FrontierRecord,
-    FrontierStatus, FrontierVerdict, KnownMetricUnit, MetricUnit, NonEmptyText, RegistryLockMode,
-    RegistryName, RunDimensionValue, Slug, TagFamilyName, TagName, VertexRef,
+    FrontierStatus, FrontierVerdict, KnownMetricUnit, MetricAggregation, MetricUnit,
+    MetricVisibility, NonEmptyText, OptimizationObjective, RegistryLockMode, RegistryName,
+    RunDimensionValue, Slug, TagFamilyName, TagName, VertexRef,
 };
 use fidget_spinner_store_sqlite::{
-    AssignTagFamilyRequest, CreateTagFamilyRequest, DeleteTagRequest, ExperimentDetail,
-    ExperimentSummary, FrontierMetricSeries, FrontierOpenProjection, FrontierSummary,
-    HypothesisCurrentState, HypothesisDetail, ListExperimentsQuery, ListFrontiersQuery,
-    ListHypothesesQuery, MergeTagRequest, MetricKeysQuery, MetricScope, ProjectStatus,
-    RenameTagRequest, STATE_DB_NAME, SetRegistryLockRequest, SetTagFamilyMandatoryRequest,
-    StoreError, UpdateFrontierRequest, VertexSummary,
+    AssignTagFamilyRequest, CreateKpiRequest, CreateTagFamilyRequest, DefineMetricRequest,
+    DeleteMetricRequest, DeleteTagRequest, ExperimentDetail, ExperimentSummary,
+    FrontierMetricSeries, FrontierOpenProjection, FrontierSummary, HypothesisCurrentState,
+    HypothesisDetail, KpiSummary, ListExperimentsQuery, ListFrontiersQuery, ListHypothesesQuery,
+    MergeMetricRequest, MergeTagRequest, MetricKeysQuery, MetricScope, ProjectStatus,
+    RenameMetricRequest, RenameTagRequest, STATE_DB_NAME, SetRegistryLockRequest,
+    SetTagFamilyMandatoryRequest, StoreError, UpdateFrontierRequest, VertexSummary,
 };
 use maud::{DOCTYPE, Markup, PreEscaped, html};
 use percent_encoding::{NON_ALPHANUMERIC, percent_decode_str, utf8_percent_encode};
@@ -253,6 +255,7 @@ pub(crate) fn serve(
                 get(project_refresh_token),
             )
             .route("/project/{project}/tags", get(project_tags))
+            .route("/project/{project}/metrics", get(project_metrics))
             .route("/project/{project}/tags/create", post(create_tag))
             .route(
                 "/project/{project}/tags/families/create",
@@ -270,6 +273,11 @@ pub(crate) fn serve(
                 "/project/{project}/tags/tag-family",
                 post(assign_tag_family),
             )
+            .route("/project/{project}/metrics/create", post(create_metric))
+            .route("/project/{project}/metrics/rename", post(rename_metric))
+            .route("/project/{project}/metrics/merge", post(merge_metric))
+            .route("/project/{project}/metrics/delete", post(delete_metric))
+            .route("/project/{project}/metrics/kpi", post(create_kpi))
             .route(
                 "/project/{project}/frontier/{selector}",
                 get(frontier_detail),
@@ -353,6 +361,13 @@ async fn project_tags(
     Path(project): Path<String>,
 ) -> Response {
     render_response(resolve_project_context(&state, &project).and_then(render_project_tags))
+}
+
+async fn project_metrics(
+    State(state): State<NavigatorState>,
+    Path(project): Path<String>,
+) -> Response {
+    render_response(resolve_project_context(&state, &project).and_then(render_project_metrics))
 }
 
 #[derive(Deserialize)]
@@ -558,6 +573,140 @@ async fn assign_tag_family(
                 family,
             })?;
             Ok(format!("{}tags", context.base_href))
+        }),
+    )
+}
+
+#[derive(Deserialize)]
+struct CreateMetricForm {
+    key: String,
+    unit: String,
+    aggregation: String,
+    objective: String,
+    visibility: String,
+    description: String,
+}
+
+async fn create_metric(
+    State(state): State<NavigatorState>,
+    Path(project): Path<String>,
+    Form(form): Form<CreateMetricForm>,
+) -> Response {
+    metric_mutation_response(
+        resolve_project_context(&state, &project).and_then(|context| {
+            let mut store = open_store(context.project_root.as_std_path())?;
+            let _ = store.define_metric(DefineMetricRequest {
+                key: NonEmptyText::new(form.key)?,
+                unit: MetricUnit::new(form.unit)?,
+                aggregation: parse_metric_aggregation_ui(&form.aggregation)?,
+                objective: parse_optimization_objective_ui(&form.objective)?,
+                visibility: parse_metric_visibility_ui(&form.visibility)?,
+                description: optional_text_field(form.description)?,
+            })?;
+            Ok(format!("{}metrics", context.base_href))
+        }),
+    )
+}
+
+#[derive(Deserialize)]
+struct RenameMetricForm {
+    metric: String,
+    new_key: String,
+}
+
+async fn rename_metric(
+    State(state): State<NavigatorState>,
+    Path(project): Path<String>,
+    Form(form): Form<RenameMetricForm>,
+) -> Response {
+    metric_mutation_response(
+        resolve_project_context(&state, &project).and_then(|context| {
+            let mut store = open_store(context.project_root.as_std_path())?;
+            let _ = store.rename_metric(RenameMetricRequest {
+                metric: NonEmptyText::new(form.metric)?,
+                new_key: NonEmptyText::new(form.new_key)?,
+            })?;
+            Ok(format!("{}metrics", context.base_href))
+        }),
+    )
+}
+
+#[derive(Deserialize)]
+struct MergeMetricForm {
+    source: String,
+    target: String,
+}
+
+async fn merge_metric(
+    State(state): State<NavigatorState>,
+    Path(project): Path<String>,
+    Form(form): Form<MergeMetricForm>,
+) -> Response {
+    metric_mutation_response(
+        resolve_project_context(&state, &project).and_then(|context| {
+            let mut store = open_store(context.project_root.as_std_path())?;
+            store.merge_metric(MergeMetricRequest {
+                source: NonEmptyText::new(form.source)?,
+                target: NonEmptyText::new(form.target)?,
+            })?;
+            Ok(format!("{}metrics", context.base_href))
+        }),
+    )
+}
+
+#[derive(Deserialize)]
+struct DeleteMetricForm {
+    metric: String,
+}
+
+async fn delete_metric(
+    State(state): State<NavigatorState>,
+    Path(project): Path<String>,
+    Form(form): Form<DeleteMetricForm>,
+) -> Response {
+    metric_mutation_response(
+        resolve_project_context(&state, &project).and_then(|context| {
+            let mut store = open_store(context.project_root.as_std_path())?;
+            store.delete_metric(DeleteMetricRequest {
+                metric: NonEmptyText::new(form.metric)?,
+            })?;
+            Ok(format!("{}metrics", context.base_href))
+        }),
+    )
+}
+
+#[derive(Deserialize)]
+struct CreateKpiForm {
+    frontier: String,
+    name: String,
+    objective: String,
+    description: String,
+    metric_keys: String,
+}
+
+async fn create_kpi(
+    State(state): State<NavigatorState>,
+    Path(project): Path<String>,
+    Form(form): Form<CreateKpiForm>,
+) -> Response {
+    metric_mutation_response(
+        resolve_project_context(&state, &project).and_then(|context| {
+            let mut store = open_store(context.project_root.as_std_path())?;
+            let metric_keys = form
+                .metric_keys
+                .split(',')
+                .map(str::trim)
+                .filter(|key| !key.is_empty())
+                .map(|key| NonEmptyText::new(key.to_owned()))
+                .collect::<Result<Vec<_>, _>>()?;
+            let _ = store.create_kpi(CreateKpiRequest {
+                frontier: form.frontier,
+                name: NonEmptyText::new(form.name)?,
+                objective: parse_optimization_objective_ui(&form.objective)?,
+                description: optional_text_field(form.description)?,
+                metric_keys,
+            })?;
+            Ok(format!("{}metrics", context.base_href))
         }),
     )
 }
@@ -826,12 +975,80 @@ fn tag_mutation_response(result: Result<String, StoreError>) -> Response {
     }
 }
 
+fn metric_mutation_response(result: Result<String, StoreError>) -> Response {
+    match result {
+        Ok(location) => Redirect::to(&location).into_response(),
+        Err(StoreError::UnknownMetricDefinition(_))
+        | Err(StoreError::UnknownFrontierSelector(_)) => {
+            (StatusCode::NOT_FOUND, "not found".to_owned()).into_response()
+        }
+        Err(StoreError::DuplicateMetricDefinition(_)) | Err(StoreError::DuplicateKpi(_)) => {
+            (StatusCode::CONFLICT, "metric registry conflict".to_owned()).into_response()
+        }
+        Err(StoreError::PolicyViolation(message)) => {
+            (StatusCode::CONFLICT, message).into_response()
+        }
+        Err(error) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("metric supervisor update failed: {error}"),
+        )
+            .into_response(),
+    }
+}
+
 fn parse_ui_lock_mode(raw: &str) -> Result<RegistryLockMode, StoreError> {
     match raw {
         "add" => Ok(RegistryLockMode::Definition),
         "edit" => Ok(RegistryLockMode::Family),
         _ => Err(StoreError::InvalidInput(format!(
             "invalid registry lock mode `{raw}`"
+        ))),
+    }
+}
+
+fn optional_text_field(value: String) -> Result<Option<NonEmptyText>, StoreError> {
+    if value.trim().is_empty() {
+        Ok(None)
+    } else {
+        NonEmptyText::new(value).map(Some).map_err(StoreError::from)
+    }
+}
+
+fn parse_optimization_objective_ui(raw: &str) -> Result<OptimizationObjective, StoreError> {
+    match raw {
+        "minimize" => Ok(OptimizationObjective::Minimize),
+        "maximize" => Ok(OptimizationObjective::Maximize),
+        "target" => Ok(OptimizationObjective::Target),
+        _ => Err(StoreError::InvalidInput(format!(
+            "invalid optimization objective `{raw}`"
+        ))),
+    }
+}
+
+fn parse_metric_visibility_ui(raw: &str) -> Result<MetricVisibility, StoreError> {
+    match raw {
+        "canonical" => Ok(MetricVisibility::Canonical),
+        "minor" => Ok(MetricVisibility::Minor),
+        "hidden" => Ok(MetricVisibility::Hidden),
+        "archived" => Ok(MetricVisibility::Archived),
+        _ => Err(StoreError::InvalidInput(format!(
+            "invalid metric visibility `{raw}`"
+        ))),
+    }
+}
+
+fn parse_metric_aggregation_ui(raw: &str) -> Result<MetricAggregation, StoreError> {
+    match raw {
+        "point" => Ok(MetricAggregation::Point),
+        "mean" => Ok(MetricAggregation::Mean),
+        "geomean" => Ok(MetricAggregation::Geomean),
+        "median" => Ok(MetricAggregation::Median),
+        "p95" => Ok(MetricAggregation::P95),
+        "min" => Ok(MetricAggregation::Min),
+        "max" => Ok(MetricAggregation::Max),
+        "sum" => Ok(MetricAggregation::Sum),
+        _ => Err(StoreError::InvalidInput(format!(
+            "invalid metric aggregation `{raw}`"
         ))),
     }
 }
@@ -968,7 +1185,6 @@ fn update_frontier_status(
         situation: None,
         roadmap: None,
         unknowns: None,
-        scoreboard_metric_keys: None,
     })?;
     Ok(format!(
         "{}{}",
@@ -1064,6 +1280,71 @@ fn render_project_tags(context: ProjectRenderContext) -> Result<Markup, StoreErr
     ))
 }
 
+fn render_project_metrics(context: ProjectRenderContext) -> Result<Markup, StoreError> {
+    let store = open_store(context.project_root.as_std_path())?;
+    let shell = load_shell_frame(&store, None, &context)?;
+    let metrics = store.metric_keys(MetricKeysQuery {
+        frontier: None,
+        scope: MetricScope::All,
+    })?;
+    let frontiers = store.list_frontiers(ListFrontiersQuery {
+        include_archived: true,
+    })?;
+    let kpis = frontiers
+        .iter()
+        .map(|frontier| {
+            Ok((
+                frontier.clone(),
+                store.list_kpis(fidget_spinner_store_sqlite::KpiListQuery {
+                    frontier: frontier.slug.to_string(),
+                })?,
+            ))
+        })
+        .collect::<Result<Vec<_>, StoreError>>()?;
+    let kpi_count = kpis
+        .iter()
+        .map(|(_frontier, kpis)| kpis.len())
+        .sum::<usize>();
+    let hidden_count = metrics
+        .iter()
+        .filter(|metric| {
+            matches!(
+                metric.visibility,
+                MetricVisibility::Hidden | MetricVisibility::Archived
+            )
+        })
+        .count();
+    let orphan_count = metrics
+        .iter()
+        .filter(|metric| metric.reference_count == 0)
+        .count();
+    let title = format!("{} · metrics", shell.project_status.display_name);
+    let content = html! {
+        section.card.tag-state-card {
+            div.tag-state-band {
+                div.fact-strip {
+                    (render_fact("metrics", &metrics.len().to_string()))
+                    (render_fact("hidden", &hidden_count.to_string()))
+                    (render_fact("KPIs", &kpi_count.to_string()))
+                    (render_fact("orphans", &orphan_count.to_string()))
+                }
+            }
+        }
+        (render_create_kpi_form(&frontiers, &metrics))
+        (render_kpi_registry(&kpis))
+        (render_metric_registry_table(&metrics))
+    };
+    Ok(render_shell(
+        &title,
+        &shell,
+        true,
+        Some(&shell.project_status.display_name.to_string()),
+        None,
+        None,
+        content,
+    ))
+}
+
 fn render_frontier_detail(
     context: ProjectRenderContext,
     selector: String,
@@ -1072,7 +1353,13 @@ fn render_frontier_detail(
     let store = open_store(context.project_root.as_std_path())?;
     let projection = store.frontier_open(&selector)?;
     let shell = load_shell_frame(&store, Some(projection.frontier.slug.clone()), &context)?;
+    let kpi_metric_keys_for_tab_bar = store.metric_keys(MetricKeysQuery {
+        frontier: Some(projection.frontier.slug.to_string()),
+        scope: MetricScope::Kpi,
+    })?;
     let other_metric_keys_for_tab_bar = load_other_metric_keys(&store, &projection)?;
+    let requested_metrics_for_tab_bar =
+        requested_or_kpi_metric_keys(&query.metric, &kpi_metric_keys_for_tab_bar);
     let tab = FrontierTab::from_query(query.tab.as_deref());
     let title = format!("{} · frontier", projection.frontier.label);
     let subtitle = format!(
@@ -1091,9 +1378,9 @@ fn render_frontier_detail(
             &projection.frontier.slug,
             tab,
             &resolve_selected_metric_keys(
-                &query.metric,
+                &requested_metrics_for_tab_bar,
                 &visible_metric_catalog(
-                    &projection.scoreboard_metric_keys,
+                    &kpi_metric_keys_for_tab_bar,
                     &other_metric_keys_for_tab_bar,
                 ),
             ),
@@ -1476,6 +1763,170 @@ fn render_create_tag_form(families: &[fidget_spinner_core::TagFamilyRecord]) -> 
     }
 }
 
+fn render_create_metric_form() -> Markup {
+    html! {
+        form.tag-create-form method="post" action="metrics/create" data-preserve-viewport="true" {
+            input.compact-input type="text" name="key" placeholder="metric_key" aria-label="Metric key" required;
+            input.compact-input type="text" name="unit" placeholder="milliseconds" aria-label="Display unit" required;
+            select.compact-select name="aggregation" aria-label="Aggregation" {
+                @for aggregation in ["point", "mean", "geomean", "median", "p95", "min", "max", "sum"] {
+                    option value=(aggregation) { (aggregation) }
+                }
+            }
+            select.compact-select name="objective" aria-label="Objective" {
+                option value="minimize" { "minimize" }
+                option value="maximize" { "maximize" }
+                option value="target" { "target" }
+            }
+            select.compact-select name="visibility" aria-label="Visibility" {
+                option value="canonical" { "canonical" }
+                option value="minor" { "minor" }
+                option value="hidden" { "hidden" }
+                option value="archived" { "archived" }
+            }
+            input.compact-input.wide-compact-input type="text" name="description" placeholder="description" aria-label="Metric description";
+            button.inline-icon-button type="submit" aria-label="Add metric" title="Add metric" {
+                (plus_icon())
+            }
+        }
+    }
+}
+
+fn render_create_kpi_form(
+    frontiers: &[FrontierSummary],
+    metrics: &[fidget_spinner_store_sqlite::MetricKeySummary],
+) -> Markup {
+    html! {
+        form.tag-create-form method="post" action="metrics/kpi" data-preserve-viewport="true" {
+            select.compact-select name="frontier" aria-label="KPI frontier" required {
+                @for frontier in frontiers {
+                    option value=(frontier.slug.as_str()) { (frontier.label) }
+                }
+            }
+            input.compact-input type="text" name="name" placeholder="kpi name" aria-label="KPI name" required;
+            select.compact-select name="objective" aria-label="KPI objective" {
+                option value="minimize" { "minimize" }
+                option value="maximize" { "maximize" }
+                option value="target" { "target" }
+            }
+            input.compact-input.wide-compact-input type="text" name="metric_keys" placeholder="metric_a, metric_b" list="metric-key-list" aria-label="Metric alternatives" required;
+            datalist id="metric-key-list" {
+                @for metric in metrics {
+                    option value=(metric.key.as_str()) {}
+                }
+            }
+            input.compact-input.wide-compact-input type="text" name="description" placeholder="description" aria-label="KPI description";
+            button.inline-icon-button type="submit" aria-label="Add KPI" title="Add KPI" {
+                (plus_icon())
+            }
+        }
+    }
+}
+
+fn render_kpi_registry(kpis_by_frontier: &[(FrontierSummary, Vec<KpiSummary>)]) -> Markup {
+    html! {
+        section.card {
+            div.card-header { h2 { "KPI Contracts" } }
+            @if kpis_by_frontier.iter().all(|(_frontier, kpis)| kpis.is_empty()) {
+                p.muted { "No KPIs yet." }
+            } @else {
+                div.tag-family-list {
+                    @for (frontier, kpis) in kpis_by_frontier {
+                        @if !kpis.is_empty() {
+                            div.tag-family-row {
+                                div.tag-family-main {
+                                    span.tag-chip { (frontier.label) }
+                                    span.muted { (kpis.len()) " KPI" @if kpis.len() != 1 { "s" } }
+                                }
+                                div.chip-row {
+                                    @for kpi in kpis {
+                                        span.tag-chip title=(kpi.description.as_ref().map_or("", NonEmptyText::as_str)) {
+                                            (kpi.name) " · " (kpi.objective.as_str()) " · "
+                                            (kpi.metrics.iter().map(|metric| metric.key.to_string()).collect::<Vec<_>>().join(" | "))
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn render_metric_registry_table(
+    metrics: &[fidget_spinner_store_sqlite::MetricKeySummary],
+) -> Markup {
+    html! {
+        section.card {
+            div.card-header { h2 { "Metric Registry" } }
+            (render_create_metric_form())
+            @if metrics.is_empty() {
+                p.muted { "No metrics yet." }
+            } @else {
+                div.table-scroll {
+                    table.metric-table {
+                        thead {
+                            tr {
+                                th { "" }
+                                th { "Metric" }
+                                th { "Unit" }
+                                th { "Shape" }
+                                th { "Refs" }
+                                th { "Merge" }
+                            }
+                        }
+                        tbody {
+                            @for metric in metrics {
+                                tr {
+                                    td.no-truncate {
+                                        form.tag-icon-form method="post" action="metrics/delete" data-preserve-viewport="true" {
+                                            input type="hidden" name="metric" value=(metric.key.as_str());
+                                            button.inline-icon-button.danger-icon-button type="submit" aria-label=(format!("Delete {}", metric.key)) title="Delete unused metric" {
+                                                (trash_icon())
+                                            }
+                                        }
+                                    }
+                                    td.no-truncate {
+                                        form.tag-inline-rename-form method="post" action="metrics/rename" data-preserve-viewport="true" data-inline-rename-form="true" data-original-name=(metric.key.as_str()) {
+                                            input type="hidden" name="metric" value=(metric.key.as_str());
+                                            span.tag-chip data-inline-rename-label="true" { (metric.key) }
+                                            button.inline-icon-button type="button" data-inline-rename-trigger="true" aria-label=(format!("Rename {}", metric.key)) title="Rename metric" {
+                                                (pencil_icon())
+                                            }
+                                            input.inline-rename-input type="text" name="new_key" value=(metric.key.as_str()) aria-label=(format!("New key for {}", metric.key)) data-inline-rename-input="true";
+                                        }
+                                        @if let Some(description) = metric.description.as_ref() {
+                                            div.muted { (description) }
+                                        }
+                                    }
+                                    td.no-truncate { (metric.unit.as_str()) " · " (metric.dimension.as_str()) }
+                                    td.no-truncate { (metric.aggregation.as_str()) " · " (metric.objective.as_str()) " · " (metric.visibility.as_str()) }
+                                    td.no-truncate { (metric.reference_count) }
+                                    td.no-truncate {
+                                        form.tag-inline-form method="post" action="metrics/merge" data-preserve-viewport="true" {
+                                            input type="hidden" name="source" value=(metric.key.as_str());
+                                            select.compact-select name="target" data-auto-submit="true" aria-label=(format!("Merge target for {}", metric.key)) {
+                                                option value="" { "merge into..." }
+                                                @for target in metrics {
+                                                    @if target.key != metric.key {
+                                                        option value=(target.key.as_str()) { (target.key) }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 fn render_frontier_tab_content(
     store: &fidget_spinner_store_sqlite::ProjectStore,
     projection: &FrontierOpenProjection,
@@ -1517,10 +1968,15 @@ fn render_frontier_tab_content(
             })
         }
         FrontierTab::Metrics => {
+            let kpi_metrics = store.metric_keys(MetricKeysQuery {
+                frontier: Some(projection.frontier.slug.to_string()),
+                scope: MetricScope::Kpi,
+            })?;
             let other_metric_keys = load_other_metric_keys(store, projection)?;
-            let visible_metrics =
-                visible_metric_catalog(&projection.scoreboard_metric_keys, &other_metric_keys);
-            let selected_metrics = resolve_selected_metric_keys(&query.metric, &visible_metrics);
+            let visible_metrics = visible_metric_catalog(&kpi_metrics, &other_metric_keys);
+            let requested_metrics = requested_or_kpi_metric_keys(&query.metric, &kpi_metrics);
+            let selected_metrics =
+                resolve_selected_metric_keys(&requested_metrics, &visible_metrics);
             let series = selected_metrics
                 .iter()
                 .map(|metric| {
@@ -1536,7 +1992,7 @@ fn render_frontier_tab_content(
                 (render_frontier_header(&projection.frontier))
                 (render_metric_series_section(
                     &projection.frontier.slug,
-                    &projection.scoreboard_metric_keys,
+                    &kpi_metrics,
                     &other_metric_keys,
                     &selected_metrics,
                     &series,
@@ -1587,10 +2043,10 @@ fn render_frontier_tab_bar(
 }
 
 fn visible_metric_catalog(
-    scoreboard_metric_keys: &[fidget_spinner_store_sqlite::MetricKeySummary],
+    kpi_metric_keys: &[fidget_spinner_store_sqlite::MetricKeySummary],
     other_metric_keys: &[fidget_spinner_store_sqlite::MetricKeySummary],
 ) -> Vec<fidget_spinner_store_sqlite::MetricKeySummary> {
-    scoreboard_metric_keys
+    kpi_metric_keys
         .iter()
         .chain(other_metric_keys.iter())
         .cloned()
@@ -1613,11 +2069,26 @@ fn load_other_metric_keys(
         .into_iter()
         .filter(|metric| {
             !projection
-                .scoreboard_metric_keys
+                .kpis
                 .iter()
-                .any(|scoreboard| scoreboard.key == metric.key)
+                .flat_map(|kpi| kpi.metrics.iter())
+                .any(|kpi_metric| kpi_metric.key == metric.key)
         })
         .collect())
+}
+
+fn requested_or_kpi_metric_keys(
+    requested_metrics: &[String],
+    kpi_metric_keys: &[fidget_spinner_store_sqlite::MetricKeySummary],
+) -> Vec<String> {
+    if requested_metrics.is_empty() {
+        kpi_metric_keys
+            .iter()
+            .map(|metric| metric.key.to_string())
+            .collect()
+    } else {
+        requested_metrics.to_vec()
+    }
 }
 
 fn resolve_selected_metric_keys(
@@ -1714,7 +2185,7 @@ struct MetricChartSeries {
 
 fn render_metric_series_section(
     frontier_slug: &Slug,
-    scoreboard_metric_keys: &[fidget_spinner_store_sqlite::MetricKeySummary],
+    kpi_metric_keys: &[fidget_spinner_store_sqlite::MetricKeySummary],
     other_metric_keys: &[fidget_spinner_store_sqlite::MetricKeySummary],
     selected_metrics: &[fidget_spinner_store_sqlite::MetricKeySummary],
     series: &[FrontierMetricSeries],
@@ -1759,7 +2230,7 @@ fn render_metric_series_section(
                 ))
                 (render_metric_selection_popout(
                     frontier_slug,
-                    scoreboard_metric_keys,
+                    kpi_metric_keys,
                     other_metric_keys,
                     selected_metrics,
                     dimension_filters,
@@ -1769,7 +2240,7 @@ fn render_metric_series_section(
                 ))
             }
         }
-        @if scoreboard_metric_keys.is_empty() && other_metric_keys.is_empty() {
+        @if kpi_metric_keys.is_empty() && other_metric_keys.is_empty() {
             p.muted { "No visible metrics registered for this frontier." }
         } @else if no_metric_history {
             p.muted { "No closed experiments for the current metric selection yet." }
@@ -1983,7 +2454,7 @@ fn render_metric_filter_popout(
 
 fn render_metric_selection_popout(
     frontier_slug: &Slug,
-    scoreboard_metric_keys: &[fidget_spinner_store_sqlite::MetricKeySummary],
+    kpi_metric_keys: &[fidget_spinner_store_sqlite::MetricKeySummary],
     other_metric_keys: &[fidget_spinner_store_sqlite::MetricKeySummary],
     selected_metrics: &[fidget_spinner_store_sqlite::MetricKeySummary],
     dimension_filters: &BTreeMap<String, String>,
@@ -2003,11 +2474,11 @@ fn render_metric_selection_popout(
                 (render_table_metric_hidden_input(table_metric))
                 div.metric-popout-layout {
                     div.metric-picker-main {
-                        @if !scoreboard_metric_keys.is_empty() {
+                        @if !kpi_metric_keys.is_empty() {
                             section.metric-picker-group {
-                                h4 { "Scoreboard" }
+                                h4 { "KPIs" }
                                 div.metric-picker-list {
-                                    @for metric in scoreboard_metric_keys {
+                                    @for metric in kpi_metric_keys {
                                         (render_metric_picker_option(
                                             frontier_slug,
                                             metric,
@@ -2500,37 +2971,33 @@ fn render_frontier_active_sets(projection: &FrontierOpenProjection) -> Markup {
                 }
             }
             div.subcard {
-                h3 { "Scoreboard Metrics" }
-                @if projection.scoreboard_metric_keys.is_empty() {
-                    p.muted { "No frontier scoreboard metrics configured." }
+                h3 { "KPIs" }
+                @if projection.kpis.is_empty() {
+                    p.muted { "No frontier KPIs configured." }
                 } @else {
                     div.table-scroll {
                         table.metric-table {
                             thead {
                                 tr {
-                                    th { "Key" }
-                                    th { "Unit" }
+                                    th { "KPI" }
+                                    th { "Metrics" }
                                     th { "Objective" }
-                                    th { "Refs" }
                                 }
                             }
                             tbody {
-                                @for metric in &projection.scoreboard_metric_keys {
+                                @for kpi in &projection.kpis {
                                     tr {
+                                        td { (kpi.name) }
                                         td {
-                                            a href=(frontier_tab_href(
-                                                &projection.frontier.slug,
-                                                FrontierTab::Metrics,
-                                                std::slice::from_ref(metric),
-                                                false,
-                                                Some(metric.key.as_str()),
-                                            )) {
-                                                (metric.key)
+                                            div.chip-row {
+                                                @for metric in &kpi.metrics {
+                                                    span.tag-chip title=(format!("precedence {}", metric.precedence)) {
+                                                        (metric.key)
+                                                    }
+                                                }
                                             }
                                         }
-                                        td { (metric.unit.as_str()) }
-                                        td { (metric.objective.as_str()) }
-                                        td { (metric.reference_count) }
+                                        td { (kpi.objective.as_str()) }
                                     }
                                 }
                             }
@@ -3595,7 +4062,8 @@ fn render_sidebar(shell: &ShellFrame) -> Markup {
     section.sidebar-panel {
         div.sidebar-project {
             a.sidebar-home href=(&shell.project_home_href) { (&shell.project_status.display_name) }
-            a.sidebar-tags href="tags" { "Tags" }
+            a.sidebar-tags href=(format!("{}tags", shell.base_href)) { "Tags" }
+            a.sidebar-tags href=(format!("{}metrics", shell.base_href)) { "Metrics" }
             p.sidebar-copy {
                 "Frontier-scoped navigator. Open one frontier, then walk hypotheses and experiments deliberately."
             }
@@ -5669,8 +6137,8 @@ mod tests {
 
     use fidget_spinner_core::{
         ExperimentStatus, FrontierBrief, FrontierId, FrontierRecord, FrontierStatus,
-        FrontierVerdict, HypothesisId, MetricUnit, MetricVisibility, NonEmptyText,
-        OptimizationObjective, Slug,
+        FrontierVerdict, HypothesisId, MetricAggregation, MetricUnit, MetricVisibility,
+        NonEmptyText, OptimizationObjective, Slug,
     };
     use fidget_spinner_store_sqlite::{
         ExperimentSummary, FrontierMetricPoint, FrontierMetricSeries, HypothesisSummary,
@@ -5688,9 +6156,12 @@ mod tests {
     }
 
     fn test_metric(key: &str, unit: &str) -> MetricKeySummary {
+        let unit = must(MetricUnit::new(unit), "metric unit");
         MetricKeySummary {
             key: must(NonEmptyText::new(key.to_owned()), "metric key"),
-            unit: must(MetricUnit::new(unit), "metric unit"),
+            dimension: unit.dimension(),
+            unit,
+            aggregation: MetricAggregation::Point,
             objective: OptimizationObjective::Minimize,
             visibility: MetricVisibility::Canonical,
             description: None,
@@ -5796,6 +6267,7 @@ mod tests {
         FrontierMetricPoint {
             experiment: test_experiment(frontier_id, hypothesis.id, slug, title, closed_at),
             hypothesis: hypothesis.clone(),
+            metric_key: must(NonEmptyText::new("test_metric"), "metric key"),
             value,
             verdict: FrontierVerdict::Accepted,
             closed_at,
@@ -5910,6 +6382,7 @@ mod tests {
             FrontierMetricSeries {
                 frontier: frontier.clone(),
                 metric: metric_a.clone(),
+                kpi: None,
                 points: vec![
                     test_metric_point(
                         frontier.id,
@@ -5932,6 +6405,7 @@ mod tests {
             FrontierMetricSeries {
                 frontier: frontier.clone(),
                 metric: metric_b.clone(),
+                kpi: None,
                 points: vec![
                     test_metric_point(
                         frontier.id,

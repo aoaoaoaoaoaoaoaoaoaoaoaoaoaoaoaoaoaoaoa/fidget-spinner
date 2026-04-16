@@ -51,7 +51,7 @@ If you need more context, pull it from:
 
 - `tag.add` when a new campaign or subsystem token is genuinely needed; every tag must carry a description, and supervisor locks may reject model-created tags
 - `tag.list` before inventing tags by memory; it also reports supervisor-defined families, mandatory-family rules, locks, and stale-name guidance
-- `frontier.update` when the objective, situation, roadmap, unknowns, or scoreboard metrics need to change
+- `frontier.update` when the objective, situation, roadmap, or unknowns need to change
 - `hypothesis.record` before core-path work; every experiment must hang off exactly one hypothesis
 - `hypothesis.update` when the title, summary, body, tags, or influence parents need tightening
 - `experiment.open` once a hypothesis has a concrete slice and is ready to be tested
@@ -62,7 +62,8 @@ If you need more context, pull it from:
 - `artifact.record` when preserving an external file, link, log, table, plot, dump, or bibliography by reference
 - `artifact.read` only to inspect metadata and attachments, never to read the body
 - `metric.define` when a project-level metric key needs a canonical unit, objective, visibility tier, or description
-- `metric.keys --scope scoreboard` before guessing which frontier-grade consumer metrics define the real hill
+- `kpi.list` or `metric.keys --scope kpi` before guessing which mandatory frontier metrics define the real hill
+- `kpi.best` when you need the frontier ranking under KPI supersession rules
 - `metric.keys --scope live` before guessing which numeric signals matter now
 - `metric.best` when you need the best closed experiments by one numeric key; pass exact run-dimension filters when comparing one slice
 - `run.dimension.define` when a new experiment slicer such as `instance` or `duration_s` becomes query-worthy

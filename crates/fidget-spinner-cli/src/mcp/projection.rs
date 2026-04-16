@@ -9,8 +9,8 @@ use fidget_spinner_core::{
 use fidget_spinner_store_sqlite::{
     ArtifactDetail, ArtifactSummary, EntityHistoryEntry, ExperimentDetail, ExperimentNearestHit,
     ExperimentNearestResult, ExperimentSummary, FrontierOpenProjection, FrontierSummary,
-    HypothesisCurrentState, HypothesisDetail, MetricBestEntry, MetricKeySummary,
-    MetricObservationSummary, ProjectStore, StoreError, VertexSummary,
+    HypothesisCurrentState, HypothesisDetail, KpiBestEntry, KpiSummary, MetricBestEntry,
+    MetricKeySummary, MetricObservationSummary, ProjectStore, StoreError, VertexSummary,
 };
 use libmcp::{
     ProjectionError, SelectorProjection, StructuredProjection, SurfaceKind, SurfacePolicy,
@@ -57,7 +57,6 @@ pub(crate) struct FrontierBriefProjection {
     pub(crate) situation: Option<String>,
     pub(crate) roadmap: Vec<RoadmapItemProjection>,
     pub(crate) unknowns: Vec<String>,
-    pub(crate) scoreboard_metric_keys: Vec<String>,
     pub(crate) revision: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) updated_at: Option<TimestampText>,
@@ -108,7 +107,7 @@ pub(crate) struct FrontierListOutput {
 pub(crate) struct FrontierOpenOutput {
     pub(crate) frontier: FrontierOpenFrontierProjection,
     pub(crate) active_tags: Vec<String>,
-    pub(crate) scoreboard_metrics: Vec<MetricKeySummaryProjection>,
+    pub(crate) kpis: Vec<KpiSummaryProjection>,
     pub(crate) active_metric_keys: Vec<MetricKeySummaryProjection>,
     pub(crate) active_hypotheses: Vec<HypothesisCurrentStateProjection>,
     pub(crate) open_experiments: Vec<ExperimentSummaryProjection>,
@@ -424,11 +423,62 @@ pub(crate) struct HypothesisCurrentStateProjection {
 pub(crate) struct MetricKeySummaryProjection {
     pub(crate) key: String,
     pub(crate) unit: String,
+    pub(crate) dimension: String,
+    pub(crate) aggregation: String,
     pub(crate) objective: String,
     pub(crate) visibility: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) description: Option<String>,
     pub(crate) reference_count: u64,
+}
+
+#[derive(Clone, Serialize)]
+pub(crate) struct KpiSummaryProjection {
+    pub(crate) name: String,
+    pub(crate) objective: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) description: Option<String>,
+    pub(crate) metrics: Vec<KpiMetricProjection>,
+    pub(crate) revision: u64,
+}
+
+#[derive(Clone, Serialize)]
+pub(crate) struct KpiMetricProjection {
+    pub(crate) key: String,
+    pub(crate) precedence: u32,
+    pub(crate) unit: String,
+    pub(crate) dimension: String,
+    pub(crate) aggregation: String,
+    pub(crate) objective: String,
+}
+
+#[derive(Clone, Serialize, libmcp::ToolProjection)]
+#[libmcp(kind = "mutation", reference_only)]
+pub(crate) struct KpiRecordOutput {
+    pub(crate) record: KpiSummaryProjection,
+}
+
+#[derive(Clone, Serialize, libmcp::ToolProjection)]
+#[libmcp(kind = "list")]
+pub(crate) struct KpiListOutput {
+    pub(crate) count: usize,
+    pub(crate) kpis: Vec<KpiSummaryProjection>,
+}
+
+#[derive(Clone, Serialize)]
+pub(crate) struct KpiBestEntryProjection {
+    pub(crate) experiment: ExperimentSummaryProjection,
+    pub(crate) hypothesis: HypothesisSummaryProjection,
+    pub(crate) metric_key: String,
+    pub(crate) value: f64,
+    pub(crate) dimensions: BTreeMap<String, Value>,
+}
+
+#[derive(Clone, Serialize, libmcp::ToolProjection)]
+#[libmcp(kind = "list")]
+pub(crate) struct KpiBestOutput {
+    pub(crate) count: usize,
+    pub(crate) entries: Vec<KpiBestEntryProjection>,
 }
 
 #[derive(Clone, Serialize)]
@@ -444,6 +494,7 @@ pub(crate) struct MetricObservationSummaryProjection {
     pub(crate) key: String,
     pub(crate) value: f64,
     pub(crate) unit: String,
+    pub(crate) dimension: String,
     pub(crate) objective: String,
 }
 
@@ -605,8 +656,11 @@ pub(crate) struct TagListOutput {
 
 #[derive(Clone, Serialize)]
 pub(crate) struct MetricDefinitionProjection {
+    pub(crate) id: String,
     pub(crate) key: String,
     pub(crate) unit: String,
+    pub(crate) dimension: String,
+    pub(crate) aggregation: String,
     pub(crate) objective: String,
     pub(crate) visibility: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -714,11 +768,7 @@ pub(crate) fn frontier_open(projection: &FrontierOpenProjection) -> FrontierOpen
             .iter()
             .map(ToString::to_string)
             .collect(),
-        scoreboard_metrics: projection
-            .scoreboard_metric_keys
-            .iter()
-            .map(metric_key_summary)
-            .collect(),
+        kpis: projection.kpis.iter().map(kpi_summary).collect(),
         active_metric_keys: projection
             .active_metric_keys
             .iter()
@@ -933,6 +983,26 @@ pub(crate) fn metric_best(entries: &[MetricBestEntry]) -> MetricBestOutput {
     }
 }
 
+pub(crate) fn kpi_record(kpi: &KpiSummary) -> KpiRecordOutput {
+    KpiRecordOutput {
+        record: kpi_summary(kpi),
+    }
+}
+
+pub(crate) fn kpi_list(kpis: &[KpiSummary]) -> KpiListOutput {
+    KpiListOutput {
+        count: kpis.len(),
+        kpis: kpis.iter().map(kpi_summary).collect(),
+    }
+}
+
+pub(crate) fn kpi_best(entries: &[KpiBestEntry]) -> KpiBestOutput {
+    KpiBestOutput {
+        count: entries.len(),
+        entries: entries.iter().map(kpi_best_entry).collect(),
+    }
+}
+
 pub(crate) fn experiment_nearest(result: &ExperimentNearestResult) -> ExperimentNearestOutput {
     ExperimentNearestOutput {
         metric: result.metric.as_ref().map(metric_key_summary),
@@ -1059,11 +1129,6 @@ fn frontier_brief_projection(
         situation: brief.situation.as_ref().map(ToString::to_string),
         roadmap,
         unknowns: brief.unknowns.iter().map(ToString::to_string).collect(),
-        scoreboard_metric_keys: brief
-            .scoreboard_metric_keys
-            .iter()
-            .map(ToString::to_string)
-            .collect(),
         revision: brief.revision,
         updated_at: brief.updated_at.map(timestamp_value),
     }
@@ -1186,10 +1251,33 @@ fn metric_key_summary(metric: &MetricKeySummary) -> MetricKeySummaryProjection {
     MetricKeySummaryProjection {
         key: metric.key.to_string(),
         unit: metric.unit.as_str().to_owned(),
+        dimension: metric.dimension.as_str().to_owned(),
+        aggregation: metric.aggregation.as_str().to_owned(),
         objective: metric.objective.as_str().to_owned(),
         visibility: metric.visibility.as_str().to_owned(),
         description: metric.description.as_ref().map(ToString::to_string),
         reference_count: metric.reference_count,
+    }
+}
+
+fn kpi_summary(kpi: &KpiSummary) -> KpiSummaryProjection {
+    KpiSummaryProjection {
+        name: kpi.name.to_string(),
+        objective: kpi.objective.as_str().to_owned(),
+        description: kpi.description.as_ref().map(ToString::to_string),
+        metrics: kpi
+            .metrics
+            .iter()
+            .map(|metric| KpiMetricProjection {
+                key: metric.key.to_string(),
+                precedence: metric.precedence,
+                unit: metric.unit.as_str().to_owned(),
+                dimension: metric.dimension.as_str().to_owned(),
+                aggregation: metric.aggregation.as_str().to_owned(),
+                objective: metric.objective.as_str().to_owned(),
+            })
+            .collect(),
+        revision: kpi.revision,
     }
 }
 
@@ -1237,8 +1325,11 @@ fn tag_name_history_projection(history: &TagNameHistoryRecord) -> TagNameHistory
 
 fn metric_definition_projection(metric: &MetricDefinition) -> MetricDefinitionProjection {
     MetricDefinitionProjection {
+        id: metric.id.to_string(),
         key: metric.key.to_string(),
         unit: metric.unit.as_str().to_owned(),
+        dimension: metric.dimension.as_str().to_owned(),
+        aggregation: metric.aggregation.as_str().to_owned(),
         objective: metric.objective.as_str().to_owned(),
         visibility: metric.visibility.as_str().to_owned(),
         description: metric.description.as_ref().map(ToString::to_string),
@@ -1277,6 +1368,16 @@ fn metric_best_entry(entry: &MetricBestEntry) -> MetricBestEntryProjection {
     }
 }
 
+fn kpi_best_entry(entry: &KpiBestEntry) -> KpiBestEntryProjection {
+    KpiBestEntryProjection {
+        experiment: experiment_summary(&entry.experiment),
+        hypothesis: hypothesis_summary(&entry.hypothesis),
+        metric_key: entry.metric_key.to_string(),
+        value: entry.value,
+        dimensions: dimension_map(&entry.dimensions),
+    }
+}
+
 fn experiment_nearest_hit(hit: &ExperimentNearestHit) -> ExperimentNearestHitProjection {
     ExperimentNearestHitProjection {
         experiment: experiment_summary(&hit.experiment),
@@ -1294,6 +1395,7 @@ fn metric_observation_summary(
         key: metric.key.to_string(),
         value: metric.value,
         unit: metric.unit.as_str().to_owned(),
+        dimension: metric.dimension.as_str().to_owned(),
         objective: metric.objective.as_str().to_owned(),
     }
 }

@@ -178,7 +178,7 @@ body lives elsewhere.
 
 - frontier brief
 - active tags
-- scoreboard metric keys
+- KPIs
 - live metric keys
 - active hypotheses with deduped current state
 - open experiments

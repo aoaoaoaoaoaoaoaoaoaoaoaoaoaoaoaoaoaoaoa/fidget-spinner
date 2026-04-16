@@ -10,13 +10,14 @@ use std::sync::OnceLock;
 
 use camino::Utf8PathBuf;
 use fidget_spinner_core::{
-    FrontierStatus, NonEmptyText, RegistryLockMode, RegistryName, Slug, TagFamilyName, TagName,
+    FrontierStatus, MetricUnit, MetricVisibility, NonEmptyText, OptimizationObjective,
+    RegistryLockMode, RegistryName, Slug, TagFamilyName, TagName,
 };
 use fidget_spinner_store_sqlite::{
-    AssignTagFamilyRequest, CreateFrontierRequest, CreateHypothesisRequest, CreateTagFamilyRequest,
-    DeleteTagRequest, ListExperimentsQuery, ListFrontiersQuery, MergeTagRequest,
-    OpenExperimentRequest, ProjectStore, RenameTagRequest, SetRegistryLockRequest,
-    UpdateFrontierRequest,
+    AssignTagFamilyRequest, CreateFrontierRequest, CreateHypothesisRequest, CreateKpiRequest,
+    CreateTagFamilyRequest, DefineMetricRequest, DeleteTagRequest, ListExperimentsQuery,
+    ListFrontiersQuery, MergeTagRequest, OpenExperimentRequest, ProjectStore, RenameTagRequest,
+    SetRegistryLockRequest, UpdateFrontierRequest,
 };
 use libmcp as _;
 use libmcp_testkit::assert_no_opaque_ids;
@@ -278,6 +279,20 @@ fn assert_tool_error(response: &Value) {
     );
 }
 
+fn create_nodes_kpi(harness: &mut McpHarness, id: u64, frontier: &str) -> TestResult {
+    assert_tool_ok(&harness.call_tool(
+        id,
+        "kpi.create",
+        json!({
+            "frontier": frontier,
+            "name": "node throughput",
+            "objective": "maximize",
+            "metric_keys": ["nodes_solved"],
+        }),
+    )?);
+    Ok(())
+}
+
 fn tool_names(response: &Value) -> Vec<&str> {
     response["result"]["tools"]
         .as_array()
@@ -370,7 +385,6 @@ fn frontier_archive_hides_default_enumeration_without_breaking_direct_reads() ->
             situation: None,
             roadmap: None,
             unknowns: None,
-            scoreboard_metric_keys: None,
         }),
         "archive frontier",
     )?;
@@ -895,6 +909,7 @@ fn frontier_open_is_the_grounding_surface_for_live_state() -> TestResult {
             "slug": "lp-root",
         }),
     )?);
+    create_nodes_kpi(&mut harness, 131, "lp-root")?;
     assert_tool_ok(&harness.call_tool(
         14,
         "hypothesis.record",
@@ -1001,7 +1016,7 @@ fn frontier_open_is_the_grounding_surface_for_live_state() -> TestResult {
 }
 
 #[test]
-fn frontier_update_mutates_objective_and_scoreboard_grounding() -> TestResult {
+fn frontier_update_mutates_objective_and_kpi_grounding() -> TestResult {
     let project_root = temp_project_root("frontier_update")?;
     init_project(&project_root)?;
 
@@ -1037,7 +1052,6 @@ fn frontier_update_mutates_objective_and_scoreboard_grounding() -> TestResult {
             "objective": "Drive structural LP cash-out on parity rails",
             "situation": "Structural LP churn is the active hill.",
             "unknowns": ["How far queued structural reuse can cash out below root."],
-            "scoreboard_metric_keys": ["nodes_solved"],
         }),
     )?;
     assert_tool_ok(&updated);
@@ -1046,19 +1060,26 @@ fn frontier_update_mutates_objective_and_scoreboard_grounding() -> TestResult {
         updated_content["record"]["objective"].as_str(),
         Some("Drive structural LP cash-out on parity rails")
     );
-    assert_eq!(
-        must_some(
-            updated_content["record"]["brief"]["scoreboard_metric_keys"]
-                .as_array()
-                .and_then(|items| items.first())
-                .and_then(Value::as_str),
-            "frontier scoreboard metric key",
-        )?,
-        "nodes_solved"
+    assert!(
+        updated_content["record"]["brief"]
+            .get("scoreboard_metric_keys")
+            .is_none()
     );
 
+    let kpi = harness.call_tool_full(
+        73,
+        "kpi.create",
+        json!({
+            "frontier": "lp-root",
+            "name": "node throughput",
+            "objective": "maximize",
+            "metric_keys": ["nodes_solved"],
+        }),
+    )?;
+    assert_tool_ok(&kpi);
+
     let frontier_open =
-        harness.call_tool_full(73, "frontier.open", json!({ "frontier": "lp-root" }))?;
+        harness.call_tool_full(74, "frontier.open", json!({ "frontier": "lp-root" }))?;
     assert_tool_ok(&frontier_open);
     let open_content = tool_content(&frontier_open);
     assert_eq!(
@@ -1067,30 +1088,30 @@ fn frontier_update_mutates_objective_and_scoreboard_grounding() -> TestResult {
     );
     assert_eq!(
         must_some(
-            open_content["scoreboard_metrics"]
+            open_content["kpis"]
                 .as_array()
                 .and_then(|items| items.first()),
-            "frontier scoreboard metrics entry",
-        )?["key"]
+            "frontier KPI entry",
+        )?["metrics"][0]["key"]
             .as_str(),
         Some("nodes_solved")
     );
 
-    let scoreboard = harness.call_tool_full(
-        74,
+    let kpi_metrics = harness.call_tool_full(
+        75,
         "metric.keys",
         json!({
             "frontier": "lp-root",
-            "scope": "scoreboard",
+            "scope": "kpi",
         }),
     )?;
-    assert_tool_ok(&scoreboard);
+    assert_tool_ok(&kpi_metrics);
     assert_eq!(
         must_some(
-            tool_content(&scoreboard)["metrics"]
+            tool_content(&kpi_metrics)["metrics"]
                 .as_array()
                 .and_then(|items| items.first()),
-            "scoreboard metric entry",
+            "KPI metric entry",
         )?["key"]
             .as_str(),
         Some("nodes_solved")
@@ -1145,10 +1166,12 @@ fn experiment_nearest_finds_structural_buckets_and_champion() -> TestResult {
     )?);
     assert_tool_ok(&harness.call_tool(
         85,
-        "frontier.update",
+        "kpi.create",
         json!({
             "frontier": "comparators",
-            "scoreboard_metric_keys": ["nodes_solved"],
+            "name": "node throughput",
+            "objective": "maximize",
+            "metric_keys": ["nodes_solved"],
         }),
     )?);
     assert_tool_ok(&harness.call_tool(
@@ -1492,6 +1515,7 @@ fn experiment_close_drives_metric_best_and_analysis() -> TestResult {
             "slug": "metric-frontier",
         }),
     )?);
+    create_nodes_kpi(&mut harness, 421, "metric-frontier")?;
     assert_tool_ok(&harness.call_tool(
         43,
         "hypothesis.record",
@@ -1640,6 +1664,7 @@ fn experiment_close_rejects_dirty_worktree() -> TestResult {
             "slug": "dirty-frontier",
         }),
     )?);
+    create_nodes_kpi(&mut harness, 521, "dirty-frontier")?;
     assert_tool_ok(&harness.call_tool(
         53,
         "hypothesis.record",
@@ -1699,6 +1724,16 @@ fn already_bound_worker_refreshes_after_destructive_reseed() -> TestResult {
     assert_tool_ok(&bind);
 
     assert_tool_ok(&harness.call_tool(
+        601,
+        "metric.define",
+        json!({
+            "key": "nodes_solved",
+            "unit": "count",
+            "objective": "maximize",
+            "visibility": "canonical",
+        }),
+    )?);
+    assert_tool_ok(&harness.call_tool(
         61,
         "frontier.create",
         json!({
@@ -1707,6 +1742,7 @@ fn already_bound_worker_refreshes_after_destructive_reseed() -> TestResult {
             "slug": "alpha",
         }),
     )?);
+    create_nodes_kpi(&mut harness, 611, "alpha")?;
     let alpha_list = harness.call_tool_full(62, "frontier.list", json!({}))?;
     assert_tool_ok(&alpha_list);
     assert_eq!(frontier_slugs(&alpha_list), vec!["alpha"]);
@@ -1719,6 +1755,17 @@ fn already_bound_worker_refreshes_after_destructive_reseed() -> TestResult {
     )?;
     init_project(&project_root)?;
     let mut reopened = must(ProjectStore::open(&project_root), "open recreated store")?;
+    let _metric = must(
+        reopened.define_metric(DefineMetricRequest {
+            key: must(NonEmptyText::new("nodes_solved"), "metric key")?,
+            unit: must(MetricUnit::new("count"), "metric unit")?,
+            aggregation: fidget_spinner_core::MetricAggregation::Point,
+            objective: OptimizationObjective::Maximize,
+            visibility: MetricVisibility::Canonical,
+            description: None,
+        }),
+        "define beta metric",
+    )?;
     let _beta = must(
         reopened.create_frontier(CreateFrontierRequest {
             label: must(NonEmptyText::new("beta frontier"), "beta label")?,
@@ -1729,6 +1776,16 @@ fn already_bound_worker_refreshes_after_destructive_reseed() -> TestResult {
             slug: Some(must(Slug::new("beta"), "beta slug")?),
         }),
         "create beta frontier directly in recreated store",
+    )?;
+    let _kpi = must(
+        reopened.create_kpi(CreateKpiRequest {
+            frontier: "beta".to_owned(),
+            name: must(NonEmptyText::new("node throughput"), "kpi name")?,
+            objective: OptimizationObjective::Maximize,
+            description: None,
+            metric_keys: vec![must(NonEmptyText::new("nodes_solved"), "kpi metric")?],
+        }),
+        "create beta KPI",
     )?;
 
     let beta_list = harness.call_tool_full(63, "frontier.list", json!({}))?;

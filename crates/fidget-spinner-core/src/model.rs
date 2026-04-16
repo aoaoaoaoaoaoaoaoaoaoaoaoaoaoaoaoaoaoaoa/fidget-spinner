@@ -9,8 +9,8 @@ use time::format_description::well_known::Rfc3339;
 use uuid::Uuid;
 
 use crate::{
-    ArtifactId, CoreError, ExperimentId, FrontierId, HypothesisId, RegistryLockId, TagFamilyId,
-    TagId,
+    ArtifactId, CoreError, ExperimentId, FrontierId, HypothesisId, KpiId, MetricId, RegistryLockId,
+    TagFamilyId, TagId,
 };
 
 #[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
@@ -311,6 +311,58 @@ impl KnownMetricUnit {
     }
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MetricDimension {
+    Time,
+    Count,
+    Bytes,
+    Ratio,
+    Dimensionless,
+}
+
+impl MetricDimension {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Time => "time",
+            Self::Count => "count",
+            Self::Bytes => "bytes",
+            Self::Ratio => "ratio",
+            Self::Dimensionless => "dimensionless",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MetricAggregation {
+    Point,
+    Mean,
+    Geomean,
+    Median,
+    P95,
+    Min,
+    Max,
+    Sum,
+}
+
+impl MetricAggregation {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Point => "point",
+            Self::Mean => "mean",
+            Self::Geomean => "geomean",
+            Self::Median => "median",
+            Self::P95 => "p95",
+            Self::Min => "min",
+            Self::Max => "max",
+            Self::Sum => "sum",
+        }
+    }
+}
+
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
 pub struct MetricUnit(String);
@@ -330,6 +382,46 @@ impl MetricUnit {
     #[must_use]
     pub fn known_kind(&self) -> Option<KnownMetricUnit> {
         KnownMetricUnit::parse_alias(&self.0)
+    }
+
+    #[must_use]
+    pub fn dimension(&self) -> MetricDimension {
+        match self.known_kind() {
+            Some(
+                KnownMetricUnit::Nanoseconds
+                | KnownMetricUnit::Microseconds
+                | KnownMetricUnit::Milliseconds
+                | KnownMetricUnit::Seconds,
+            ) => MetricDimension::Time,
+            Some(KnownMetricUnit::Count) => MetricDimension::Count,
+            Some(KnownMetricUnit::Bytes) => MetricDimension::Bytes,
+            Some(KnownMetricUnit::Ratio | KnownMetricUnit::Percent) => MetricDimension::Ratio,
+            Some(KnownMetricUnit::Scalar) | None => MetricDimension::Dimensionless,
+        }
+    }
+
+    #[must_use]
+    pub fn canonical_value(&self, value: f64) -> f64 {
+        match self.known_kind() {
+            Some(KnownMetricUnit::Nanoseconds) => value,
+            Some(KnownMetricUnit::Microseconds) => value * 1_000.0,
+            Some(KnownMetricUnit::Milliseconds) => value * 1_000_000.0,
+            Some(KnownMetricUnit::Seconds) => value * 1_000_000_000.0,
+            Some(KnownMetricUnit::Percent) => value / 100.0,
+            _ => value,
+        }
+    }
+
+    #[must_use]
+    pub fn display_value(&self, canonical_value: f64) -> f64 {
+        match self.known_kind() {
+            Some(KnownMetricUnit::Nanoseconds) => canonical_value,
+            Some(KnownMetricUnit::Microseconds) => canonical_value / 1_000.0,
+            Some(KnownMetricUnit::Milliseconds) => canonical_value / 1_000_000.0,
+            Some(KnownMetricUnit::Seconds) => canonical_value / 1_000_000_000.0,
+            Some(KnownMetricUnit::Percent) => canonical_value * 100.0,
+            _ => canonical_value,
+        }
     }
 
     #[must_use]
@@ -436,11 +528,15 @@ impl MetricVisibility {
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct MetricDefinition {
+    pub id: MetricId,
     pub key: NonEmptyText,
+    pub dimension: MetricDimension,
     pub unit: MetricUnit,
+    pub aggregation: MetricAggregation,
     pub objective: OptimizationObjective,
     pub visibility: MetricVisibility,
     pub description: Option<NonEmptyText>,
+    pub revision: u64,
     pub created_at: OffsetDateTime,
     pub updated_at: OffsetDateTime,
 }
@@ -450,17 +546,23 @@ impl MetricDefinition {
     pub fn new(
         key: NonEmptyText,
         unit: MetricUnit,
+        aggregation: MetricAggregation,
         objective: OptimizationObjective,
         visibility: MetricVisibility,
         description: Option<NonEmptyText>,
     ) -> Self {
         let now = OffsetDateTime::now_utc();
+        let dimension = unit.dimension();
         Self {
+            id: MetricId::fresh(),
             key,
+            dimension,
             unit,
+            aggregation,
             objective,
             visibility,
             description,
+            revision: 1,
             created_at: now,
             updated_at: now,
         }
@@ -624,6 +726,27 @@ mod tests {
 pub struct MetricValue {
     pub key: NonEmptyText,
     pub value: f64,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct FrontierKpiRecord {
+    pub id: KpiId,
+    pub frontier_id: FrontierId,
+    pub name: NonEmptyText,
+    pub objective: OptimizationObjective,
+    pub description: Option<NonEmptyText>,
+    pub status: TagStatus,
+    pub revision: u64,
+    pub created_at: OffsetDateTime,
+    pub updated_at: OffsetDateTime,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct KpiMetricAlternativeRecord {
+    pub kpi_id: KpiId,
+    pub metric_id: MetricId,
+    pub metric_key: NonEmptyText,
+    pub precedence: u32,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -843,8 +966,6 @@ pub struct FrontierBrief {
     pub situation: Option<NonEmptyText>,
     pub roadmap: Vec<FrontierRoadmapItem>,
     pub unknowns: Vec<NonEmptyText>,
-    #[serde(default)]
-    pub scoreboard_metric_keys: Vec<NonEmptyText>,
     pub revision: u64,
     pub updated_at: Option<OffsetDateTime>,
 }
