@@ -115,4 +115,7 @@ The core pattern:
 - mandatory families constrain future writes without invalidating history
 
 This pattern should generalize to metrics, run dimensions, frontier freezing,
-and other mature-frontier cleanup controls.
+and other mature-frontier cleanup controls. Metrics should not grow generic
+families or retain backend scoreboard pinning; the durable metric contract is
+frontier-local KPIs with ordered metric alternatives, documented in
+`docs/metric-kpi-governance.md`.
