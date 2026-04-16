@@ -2,8 +2,9 @@ use std::collections::BTreeMap;
 
 use fidget_spinner_core::{
     AttachmentTargetRef, CommandRecipe, ExperimentAnalysis, ExperimentOutcome, FrontierBrief,
-    FrontierRecord, MetricDefinition, MetricValue, NonEmptyText, RunDimensionDefinition,
-    RunDimensionValue, TagRecord,
+    FrontierRecord, MetricDefinition, MetricValue, NonEmptyText, RegistryLockRecord,
+    RunDimensionDefinition, RunDimensionValue, TagFamilyRecord, TagNameHistoryRecord, TagRecord,
+    TagRegistrySnapshot,
 };
 use fidget_spinner_store_sqlite::{
     ArtifactDetail, ArtifactSummary, EntityHistoryEntry, ExperimentDetail, ExperimentNearestHit,
@@ -550,9 +551,40 @@ pub(crate) struct ExperimentNearestOutput {
 
 #[derive(Clone, Serialize)]
 pub(crate) struct TagRecordProjection {
+    pub(crate) id: String,
     pub(crate) name: String,
     pub(crate) description: String,
+    pub(crate) family: Option<String>,
+    pub(crate) status: String,
+    pub(crate) revision: u64,
     pub(crate) created_at: TimestampText,
+    pub(crate) updated_at: TimestampText,
+}
+
+#[derive(Clone, Serialize)]
+pub(crate) struct TagFamilyProjection {
+    pub(crate) id: String,
+    pub(crate) name: String,
+    pub(crate) description: String,
+    pub(crate) mandatory: bool,
+    pub(crate) status: String,
+    pub(crate) revision: u64,
+}
+
+#[derive(Clone, Serialize)]
+pub(crate) struct RegistryLockProjection {
+    pub(crate) registry: String,
+    pub(crate) mode: String,
+    pub(crate) reason: String,
+    pub(crate) revision: u64,
+}
+
+#[derive(Clone, Serialize)]
+pub(crate) struct TagNameHistoryProjection {
+    pub(crate) name: String,
+    pub(crate) target: Option<String>,
+    pub(crate) disposition: String,
+    pub(crate) message: String,
 }
 
 #[derive(Clone, Serialize, libmcp::ToolProjection)]
@@ -566,6 +598,9 @@ pub(crate) struct TagRecordOutput {
 pub(crate) struct TagListOutput {
     pub(crate) count: usize,
     pub(crate) tags: Vec<TagRecordProjection>,
+    pub(crate) families: Vec<TagFamilyProjection>,
+    pub(crate) locks: Vec<RegistryLockProjection>,
+    pub(crate) name_history: Vec<TagNameHistoryProjection>,
 }
 
 #[derive(Clone, Serialize)]
@@ -915,10 +950,25 @@ pub(crate) fn tag_record(tag: &TagRecord) -> TagRecordOutput {
     }
 }
 
-pub(crate) fn tag_list(tags: &[TagRecord]) -> TagListOutput {
+pub(crate) fn tag_registry(registry: &TagRegistrySnapshot) -> TagListOutput {
     TagListOutput {
-        count: tags.len(),
-        tags: tags.iter().map(tag_record_projection).collect(),
+        count: registry.tags.len(),
+        tags: registry.tags.iter().map(tag_record_projection).collect(),
+        families: registry
+            .families
+            .iter()
+            .map(tag_family_projection)
+            .collect(),
+        locks: registry
+            .locks
+            .iter()
+            .map(registry_lock_projection)
+            .collect(),
+        name_history: registry
+            .name_history
+            .iter()
+            .map(tag_name_history_projection)
+            .collect(),
     }
 }
 
@@ -1145,9 +1195,43 @@ fn metric_key_summary(metric: &MetricKeySummary) -> MetricKeySummaryProjection {
 
 fn tag_record_projection(tag: &TagRecord) -> TagRecordProjection {
     TagRecordProjection {
+        id: tag.id.to_string(),
         name: tag.name.to_string(),
         description: tag.description.to_string(),
+        family: tag.family.as_ref().map(ToString::to_string),
+        status: tag.status.as_str().to_owned(),
+        revision: tag.revision,
         created_at: timestamp_value(tag.created_at),
+        updated_at: timestamp_value(tag.updated_at),
+    }
+}
+
+fn tag_family_projection(family: &TagFamilyRecord) -> TagFamilyProjection {
+    TagFamilyProjection {
+        id: family.id.to_string(),
+        name: family.name.to_string(),
+        description: family.description.to_string(),
+        mandatory: family.mandatory,
+        status: family.status.as_str().to_owned(),
+        revision: family.revision,
+    }
+}
+
+fn registry_lock_projection(lock: &RegistryLockRecord) -> RegistryLockProjection {
+    RegistryLockProjection {
+        registry: lock.registry.to_string(),
+        mode: lock.mode.as_str().to_owned(),
+        reason: lock.reason.to_string(),
+        revision: lock.revision,
+    }
+}
+
+fn tag_name_history_projection(history: &TagNameHistoryRecord) -> TagNameHistoryProjection {
+    TagNameHistoryProjection {
+        name: history.name.to_string(),
+        target: history.target_tag_name.as_ref().map(ToString::to_string),
+        disposition: history.disposition.as_str().to_owned(),
+        message: history.message.to_string(),
     }
 }
 
@@ -1362,11 +1446,11 @@ fn timestamp_value(timestamp: time::OffsetDateTime) -> TimestampText {
 
 fn store_fault(operation: &str) -> impl Fn(StoreError) -> FaultRecord + '_ {
     move |error| {
-        FaultRecord::new(
-            FaultKind::Internal,
-            FaultStage::Store,
-            operation,
-            error.to_string(),
-        )
+        let kind = if matches!(error, StoreError::PolicyViolation(_)) {
+            FaultKind::PolicyViolation
+        } else {
+            FaultKind::Internal
+        };
+        FaultRecord::new(kind, FaultStage::Store, operation, error.to_string())
     }
 }

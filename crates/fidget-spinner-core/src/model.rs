@@ -8,7 +8,10 @@ use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
 use uuid::Uuid;
 
-use crate::{ArtifactId, CoreError, ExperimentId, FrontierId, HypothesisId};
+use crate::{
+    ArtifactId, CoreError, ExperimentId, FrontierId, HypothesisId, RegistryLockId, TagFamilyId,
+    TagId,
+};
 
 #[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(transparent)]
@@ -84,6 +87,60 @@ impl From<TagName> for String {
 }
 
 impl Display for TagName {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
+        formatter.write_str(&self.0)
+    }
+}
+
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct TagFamilyName(String);
+
+impl TagFamilyName {
+    pub fn new(value: impl Into<String>) -> Result<Self, CoreError> {
+        let normalized = value.into().trim().to_ascii_lowercase();
+        if normalized.is_empty() {
+            return Err(CoreError::EmptyTagName);
+        }
+        let mut previous_was_separator = true;
+        for character in normalized.chars() {
+            if character.is_ascii_lowercase() || character.is_ascii_digit() {
+                previous_was_separator = false;
+                continue;
+            }
+            if matches!(character, '-' | '_') && !previous_was_separator {
+                previous_was_separator = true;
+                continue;
+            }
+            return Err(CoreError::InvalidTagName(normalized));
+        }
+        if previous_was_separator {
+            return Err(CoreError::InvalidTagName(normalized));
+        }
+        Ok(Self(normalized))
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl TryFrom<String> for TagFamilyName {
+    type Error = CoreError;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        Self::new(value)
+    }
+}
+
+impl From<TagFamilyName> for String {
+    fn from(value: TagFamilyName) -> Self {
+        value.0
+    }
+}
+
+impl Display for TagFamilyName {
     fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
         formatter.write_str(&self.0)
     }
@@ -611,11 +668,141 @@ impl FrontierVerdict {
     }
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TagStatus {
+    Active,
+}
+
+impl TagStatus {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Active => "active",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TagNameDisposition {
+    Renamed,
+    Merged,
+    Deleted,
+}
+
+impl TagNameDisposition {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Renamed => "renamed",
+            Self::Merged => "merged",
+            Self::Deleted => "deleted",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(transparent)]
+pub struct RegistryName(String);
+
+impl RegistryName {
+    pub fn new(value: impl Into<String>) -> Result<Self, CoreError> {
+        let normalized = value.into().trim().to_ascii_lowercase();
+        let _ = NonEmptyText::new(normalized.clone())?;
+        Ok(Self(normalized))
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    #[must_use]
+    pub fn tags() -> Self {
+        Self("tags".to_owned())
+    }
+}
+
+impl Display for RegistryName {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
+        formatter.write_str(&self.0)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RegistryLockMode {
+    Definition,
+    Assignment,
+    Family,
+}
+
+impl RegistryLockMode {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Definition => "definition",
+            Self::Assignment => "assignment",
+            Self::Family => "family",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct TagFamilyRecord {
+    pub id: TagFamilyId,
+    pub name: TagFamilyName,
+    pub description: NonEmptyText,
+    pub mandatory: bool,
+    pub status: TagStatus,
+    pub revision: u64,
+    pub created_at: OffsetDateTime,
+    pub updated_at: OffsetDateTime,
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct TagRecord {
+    pub id: TagId,
     pub name: TagName,
     pub description: NonEmptyText,
+    pub family_id: Option<TagFamilyId>,
+    pub family: Option<TagFamilyName>,
+    pub status: TagStatus,
+    pub revision: u64,
     pub created_at: OffsetDateTime,
+    pub updated_at: OffsetDateTime,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct TagNameHistoryRecord {
+    pub name: TagName,
+    pub target_tag_id: Option<TagId>,
+    pub target_tag_name: Option<TagName>,
+    pub disposition: TagNameDisposition,
+    pub message: NonEmptyText,
+    pub created_at: OffsetDateTime,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct RegistryLockRecord {
+    pub id: RegistryLockId,
+    pub registry: RegistryName,
+    pub mode: RegistryLockMode,
+    pub scope_kind: NonEmptyText,
+    pub scope_id: NonEmptyText,
+    pub reason: NonEmptyText,
+    pub revision: u64,
+    pub locked_at: OffsetDateTime,
+    pub updated_at: OffsetDateTime,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct TagRegistrySnapshot {
+    pub tags: Vec<TagRecord>,
+    pub families: Vec<TagFamilyRecord>,
+    pub locks: Vec<RegistryLockRecord>,
+    pub name_history: Vec<TagNameHistoryRecord>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]

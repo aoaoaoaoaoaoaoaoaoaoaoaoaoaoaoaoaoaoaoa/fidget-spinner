@@ -12,14 +12,16 @@ use axum::routing::{get, post};
 use camino::Utf8PathBuf;
 use fidget_spinner_core::{
     AttachmentTargetRef, ExperimentAnalysis, ExperimentOutcome, ExperimentStatus, FrontierRecord,
-    FrontierStatus, FrontierVerdict, KnownMetricUnit, MetricUnit, NonEmptyText, RunDimensionValue,
-    Slug, VertexRef,
+    FrontierStatus, FrontierVerdict, KnownMetricUnit, MetricUnit, NonEmptyText, RegistryLockMode,
+    RegistryName, RunDimensionValue, Slug, TagFamilyName, TagName, VertexRef,
 };
 use fidget_spinner_store_sqlite::{
-    ExperimentDetail, ExperimentSummary, FrontierMetricSeries, FrontierOpenProjection,
-    FrontierSummary, HypothesisCurrentState, HypothesisDetail, ListExperimentsQuery,
-    ListFrontiersQuery, ListHypothesesQuery, MetricKeysQuery, MetricScope, ProjectStatus,
-    STATE_DB_NAME, StoreError, UpdateFrontierRequest, VertexSummary,
+    AssignTagFamilyRequest, CreateTagFamilyRequest, DeleteTagRequest, ExperimentDetail,
+    ExperimentSummary, FrontierMetricSeries, FrontierOpenProjection, FrontierSummary,
+    HypothesisCurrentState, HypothesisDetail, ListExperimentsQuery, ListFrontiersQuery,
+    ListHypothesesQuery, MergeTagRequest, MetricKeysQuery, MetricScope, ProjectStatus,
+    RenameTagRequest, STATE_DB_NAME, SetRegistryLockRequest, SetTagFamilyMandatoryRequest,
+    StoreError, UpdateFrontierRequest, VertexSummary,
 };
 use maud::{DOCTYPE, Markup, PreEscaped, html};
 use percent_encoding::{NON_ALPHANUMERIC, percent_decode_str, utf8_percent_encode};
@@ -102,6 +104,12 @@ impl ProjectRenderContext {
 struct ProjectIndexItem {
     project_root: Utf8PathBuf,
     project_status: ProjectStatus,
+}
+
+#[derive(Clone, Copy, Default)]
+struct TagUsage {
+    hypotheses: u64,
+    experiments: u64,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -244,6 +252,23 @@ pub(crate) fn serve(
                 "/project/{project}/refresh-token",
                 get(project_refresh_token),
             )
+            .route("/project/{project}/tags", get(project_tags))
+            .route(
+                "/project/{project}/tags/families/create",
+                post(create_tag_family),
+            )
+            .route("/project/{project}/tags/lock", post(set_tag_lock))
+            .route(
+                "/project/{project}/tags/family-mandatory",
+                post(set_tag_family_mandatory),
+            )
+            .route("/project/{project}/tags/rename", post(rename_tag))
+            .route("/project/{project}/tags/merge", post(merge_tag))
+            .route("/project/{project}/tags/delete", post(delete_tag))
+            .route(
+                "/project/{project}/tags/tag-family",
+                post(assign_tag_family),
+            )
             .route(
                 "/project/{project}/frontier/{selector}",
                 get(frontier_detail),
@@ -319,6 +344,196 @@ async fn project_refresh_token(
     refresh_token_response(
         resolve_project_context(&state, &project)
             .and_then(|context| project_refresh_token_for(&context)),
+    )
+}
+
+async fn project_tags(
+    State(state): State<NavigatorState>,
+    Path(project): Path<String>,
+) -> Response {
+    render_response(resolve_project_context(&state, &project).and_then(render_project_tags))
+}
+
+#[derive(Deserialize)]
+struct CreateTagFamilyForm {
+    name: String,
+    description: String,
+    mandatory: Option<String>,
+}
+
+async fn create_tag_family(
+    State(state): State<NavigatorState>,
+    Path(project): Path<String>,
+    Form(form): Form<CreateTagFamilyForm>,
+) -> Response {
+    tag_mutation_response(
+        resolve_project_context(&state, &project).and_then(|context| {
+            let mut store = open_store(context.project_root.as_std_path())?;
+            let _ = store.create_tag_family(CreateTagFamilyRequest {
+                name: TagFamilyName::new(form.name)?,
+                description: NonEmptyText::new(form.description)?,
+                mandatory: form.mandatory.is_some(),
+            })?;
+            Ok(format!("{}tags", context.base_href))
+        }),
+    )
+}
+
+#[derive(Deserialize)]
+struct SetTagLockForm {
+    mode: String,
+    locked: String,
+    reason: Option<String>,
+}
+
+async fn set_tag_lock(
+    State(state): State<NavigatorState>,
+    Path(project): Path<String>,
+    Form(form): Form<SetTagLockForm>,
+) -> Response {
+    tag_mutation_response(
+        resolve_project_context(&state, &project).and_then(|context| {
+            let mut store = open_store(context.project_root.as_std_path())?;
+            let _ = store.set_registry_lock(SetRegistryLockRequest {
+                registry: RegistryName::tags(),
+                mode: parse_ui_lock_mode(&form.mode)?,
+                locked: matches!(form.locked.as_str(), "1" | "true" | "on" | "lock"),
+                reason: form
+                    .reason
+                    .filter(|reason| !reason.trim().is_empty())
+                    .map(NonEmptyText::new)
+                    .transpose()?,
+            })?;
+            Ok(format!("{}tags", context.base_href))
+        }),
+    )
+}
+
+#[derive(Deserialize)]
+struct SetTagFamilyMandatoryForm {
+    family: String,
+    expected_revision: Option<u64>,
+    mandatory: String,
+}
+
+async fn set_tag_family_mandatory(
+    State(state): State<NavigatorState>,
+    Path(project): Path<String>,
+    Form(form): Form<SetTagFamilyMandatoryForm>,
+) -> Response {
+    tag_mutation_response(
+        resolve_project_context(&state, &project).and_then(|context| {
+            let mut store = open_store(context.project_root.as_std_path())?;
+            let _ = store.set_tag_family_mandatory(SetTagFamilyMandatoryRequest {
+                family: TagFamilyName::new(form.family)?,
+                expected_revision: form.expected_revision,
+                mandatory: matches!(form.mandatory.as_str(), "1" | "true" | "on" | "mandatory"),
+            })?;
+            Ok(format!("{}tags", context.base_href))
+        }),
+    )
+}
+
+#[derive(Deserialize)]
+struct RenameTagForm {
+    tag: String,
+    expected_revision: Option<u64>,
+    new_name: String,
+}
+
+async fn rename_tag(
+    State(state): State<NavigatorState>,
+    Path(project): Path<String>,
+    Form(form): Form<RenameTagForm>,
+) -> Response {
+    tag_mutation_response(
+        resolve_project_context(&state, &project).and_then(|context| {
+            let mut store = open_store(context.project_root.as_std_path())?;
+            let _ = store.rename_tag(RenameTagRequest {
+                tag: TagName::new(form.tag)?,
+                expected_revision: form.expected_revision,
+                new_name: TagName::new(form.new_name)?,
+            })?;
+            Ok(format!("{}tags", context.base_href))
+        }),
+    )
+}
+
+#[derive(Deserialize)]
+struct MergeTagForm {
+    source: String,
+    expected_revision: Option<u64>,
+    target: String,
+}
+
+async fn merge_tag(
+    State(state): State<NavigatorState>,
+    Path(project): Path<String>,
+    Form(form): Form<MergeTagForm>,
+) -> Response {
+    tag_mutation_response(
+        resolve_project_context(&state, &project).and_then(|context| {
+            let mut store = open_store(context.project_root.as_std_path())?;
+            let _ = store.merge_tag(MergeTagRequest {
+                source: TagName::new(form.source)?,
+                expected_revision: form.expected_revision,
+                target: TagName::new(form.target)?,
+            })?;
+            Ok(format!("{}tags", context.base_href))
+        }),
+    )
+}
+
+#[derive(Deserialize)]
+struct DeleteTagForm {
+    tag: String,
+    expected_revision: Option<u64>,
+}
+
+async fn delete_tag(
+    State(state): State<NavigatorState>,
+    Path(project): Path<String>,
+    Form(form): Form<DeleteTagForm>,
+) -> Response {
+    tag_mutation_response(
+        resolve_project_context(&state, &project).and_then(|context| {
+            let mut store = open_store(context.project_root.as_std_path())?;
+            store.delete_tag(DeleteTagRequest {
+                tag: TagName::new(form.tag)?,
+                expected_revision: form.expected_revision,
+            })?;
+            Ok(format!("{}tags", context.base_href))
+        }),
+    )
+}
+
+#[derive(Deserialize)]
+struct AssignTagFamilyForm {
+    tag: String,
+    expected_revision: Option<u64>,
+    family: String,
+}
+
+async fn assign_tag_family(
+    State(state): State<NavigatorState>,
+    Path(project): Path<String>,
+    Form(form): Form<AssignTagFamilyForm>,
+) -> Response {
+    tag_mutation_response(
+        resolve_project_context(&state, &project).and_then(|context| {
+            let mut store = open_store(context.project_root.as_std_path())?;
+            let family = if form.family.trim().is_empty() {
+                None
+            } else {
+                Some(TagFamilyName::new(form.family)?)
+            };
+            let _ = store.assign_tag_family(AssignTagFamilyRequest {
+                tag: TagName::new(form.tag)?,
+                expected_revision: form.expected_revision,
+                family,
+            })?;
+            Ok(format!("{}tags", context.base_href))
+        }),
     )
 }
 
@@ -451,6 +666,40 @@ fn frontier_status_mutation_response(result: Result<String, StoreError>) -> Resp
             format!("frontier archive update failed: {error}"),
         )
             .into_response(),
+    }
+}
+
+fn tag_mutation_response(result: Result<String, StoreError>) -> Response {
+    match result {
+        Ok(location) => Redirect::to(&location).into_response(),
+        Err(StoreError::RevisionMismatch { .. }) => (
+            StatusCode::CONFLICT,
+            "tag registry changed before the supervisor request landed; reload and retry"
+                .to_owned(),
+        )
+            .into_response(),
+        Err(StoreError::UnknownTag(_)) | Err(StoreError::UnknownTagFamily(_)) => {
+            (StatusCode::NOT_FOUND, "not found".to_owned()).into_response()
+        }
+        Err(StoreError::PolicyViolation(message)) => {
+            (StatusCode::CONFLICT, message).into_response()
+        }
+        Err(error) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("tag supervisor update failed: {error}"),
+        )
+            .into_response(),
+    }
+}
+
+fn parse_ui_lock_mode(raw: &str) -> Result<RegistryLockMode, StoreError> {
+    match raw {
+        "definition" => Ok(RegistryLockMode::Definition),
+        "assignment" => Ok(RegistryLockMode::Assignment),
+        "family" => Ok(RegistryLockMode::Family),
+        _ => Err(StoreError::InvalidInput(format!(
+            "invalid registry lock mode `{raw}`"
+        ))),
     }
 }
 
@@ -608,6 +857,73 @@ fn render_project_home(context: ProjectRenderContext) -> Result<Markup, StoreErr
         &shell,
         true,
         Some(&shell.project_status.display_name.to_string()),
+        None,
+        None,
+        content,
+    ))
+}
+
+fn render_project_tags(context: ProjectRenderContext) -> Result<Markup, StoreError> {
+    let store = open_store(context.project_root.as_std_path())?;
+    let shell = load_shell_frame(&store, None, &context)?;
+    let registry = store.tag_registry()?;
+    let usage = load_tag_usage(&store)?;
+    let title = format!("{} · tags", shell.project_status.display_name);
+    let mandatory_count = registry
+        .families
+        .iter()
+        .filter(|family| family.mandatory)
+        .count();
+    let orphan_count = registry
+        .tags
+        .iter()
+        .filter(|tag| {
+            usage
+                .get(&tag.name)
+                .is_none_or(|usage| usage.hypotheses + usage.experiments == 0)
+        })
+        .count();
+    let content = html! {
+        section.card {
+            div.card-header {
+                div {
+                    div.eyebrow { "supervisor surface" }
+                    h1 { "Tags" }
+                    p.prose {
+                        "Clean, classify, and lock the tag vocabulary models use while experiments keep running."
+                    }
+                }
+            }
+            div.fact-strip {
+                (render_fact("active tags", &registry.tags.len().to_string()))
+                (render_fact("families", &registry.families.len().to_string()))
+                (render_fact("mandatory", &mandatory_count.to_string()))
+                (render_fact("orphans", &orphan_count.to_string()))
+            }
+        }
+        (render_tag_locks(&registry.locks))
+        (render_tag_families(&registry.families))
+        (render_tag_table(&registry.tags, &registry.families, &usage))
+        @if !registry.name_history.is_empty() {
+            section.card {
+                h2 { "Name History" }
+                div.tag-history-list {
+                    @for history in &registry.name_history {
+                        div.tag-history-row {
+                            span.tag-chip { (history.name) }
+                            span.muted { (history.disposition.as_str()) }
+                            span { (history.message) }
+                        }
+                    }
+                }
+            }
+        }
+    };
+    Ok(render_shell(
+        &title,
+        &shell,
+        true,
+        Some("supervisor registry governance"),
         None,
         None,
         content,
@@ -801,6 +1117,201 @@ fn load_shell_frame(
         project_status: store.status()?,
         refresh_token_href: context.refresh_token_href.clone(),
     })
+}
+
+fn load_tag_usage(
+    store: &fidget_spinner_store_sqlite::ProjectStore,
+) -> Result<BTreeMap<TagName, TagUsage>, StoreError> {
+    let mut usage = BTreeMap::<TagName, TagUsage>::new();
+    for hypothesis in store.list_hypotheses(ListHypothesesQuery {
+        include_archived: true,
+        limit: None,
+        ..ListHypothesesQuery::default()
+    })? {
+        for tag in hypothesis.tags {
+            usage.entry(tag).or_default().hypotheses += 1;
+        }
+    }
+    for experiment in store.list_experiments(ListExperimentsQuery {
+        include_archived: true,
+        limit: None,
+        ..ListExperimentsQuery::default()
+    })? {
+        for tag in experiment.tags {
+            usage.entry(tag).or_default().experiments += 1;
+        }
+    }
+    Ok(usage)
+}
+
+fn render_tag_locks(locks: &[fidget_spinner_core::RegistryLockRecord]) -> Markup {
+    let definition_locked = locks
+        .iter()
+        .any(|lock| lock.mode == RegistryLockMode::Definition);
+    let assignment_locked = locks
+        .iter()
+        .any(|lock| lock.mode == RegistryLockMode::Assignment);
+    html! {
+        section.card {
+            h2 { "Locks" }
+            p.prose {
+                "Locks constrain MCP-origin writes immediately. Supervisor UI operations remain authoritative."
+            }
+            div.tag-control-grid {
+                (render_tag_lock_control("Definition", "definition", definition_locked))
+                (render_tag_lock_control("Assignment", "assignment", assignment_locked))
+            }
+        }
+    }
+}
+
+fn render_tag_lock_control(label: &str, mode: &str, locked: bool) -> Markup {
+    html! {
+        form.tag-inline-form method="post" action="tags/lock" {
+            input type="hidden" name="mode" value=(mode);
+            input type="hidden" name="locked" value=(if locked { "unlock" } else { "lock" });
+            input.compact-input type="text" name="reason" placeholder="reason" value="supervisor policy";
+            button.form-button type="submit" {
+                (if locked { format!("Unlock {label}") } else { format!("Lock {label}") })
+            }
+        }
+    }
+}
+
+fn render_tag_families(families: &[fidget_spinner_core::TagFamilyRecord]) -> Markup {
+    html! {
+        section.card {
+            div.card-header {
+                h2 { "Families" }
+            }
+            form.tag-create-form method="post" action="tags/families/create" {
+                input.compact-input type="text" name="name" placeholder="family name";
+                input.compact-input type="text" name="description" placeholder="description";
+                label.inline-check {
+                    input type="checkbox" name="mandatory" value="1";
+                    "mandatory"
+                }
+                button.form-button type="submit" { "Create Family" }
+            }
+            @if families.is_empty() {
+                p.muted { "No families yet." }
+            } @else {
+                div.tag-family-grid {
+                    @for family in families {
+                        article.mini-card {
+                            div.card-header {
+                                strong { (family.name) }
+                                span.status-chip { (if family.mandatory { "mandatory" } else { "optional" }) }
+                            }
+                            p.prose { (family.description) }
+                            form.tag-inline-form method="post" action="tags/family-mandatory" {
+                                input type="hidden" name="family" value=(family.name.as_str());
+                                input type="hidden" name="expected_revision" value=(family.revision);
+                                input type="hidden" name="mandatory" value=(if family.mandatory { "optional" } else { "mandatory" });
+                                button.form-button type="submit" {
+                                    (if family.mandatory { "Make Optional" } else { "Make Mandatory" })
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn render_tag_table(
+    tags: &[fidget_spinner_core::TagRecord],
+    families: &[fidget_spinner_core::TagFamilyRecord],
+    usage: &BTreeMap<TagName, TagUsage>,
+) -> Markup {
+    html! {
+        section.card {
+            h2 { "Tag Registry" }
+            @if tags.is_empty() {
+                p.muted { "No tags yet." }
+            } @else {
+                div.table-wrap {
+                    table.dense-table.tag-registry-table {
+                        thead {
+                            tr {
+                                th { "Tag" }
+                                th { "Family" }
+                                th { "Description" }
+                                th { "Use" }
+                                th { "Rename" }
+                                th { "Merge" }
+                                th { "Delete" }
+                            }
+                        }
+                        tbody {
+                            @for tag in tags {
+                                @let tag_usage = usage.get(&tag.name).copied().unwrap_or_default();
+                                tr {
+                                    td.no-truncate {
+                                        span.tag-chip { (tag.name) }
+                                    }
+                                    td.no-truncate {
+                                        form.tag-inline-form method="post" action="tags/tag-family" {
+                                            input type="hidden" name="tag" value=(tag.name.as_str());
+                                            input type="hidden" name="expected_revision" value=(tag.revision);
+                                            select.compact-select name="family" {
+                                                option value="" selected[tag.family.is_none()] { "none" }
+                                                @for family in families {
+                                                    option
+                                                        value=(family.name.as_str())
+                                                        selected[tag.family.as_ref() == Some(&family.name)]
+                                                    {
+                                                        (family.name)
+                                                    }
+                                                }
+                                            }
+                                            button.form-button type="submit" { "Set" }
+                                        }
+                                    }
+                                    td {
+                                        (tag.description)
+                                    }
+                                    td.no-truncate {
+                                        (tag_usage.hypotheses) " H · " (tag_usage.experiments) " E"
+                                    }
+                                    td.no-truncate {
+                                        form.tag-inline-form method="post" action="tags/rename" {
+                                            input type="hidden" name="tag" value=(tag.name.as_str());
+                                            input type="hidden" name="expected_revision" value=(tag.revision);
+                                            input.compact-input type="text" name="new_name" placeholder="new name";
+                                            button.form-button type="submit" { "Rename" }
+                                        }
+                                    }
+                                    td.no-truncate {
+                                        form.tag-inline-form method="post" action="tags/merge" {
+                                            input type="hidden" name="source" value=(tag.name.as_str());
+                                            input type="hidden" name="expected_revision" value=(tag.revision);
+                                            select.compact-select name="target" {
+                                                @for target in tags {
+                                                    @if target.name != tag.name {
+                                                        option value=(target.name.as_str()) { (target.name) }
+                                                    }
+                                                }
+                                            }
+                                            button.form-button type="submit" { "Merge" }
+                                        }
+                                    }
+                                    td.no-truncate {
+                                        form.tag-inline-form method="post" action="tags/delete" {
+                                            input type="hidden" name="tag" value=(tag.name.as_str());
+                                            input type="hidden" name="expected_revision" value=(tag.revision);
+                                            button.form-button.danger-button type="submit" { "Delete" }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
 
 fn render_frontier_tab_content(
@@ -2845,6 +3356,7 @@ fn render_sidebar(shell: &ShellFrame) -> Markup {
     section.sidebar-panel {
         div.sidebar-project {
             a.sidebar-home href=(&shell.project_home_href) { (&shell.project_status.display_name) }
+            a.sidebar-tags href="tags" { "Tags" }
             p.sidebar-copy {
                 "Frontier-scoped navigator. Open one frontier, then walk hypotheses and experiments deliberately."
             }
@@ -3824,6 +4336,17 @@ fn styles() -> &'static str {
         font-size: 18px;
         font-weight: 700;
     }
+    .sidebar-tags {
+        justify-self: start;
+        padding: 3px 7px;
+        border: 1px solid var(--border);
+        background: var(--panel-2);
+        color: var(--accent);
+        font-size: 12px;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+    }
     .sidebar-copy {
         margin: 0;
         color: var(--muted);
@@ -3913,6 +4436,99 @@ fn styles() -> &'static str {
         display: grid;
         gap: 12px;
         min-width: 0;
+    }
+    .tag-control-grid,
+    .tag-family-grid {
+        display: grid;
+        gap: 10px;
+        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    }
+    .tag-create-form,
+    .tag-inline-form {
+        display: flex;
+        gap: 6px;
+        align-items: center;
+        flex-wrap: wrap;
+        margin: 0;
+    }
+    .compact-input,
+    .compact-select {
+        min-width: 0;
+        max-width: 180px;
+        border: 1px solid var(--border);
+        background: var(--panel);
+        color: var(--text);
+        font: inherit;
+        font-size: 12px;
+        padding: 5px 7px;
+    }
+    .compact-select {
+        max-width: 150px;
+    }
+    .form-button {
+        border: 1px solid var(--border);
+        background: var(--panel-2);
+        color: var(--accent);
+        cursor: pointer;
+        font: inherit;
+        font-size: 11px;
+        font-weight: 700;
+        padding: 5px 7px;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+    }
+    .form-button:hover {
+        border-color: var(--border-strong);
+        color: var(--text);
+    }
+    .danger-button {
+        color: var(--rejected);
+    }
+    .inline-check {
+        display: inline-flex;
+        gap: 5px;
+        align-items: center;
+        color: var(--muted);
+        font-size: 12px;
+    }
+    .table-wrap {
+        width: 100%;
+        overflow-x: auto;
+    }
+    .dense-table {
+        width: 100%;
+        border-collapse: collapse;
+        table-layout: auto;
+    }
+    .dense-table th,
+    .dense-table td {
+        border-bottom: 1px solid var(--border);
+        padding: 7px 8px;
+        text-align: left;
+        vertical-align: top;
+    }
+    .dense-table th {
+        color: var(--muted);
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+    }
+    .dense-table td {
+        overflow-wrap: anywhere;
+    }
+    .dense-table .no-truncate {
+        white-space: nowrap;
+        overflow-wrap: normal;
+    }
+    .tag-history-list {
+        display: grid;
+        gap: 7px;
+    }
+    .tag-history-row {
+        display: flex;
+        gap: 8px;
+        align-items: center;
+        flex-wrap: wrap;
     }
     .page-header {
         display: grid;
@@ -4658,10 +5274,18 @@ mod tests {
     use time::OffsetDateTime;
     use time::format_description::well_known::Rfc3339;
 
+    #[allow(clippy::panic, reason = "test constructors should fail loudly")]
+    fn must<T, E: std::fmt::Display>(result: Result<T, E>, context: &str) -> T {
+        match result {
+            Ok(value) => value,
+            Err(error) => panic!("{context}: {error}"),
+        }
+    }
+
     fn test_metric(key: &str, unit: &str) -> MetricKeySummary {
         MetricKeySummary {
-            key: NonEmptyText::new(key.to_owned()).expect("metric key"),
-            unit: MetricUnit::new(unit).expect("metric unit"),
+            key: must(NonEmptyText::new(key.to_owned()), "metric key"),
+            unit: must(MetricUnit::new(unit), "metric unit"),
             objective: OptimizationObjective::Minimize,
             visibility: MetricVisibility::Canonical,
             description: None,
@@ -4670,16 +5294,16 @@ mod tests {
     }
 
     fn test_timestamp(raw: &str) -> OffsetDateTime {
-        OffsetDateTime::parse(raw, &Rfc3339).expect("timestamp")
+        must(OffsetDateTime::parse(raw, &Rfc3339), "timestamp")
     }
 
     fn test_frontier() -> FrontierRecord {
         let timestamp = test_timestamp("2026-04-11T00:00:00Z");
         FrontierRecord {
             id: FrontierId::fresh(),
-            slug: Slug::new("test-frontier").expect("frontier slug"),
-            label: NonEmptyText::new("Test frontier").expect("frontier label"),
-            objective: NonEmptyText::new("Test objective").expect("frontier objective"),
+            slug: must(Slug::new("test-frontier"), "frontier slug"),
+            label: must(NonEmptyText::new("Test frontier"), "frontier label"),
+            objective: must(NonEmptyText::new("Test objective"), "frontier objective"),
             status: FrontierStatus::Exploring,
             brief: FrontierBrief::default(),
             revision: 1,
@@ -4691,11 +5315,14 @@ mod tests {
     fn test_hypothesis(frontier_id: FrontierId, slug: &str, title: &str) -> HypothesisSummary {
         HypothesisSummary {
             id: HypothesisId::fresh(),
-            slug: Slug::new(slug).expect("hypothesis slug"),
+            slug: must(Slug::new(slug), "hypothesis slug"),
             frontier_id,
             archived: false,
-            title: NonEmptyText::new(title).expect("hypothesis title"),
-            summary: NonEmptyText::new(format!("{title} summary")).expect("hypothesis summary"),
+            title: must(NonEmptyText::new(title), "hypothesis title"),
+            summary: must(
+                NonEmptyText::new(format!("{title} summary")),
+                "hypothesis summary",
+            ),
             tags: Vec::new(),
             open_experiment_count: 0,
             latest_verdict: None,
@@ -4712,11 +5339,11 @@ mod tests {
     ) -> ExperimentSummary {
         ExperimentSummary {
             id: fidget_spinner_core::ExperimentId::fresh(),
-            slug: Slug::new(slug).expect("experiment slug"),
+            slug: must(Slug::new(slug), "experiment slug"),
             frontier_id,
             hypothesis_id,
             archived: false,
-            title: NonEmptyText::new(title).expect("experiment title"),
+            title: must(NonEmptyText::new(title), "experiment title"),
             summary: None,
             tags: Vec::new(),
             status: ExperimentStatus::Closed,
@@ -4813,14 +5440,16 @@ mod tests {
     #[test]
     fn metric_chart_axis_normalizes_time_units_into_primary_unit() {
         let axis = MetricChartAxis::from_metric(&test_metric("presolve_ms", "ms"));
-        let seconds = MetricUnit::new("seconds").expect("seconds unit");
+        let seconds = must(MetricUnit::new("seconds"), "seconds unit");
         assert_eq!(axis.normalize_value(1.5, &seconds), Some(1500.0));
     }
 
     #[test]
     fn frontier_page_query_accepts_legacy_single_metric_selector() {
-        let query = FrontierPageQuery::parse(Some("tab=metrics&metric=presolve_ms_gmean"))
-            .expect("query should parse");
+        let query = must(
+            FrontierPageQuery::parse(Some("tab=metrics&metric=presolve_ms_gmean")),
+            "query should parse",
+        );
         assert_eq!(query.tab.as_deref(), Some("metrics"));
         assert_eq!(query.metric, vec!["presolve_ms_gmean".to_owned()]);
     }
@@ -4829,8 +5458,8 @@ mod tests {
     fn frontier_page_query_accepts_repeated_metric_selectors() {
         let query = FrontierPageQuery::parse(Some(
             "metric=presolve_ms&metric=ingress_ms_gmean&table_metric=ingress_ms_gmean&log_y=1",
-        ))
-        .expect("query should parse");
+        ));
+        let query = must(query, "query should parse");
         assert_eq!(
             query.metric,
             vec!["presolve_ms".to_owned(), "ingress_ms_gmean".to_owned()]

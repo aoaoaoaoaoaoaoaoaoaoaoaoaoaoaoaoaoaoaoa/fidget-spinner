@@ -49,8 +49,8 @@ If you need more context, pull it from:
 
 ## Choose The Cheapest Tool
 
-- `tag.add` when a new campaign or subsystem token is genuinely needed; every tag must carry a description
-- `tag.list` before inventing tags by memory
+- `tag.add` when a new campaign or subsystem token is genuinely needed; every tag must carry a description, and supervisor locks may reject model-created tags
+- `tag.list` before inventing tags by memory; it also reports supervisor-defined families, mandatory-family rules, locks, and stale-name guidance
 - `frontier.update` when the objective, situation, roadmap, unknowns, or scoreboard metrics need to change
 - `hypothesis.record` before core-path work; every experiment must hang off exactly one hypothesis
 - `hypothesis.update` when the title, summary, body, tags, or influence parents need tightening
@@ -87,18 +87,19 @@ hypothesis, or experiment outcome.
 1. `frontier.open` is the only overview dump. After that, walk the graph one selector at a time.
 2. Pull context from hypotheses and experiments, not from sprawling prompt prose.
 3. Do not expect artifact content to be available through Spinner. Open the file or link out of band when necessary.
-4. If the MCP behaves oddly or resumes after interruption, inspect `system.health`
+4. Treat tag policy errors as instructions, not transient failures: use the replacement tag named by the error, satisfy mandatory families, or ask the supervisor if the tag surface is locked.
+5. If the MCP behaves oddly or resumes after interruption, inspect `system.health`
    and `system.telemetry` before pushing further.
-5. Keep fetches narrow by default; slow is better than burning tokens.
-6. Treat metric keys as project-level registry entries and run dimensions as the
+6. Keep fetches narrow by default; slow is better than burning tokens.
+7. Treat metric keys as project-level registry entries and run dimensions as the
    first-class slice surface for experiment comparison; do not encode scenario
    context into the metric key itself.
-7. A hypothesis is not an experiment. Open the experiment explicitly; do not
+8. A hypothesis is not an experiment. Open the experiment explicitly; do not
    smuggle planned work into the frontier brief.
-8. Experiments are the scientific record. If a fact matters later, it should
+9. Experiments are the scientific record. If a fact matters later, it should
    usually live in a closed experiment outcome rather than in freeform text.
-9. Spinner records the closing commit hash as a recoverability anchor, not as experiment identity.
-10. Porcelain is the terse triage surface. Use `detail=full` only when concise
+10. Spinner records the closing commit hash as a recoverability anchor, not as experiment identity.
+11. Porcelain is the terse triage surface. Use `detail=full` only when concise
    output stops being decision-sufficient.
-11. When the task becomes a true indefinite optimization push, pair this skill
+12. When the task becomes a true indefinite optimization push, pair this skill
     with `frontier-loop`.

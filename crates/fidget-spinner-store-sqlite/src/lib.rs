@@ -11,8 +11,10 @@ use fidget_spinner_core::{
     ExperimentStatus, FieldValueType, FrontierBrief, FrontierId, FrontierRecord,
     FrontierRoadmapItem, FrontierStatus, FrontierVerdict, GitCommitHash, HypothesisId,
     HypothesisRecord, MetricDefinition, MetricUnit, MetricValue, MetricVisibility, NonEmptyText,
-    OptimizationObjective, RunDimensionDefinition, RunDimensionValue, Slug, TagName, TagRecord,
-    VertexRef,
+    OptimizationObjective, RegistryLockId, RegistryLockMode, RegistryLockRecord, RegistryName,
+    RunDimensionDefinition, RunDimensionValue, Slug, TagFamilyId, TagFamilyName, TagFamilyRecord,
+    TagId, TagName, TagNameDisposition, TagNameHistoryRecord, TagRecord, TagRegistrySnapshot,
+    TagStatus, VertexRef,
 };
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde::{Deserialize, Serialize};
@@ -26,7 +28,7 @@ pub const STORE_DIR_NAME: &str = ".fidget_spinner";
 pub const GIT_DIR_NAME: &str = ".git";
 pub const STATE_DB_NAME: &str = "state.sqlite";
 pub const PROJECT_CONFIG_NAME: &str = "project.json";
-pub const CURRENT_STORE_FORMAT_VERSION: u32 = 5;
+pub const CURRENT_STORE_FORMAT_VERSION: u32 = 6;
 pub const STATE_HOME_DIR_NAME: &str = "fidget-spinner";
 pub const PROJECT_STATE_DIR_NAME: &str = "projects";
 const PROJECT_ROOT_NAMESPACE: Uuid = Uuid::from_u128(0x0df3_58f4_3649_44f1_8f05_0bb2_4ebd_8d31);
@@ -65,6 +67,12 @@ pub enum StoreError {
     UnknownTag(TagName),
     #[error("tag `{0}` already exists")]
     DuplicateTag(TagName),
+    #[error("unknown tag family `{0}`")]
+    UnknownTagFamily(TagFamilyName),
+    #[error("tag family `{0}` already exists")]
+    DuplicateTagFamily(TagFamilyName),
+    #[error("{0}")]
+    PolicyViolation(String),
     #[error("metric `{0}` is not registered")]
     UnknownMetricDefinition(NonEmptyText),
     #[error("metric `{0}` already exists")]
@@ -182,6 +190,68 @@ pub enum MetricScope {
     Scoreboard,
     Visible,
     All,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MutationOrigin {
+    Mcp,
+    Supervisor,
+}
+
+impl MutationOrigin {
+    #[must_use]
+    pub const fn is_mcp(self) -> bool {
+        matches!(self, Self::Mcp)
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct CreateTagFamilyRequest {
+    pub name: TagFamilyName,
+    pub description: NonEmptyText,
+    pub mandatory: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct RenameTagRequest {
+    pub tag: TagName,
+    pub expected_revision: Option<u64>,
+    pub new_name: TagName,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct MergeTagRequest {
+    pub source: TagName,
+    pub expected_revision: Option<u64>,
+    pub target: TagName,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct DeleteTagRequest {
+    pub tag: TagName,
+    pub expected_revision: Option<u64>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct AssignTagFamilyRequest {
+    pub tag: TagName,
+    pub expected_revision: Option<u64>,
+    pub family: Option<TagFamilyName>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct SetTagFamilyMandatoryRequest {
+    pub family: TagFamilyName,
+    pub expected_revision: Option<u64>,
+    pub mandatory: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct SetRegistryLockRequest {
+    pub registry: RegistryName,
+    pub mode: RegistryLockMode,
+    pub locked: bool,
+    pub reason: Option<NonEmptyText>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -694,47 +764,357 @@ impl ProjectStore {
         name: TagName,
         description: NonEmptyText,
     ) -> Result<TagRecord, StoreError> {
-        if self
-            .connection
-            .query_row(
-                "SELECT 1 FROM tags WHERE name = ?1",
-                params![name.as_str()],
-                |_| Ok(()),
-            )
-            .optional()?
-            .is_some()
-        {
+        self.register_tag_with_origin(name, description, MutationOrigin::Supervisor)
+    }
+
+    pub fn register_tag_from_mcp(
+        &mut self,
+        name: TagName,
+        description: NonEmptyText,
+    ) -> Result<TagRecord, StoreError> {
+        self.register_tag_with_origin(name, description, MutationOrigin::Mcp)
+    }
+
+    fn register_tag_with_origin(
+        &mut self,
+        name: TagName,
+        description: NonEmptyText,
+        origin: MutationOrigin,
+    ) -> Result<TagRecord, StoreError> {
+        if origin.is_mcp() {
+            self.assert_tag_definition_open()?;
+            self.assert_no_stale_tag_name(&name)?;
+        }
+        if self.tag_record_by_name(&name)?.is_some() {
             return Err(StoreError::DuplicateTag(name));
         }
-        let created_at = OffsetDateTime::now_utc();
-        let _ = self.connection.execute(
-            "INSERT INTO tags (name, description, created_at) VALUES (?1, ?2, ?3)",
-            params![
-                name.as_str(),
-                description.as_str(),
-                encode_timestamp(created_at)?
-            ],
-        )?;
-        Ok(TagRecord {
+        let now = OffsetDateTime::now_utc();
+        let record = TagRecord {
+            id: TagId::fresh(),
             name,
             description,
-            created_at,
-        })
+            family_id: None,
+            family: None,
+            status: TagStatus::Active,
+            revision: 1,
+            created_at: now,
+            updated_at: now,
+        };
+        let transaction = self.connection.transaction()?;
+        insert_tag(&transaction, &record)?;
+        let _ = transaction.execute(
+            "DELETE FROM tag_name_history WHERE name = ?1",
+            params![record.name.as_str()],
+        )?;
+        record_event(
+            &transaction,
+            "tag",
+            &record.id.to_string(),
+            record.revision,
+            "created",
+            &record,
+        )?;
+        transaction.commit()?;
+        Ok(record)
     }
 
     pub fn list_tags(&self) -> Result<Vec<TagRecord>, StoreError> {
-        let mut statement = self
-            .connection
-            .prepare("SELECT name, description, created_at FROM tags ORDER BY name ASC")?;
-        let rows = statement.query_map([], |row| {
-            Ok(TagRecord {
-                name: parse_tag_name(&row.get::<_, String>(0)?)?,
-                description: parse_non_empty_text(&row.get::<_, String>(1)?)?,
-                created_at: parse_timestamp_sql(&row.get::<_, String>(2)?)?,
+        self.load_tag_records()
+    }
+
+    pub fn tag_registry(&self) -> Result<TagRegistrySnapshot, StoreError> {
+        Ok(TagRegistrySnapshot {
+            tags: self.load_tag_records()?,
+            families: self.load_tag_family_records()?,
+            locks: self.load_registry_locks()?,
+            name_history: self.load_tag_name_history()?,
+        })
+    }
+
+    pub fn create_tag_family(
+        &mut self,
+        request: CreateTagFamilyRequest,
+    ) -> Result<TagFamilyRecord, StoreError> {
+        if self.tag_family_by_name(&request.name)?.is_some() {
+            return Err(StoreError::DuplicateTagFamily(request.name));
+        }
+        let now = OffsetDateTime::now_utc();
+        let record = TagFamilyRecord {
+            id: TagFamilyId::fresh(),
+            name: request.name,
+            description: request.description,
+            mandatory: request.mandatory,
+            status: TagStatus::Active,
+            revision: 1,
+            created_at: now,
+            updated_at: now,
+        };
+        let transaction = self.connection.transaction()?;
+        insert_tag_family(&transaction, &record)?;
+        record_event(
+            &transaction,
+            "tag_family",
+            &record.id.to_string(),
+            record.revision,
+            "created",
+            &record,
+        )?;
+        transaction.commit()?;
+        Ok(record)
+    }
+
+    pub fn rename_tag(&mut self, request: RenameTagRequest) -> Result<TagRecord, StoreError> {
+        let record = self
+            .tag_record_by_name(&request.tag)?
+            .ok_or_else(|| StoreError::UnknownTag(request.tag.clone()))?;
+        enforce_revision(
+            "tag",
+            &request.tag.to_string(),
+            request.expected_revision,
+            record.revision,
+        )?;
+        if self.tag_record_by_name(&request.new_name)?.is_some() {
+            return Err(StoreError::DuplicateTag(request.new_name));
+        }
+        let now = OffsetDateTime::now_utc();
+        let updated = TagRecord {
+            name: request.new_name,
+            revision: record.revision.saturating_add(1),
+            updated_at: now,
+            ..record
+        };
+        let message = NonEmptyText::new(format!(
+            "tag `{}` was renamed to `{}`; use `{}`",
+            request.tag, updated.name, updated.name
+        ))?;
+        let history = TagNameHistoryRecord {
+            name: request.tag,
+            target_tag_id: Some(updated.id),
+            target_tag_name: Some(updated.name.clone()),
+            disposition: TagNameDisposition::Renamed,
+            message,
+            created_at: now,
+        };
+        let transaction = self.connection.transaction()?;
+        update_tag(&transaction, &updated)?;
+        upsert_tag_name_history(&transaction, &history)?;
+        record_event(
+            &transaction,
+            "tag",
+            &updated.id.to_string(),
+            updated.revision,
+            "renamed",
+            &updated,
+        )?;
+        transaction.commit()?;
+        Ok(updated)
+    }
+
+    pub fn merge_tag(&mut self, request: MergeTagRequest) -> Result<TagRecord, StoreError> {
+        if request.source == request.target {
+            return Err(StoreError::InvalidInput(
+                "cannot merge a tag into itself".to_owned(),
+            ));
+        }
+        let source = self
+            .tag_record_by_name(&request.source)?
+            .ok_or_else(|| StoreError::UnknownTag(request.source.clone()))?;
+        let target = self
+            .tag_record_by_name(&request.target)?
+            .ok_or_else(|| StoreError::UnknownTag(request.target.clone()))?;
+        enforce_revision(
+            "tag",
+            &request.source.to_string(),
+            request.expected_revision,
+            source.revision,
+        )?;
+        let now = OffsetDateTime::now_utc();
+        let message = NonEmptyText::new(format!(
+            "tag `{}` was merged into `{}`; use `{}`",
+            source.name, target.name, target.name
+        ))?;
+        let history = TagNameHistoryRecord {
+            name: source.name.clone(),
+            target_tag_id: Some(target.id),
+            target_tag_name: Some(target.name.clone()),
+            disposition: TagNameDisposition::Merged,
+            message,
+            created_at: now,
+        };
+        let transaction = self.connection.transaction()?;
+        merge_tag_edges(&transaction, source.id, target.id)?;
+        delete_tag_row(&transaction, source.id)?;
+        upsert_tag_name_history(&transaction, &history)?;
+        record_event(
+            &transaction,
+            "tag",
+            &source.id.to_string(),
+            source.revision.saturating_add(1),
+            "merged",
+            &history,
+        )?;
+        transaction.commit()?;
+        Ok(target)
+    }
+
+    pub fn delete_tag(&mut self, request: DeleteTagRequest) -> Result<(), StoreError> {
+        let record = self
+            .tag_record_by_name(&request.tag)?
+            .ok_or_else(|| StoreError::UnknownTag(request.tag.clone()))?;
+        enforce_revision(
+            "tag",
+            &request.tag.to_string(),
+            request.expected_revision,
+            record.revision,
+        )?;
+        let now = OffsetDateTime::now_utc();
+        let message = NonEmptyText::new(format!(
+            "tag `{}` was deleted by the supervisor; choose an active tag from tag.list",
+            record.name
+        ))?;
+        let history = TagNameHistoryRecord {
+            name: record.name.clone(),
+            target_tag_id: None,
+            target_tag_name: None,
+            disposition: TagNameDisposition::Deleted,
+            message,
+            created_at: now,
+        };
+        let transaction = self.connection.transaction()?;
+        delete_tag_row(&transaction, record.id)?;
+        upsert_tag_name_history(&transaction, &history)?;
+        record_event(
+            &transaction,
+            "tag",
+            &record.id.to_string(),
+            record.revision.saturating_add(1),
+            "deleted",
+            &history,
+        )?;
+        transaction.commit()?;
+        Ok(())
+    }
+
+    pub fn assign_tag_family(
+        &mut self,
+        request: AssignTagFamilyRequest,
+    ) -> Result<TagRecord, StoreError> {
+        let record = self
+            .tag_record_by_name(&request.tag)?
+            .ok_or_else(|| StoreError::UnknownTag(request.tag.clone()))?;
+        enforce_revision(
+            "tag",
+            &request.tag.to_string(),
+            request.expected_revision,
+            record.revision,
+        )?;
+        let family = request
+            .family
+            .as_ref()
+            .map(|name| {
+                self.tag_family_by_name(name)?
+                    .ok_or_else(|| StoreError::UnknownTagFamily(name.clone()))
             })
-        })?;
-        rows.collect::<Result<Vec<_>, _>>()
-            .map_err(StoreError::from)
+            .transpose()?;
+        let updated = TagRecord {
+            family_id: family.as_ref().map(|family| family.id),
+            family: family.as_ref().map(|family| family.name.clone()),
+            revision: record.revision.saturating_add(1),
+            updated_at: OffsetDateTime::now_utc(),
+            ..record
+        };
+        let transaction = self.connection.transaction()?;
+        update_tag(&transaction, &updated)?;
+        record_event(
+            &transaction,
+            "tag",
+            &updated.id.to_string(),
+            updated.revision,
+            "family_assigned",
+            &updated,
+        )?;
+        transaction.commit()?;
+        Ok(updated)
+    }
+
+    pub fn set_tag_family_mandatory(
+        &mut self,
+        request: SetTagFamilyMandatoryRequest,
+    ) -> Result<TagFamilyRecord, StoreError> {
+        let record = self
+            .tag_family_by_name(&request.family)?
+            .ok_or_else(|| StoreError::UnknownTagFamily(request.family.clone()))?;
+        enforce_revision(
+            "tag_family",
+            &request.family.to_string(),
+            request.expected_revision,
+            record.revision,
+        )?;
+        let updated = TagFamilyRecord {
+            mandatory: request.mandatory,
+            revision: record.revision.saturating_add(1),
+            updated_at: OffsetDateTime::now_utc(),
+            ..record
+        };
+        let transaction = self.connection.transaction()?;
+        update_tag_family(&transaction, &updated)?;
+        record_event(
+            &transaction,
+            "tag_family",
+            &updated.id.to_string(),
+            updated.revision,
+            "mandatory_updated",
+            &updated,
+        )?;
+        transaction.commit()?;
+        Ok(updated)
+    }
+
+    pub fn set_registry_lock(
+        &mut self,
+        request: SetRegistryLockRequest,
+    ) -> Result<Option<RegistryLockRecord>, StoreError> {
+        if !request.locked {
+            let transaction = self.connection.transaction()?;
+            let _ = transaction.execute(
+                "DELETE FROM registry_locks
+                 WHERE registry = ?1 AND mode = ?2 AND scope_kind = 'project' AND scope_id = 'project'",
+                params![request.registry.as_str(), request.mode.as_str()],
+            )?;
+            transaction.commit()?;
+            return Ok(None);
+        }
+        let now = OffsetDateTime::now_utc();
+        let existing = self.registry_lock(&request.registry, request.mode)?;
+        let record = RegistryLockRecord {
+            id: existing
+                .as_ref()
+                .map_or_else(RegistryLockId::fresh, |lock| lock.id),
+            registry: request.registry,
+            mode: request.mode,
+            scope_kind: NonEmptyText::new("project")?,
+            scope_id: NonEmptyText::new("project")?,
+            reason: request
+                .reason
+                .unwrap_or(NonEmptyText::new("supervisor policy")?),
+            revision: existing
+                .as_ref()
+                .map_or(1, |lock| lock.revision.saturating_add(1)),
+            locked_at: existing.as_ref().map_or(now, |lock| lock.locked_at),
+            updated_at: now,
+        };
+        let transaction = self.connection.transaction()?;
+        upsert_registry_lock(&transaction, &record)?;
+        record_event(
+            &transaction,
+            "registry_lock",
+            &record.id.to_string(),
+            record.revision,
+            "updated",
+            &record,
+        )?;
+        transaction.commit()?;
+        Ok(Some(record))
     }
 
     pub fn define_metric(
@@ -960,8 +1340,24 @@ impl ProjectStore {
         &mut self,
         request: CreateHypothesisRequest,
     ) -> Result<HypothesisRecord, StoreError> {
+        self.create_hypothesis_with_origin(request, MutationOrigin::Supervisor)
+    }
+
+    pub fn create_hypothesis_from_mcp(
+        &mut self,
+        request: CreateHypothesisRequest,
+    ) -> Result<HypothesisRecord, StoreError> {
+        self.create_hypothesis_with_origin(request, MutationOrigin::Mcp)
+    }
+
+    fn create_hypothesis_with_origin(
+        &mut self,
+        request: CreateHypothesisRequest,
+        origin: MutationOrigin,
+    ) -> Result<HypothesisRecord, StoreError> {
         validate_hypothesis_body(&request.body)?;
-        self.assert_known_tags(&request.tags)?;
+        let tag_ids = self.resolve_tag_set(&request.tags, origin)?;
+        self.assert_tag_policy_for_assignment(&request.tags, origin)?;
         let frontier = self.resolve_frontier(&request.frontier)?;
         let id = HypothesisId::fresh();
         let slug = self.unique_hypothesis_slug(request.slug, &request.title)?;
@@ -986,7 +1382,7 @@ impl ProjectStore {
         )?;
         let transaction = self.connection.transaction()?;
         insert_hypothesis(&transaction, &record)?;
-        replace_hypothesis_tags(&transaction, record.id, &request.tags)?;
+        replace_hypothesis_tags(&transaction, record.id, &tag_ids)?;
         replace_influence_parents(&transaction, VertexRef::Hypothesis(id), &parents)?;
         record_event(
             &transaction,
@@ -1051,6 +1447,21 @@ impl ProjectStore {
         &mut self,
         request: UpdateHypothesisRequest,
     ) -> Result<HypothesisRecord, StoreError> {
+        self.update_hypothesis_with_origin(request, MutationOrigin::Supervisor)
+    }
+
+    pub fn update_hypothesis_from_mcp(
+        &mut self,
+        request: UpdateHypothesisRequest,
+    ) -> Result<HypothesisRecord, StoreError> {
+        self.update_hypothesis_with_origin(request, MutationOrigin::Mcp)
+    }
+
+    fn update_hypothesis_with_origin(
+        &mut self,
+        request: UpdateHypothesisRequest,
+        origin: MutationOrigin,
+    ) -> Result<HypothesisRecord, StoreError> {
         let record = self.resolve_hypothesis(&request.hypothesis)?;
         enforce_revision(
             "hypothesis",
@@ -1061,9 +1472,14 @@ impl ProjectStore {
         if let Some(body) = request.body.as_ref() {
             validate_hypothesis_body(body)?;
         }
-        if let Some(tags) = request.tags.as_ref() {
-            self.assert_known_tags(tags)?;
-        }
+        let tag_ids = request
+            .tags
+            .as_ref()
+            .map(|tags| {
+                self.assert_tag_policy_for_assignment(tags, origin)?;
+                self.resolve_tag_set(tags, origin)
+            })
+            .transpose()?;
         let updated = HypothesisRecord {
             title: request.title.unwrap_or(record.title.clone()),
             summary: request.summary.unwrap_or(record.summary.clone()),
@@ -1088,13 +1504,13 @@ impl ProjectStore {
                 )
             })
             .transpose()?;
+        let final_tag_ids = match tag_ids {
+            Some(tag_ids) => tag_ids,
+            None => self.resolve_existing_tag_names(&updated.tags)?,
+        };
         let transaction = self.connection.transaction()?;
         update_hypothesis_row(&transaction, &updated)?;
-        replace_hypothesis_tags(
-            &transaction,
-            updated.id,
-            &updated.tags.iter().cloned().collect::<BTreeSet<_>>(),
-        )?;
+        replace_hypothesis_tags(&transaction, updated.id, &final_tag_ids)?;
         if let Some(parents) = parents.as_ref() {
             replace_influence_parents(&transaction, VertexRef::Hypothesis(updated.id), parents)?;
         }
@@ -1114,7 +1530,23 @@ impl ProjectStore {
         &mut self,
         request: OpenExperimentRequest,
     ) -> Result<ExperimentRecord, StoreError> {
-        self.assert_known_tags(&request.tags)?;
+        self.open_experiment_with_origin(request, MutationOrigin::Supervisor)
+    }
+
+    pub fn open_experiment_from_mcp(
+        &mut self,
+        request: OpenExperimentRequest,
+    ) -> Result<ExperimentRecord, StoreError> {
+        self.open_experiment_with_origin(request, MutationOrigin::Mcp)
+    }
+
+    fn open_experiment_with_origin(
+        &mut self,
+        request: OpenExperimentRequest,
+        origin: MutationOrigin,
+    ) -> Result<ExperimentRecord, StoreError> {
+        let tag_ids = self.resolve_tag_set(&request.tags, origin)?;
+        self.assert_tag_policy_for_assignment(&request.tags, origin)?;
         let hypothesis = self.resolve_hypothesis(&request.hypothesis)?;
         let id = ExperimentId::fresh();
         let slug = self.unique_experiment_slug(request.slug, &request.title)?;
@@ -1141,7 +1573,7 @@ impl ProjectStore {
         )?;
         let transaction = self.connection.transaction()?;
         insert_experiment(&transaction, &record)?;
-        replace_experiment_tags(&transaction, record.id, &request.tags)?;
+        replace_experiment_tags(&transaction, record.id, &tag_ids)?;
         replace_influence_parents(&transaction, VertexRef::Experiment(id), &parents)?;
         record_event(
             &transaction,
@@ -1205,6 +1637,21 @@ impl ProjectStore {
         &mut self,
         request: UpdateExperimentRequest,
     ) -> Result<ExperimentRecord, StoreError> {
+        self.update_experiment_with_origin(request, MutationOrigin::Supervisor)
+    }
+
+    pub fn update_experiment_from_mcp(
+        &mut self,
+        request: UpdateExperimentRequest,
+    ) -> Result<ExperimentRecord, StoreError> {
+        self.update_experiment_with_origin(request, MutationOrigin::Mcp)
+    }
+
+    fn update_experiment_with_origin(
+        &mut self,
+        request: UpdateExperimentRequest,
+        origin: MutationOrigin,
+    ) -> Result<ExperimentRecord, StoreError> {
         let record = self.resolve_experiment(&request.experiment)?;
         enforce_revision(
             "experiment",
@@ -1212,9 +1659,14 @@ impl ProjectStore {
             request.expected_revision,
             record.revision,
         )?;
-        if let Some(tags) = request.tags.as_ref() {
-            self.assert_known_tags(tags)?;
-        }
+        let tag_ids = request
+            .tags
+            .as_ref()
+            .map(|tags| {
+                self.assert_tag_policy_for_assignment(tags, origin)?;
+                self.resolve_tag_set(tags, origin)
+            })
+            .transpose()?;
         let outcome = match request.outcome {
             Some(patch) => Some(self.materialize_outcome(&patch, record.outcome.as_ref())?),
             None => record.outcome.clone(),
@@ -1248,13 +1700,13 @@ impl ProjectStore {
                 )
             })
             .transpose()?;
+        let final_tag_ids = match tag_ids {
+            Some(tag_ids) => tag_ids,
+            None => self.resolve_existing_tag_names(&updated.tags)?,
+        };
         let transaction = self.connection.transaction()?;
         update_experiment_row(&transaction, &updated)?;
-        replace_experiment_tags(
-            &transaction,
-            updated.id,
-            &updated.tags.iter().cloned().collect::<BTreeSet<_>>(),
-        )?;
+        replace_experiment_tags(&transaction, updated.id, &final_tag_ids)?;
         replace_experiment_dimensions(&transaction, updated.id, updated.outcome.as_ref())?;
         replace_experiment_metrics(&transaction, updated.id, updated.outcome.as_ref())?;
         if let Some(parents) = parents.as_ref() {
@@ -2251,7 +2703,11 @@ impl ProjectStore {
 
     fn hypothesis_tags(&self, id: HypothesisId) -> Result<Vec<TagName>, rusqlite::Error> {
         let mut statement = self.connection.prepare(
-            "SELECT tag_name FROM hypothesis_tags WHERE hypothesis_id = ?1 ORDER BY tag_name ASC",
+            "SELECT tags.name
+             FROM hypothesis_tags
+             JOIN tags ON tags.id = hypothesis_tags.tag_id
+             WHERE hypothesis_tags.hypothesis_id = ?1
+             ORDER BY tags.name ASC",
         )?;
         let rows = statement.query_map(params![id.to_string()], |row| {
             parse_tag_name(&row.get::<_, String>(0)?)
@@ -2261,7 +2717,11 @@ impl ProjectStore {
 
     fn experiment_tags(&self, id: ExperimentId) -> Result<Vec<TagName>, rusqlite::Error> {
         let mut statement = self.connection.prepare(
-            "SELECT tag_name FROM experiment_tags WHERE experiment_id = ?1 ORDER BY tag_name ASC",
+            "SELECT tags.name
+             FROM experiment_tags
+             JOIN tags ON tags.id = experiment_tags.tag_id
+             WHERE experiment_tags.experiment_id = ?1
+             ORDER BY tags.name ASC",
         )?;
         let rows = statement.query_map(params![id.to_string()], |row| {
             parse_tag_name(&row.get::<_, String>(0)?)
@@ -2725,22 +3185,257 @@ impl ProjectStore {
         })
     }
 
-    fn assert_known_tags(&self, tags: &BTreeSet<TagName>) -> Result<(), StoreError> {
-        for tag in tags {
-            if self
-                .connection
-                .query_row(
-                    "SELECT 1 FROM tags WHERE name = ?1",
-                    params![tag.as_str()],
-                    |_| Ok(()),
-                )
-                .optional()?
-                .is_none()
-            {
-                return Err(StoreError::UnknownTag(tag.clone()));
+    fn resolve_tag_set(
+        &self,
+        tags: &BTreeSet<TagName>,
+        origin: MutationOrigin,
+    ) -> Result<BTreeSet<TagId>, StoreError> {
+        let tag_ids = self.resolve_existing_tag_names(&tags.iter().cloned().collect::<Vec<_>>())?;
+        if origin.is_mcp() {
+            self.assert_mandatory_tag_families(tags)?;
+        }
+        Ok(tag_ids)
+    }
+
+    fn resolve_existing_tag_names(&self, tags: &[TagName]) -> Result<BTreeSet<TagId>, StoreError> {
+        tags.iter()
+            .map(|tag| self.tag_id_by_name(tag))
+            .collect::<Result<BTreeSet<_>, _>>()
+    }
+
+    fn tag_id_by_name(&self, tag: &TagName) -> Result<TagId, StoreError> {
+        if let Some(record) = self.tag_record_by_name(tag)? {
+            return Ok(record.id);
+        }
+        if let Some(history) = self.tag_name_history_by_name(tag)? {
+            return Err(StoreError::PolicyViolation(history.message.to_string()));
+        }
+        Err(StoreError::UnknownTag(tag.clone()))
+    }
+
+    fn assert_no_stale_tag_name(&self, tag: &TagName) -> Result<(), StoreError> {
+        if let Some(history) = self.tag_name_history_by_name(tag)? {
+            return Err(StoreError::PolicyViolation(history.message.to_string()));
+        }
+        Ok(())
+    }
+
+    fn assert_tag_policy_for_assignment(
+        &self,
+        tags: &BTreeSet<TagName>,
+        origin: MutationOrigin,
+    ) -> Result<(), StoreError> {
+        if !origin.is_mcp() {
+            return Ok(());
+        }
+        self.assert_tag_assignment_open()?;
+        self.assert_mandatory_tag_families(tags)
+    }
+
+    fn assert_tag_definition_open(&self) -> Result<(), StoreError> {
+        if let Some(lock) =
+            self.registry_lock(&RegistryName::tags(), RegistryLockMode::Definition)?
+        {
+            return Err(StoreError::PolicyViolation(format!(
+                "tag registry is locked; new tags cannot be created from MCP; use an existing tag from tag.list or ask the supervisor. Reason: {}",
+                lock.reason
+            )));
+        }
+        Ok(())
+    }
+
+    fn assert_tag_assignment_open(&self) -> Result<(), StoreError> {
+        if let Some(lock) =
+            self.registry_lock(&RegistryName::tags(), RegistryLockMode::Assignment)?
+        {
+            return Err(StoreError::PolicyViolation(format!(
+                "tag assignment is locked; experiment and hypothesis tag sets cannot be changed from MCP. Reason: {}",
+                lock.reason
+            )));
+        }
+        Ok(())
+    }
+
+    fn assert_mandatory_tag_families(&self, tags: &BTreeSet<TagName>) -> Result<(), StoreError> {
+        let selected_ids =
+            self.resolve_existing_tag_names(&tags.iter().cloned().collect::<Vec<_>>())?;
+        for family in self.load_tag_family_records()? {
+            if !family.mandatory {
+                continue;
+            }
+            let members = self.tag_names_for_family(family.id)?;
+            let satisfied = selected_ids.iter().any(|tag_id| {
+                self.tag_family_id_for_tag_id(*tag_id)
+                    .ok()
+                    .flatten()
+                    .is_some_and(|family_id| family_id == family.id)
+            });
+            if !satisfied {
+                if members.is_empty() {
+                    return Err(StoreError::PolicyViolation(format!(
+                        "mandatory tag family `{}` is missing, but it has no active tags; ask the supervisor to add a tag or make the family optional",
+                        family.name
+                    )));
+                }
+                let choices = members
+                    .iter()
+                    .take(8)
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let suffix = if members.len() > 8 {
+                    "; call tag.list for the complete family"
+                } else {
+                    ""
+                };
+                return Err(StoreError::PolicyViolation(format!(
+                    "mandatory tag family `{}` is missing; include at least one of: {}{}",
+                    family.name, choices, suffix
+                )));
             }
         }
         Ok(())
+    }
+
+    fn tag_record_by_name(&self, name: &TagName) -> Result<Option<TagRecord>, StoreError> {
+        self.connection
+            .query_row(
+                "SELECT tags.id, tags.name, tags.description, tags.family_id, tag_families.name,
+                        tags.status, tags.revision, tags.created_at, tags.updated_at
+                 FROM tags
+                 LEFT JOIN tag_families ON tag_families.id = tags.family_id
+                 WHERE tags.name = ?1",
+                params![name.as_str()],
+                decode_tag_row,
+            )
+            .optional()
+            .map_err(StoreError::from)
+    }
+
+    fn tag_family_by_name(
+        &self,
+        name: &TagFamilyName,
+    ) -> Result<Option<TagFamilyRecord>, StoreError> {
+        self.connection
+            .query_row(
+                "SELECT id, name, description, mandatory, status, revision, created_at, updated_at
+                 FROM tag_families
+                 WHERE name = ?1",
+                params![name.as_str()],
+                decode_tag_family_row,
+            )
+            .optional()
+            .map_err(StoreError::from)
+    }
+
+    fn tag_name_history_by_name(
+        &self,
+        name: &TagName,
+    ) -> Result<Option<TagNameHistoryRecord>, StoreError> {
+        self.connection
+            .query_row(
+                "SELECT tag_name_history.name, tag_name_history.target_tag_id, tags.name,
+                        tag_name_history.disposition, tag_name_history.message,
+                        tag_name_history.created_at
+                 FROM tag_name_history
+                 LEFT JOIN tags ON tags.id = tag_name_history.target_tag_id
+                 WHERE tag_name_history.name = ?1",
+                params![name.as_str()],
+                decode_tag_name_history_row,
+            )
+            .optional()
+            .map_err(StoreError::from)
+    }
+
+    fn registry_lock(
+        &self,
+        registry: &RegistryName,
+        mode: RegistryLockMode,
+    ) -> Result<Option<RegistryLockRecord>, StoreError> {
+        self.connection
+            .query_row(
+                "SELECT id, registry, mode, scope_kind, scope_id, reason, revision, locked_at, updated_at
+                 FROM registry_locks
+                 WHERE registry = ?1 AND mode = ?2 AND scope_kind = 'project' AND scope_id = 'project'",
+                params![registry.as_str(), mode.as_str()],
+                decode_registry_lock_row,
+            )
+            .optional()
+            .map_err(StoreError::from)
+    }
+
+    fn load_tag_records(&self) -> Result<Vec<TagRecord>, StoreError> {
+        let mut statement = self.connection.prepare(
+            "SELECT tags.id, tags.name, tags.description, tags.family_id, tag_families.name,
+                    tags.status, tags.revision, tags.created_at, tags.updated_at
+             FROM tags
+             LEFT JOIN tag_families ON tag_families.id = tags.family_id
+             ORDER BY tags.name ASC",
+        )?;
+        let rows = statement.query_map([], decode_tag_row)?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(StoreError::from)
+    }
+
+    fn load_tag_family_records(&self) -> Result<Vec<TagFamilyRecord>, StoreError> {
+        let mut statement = self.connection.prepare(
+            "SELECT id, name, description, mandatory, status, revision, created_at, updated_at
+             FROM tag_families
+             ORDER BY name ASC",
+        )?;
+        let rows = statement.query_map([], decode_tag_family_row)?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(StoreError::from)
+    }
+
+    fn load_registry_locks(&self) -> Result<Vec<RegistryLockRecord>, StoreError> {
+        let mut statement = self.connection.prepare(
+            "SELECT id, registry, mode, scope_kind, scope_id, reason, revision, locked_at, updated_at
+             FROM registry_locks
+             ORDER BY registry ASC, mode ASC",
+        )?;
+        let rows = statement.query_map([], decode_registry_lock_row)?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(StoreError::from)
+    }
+
+    fn load_tag_name_history(&self) -> Result<Vec<TagNameHistoryRecord>, StoreError> {
+        let mut statement = self.connection.prepare(
+            "SELECT tag_name_history.name, tag_name_history.target_tag_id, tags.name,
+                    tag_name_history.disposition, tag_name_history.message,
+                    tag_name_history.created_at
+             FROM tag_name_history
+             LEFT JOIN tags ON tags.id = tag_name_history.target_tag_id
+             ORDER BY tag_name_history.created_at DESC, tag_name_history.name ASC",
+        )?;
+        let rows = statement.query_map([], decode_tag_name_history_row)?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(StoreError::from)
+    }
+
+    fn tag_names_for_family(&self, family_id: TagFamilyId) -> Result<Vec<TagName>, StoreError> {
+        let mut statement = self
+            .connection
+            .prepare("SELECT name FROM tags WHERE family_id = ?1 ORDER BY name ASC")?;
+        let rows = statement.query_map(params![family_id.to_string()], |row| {
+            parse_tag_name(&row.get::<_, String>(0)?)
+        })?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(StoreError::from)
+    }
+
+    fn tag_family_id_for_tag_id(&self, tag_id: TagId) -> Result<Option<TagFamilyId>, StoreError> {
+        self.connection
+            .query_row(
+                "SELECT family_id FROM tags WHERE id = ?1",
+                params![tag_id.to_string()],
+                |row| {
+                    row.get::<_, Option<String>>(0)?
+                        .map(|raw| parse_tag_family_id(&raw))
+                        .transpose()
+                },
+            )
+            .map_err(StoreError::from)
     }
 
     fn unique_frontier_slug(
@@ -2837,9 +3532,46 @@ fn install_schema(connection: &Connection) -> Result<(), StoreError> {
     connection.execute_batch(
         "
         CREATE TABLE IF NOT EXISTS tags (
-            name TEXT PRIMARY KEY NOT NULL,
+            id TEXT PRIMARY KEY NOT NULL,
+            name TEXT NOT NULL UNIQUE,
             description TEXT NOT NULL,
+            family_id TEXT REFERENCES tag_families(id) ON DELETE SET NULL,
+            status TEXT NOT NULL,
+            revision INTEGER NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS tag_families (
+            id TEXT PRIMARY KEY NOT NULL,
+            name TEXT NOT NULL UNIQUE,
+            description TEXT NOT NULL,
+            mandatory INTEGER NOT NULL,
+            status TEXT NOT NULL,
+            revision INTEGER NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS tag_name_history (
+            name TEXT PRIMARY KEY NOT NULL,
+            target_tag_id TEXT REFERENCES tags(id) ON DELETE SET NULL,
+            disposition TEXT NOT NULL,
+            message TEXT NOT NULL,
             created_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS registry_locks (
+            id TEXT PRIMARY KEY NOT NULL,
+            registry TEXT NOT NULL,
+            mode TEXT NOT NULL,
+            scope_kind TEXT NOT NULL,
+            scope_id TEXT NOT NULL,
+            reason TEXT NOT NULL,
+            revision INTEGER NOT NULL,
+            locked_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            UNIQUE (registry, mode, scope_kind, scope_id)
         );
 
         CREATE TABLE IF NOT EXISTS frontiers (
@@ -2869,8 +3601,8 @@ fn install_schema(connection: &Connection) -> Result<(), StoreError> {
 
         CREATE TABLE IF NOT EXISTS hypothesis_tags (
             hypothesis_id TEXT NOT NULL REFERENCES hypotheses(id) ON DELETE CASCADE,
-            tag_name TEXT NOT NULL REFERENCES tags(name) ON DELETE CASCADE,
-            PRIMARY KEY (hypothesis_id, tag_name)
+            tag_id TEXT NOT NULL REFERENCES tags(id) ON DELETE CASCADE,
+            PRIMARY KEY (hypothesis_id, tag_id)
         );
 
         CREATE TABLE IF NOT EXISTS experiments (
@@ -2890,8 +3622,8 @@ fn install_schema(connection: &Connection) -> Result<(), StoreError> {
 
         CREATE TABLE IF NOT EXISTS experiment_tags (
             experiment_id TEXT NOT NULL REFERENCES experiments(id) ON DELETE CASCADE,
-            tag_name TEXT NOT NULL REFERENCES tags(name) ON DELETE CASCADE,
-            PRIMARY KEY (experiment_id, tag_name)
+            tag_id TEXT NOT NULL REFERENCES tags(id) ON DELETE CASCADE,
+            PRIMARY KEY (experiment_id, tag_id)
         );
 
         CREATE TABLE IF NOT EXISTS influence_edges (
@@ -2968,6 +3700,167 @@ fn install_schema(connection: &Connection) -> Result<(), StoreError> {
             PRIMARY KEY (entity_kind, entity_id, revision)
         );
         ",
+    )?;
+    Ok(())
+}
+
+fn insert_tag(transaction: &Transaction<'_>, tag: &TagRecord) -> Result<(), StoreError> {
+    let _ = transaction.execute(
+        "INSERT INTO tags (id, name, description, family_id, status, revision, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        params![
+            tag.id.to_string(),
+            tag.name.as_str(),
+            tag.description.as_str(),
+            tag.family_id.map(|id| id.to_string()),
+            tag.status.as_str(),
+            tag.revision,
+            encode_timestamp(tag.created_at)?,
+            encode_timestamp(tag.updated_at)?,
+        ],
+    )?;
+    Ok(())
+}
+
+fn update_tag(transaction: &Transaction<'_>, tag: &TagRecord) -> Result<(), StoreError> {
+    let _ = transaction.execute(
+        "UPDATE tags
+         SET name = ?2, description = ?3, family_id = ?4, status = ?5, revision = ?6, updated_at = ?7
+         WHERE id = ?1",
+        params![
+            tag.id.to_string(),
+            tag.name.as_str(),
+            tag.description.as_str(),
+            tag.family_id.map(|id| id.to_string()),
+            tag.status.as_str(),
+            tag.revision,
+            encode_timestamp(tag.updated_at)?,
+        ],
+    )?;
+    Ok(())
+}
+
+fn delete_tag_row(transaction: &Transaction<'_>, tag_id: TagId) -> Result<(), StoreError> {
+    let _ = transaction.execute(
+        "DELETE FROM tags WHERE id = ?1",
+        params![tag_id.to_string()],
+    )?;
+    Ok(())
+}
+
+fn insert_tag_family(
+    transaction: &Transaction<'_>,
+    family: &TagFamilyRecord,
+) -> Result<(), StoreError> {
+    let _ = transaction.execute(
+        "INSERT INTO tag_families (id, name, description, mandatory, status, revision, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        params![
+            family.id.to_string(),
+            family.name.as_str(),
+            family.description.as_str(),
+            bool_to_sql(family.mandatory),
+            family.status.as_str(),
+            family.revision,
+            encode_timestamp(family.created_at)?,
+            encode_timestamp(family.updated_at)?,
+        ],
+    )?;
+    Ok(())
+}
+
+fn update_tag_family(
+    transaction: &Transaction<'_>,
+    family: &TagFamilyRecord,
+) -> Result<(), StoreError> {
+    let _ = transaction.execute(
+        "UPDATE tag_families
+         SET name = ?2, description = ?3, mandatory = ?4, status = ?5, revision = ?6, updated_at = ?7
+         WHERE id = ?1",
+        params![
+            family.id.to_string(),
+            family.name.as_str(),
+            family.description.as_str(),
+            bool_to_sql(family.mandatory),
+            family.status.as_str(),
+            family.revision,
+            encode_timestamp(family.updated_at)?,
+        ],
+    )?;
+    Ok(())
+}
+
+fn upsert_tag_name_history(
+    transaction: &Transaction<'_>,
+    history: &TagNameHistoryRecord,
+) -> Result<(), StoreError> {
+    let _ = transaction.execute(
+        "INSERT INTO tag_name_history (name, target_tag_id, disposition, message, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5)
+         ON CONFLICT(name) DO UPDATE SET
+             target_tag_id = excluded.target_tag_id,
+             disposition = excluded.disposition,
+             message = excluded.message,
+             created_at = excluded.created_at",
+        params![
+            history.name.as_str(),
+            history.target_tag_id.map(|id| id.to_string()),
+            history.disposition.as_str(),
+            history.message.as_str(),
+            encode_timestamp(history.created_at)?,
+        ],
+    )?;
+    Ok(())
+}
+
+fn upsert_registry_lock(
+    transaction: &Transaction<'_>,
+    lock: &RegistryLockRecord,
+) -> Result<(), StoreError> {
+    let _ = transaction.execute(
+        "INSERT INTO registry_locks (id, registry, mode, scope_kind, scope_id, reason, revision, locked_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+         ON CONFLICT(registry, mode, scope_kind, scope_id) DO UPDATE SET
+             reason = excluded.reason,
+             revision = excluded.revision,
+             updated_at = excluded.updated_at",
+        params![
+            lock.id.to_string(),
+            lock.registry.as_str(),
+            lock.mode.as_str(),
+            lock.scope_kind.as_str(),
+            lock.scope_id.as_str(),
+            lock.reason.as_str(),
+            lock.revision,
+            encode_timestamp(lock.locked_at)?,
+            encode_timestamp(lock.updated_at)?,
+        ],
+    )?;
+    Ok(())
+}
+
+fn merge_tag_edges(
+    transaction: &Transaction<'_>,
+    source: TagId,
+    target: TagId,
+) -> Result<(), StoreError> {
+    let _ = transaction.execute(
+        "INSERT OR IGNORE INTO hypothesis_tags (hypothesis_id, tag_id)
+         SELECT hypothesis_id, ?2 FROM hypothesis_tags WHERE tag_id = ?1",
+        params![source.to_string(), target.to_string()],
+    )?;
+    let _ = transaction.execute(
+        "DELETE FROM hypothesis_tags WHERE tag_id = ?1",
+        params![source.to_string()],
+    )?;
+    let _ = transaction.execute(
+        "INSERT OR IGNORE INTO experiment_tags (experiment_id, tag_id)
+         SELECT experiment_id, ?2 FROM experiment_tags WHERE tag_id = ?1",
+        params![source.to_string(), target.to_string()],
+    )?;
+    let _ = transaction.execute(
+        "DELETE FROM experiment_tags WHERE tag_id = ?1",
+        params![source.to_string()],
     )?;
     Ok(())
 }
@@ -3064,7 +3957,7 @@ fn update_hypothesis_row(
 fn replace_hypothesis_tags(
     transaction: &Transaction<'_>,
     hypothesis_id: HypothesisId,
-    tags: &BTreeSet<TagName>,
+    tags: &BTreeSet<TagId>,
 ) -> Result<(), StoreError> {
     let _ = transaction.execute(
         "DELETE FROM hypothesis_tags WHERE hypothesis_id = ?1",
@@ -3072,8 +3965,8 @@ fn replace_hypothesis_tags(
     )?;
     for tag in tags {
         let _ = transaction.execute(
-            "INSERT INTO hypothesis_tags (hypothesis_id, tag_name) VALUES (?1, ?2)",
-            params![hypothesis_id.to_string(), tag.as_str()],
+            "INSERT INTO hypothesis_tags (hypothesis_id, tag_id) VALUES (?1, ?2)",
+            params![hypothesis_id.to_string(), tag.to_string()],
         )?;
     }
     Ok(())
@@ -3130,7 +4023,7 @@ fn update_experiment_row(
 fn replace_experiment_tags(
     transaction: &Transaction<'_>,
     experiment_id: ExperimentId,
-    tags: &BTreeSet<TagName>,
+    tags: &BTreeSet<TagId>,
 ) -> Result<(), StoreError> {
     let _ = transaction.execute(
         "DELETE FROM experiment_tags WHERE experiment_id = ?1",
@@ -3138,8 +4031,8 @@ fn replace_experiment_tags(
     )?;
     for tag in tags {
         let _ = transaction.execute(
-            "INSERT INTO experiment_tags (experiment_id, tag_name) VALUES (?1, ?2)",
-            params![experiment_id.to_string(), tag.as_str()],
+            "INSERT INTO experiment_tags (experiment_id, tag_id) VALUES (?1, ?2)",
+            params![experiment_id.to_string(), tag.to_string()],
         )?;
     }
     Ok(())
@@ -3308,6 +4201,76 @@ fn record_event(
         ],
     )?;
     Ok(())
+}
+
+fn decode_tag_row(row: &rusqlite::Row<'_>) -> Result<TagRecord, rusqlite::Error> {
+    Ok(TagRecord {
+        id: TagId::from_uuid(parse_uuid_sql(&row.get::<_, String>(0)?)?),
+        name: parse_tag_name(&row.get::<_, String>(1)?)?,
+        description: parse_non_empty_text(&row.get::<_, String>(2)?)?,
+        family_id: row
+            .get::<_, Option<String>>(3)?
+            .map(|raw| parse_tag_family_id(&raw))
+            .transpose()?,
+        family: row
+            .get::<_, Option<String>>(4)?
+            .map(TagFamilyName::new)
+            .transpose()
+            .map_err(core_to_sql_conversion_error)?,
+        status: parse_tag_status(&row.get::<_, String>(5)?)?,
+        revision: row.get(6)?,
+        created_at: parse_timestamp_sql(&row.get::<_, String>(7)?)?,
+        updated_at: parse_timestamp_sql(&row.get::<_, String>(8)?)?,
+    })
+}
+
+fn decode_tag_family_row(row: &rusqlite::Row<'_>) -> Result<TagFamilyRecord, rusqlite::Error> {
+    Ok(TagFamilyRecord {
+        id: TagFamilyId::from_uuid(parse_uuid_sql(&row.get::<_, String>(0)?)?),
+        name: TagFamilyName::new(row.get::<_, String>(1)?).map_err(core_to_sql_conversion_error)?,
+        description: parse_non_empty_text(&row.get::<_, String>(2)?)?,
+        mandatory: row.get::<_, i64>(3)? != 0,
+        status: parse_tag_status(&row.get::<_, String>(4)?)?,
+        revision: row.get(5)?,
+        created_at: parse_timestamp_sql(&row.get::<_, String>(6)?)?,
+        updated_at: parse_timestamp_sql(&row.get::<_, String>(7)?)?,
+    })
+}
+
+fn decode_tag_name_history_row(
+    row: &rusqlite::Row<'_>,
+) -> Result<TagNameHistoryRecord, rusqlite::Error> {
+    Ok(TagNameHistoryRecord {
+        name: parse_tag_name(&row.get::<_, String>(0)?)?,
+        target_tag_id: row
+            .get::<_, Option<String>>(1)?
+            .map(|raw| parse_tag_id(&raw))
+            .transpose()?,
+        target_tag_name: row
+            .get::<_, Option<String>>(2)?
+            .map(|raw| parse_tag_name(&raw))
+            .transpose()?,
+        disposition: parse_tag_name_disposition(&row.get::<_, String>(3)?)?,
+        message: parse_non_empty_text(&row.get::<_, String>(4)?)?,
+        created_at: parse_timestamp_sql(&row.get::<_, String>(5)?)?,
+    })
+}
+
+fn decode_registry_lock_row(
+    row: &rusqlite::Row<'_>,
+) -> Result<RegistryLockRecord, rusqlite::Error> {
+    Ok(RegistryLockRecord {
+        id: RegistryLockId::from_uuid(parse_uuid_sql(&row.get::<_, String>(0)?)?),
+        registry: RegistryName::new(row.get::<_, String>(1)?)
+            .map_err(core_to_sql_conversion_error)?,
+        mode: parse_registry_lock_mode(&row.get::<_, String>(2)?)?,
+        scope_kind: parse_non_empty_text(&row.get::<_, String>(3)?)?,
+        scope_id: parse_non_empty_text(&row.get::<_, String>(4)?)?,
+        reason: parse_non_empty_text(&row.get::<_, String>(5)?)?,
+        revision: row.get(6)?,
+        locked_at: parse_timestamp_sql(&row.get::<_, String>(7)?)?,
+        updated_at: parse_timestamp_sql(&row.get::<_, String>(8)?)?,
+    })
 }
 
 fn decode_frontier_row(row: &rusqlite::Row<'_>) -> Result<FrontierRecord, rusqlite::Error> {
@@ -3505,6 +4468,46 @@ fn parse_frontier_status(raw: &str) -> Result<FrontierStatus, rusqlite::Error> {
             serde_json::Error::io(io::Error::new(
                 io::ErrorKind::InvalidData,
                 format!("invalid frontier status `{raw}`"),
+            )),
+        ))),
+    }
+}
+
+fn parse_tag_status(raw: &str) -> Result<TagStatus, rusqlite::Error> {
+    match raw {
+        "active" => Ok(TagStatus::Active),
+        _ => Err(to_sql_conversion_error(StoreError::Json(
+            serde_json::Error::io(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("invalid tag status `{raw}`"),
+            )),
+        ))),
+    }
+}
+
+fn parse_tag_name_disposition(raw: &str) -> Result<TagNameDisposition, rusqlite::Error> {
+    match raw {
+        "renamed" => Ok(TagNameDisposition::Renamed),
+        "merged" => Ok(TagNameDisposition::Merged),
+        "deleted" => Ok(TagNameDisposition::Deleted),
+        _ => Err(to_sql_conversion_error(StoreError::Json(
+            serde_json::Error::io(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("invalid tag name disposition `{raw}`"),
+            )),
+        ))),
+    }
+}
+
+fn parse_registry_lock_mode(raw: &str) -> Result<RegistryLockMode, rusqlite::Error> {
+    match raw {
+        "definition" => Ok(RegistryLockMode::Definition),
+        "assignment" => Ok(RegistryLockMode::Assignment),
+        "family" => Ok(RegistryLockMode::Family),
+        _ => Err(to_sql_conversion_error(StoreError::Json(
+            serde_json::Error::io(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("invalid registry lock mode `{raw}`"),
             )),
         ))),
     }
@@ -4136,6 +5139,14 @@ fn parse_slug(raw: &str) -> Result<Slug, rusqlite::Error> {
 
 fn parse_tag_name(raw: &str) -> Result<TagName, rusqlite::Error> {
     TagName::new(raw.to_owned()).map_err(core_to_sql_conversion_error)
+}
+
+fn parse_tag_id(raw: &str) -> Result<TagId, rusqlite::Error> {
+    parse_uuid_sql(raw).map(TagId::from_uuid)
+}
+
+fn parse_tag_family_id(raw: &str) -> Result<TagFamilyId, rusqlite::Error> {
+    parse_uuid_sql(raw).map(TagFamilyId::from_uuid)
 }
 
 fn parse_uuid_sql(raw: &str) -> Result<Uuid, rusqlite::Error> {

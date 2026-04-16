@@ -40,3 +40,6 @@ define_id!(ArtifactId);
 define_id!(ExperimentId);
 define_id!(FrontierId);
 define_id!(HypothesisId);
+define_id!(RegistryLockId);
+define_id!(TagFamilyId);
+define_id!(TagId);

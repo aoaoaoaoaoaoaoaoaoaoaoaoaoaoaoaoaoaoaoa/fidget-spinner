@@ -9,10 +9,13 @@ use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::OnceLock;
 
 use camino::Utf8PathBuf;
-use fidget_spinner_core::{FrontierStatus, NonEmptyText, Slug, TagName};
+use fidget_spinner_core::{
+    FrontierStatus, NonEmptyText, RegistryLockMode, RegistryName, Slug, TagFamilyName, TagName,
+};
 use fidget_spinner_store_sqlite::{
-    CreateFrontierRequest, CreateHypothesisRequest, ListExperimentsQuery, ListFrontiersQuery,
-    OpenExperimentRequest, ProjectStore, UpdateFrontierRequest,
+    AssignTagFamilyRequest, CreateFrontierRequest, CreateHypothesisRequest, CreateTagFamilyRequest,
+    ListExperimentsQuery, ListFrontiersQuery, OpenExperimentRequest, ProjectStore,
+    RenameTagRequest, SetRegistryLockRequest, UpdateFrontierRequest,
 };
 use libmcp as _;
 use libmcp_testkit::assert_no_opaque_ids;
@@ -494,6 +497,161 @@ fn binding_via_git_directory_resolves_repo_root() -> TestResult {
         Some(project_root.as_str())
     );
     assert_eq!(tool_content(&bind)["frontier_count"].as_u64(), Some(0));
+    Ok(())
+}
+
+#[test]
+fn tag_definition_lock_rejects_mcp_tag_creation() -> TestResult {
+    let project_root = temp_project_root("tag_definition_lock")?;
+    init_project(&project_root)?;
+    {
+        let mut store = must(ProjectStore::open(&project_root), "open project store")?;
+        let _ = must(
+            store.set_registry_lock(SetRegistryLockRequest {
+                registry: RegistryName::tags(),
+                mode: RegistryLockMode::Definition,
+                locked: true,
+                reason: Some(must(
+                    NonEmptyText::new("supervisor cleaned tags"),
+                    "reason",
+                )?),
+            }),
+            "lock tag registry",
+        )?;
+    }
+
+    let mut harness = McpHarness::spawn(Some(&project_root))?;
+    let _ = harness.initialize()?;
+    harness.notify_initialized()?;
+
+    let response = harness.call_tool(
+        70,
+        "tag.add",
+        json!({"name": "model-invented", "description": "should be rejected"}),
+    )?;
+    assert_tool_error(&response);
+    assert_eq!(
+        tool_content(&response)["kind"].as_str(),
+        Some("PolicyViolation")
+    );
+    assert!(
+        must_some(tool_error_message(&response), "policy message")?
+            .contains("tag registry is locked")
+    );
+    Ok(())
+}
+
+#[test]
+fn mandatory_tag_family_rejects_future_mcp_tag_sets() -> TestResult {
+    let project_root = temp_project_root("mandatory_tag_family")?;
+    init_project(&project_root)?;
+    {
+        let mut store = must(ProjectStore::open(&project_root), "open project store")?;
+        let phase = must(
+            store.create_tag_family(CreateTagFamilyRequest {
+                name: must(TagFamilyName::new("phase"), "family")?,
+                description: must(NonEmptyText::new("experiment phase"), "description")?,
+                mandatory: true,
+            }),
+            "create tag family",
+        )?;
+        let _ = must(
+            store.register_tag(
+                must(TagName::new("baseline"), "tag")?,
+                must(NonEmptyText::new("baseline phase"), "tag description")?,
+            ),
+            "register tag",
+        )?;
+        let _ = must(
+            store.assign_tag_family(AssignTagFamilyRequest {
+                tag: must(TagName::new("baseline"), "tag")?,
+                expected_revision: None,
+                family: Some(phase.name),
+            }),
+            "assign tag family",
+        )?;
+    }
+
+    let mut harness = McpHarness::spawn(Some(&project_root))?;
+    let _ = harness.initialize()?;
+    harness.notify_initialized()?;
+
+    assert_tool_ok(&harness.call_tool(
+        71,
+        "frontier.create",
+        json!({
+            "label": "Governed Frontier",
+            "objective": "Test mandatory family",
+            "slug": "governed",
+        }),
+    )?);
+    let rejected = harness.call_tool(
+        72,
+        "hypothesis.record",
+        json!({
+            "frontier": "governed",
+            "title": "No phase tag",
+            "summary": "Missing mandatory tag family.",
+            "body": "One paragraph body.",
+        }),
+    )?;
+    assert_tool_error(&rejected);
+    assert!(
+        must_some(tool_error_message(&rejected), "mandatory message")?
+            .contains("mandatory tag family `phase` is missing")
+    );
+
+    let accepted = harness.call_tool(
+        73,
+        "hypothesis.record",
+        json!({
+            "frontier": "governed",
+            "title": "Tagged phase",
+            "summary": "Includes mandatory family.",
+            "body": "One paragraph body.",
+            "tags": ["baseline"],
+        }),
+    )?;
+    assert_tool_ok(&accepted);
+    Ok(())
+}
+
+#[test]
+fn renamed_tag_guides_stale_mcp_context() -> TestResult {
+    let project_root = temp_project_root("renamed_tag_guidance")?;
+    init_project(&project_root)?;
+    {
+        let mut store = must(ProjectStore::open(&project_root), "open project store")?;
+        let _ = must(
+            store.register_tag(
+                must(TagName::new("ls"), "old tag")?,
+                must(NonEmptyText::new("local search shorthand"), "description")?,
+            ),
+            "register old tag",
+        )?;
+        let _ = must(
+            store.rename_tag(RenameTagRequest {
+                tag: must(TagName::new("ls"), "old tag")?,
+                expected_revision: None,
+                new_name: must(TagName::new("search/local"), "new tag")?,
+            }),
+            "rename tag",
+        )?;
+    }
+
+    let mut harness = McpHarness::spawn(Some(&project_root))?;
+    let _ = harness.initialize()?;
+    harness.notify_initialized()?;
+
+    let response = harness.call_tool(
+        74,
+        "tag.add",
+        json!({"name": "ls", "description": "stale shorthand"}),
+    )?;
+    assert_tool_error(&response);
+    let message = must_some(tool_error_message(&response), "rename guidance")?;
+    assert!(message.contains("renamed"));
+    assert!(message.contains("search/local"));
     Ok(())
 }
 

@@ -10,12 +10,16 @@ mod id;
 mod model;
 
 pub use crate::error::CoreError;
-pub use crate::id::{ArtifactId, ExperimentId, FrontierId, HypothesisId};
+pub use crate::id::{
+    ArtifactId, ExperimentId, FrontierId, HypothesisId, RegistryLockId, TagFamilyId, TagId,
+};
 pub use crate::model::{
     ArtifactKind, ArtifactRecord, AttachmentTargetKind, AttachmentTargetRef, CommandRecipe,
     ExecutionBackend, ExperimentAnalysis, ExperimentOutcome, ExperimentRecord, ExperimentStatus,
     FieldValueType, FrontierBrief, FrontierRecord, FrontierRoadmapItem, FrontierStatus,
     FrontierVerdict, GitCommitHash, HypothesisRecord, KnownMetricUnit, MetricDefinition,
     MetricUnit, MetricValue, MetricVisibility, NonEmptyText, OptimizationObjective,
-    RunDimensionDefinition, RunDimensionValue, Slug, TagName, TagRecord, VertexKind, VertexRef,
+    RegistryLockMode, RegistryLockRecord, RegistryName, RunDimensionDefinition, RunDimensionValue,
+    Slug, TagFamilyName, TagFamilyRecord, TagName, TagNameDisposition, TagNameHistoryRecord,
+    TagRecord, TagRegistrySnapshot, TagStatus, VertexKind, VertexRef,
 };

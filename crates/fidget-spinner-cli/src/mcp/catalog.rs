@@ -61,13 +61,13 @@ const TOOL_SPECS: &[ToolSpec] = &[
     },
     ToolSpec {
         name: "tag.add",
-        description: "Register one repo-local tag with a required description.",
+        description: "Register one repo-local tag with a required description unless supervisor policy has locked tag creation.",
         dispatch: DispatchTarget::Worker,
         replay: ReplayContract::NeverReplay,
     },
     ToolSpec {
         name: "tag.list",
-        description: "List the repo-local tag registry.",
+        description: "List active tags plus supervisor tag families, locks, and stale-name guidance.",
         dispatch: DispatchTarget::Worker,
         replay: ReplayContract::Convergent,
     },

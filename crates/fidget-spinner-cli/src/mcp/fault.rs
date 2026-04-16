@@ -6,6 +6,7 @@ use time::OffsetDateTime;
 pub(crate) enum FaultKind {
     InvalidInput,
     NotInitialized,
+    PolicyViolation,
     Unavailable,
     Transient,
     Internal,
@@ -92,6 +93,7 @@ impl FaultRecord {
         match self.kind {
             FaultKind::InvalidInput => -32602,
             FaultKind::NotInitialized => -32002,
+            FaultKind::PolicyViolation => -32001,
             FaultKind::Unavailable => -32004,
             FaultKind::Transient | FaultKind::Internal => -32603,
         }

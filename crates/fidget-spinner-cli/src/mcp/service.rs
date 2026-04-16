@@ -99,13 +99,13 @@ impl WorkerService {
             "project.status" => project_status_output(&lift!(self.store.status()), &operation)?,
             "tag.add" => {
                 let args = deserialize::<TagAddArgs>(arguments)?;
-                let tag = lift!(self.store.register_tag(
+                let tag = lift!(self.store.register_tag_from_mcp(
                     TagName::new(args.name).map_err(store_fault(&operation))?,
                     NonEmptyText::new(args.description).map_err(store_fault(&operation))?,
                 ));
                 tag_record_output(&tag, &operation)?
             }
-            "tag.list" => tag_list_output(&lift!(self.store.list_tags()), &operation)?,
+            "tag.list" => tag_registry_output(&lift!(self.store.tag_registry()), &operation)?,
             "frontier.create" => {
                 let args = deserialize::<FrontierCreateArgs>(arguments)?;
                 let frontier = lift!(
@@ -209,21 +209,23 @@ impl WorkerService {
             "hypothesis.record" => {
                 let args = deserialize::<HypothesisRecordArgs>(arguments)?;
                 let hypothesis = lift!(
-                    self.store.create_hypothesis(CreateHypothesisRequest {
-                        frontier: args.frontier,
-                        slug: args
-                            .slug
-                            .map(Slug::new)
-                            .transpose()
-                            .map_err(store_fault(&operation))?,
-                        title: NonEmptyText::new(args.title).map_err(store_fault(&operation))?,
-                        summary: NonEmptyText::new(args.summary)
-                            .map_err(store_fault(&operation))?,
-                        body: NonEmptyText::new(args.body).map_err(store_fault(&operation))?,
-                        tags: tags_to_set(args.tags.unwrap_or_default())
-                            .map_err(store_fault(&operation))?,
-                        parents: args.parents.unwrap_or_default(),
-                    })
+                    self.store
+                        .create_hypothesis_from_mcp(CreateHypothesisRequest {
+                            frontier: args.frontier,
+                            slug: args
+                                .slug
+                                .map(Slug::new)
+                                .transpose()
+                                .map_err(store_fault(&operation))?,
+                            title: NonEmptyText::new(args.title)
+                                .map_err(store_fault(&operation))?,
+                            summary: NonEmptyText::new(args.summary)
+                                .map_err(store_fault(&operation))?,
+                            body: NonEmptyText::new(args.body).map_err(store_fault(&operation))?,
+                            tags: tags_to_set(args.tags.unwrap_or_default())
+                                .map_err(store_fault(&operation))?,
+                            parents: args.parents.unwrap_or_default(),
+                        })
                 );
                 hypothesis_record_output(&hypothesis, &operation)?
             }
@@ -251,32 +253,33 @@ impl WorkerService {
             "hypothesis.update" => {
                 let args = deserialize::<HypothesisUpdateArgs>(arguments)?;
                 let hypothesis = lift!(
-                    self.store.update_hypothesis(UpdateHypothesisRequest {
-                        hypothesis: args.hypothesis,
-                        expected_revision: args.expected_revision,
-                        title: args
-                            .title
-                            .map(NonEmptyText::new)
-                            .transpose()
-                            .map_err(store_fault(&operation))?,
-                        summary: args
-                            .summary
-                            .map(NonEmptyText::new)
-                            .transpose()
-                            .map_err(store_fault(&operation))?,
-                        body: args
-                            .body
-                            .map(NonEmptyText::new)
-                            .transpose()
-                            .map_err(store_fault(&operation))?,
-                        tags: args
-                            .tags
-                            .map(tags_to_set)
-                            .transpose()
-                            .map_err(store_fault(&operation))?,
-                        parents: args.parents,
-                        archived: args.archived,
-                    })
+                    self.store
+                        .update_hypothesis_from_mcp(UpdateHypothesisRequest {
+                            hypothesis: args.hypothesis,
+                            expected_revision: args.expected_revision,
+                            title: args
+                                .title
+                                .map(NonEmptyText::new)
+                                .transpose()
+                                .map_err(store_fault(&operation))?,
+                            summary: args
+                                .summary
+                                .map(NonEmptyText::new)
+                                .transpose()
+                                .map_err(store_fault(&operation))?,
+                            body: args
+                                .body
+                                .map(NonEmptyText::new)
+                                .transpose()
+                                .map_err(store_fault(&operation))?,
+                            tags: args
+                                .tags
+                                .map(tags_to_set)
+                                .transpose()
+                                .map_err(store_fault(&operation))?,
+                            parents: args.parents,
+                            archived: args.archived,
+                        })
                 );
                 hypothesis_record_output(&hypothesis, &operation)?
             }
@@ -290,7 +293,7 @@ impl WorkerService {
             "experiment.open" => {
                 let args = deserialize::<ExperimentOpenArgs>(arguments)?;
                 let experiment = lift!(
-                    self.store.open_experiment(OpenExperimentRequest {
+                    self.store.open_experiment_from_mcp(OpenExperimentRequest {
                         hypothesis: args.hypothesis,
                         slug: args
                             .slug
@@ -336,27 +339,28 @@ impl WorkerService {
             "experiment.update" => {
                 let args = deserialize::<ExperimentUpdateArgs>(arguments)?;
                 let experiment = lift!(
-                    self.store.update_experiment(UpdateExperimentRequest {
-                        experiment: args.experiment,
-                        expected_revision: args.expected_revision,
-                        title: args
-                            .title
-                            .map(NonEmptyText::new)
-                            .transpose()
-                            .map_err(store_fault(&operation))?,
-                        summary: nullable_text_patch_from_wire(args.summary, &operation)?,
-                        tags: args
-                            .tags
-                            .map(tags_to_set)
-                            .transpose()
-                            .map_err(store_fault(&operation))?,
-                        parents: args.parents,
-                        archived: args.archived,
-                        outcome: args
-                            .outcome
-                            .map(|wire| experiment_outcome_patch_from_wire(wire, &operation))
-                            .transpose()?,
-                    })
+                    self.store
+                        .update_experiment_from_mcp(UpdateExperimentRequest {
+                            experiment: args.experiment,
+                            expected_revision: args.expected_revision,
+                            title: args
+                                .title
+                                .map(NonEmptyText::new)
+                                .transpose()
+                                .map_err(store_fault(&operation))?,
+                            summary: nullable_text_patch_from_wire(args.summary, &operation)?,
+                            tags: args
+                                .tags
+                                .map(tags_to_set)
+                                .transpose()
+                                .map_err(store_fault(&operation))?,
+                            parents: args.parents,
+                            archived: args.archived,
+                            outcome: args
+                                .outcome
+                                .map(|wire| experiment_outcome_patch_from_wire(wire, &operation))
+                                .transpose()?,
+                        })
                 );
                 experiment_record_output(&experiment, &operation)?
             }
@@ -885,6 +889,7 @@ where
             StoreError::MissingProjectStore(_)
             | StoreError::AmbiguousProjectStoreDiscovery { .. }
             | StoreError::UnknownTag(_)
+            | StoreError::UnknownTagFamily(_)
             | StoreError::UnknownMetricDefinition(_)
             | StoreError::UnknownRunDimension(_)
             | StoreError::UnknownFrontierSelector(_)
@@ -904,12 +909,14 @@ where
             | StoreError::MetricScopeRequiresFrontier { .. }
             | StoreError::UnknownDimensionFilter(_)
             | StoreError::DuplicateTag(_)
+            | StoreError::DuplicateTagFamily(_)
             | StoreError::DuplicateMetricDefinition(_)
             | StoreError::DuplicateRunDimension(_)
             | StoreError::GitWorktreeRequired(_)
             | StoreError::GitHeadRequired(_)
             | StoreError::DirtyGitWorktree { .. }
             | StoreError::InvalidInput(_) => FaultKind::InvalidInput,
+            StoreError::PolicyViolation(_) => FaultKind::PolicyViolation,
             StoreError::IncompatibleStoreFormatVersion { .. } => FaultKind::Unavailable,
             StoreError::Io(_)
             | StoreError::Sql(_)
@@ -1136,20 +1143,39 @@ fn tag_record_output(
     )
 }
 
-fn tag_list_output(
-    tags: &[fidget_spinner_core::TagRecord],
+fn tag_registry_output(
+    registry: &fidget_spinner_core::TagRegistrySnapshot,
     operation: &str,
 ) -> Result<ToolOutput, FaultRecord> {
-    let projection = projection::tag_list(tags);
+    let projection = projection::tag_registry(registry);
     projected_tool_output(
         &projection,
-        if tags.is_empty() {
+        if registry.tags.is_empty() {
             "no tags".to_owned()
         } else {
-            tags.iter()
-                .map(|tag| format!("{} — {}", tag.name, tag.description))
-                .collect::<Vec<_>>()
-                .join("\n")
+            let mut lines = registry
+                .tags
+                .iter()
+                .map(|tag| {
+                    let family = tag
+                        .family
+                        .as_ref()
+                        .map_or(String::new(), |family| format!(" [{family}]"));
+                    format!("{}{} — {}", tag.name, family, tag.description)
+                })
+                .collect::<Vec<_>>();
+            for lock in &registry.locks {
+                lines.push(format!(
+                    "LOCKED {}:{} — {}",
+                    lock.registry,
+                    lock.mode.as_str(),
+                    lock.reason
+                ));
+            }
+            for family in registry.families.iter().filter(|family| family.mandatory) {
+                lines.push(format!("mandatory family {} is active", family.name));
+            }
+            lines.join("\n")
         },
         None,
         FaultStage::Worker,
