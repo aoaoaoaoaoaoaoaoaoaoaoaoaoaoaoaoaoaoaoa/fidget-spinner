@@ -828,9 +828,8 @@ fn tag_mutation_response(result: Result<String, StoreError>) -> Response {
 
 fn parse_ui_lock_mode(raw: &str) -> Result<RegistryLockMode, StoreError> {
     match raw {
-        "definition" => Ok(RegistryLockMode::Definition),
-        "assignment" => Ok(RegistryLockMode::Assignment),
-        "family" => Ok(RegistryLockMode::Family),
+        "add" => Ok(RegistryLockMode::Definition),
+        "edit" => Ok(RegistryLockMode::Family),
         _ => Err(StoreError::InvalidInput(format!(
             "invalid registry lock mode `{raw}`"
         ))),
@@ -1008,6 +1007,7 @@ fn render_project_tags(context: ProjectRenderContext) -> Result<Markup, StoreErr
         .iter()
         .filter(|family| family.mandatory)
         .count();
+    let lock_state = TagLockState::from_locks(&registry.locks);
     let orphan_count = registry
         .tags
         .iter()
@@ -1018,17 +1018,32 @@ fn render_project_tags(context: ProjectRenderContext) -> Result<Markup, StoreErr
         })
         .count();
     let content = html! {
-        section.card {
-            div.fact-strip {
-                (render_fact("active tags", &registry.tags.len().to_string()))
-                (render_fact("families", &registry.families.len().to_string()))
-                (render_fact("mandatory", &mandatory_count.to_string()))
-                (render_fact("orphans", &orphan_count.to_string()))
+        section.card.tag-state-card {
+            div.tag-state-band {
+                div.fact-strip {
+                    (render_fact("active tags", &registry.tags.len().to_string()))
+                    (render_fact("families", &registry.families.len().to_string()))
+                    (render_fact("mandatory", &mandatory_count.to_string()))
+                    (render_fact("orphans", &orphan_count.to_string()))
+                }
+                div.tag-state-controls {
+                    (render_tag_lock_switch(
+                        "new tags",
+                        "add",
+                        lock_state.add_locked,
+                        "When locked, no new tags can be created by MCP or supervisor UI. Existing tags remain usable.",
+                    ))
+                    (render_tag_lock_switch(
+                        "registry edits",
+                        "edit",
+                        lock_state.edit_locked,
+                        "When locked, supervisor registry edits are blocked: rename, merge, delete, family creation, mandatory-family changes, and assigning tags to families. Models can still attach existing tags to hypotheses and experiments.",
+                    ))
+                }
             }
         }
-        (render_tag_locks(&registry.locks))
-        (render_tag_families(&registry.families))
-        (render_tag_table(&registry.tags, &registry.families, &usage))
+        (render_tag_families(&registry.families, lock_state))
+        (render_tag_table(&registry.tags, &registry.families, &usage, lock_state))
         @if !registry.name_history.is_empty() {
             section.card {
                 h2 { "Name History" }
@@ -1263,59 +1278,63 @@ fn load_tag_usage(
     Ok(usage)
 }
 
-fn render_tag_locks(locks: &[fidget_spinner_core::RegistryLockRecord]) -> Markup {
-    let definition_locked = locks
-        .iter()
-        .any(|lock| lock.mode == RegistryLockMode::Definition);
-    let assignment_locked = locks
-        .iter()
-        .any(|lock| lock.mode == RegistryLockMode::Assignment);
-    html! {
-        section.card {
-            h2 { "Locks" }
-            p.prose {
-                "Locks constrain MCP-origin writes immediately. Supervisor UI operations remain authoritative."
-            }
-            div.tag-control-grid {
-                (render_tag_lock_control("Definition", "definition", definition_locked))
-                (render_tag_lock_control("Assignment", "assignment", assignment_locked))
-            }
+#[derive(Clone, Copy, Default)]
+struct TagLockState {
+    add_locked: bool,
+    edit_locked: bool,
+}
+
+impl TagLockState {
+    fn from_locks(locks: &[fidget_spinner_core::RegistryLockRecord]) -> Self {
+        Self {
+            add_locked: locks
+                .iter()
+                .any(|lock| lock.mode == RegistryLockMode::Definition),
+            edit_locked: locks
+                .iter()
+                .any(|lock| lock.mode == RegistryLockMode::Family),
         }
     }
 }
 
-fn render_tag_lock_control(label: &str, mode: &str, locked: bool) -> Markup {
+fn render_tag_lock_switch(label: &str, mode: &str, locked: bool, help: &str) -> Markup {
     html! {
-        article.mini-card {
-            div.card-header {
-                strong { (label) }
-                span.status-chip { (if locked { "locked" } else { "open" }) }
-            }
-            form.tag-inline-form method="post" action="tags/lock" data-preserve-viewport="true" {
-                input type="hidden" name="mode" value=(mode);
-                input type="hidden" name="locked" value=(if locked { "unlock" } else { "lock" });
-                button.form-button type="submit" {
-                    (if locked { format!("Unlock {label}") } else { format!("Lock {label}") })
+        form.tag-lock-switch-form method="post" action="tags/lock" data-preserve-viewport="true" {
+            input type="hidden" name="mode" value=(mode);
+            input type="hidden" name="locked" value=(if locked { "unlock" } else { "lock" });
+            button
+                type="submit"
+                class=(if locked { "tag-lock-switch locked" } else { "tag-lock-switch" })
+                aria-pressed=(if locked { "true" } else { "false" })
+                title=(help)
+            {
+                span.switch-track aria-hidden="true" {
+                    span.switch-thumb {}
                 }
+                span.switch-label { (label) }
+                span.switch-state { (if locked { "locked" } else { "open" }) }
             }
         }
     }
 }
 
-fn render_tag_families(families: &[fidget_spinner_core::TagFamilyRecord]) -> Markup {
+fn render_tag_families(
+    families: &[fidget_spinner_core::TagFamilyRecord],
+    lock_state: TagLockState,
+) -> Markup {
     html! {
         section.card {
             div.card-header {
                 h2 { "Families" }
             }
             form.tag-create-form method="post" action="tags/families/create" data-preserve-viewport="true" {
-                input.compact-input type="text" name="name" placeholder="family name";
-                input.compact-input type="text" name="description" placeholder="description";
+                input.compact-input type="text" name="name" placeholder="family name" disabled[lock_state.edit_locked];
+                input.compact-input type="text" name="description" placeholder="description" disabled[lock_state.edit_locked];
                 label.inline-check {
-                    input type="checkbox" name="mandatory" value="1";
+                    input type="checkbox" name="mandatory" value="1" disabled[lock_state.edit_locked];
                     "mandatory"
                 }
-                button.form-button type="submit" { "Create Family" }
+                button.form-button type="submit" disabled[lock_state.edit_locked] { "Create Family" }
             }
             @if families.is_empty() {
                 p.muted { "No families yet." }
@@ -1331,7 +1350,7 @@ fn render_tag_families(families: &[fidget_spinner_core::TagFamilyRecord]) -> Mar
                                         input type="hidden" name="family" value=(family.name.as_str());
                                         input type="hidden" name="expected_revision" value=(family.revision);
                                         input type="hidden" name="mandatory" value=(if family.mandatory { "optional" } else { "mandatory" });
-                                        button.form-button type="submit" {
+                                        button.form-button type="submit" disabled[lock_state.edit_locked] {
                                             (if family.mandatory { "Make Optional" } else { "Make Mandatory" })
                                         }
                                     }
@@ -1350,12 +1369,13 @@ fn render_tag_table(
     tags: &[fidget_spinner_core::TagRecord],
     families: &[fidget_spinner_core::TagFamilyRecord],
     usage: &BTreeMap<TagName, TagUsage>,
+    lock_state: TagLockState,
 ) -> Markup {
     html! {
         section.card {
             div.card-header {
                 h2 { "Tag Registry" }
-                (render_create_tag_form(families))
+                (render_create_tag_form(families, lock_state))
             }
             @if tags.is_empty() {
                 p.muted { "No tags yet." }
@@ -1380,7 +1400,7 @@ fn render_tag_table(
                                             form.tag-icon-form method="post" action="tags/delete" data-preserve-viewport="true" {
                                                 input type="hidden" name="tag" value=(tag.name.as_str());
                                                 input type="hidden" name="expected_revision" value=(tag.revision);
-                                                button.inline-icon-button.danger-icon-button type="submit" aria-label=(format!("Delete {}", tag.name)) title="Delete tag" {
+                                                button.inline-icon-button.danger-icon-button type="submit" aria-label=(format!("Delete {}", tag.name)) title="Delete tag" disabled[lock_state.edit_locked] {
                                                     (trash_icon())
                                                 }
                                             }
@@ -1388,7 +1408,7 @@ fn render_tag_table(
                                                 input type="hidden" name="tag" value=(tag.name.as_str());
                                                 input type="hidden" name="expected_revision" value=(tag.revision);
                                                 span.tag-chip data-inline-rename-label="true" { (tag.name) }
-                                                button.inline-icon-button type="button" data-inline-rename-trigger="true" aria-label=(format!("Rename {}", tag.name)) title="Rename tag" {
+                                                button.inline-icon-button type="button" data-inline-rename-trigger="true" aria-label=(format!("Rename {}", tag.name)) title="Rename tag" disabled[lock_state.edit_locked] {
                                                     (pencil_icon())
                                                 }
                                                 input.inline-rename-input type="text" name="new_name" value=(tag.name.as_str()) aria-label=(format!("New name for {}", tag.name)) data-inline-rename-input="true";
@@ -1399,7 +1419,7 @@ fn render_tag_table(
                                         form.tag-inline-form method="post" action="tags/tag-family" data-preserve-viewport="true" {
                                             input type="hidden" name="tag" value=(tag.name.as_str());
                                             input type="hidden" name="expected_revision" value=(tag.revision);
-                                            select.compact-select name="family" data-auto-submit="true" aria-label=(format!("Family for {}", tag.name)) {
+                                            select.compact-select name="family" data-auto-submit="true" aria-label=(format!("Family for {}", tag.name)) disabled[lock_state.edit_locked] {
                                                 option value="" selected[tag.family.is_none()] { "none" }
                                                 @for family in families {
                                                     option
@@ -1422,14 +1442,14 @@ fn render_tag_table(
                                         form.tag-inline-form method="post" action="tags/merge" data-preserve-viewport="true" {
                                             input type="hidden" name="source" value=(tag.name.as_str());
                                             input type="hidden" name="expected_revision" value=(tag.revision);
-                                            select.compact-select name="target" {
+                                            select.compact-select name="target" disabled[lock_state.edit_locked] {
                                                 @for target in tags {
                                                     @if target.name != tag.name {
                                                         option value=(target.name.as_str()) { (target.name) }
                                                     }
                                                 }
                                             }
-                                            button.form-button type="submit" { "Merge" }
+                                            button.form-button type="submit" disabled[lock_state.edit_locked] { "Merge" }
                                         }
                                     }
                                 }
@@ -1442,18 +1462,27 @@ fn render_tag_table(
     }
 }
 
-fn render_create_tag_form(families: &[fidget_spinner_core::TagFamilyRecord]) -> Markup {
+fn render_create_tag_form(
+    families: &[fidget_spinner_core::TagFamilyRecord],
+    lock_state: TagLockState,
+) -> Markup {
+    let family_locked = lock_state.add_locked || lock_state.edit_locked;
+    let family_title = if lock_state.edit_locked {
+        "Registry edits are locked; new tags can be created only without family assignment."
+    } else {
+        "Optional family for the new tag."
+    };
     html! {
         form.tag-create-form method="post" action="tags/create" data-preserve-viewport="true" {
-            input.compact-input type="text" name="name" placeholder="new tag" aria-label="New tag name";
-            input.compact-input.wide-compact-input type="text" name="description" placeholder="description shown to agents" aria-label="New tag description";
-            select.compact-select name="family" aria-label="New tag family" {
+            input.compact-input type="text" name="name" placeholder="new tag" aria-label="New tag name" disabled[lock_state.add_locked];
+            input.compact-input.wide-compact-input type="text" name="description" placeholder="description shown to agents" aria-label="New tag description" disabled[lock_state.add_locked];
+            select.compact-select name="family" aria-label="New tag family" title=(family_title) disabled[family_locked] {
                 option value="" { "no family" }
                 @for family in families {
                     option value=(family.name.as_str()) { (family.name) }
                 }
             }
-            button.inline-icon-button type="submit" aria-label="Add tag" title="Add tag" {
+            button.inline-icon-button type="submit" aria-label="Add tag" title="Add tag" disabled[lock_state.add_locked] {
                 (plus_icon())
             }
         }
@@ -4690,7 +4719,6 @@ fn styles() -> &'static str {
         gap: 12px;
         min-width: 0;
     }
-    .tag-control-grid,
     .tag-family-grid {
         display: grid;
         gap: 10px;
@@ -4795,6 +4823,13 @@ fn styles() -> &'static str {
     .form-button:hover {
         border-color: var(--border-strong);
         color: var(--text);
+    }
+    .form-button:disabled,
+    .inline-icon-button:disabled,
+    .compact-input:disabled,
+    .compact-select:disabled {
+        cursor: not-allowed;
+        opacity: 0.48;
     }
     .danger-button {
         color: var(--rejected);
@@ -5010,6 +5045,74 @@ fn styles() -> &'static str {
         gap: 6px 16px;
         align-items: center;
         min-width: 0;
+    }
+    .tag-state-card {
+        padding-block: 14px;
+    }
+    .tag-state-band {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px 18px;
+        min-width: 0;
+        flex-wrap: wrap;
+    }
+    .tag-state-controls {
+        display: inline-flex;
+        align-items: center;
+        justify-content: flex-end;
+        gap: 8px;
+        flex-wrap: wrap;
+        margin-left: auto;
+    }
+    .tag-lock-switch-form {
+        margin: 0;
+    }
+    .tag-lock-switch {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        border: 1px solid var(--border);
+        background: var(--panel);
+        color: var(--muted);
+        cursor: pointer;
+        font: inherit;
+        font-size: 11px;
+        font-weight: 700;
+        letter-spacing: 0.05em;
+        padding: 4px 7px;
+        text-transform: uppercase;
+        white-space: nowrap;
+    }
+    .tag-lock-switch:hover {
+        border-color: var(--border-strong);
+        color: var(--text);
+    }
+    .tag-lock-switch.locked {
+        border-color: color-mix(in srgb, var(--rejected) 45%, var(--border));
+        color: var(--rejected);
+        background: color-mix(in srgb, var(--rejected) 8%, var(--panel));
+    }
+    .switch-track {
+        position: relative;
+        width: 24px;
+        height: 12px;
+        border: 1px solid currentColor;
+        background: var(--panel-2);
+    }
+    .switch-thumb {
+        position: absolute;
+        top: 2px;
+        left: 2px;
+        width: 6px;
+        height: 6px;
+        background: currentColor;
+    }
+    .tag-lock-switch.locked .switch-thumb {
+        left: 14px;
+    }
+    .switch-state {
+        color: var(--muted);
     }
     .fact {
         display: inline-flex;

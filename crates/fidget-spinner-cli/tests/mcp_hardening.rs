@@ -501,8 +501,8 @@ fn binding_via_git_directory_resolves_repo_root() -> TestResult {
 }
 
 #[test]
-fn tag_definition_lock_rejects_mcp_tag_creation() -> TestResult {
-    let project_root = temp_project_root("tag_definition_lock")?;
+fn tag_add_lock_rejects_new_tag_creation() -> TestResult {
+    let project_root = temp_project_root("tag_add_lock")?;
     init_project(&project_root)?;
     {
         let mut store = must(ProjectStore::open(&project_root), "open project store")?;
@@ -514,6 +514,11 @@ fn tag_definition_lock_rejects_mcp_tag_creation() -> TestResult {
             }),
             "lock tag registry",
         )?;
+        let supervisor_response = store.register_tag(
+            must(TagName::new("supervisor-invented"), "tag")?,
+            must(NonEmptyText::new("should be rejected"), "description")?,
+        );
+        assert!(supervisor_response.is_err());
     }
 
     let mut harness = McpHarness::spawn(Some(&project_root))?;
@@ -532,7 +537,7 @@ fn tag_definition_lock_rejects_mcp_tag_creation() -> TestResult {
     );
     assert!(
         must_some(tool_error_message(&response), "policy message")?
-            .contains("tag definitions are locked from the Tags page")
+            .contains("new tag creation is locked from the Tags page")
     );
     Ok(())
 }
@@ -613,6 +618,56 @@ fn mandatory_tag_family_rejects_future_mcp_tag_sets() -> TestResult {
 }
 
 #[test]
+fn retired_assignment_lock_does_not_block_mcp_tag_sets() -> TestResult {
+    let project_root = temp_project_root("retired_assignment_lock")?;
+    init_project(&project_root)?;
+    {
+        let mut store = must(ProjectStore::open(&project_root), "open project store")?;
+        let _ = must(
+            store.register_tag(
+                must(TagName::new("baseline"), "tag")?,
+                must(NonEmptyText::new("baseline phase"), "tag description")?,
+            ),
+            "register tag",
+        )?;
+        let _ = must(
+            store.set_registry_lock(SetRegistryLockRequest {
+                registry: RegistryName::tags(),
+                mode: RegistryLockMode::Assignment,
+                locked: true,
+            }),
+            "set retired assignment lock",
+        )?;
+    }
+
+    let mut harness = McpHarness::spawn(Some(&project_root))?;
+    let _ = harness.initialize()?;
+    harness.notify_initialized()?;
+
+    assert_tool_ok(&harness.call_tool(
+        170,
+        "frontier.create",
+        json!({
+            "label": "Assignment Lock Frontier",
+            "objective": "Assignment lock should be inert",
+            "slug": "assignment-lock",
+        }),
+    )?);
+    assert_tool_ok(&harness.call_tool(
+        171,
+        "hypothesis.record",
+        json!({
+            "frontier": "assignment-lock",
+            "title": "Tagged despite assignment lock",
+            "summary": "The retired assignment lock does not block tag sets.",
+            "body": "One paragraph body.",
+            "tags": ["baseline"],
+        }),
+    )?);
+    Ok(())
+}
+
+#[test]
 fn supervisor_tag_creation_can_attach_family_atomically() -> TestResult {
     let project_root = temp_project_root("tag_creation_family")?;
     init_project(&project_root)?;
@@ -646,6 +701,91 @@ fn supervisor_tag_creation_can_attach_family_atomically() -> TestResult {
         must(store.list_tags(), "list tags")?
             .into_iter()
             .all(|tag| tag.name != ghost)
+    );
+    Ok(())
+}
+
+#[test]
+fn tag_edit_lock_blocks_registry_admin_edits() -> TestResult {
+    let project_root = temp_project_root("tag_edit_lock")?;
+    init_project(&project_root)?;
+    let mut store = must(ProjectStore::open(&project_root), "open project store")?;
+    let family = must(
+        store.create_tag_family(CreateTagFamilyRequest {
+            name: must(TagFamilyName::new("surface"), "family")?,
+            description: must(NonEmptyText::new("surface classifier"), "description")?,
+            mandatory: false,
+        }),
+        "create tag family",
+    )?;
+    let _ = must(
+        store.register_tag(
+            must(TagName::new("ui"), "tag")?,
+            must(NonEmptyText::new("navigator UI work"), "description")?,
+        ),
+        "register tag",
+    )?;
+    let _ = must(
+        store.set_registry_lock(SetRegistryLockRequest {
+            registry: RegistryName::tags(),
+            mode: RegistryLockMode::Family,
+            locked: true,
+        }),
+        "set edit lock",
+    )?;
+
+    assert!(
+        store
+            .register_tag(
+                must(TagName::new("raw"), "tag")?,
+                must(NonEmptyText::new("raw tag without family"), "description")?,
+            )
+            .is_ok()
+    );
+    assert!(
+        store
+            .register_tag_in_family(
+                must(TagName::new("classified"), "tag")?,
+                must(
+                    NonEmptyText::new("family assignment is locked"),
+                    "description"
+                )?,
+                Some(family.name.clone()),
+            )
+            .is_err()
+    );
+    assert!(
+        store
+            .assign_tag_family(AssignTagFamilyRequest {
+                tag: must(TagName::new("ui"), "tag")?,
+                expected_revision: None,
+                family: Some(family.name.clone()),
+            })
+            .is_err()
+    );
+    assert!(
+        store
+            .rename_tag(RenameTagRequest {
+                tag: must(TagName::new("ui"), "tag")?,
+                expected_revision: None,
+                new_name: must(TagName::new("interface"), "tag")?,
+            })
+            .is_err()
+    );
+    assert!(
+        store
+            .set_tag_family_mandatory(fidget_spinner_store_sqlite::SetTagFamilyMandatoryRequest {
+                family: family.name,
+                expected_revision: None,
+                mandatory: true,
+            })
+            .is_err()
+    );
+    let classified = must(TagName::new("classified"), "tag")?;
+    assert!(
+        must(store.list_tags(), "list tags")?
+            .into_iter()
+            .all(|tag| tag.name != classified)
     );
     Ok(())
 }

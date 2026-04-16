@@ -119,9 +119,8 @@ Required dispositions:
 
 Required lock modes:
 
-- `definition`: MCP cannot create registry entries.
-- `assignment`: MCP cannot change assignments of existing entries.
-- `family`: MCP cannot mutate the governed family surface.
+- `definition`: add lock; no new tags can be created.
+- `family`: edit lock; the supervisor registry edit surface is frozen.
 
 Scope can be null for project-wide locks. Frontier-scoped locks are desirable
 later but should not be in the first implementation unless the schema can carry
@@ -223,17 +222,22 @@ model to call `tag.list`.
 Locks are general registry policy, not a tag-only hack. The first implementation
 should wire tags, then leave the type surface ready for metrics and dimensions.
 
-Recommended project-wide locks:
+Project-wide tag locks:
 
-- `tags/definition`: blocks `tag.add` from MCP.
-- `tags/assignment`: blocks MCP tag replacement on hypotheses and experiments.
-- `tag-family/<name>/family`: blocks MCP-visible changes to family compliance if
-  family-specific MCP paths ever exist.
+- `tags/definition`: add lock; blocks new tag creation from MCP and supervisor
+  UI.
+- `tags/family`: edit lock; blocks supervisor registry edits such as rename,
+  merge, delete, family creation, mandatory-family changes, and assigning tags
+  to families.
 - `metrics/definition`: future metric registry lock.
 - `dimensions/definition`: future run-dimension registry lock.
 
 Lock reads should appear in relevant MCP list surfaces. A model should be able
 to discover the policy before hitting it.
+
+Model assignment of existing tags to hypotheses and experiments is deliberately
+not lock-governed. Mandatory families are the intended way to shape model tag
+use; a blanket assignment lock makes ongoing MCP work too brittle.
 
 `tag.list` should include:
 
@@ -268,8 +272,8 @@ Every policy fault should answer four questions:
 Good messages:
 
 ```text
-tag registry is locked; new tags cannot be created from MCP; use an existing tag from tag.list or ask the supervisor
-tag assignment is locked; experiment tag sets cannot be changed from MCP
+new tag creation is locked; use an existing tag from tag.list or ask the supervisor to unlock additions
+tag registry editing is locked; rename, merge, delete, family creation, mandatory-family changes, and family assignment are disabled
 tag `ls` was merged into `search/local`; use `search/local`
 mandatory tag family `phase` is missing; include at least one of: baseline, ablation, optimization
 ```
@@ -316,12 +320,12 @@ The Tags page is a supervisor console, not a model-facing dashboard.
 
 Top strip:
 
-- tag definition lock state
-- tag assignment lock state
 - number of active tags
 - number of families
 - number of mandatory families
 - number of orphaned tags
+- new-tag creation lock
+- registry-edit lock
 
 Family panel:
 
@@ -382,14 +386,13 @@ old experiments. It should be possible to answer why an old tag disappeared.
 3. Rewrite store tag reads and assignment edges around tag IDs.
 4. Add supervisor store operations for rename, merge, delete, family edits, and
    lock toggles.
-5. Add MCP policy enforcement for `tag.add`, hypothesis tag replacement,
-   experiment tag replacement, and mandatory-family checks.
+5. Add MCP policy enforcement for `tag.add` and mandatory-family checks.
 6. Add `FaultKind::PolicyViolation` and map policy store errors to that fault.
 7. Expand `tag.list` projection to expose families, mandatory rules, locks, and
    full-detail name history.
 8. Build the Tags navigator tab with usage counts and supervisor controls.
 9. Add integration tests for stale model context during rename, merge, delete,
-   mandatory family introduction, registry locks, and assignment locks.
+   mandatory family introduction, add locks, and edit locks.
 10. Repeat the pattern for metric registry cleanup once tags are stable.
 
 ## Later Supervisory Controls

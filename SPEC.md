@@ -71,6 +71,26 @@ place. Prefer symbolic square chips over text buttons for common actions such
 as add, edit, archive, delete, copy, and expand. Delete labels, subtitles, eyebrows,
 and helper copy that merely describe the page the user is already on.
 
+### State Bands Over Panels
+
+Page-level counts, locks, toggles, filters, and other global modifiers belong in
+a compact state band, not in section cards. A section card is reserved for a
+content object, narrative block, table, plot, or list that merits its own
+heading. A boolean policy switch almost never earns a card.
+
+Before adding a panel, ask:
+
+- Is this a distinct content region, or merely state/configuration for the page?
+- Could this live beside the metric/fact it qualifies?
+- Would this still deserve a heading if it had only one value?
+- Is this prose explaining what a terse label plus hover help could explain?
+- Is the UI repeating the same state in a chip, button, and heading?
+
+Policy controls should be compact inline switches colocated with the facts they
+govern. Use hover help for scope and consequences. Prefer labels that name the
+user-visible effect over implementation categories: `new tags` beats
+`definition`, and `registry edits` beats storage-level lock names.
+
 ## Supervisory Registry Governance
 
 Driving models should be allowed to explore quickly and leave imperfect
