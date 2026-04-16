@@ -646,7 +646,7 @@ async fn artifact_detail(
 
 fn render_response(result: Result<Markup, StoreError>) -> Response {
     match result {
-        Ok(markup) => Html(markup.into_string()).into_response(),
+        Ok(markup) => Html(harden_autofill_controls(markup.into_string())).into_response(),
         Err(StoreError::UnknownFrontierSelector(_))
         | Err(StoreError::UnknownHypothesisSelector(_))
         | Err(StoreError::UnknownExperimentSelector(_))
@@ -659,6 +659,115 @@ fn render_response(result: Result<Markup, StoreError>) -> Response {
         )
             .into_response(),
     }
+}
+
+fn harden_autofill_controls(document: String) -> String {
+    let mut hardened = String::with_capacity(document.len() + 512);
+    let mut cursor = 0;
+    while let Some(tag_offset) = document[cursor..].find('<') {
+        let tag_start = cursor + tag_offset;
+        hardened.push_str(&document[cursor..tag_start]);
+        let Some(tag_len) = document[tag_start..].find('>').map(|offset| offset + 1) else {
+            hardened.push_str(&document[tag_start..]);
+            return hardened;
+        };
+        let tag_end = tag_start + tag_len;
+        hardened.push_str(&harden_autofill_tag(&document[tag_start..tag_end]));
+        cursor = tag_end;
+    }
+    hardened.push_str(&document[cursor..]);
+    hardened
+}
+
+fn harden_autofill_tag(tag: &str) -> String {
+    let Some(tag_kind) = AutofillTagKind::from_tag(tag) else {
+        return tag.to_owned();
+    };
+    if tag_kind == AutofillTagKind::HiddenInput {
+        return tag.to_owned();
+    }
+    let mut attributes = Vec::with_capacity(2);
+    if tag_kind.accepts_autocomplete_off() && !has_html_attribute(tag, "autocomplete") {
+        attributes.push(r#" autocomplete="off""#);
+    }
+    if tag_kind.accepts_password_manager_ignore()
+        && !has_html_attribute(tag, "data-protonpass-ignore")
+    {
+        attributes.push(r#" data-protonpass-ignore="true""#);
+    }
+    if attributes.is_empty() {
+        return tag.to_owned();
+    }
+    let Some(insert_at) = tag.rfind('>') else {
+        return tag.to_owned();
+    };
+    let mut hardened =
+        String::with_capacity(tag.len() + attributes.iter().map(|attr| attr.len()).sum::<usize>());
+    hardened.push_str(&tag[..insert_at]);
+    for attribute in attributes {
+        hardened.push_str(attribute);
+    }
+    hardened.push_str(&tag[insert_at..]);
+    hardened
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum AutofillTagKind {
+    Form,
+    Field,
+    HiddenInput,
+}
+
+impl AutofillTagKind {
+    fn from_tag(tag: &str) -> Option<Self> {
+        if !tag.starts_with('<') || tag.starts_with("</") || tag.starts_with("<!") {
+            return None;
+        }
+        if tag_has_name(tag, "form") {
+            return Some(Self::Form);
+        }
+        if tag_has_name(tag, "input") {
+            return Some(if has_html_attribute_value(tag, "type", "hidden") {
+                Self::HiddenInput
+            } else {
+                Self::Field
+            });
+        }
+        (tag_has_name(tag, "select") || tag_has_name(tag, "textarea")).then_some(Self::Field)
+    }
+
+    const fn accepts_autocomplete_off(self) -> bool {
+        matches!(self, Self::Form | Self::Field)
+    }
+
+    const fn accepts_password_manager_ignore(self) -> bool {
+        matches!(self, Self::Field)
+    }
+}
+
+fn tag_has_name(tag: &str, name: &str) -> bool {
+    let Some(rest) = tag.strip_prefix('<').and_then(|tag| tag.strip_prefix(name)) else {
+        return false;
+    };
+    rest.as_bytes()
+        .first()
+        .is_some_and(|byte| byte.is_ascii_whitespace() || matches!(byte, b'>' | b'/'))
+}
+
+fn has_html_attribute(tag: &str, name: &str) -> bool {
+    tag.match_indices(name).any(|(index, _)| {
+        let before = tag.as_bytes().get(index.wrapping_sub(1)).copied();
+        let after = tag.as_bytes().get(index + name.len()).copied();
+        before.is_some_and(|byte| byte.is_ascii_whitespace())
+            && after.is_some_and(|byte| {
+                matches!(byte, b'=' | b'>' | b'/') || byte.is_ascii_whitespace()
+            })
+    })
+}
+
+fn has_html_attribute_value(tag: &str, name: &str, value: &str) -> bool {
+    let needle = format!(r#"{name}="{value}""#);
+    has_html_attribute(tag, name) && tag.contains(&needle)
 }
 
 fn refresh_token_response(result: Result<String, StoreError>) -> Response {
@@ -5463,8 +5572,8 @@ fn styles() -> &'static str {
 mod tests {
     use super::{
         FrontierPageQuery, METRIC_TABLE_TITLE_MIN_BUDGET_CH, MetricChartAxis,
-        best_metric_table_title_split, render_metric_series_section, resolve_selected_metric_keys,
-        truncated_entry_count,
+        best_metric_table_title_split, harden_autofill_controls, render_metric_series_section,
+        resolve_selected_metric_keys, truncated_entry_count,
     };
     use std::collections::BTreeMap;
 
@@ -5501,6 +5610,32 @@ mod tests {
 
     fn test_timestamp(raw: &str) -> OffsetDateTime {
         must(OffsetDateTime::parse(raw, &Rfc3339), "timestamp")
+    }
+
+    #[test]
+    fn autofill_hardening_marks_visible_form_controls_once() {
+        let document = r#"<form method="post"><input type="text" name="tag"><select name="family"></select><textarea name="body"></textarea><input type="hidden" name="revision"></form>"#;
+        let hardened = harden_autofill_controls(document.to_owned());
+        assert!(hardened.contains(r#"<form method="post" autocomplete="off">"#));
+        assert!(hardened.contains(
+            r#"<input type="text" name="tag" autocomplete="off" data-protonpass-ignore="true">"#
+        ));
+        assert!(hardened.contains(
+            r#"<select name="family" autocomplete="off" data-protonpass-ignore="true">"#
+        ));
+        assert!(hardened.contains(
+            r#"<textarea name="body" autocomplete="off" data-protonpass-ignore="true">"#
+        ));
+        assert!(hardened.contains(r#"<input type="hidden" name="revision">"#));
+
+        let rehardened = harden_autofill_controls(hardened);
+        assert_eq!(rehardened.matches(r#"autocomplete="off""#).count(), 4);
+        assert_eq!(
+            rehardened
+                .matches(r#"data-protonpass-ignore="true""#)
+                .count(),
+            3
+        );
     }
 
     fn test_frontier() -> FrontierRecord {
