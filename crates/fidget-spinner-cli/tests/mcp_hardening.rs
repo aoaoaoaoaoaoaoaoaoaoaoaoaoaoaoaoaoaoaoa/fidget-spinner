@@ -617,6 +617,44 @@ fn mandatory_tag_family_rejects_future_mcp_tag_sets() -> TestResult {
 }
 
 #[test]
+fn supervisor_tag_creation_can_attach_family_atomically() -> TestResult {
+    let project_root = temp_project_root("tag_creation_family")?;
+    init_project(&project_root)?;
+    let mut store = must(ProjectStore::open(&project_root), "open project store")?;
+    let family = must(
+        store.create_tag_family(CreateTagFamilyRequest {
+            name: must(TagFamilyName::new("surface"), "family")?,
+            description: must(NonEmptyText::new("surface classifier"), "description")?,
+            mandatory: false,
+        }),
+        "create tag family",
+    )?;
+    let tag = must(
+        store.register_tag_in_family(
+            must(TagName::new("ui"), "tag")?,
+            must(NonEmptyText::new("navigator UI work"), "description")?,
+            Some(family.name.clone()),
+        ),
+        "register tag in family",
+    )?;
+    assert_eq!(tag.family, Some(family.name));
+
+    let rejected = store.register_tag_in_family(
+        must(TagName::new("ghost"), "tag")?,
+        must(NonEmptyText::new("not committed"), "description")?,
+        Some(must(TagFamilyName::new("missing"), "missing family")?),
+    );
+    assert!(rejected.is_err());
+    let ghost = must(TagName::new("ghost"), "tag")?;
+    assert!(
+        must(store.list_tags(), "list tags")?
+            .into_iter()
+            .all(|tag| tag.name != ghost)
+    );
+    Ok(())
+}
+
+#[test]
 fn renamed_tag_guides_stale_mcp_context() -> TestResult {
     let project_root = temp_project_root("renamed_tag_guidance")?;
     init_project(&project_root)?;

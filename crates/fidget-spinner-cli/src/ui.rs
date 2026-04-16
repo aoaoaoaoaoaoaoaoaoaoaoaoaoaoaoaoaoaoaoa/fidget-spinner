@@ -253,6 +253,7 @@ pub(crate) fn serve(
                 get(project_refresh_token),
             )
             .route("/project/{project}/tags", get(project_tags))
+            .route("/project/{project}/tags/create", post(create_tag))
             .route(
                 "/project/{project}/tags/families/create",
                 post(create_tag_family),
@@ -352,6 +353,36 @@ async fn project_tags(
     Path(project): Path<String>,
 ) -> Response {
     render_response(resolve_project_context(&state, &project).and_then(render_project_tags))
+}
+
+#[derive(Deserialize)]
+struct CreateTagForm {
+    name: String,
+    description: String,
+    family: Option<String>,
+}
+
+async fn create_tag(
+    State(state): State<NavigatorState>,
+    Path(project): Path<String>,
+    Form(form): Form<CreateTagForm>,
+) -> Response {
+    tag_mutation_response(
+        resolve_project_context(&state, &project).and_then(|context| {
+            let mut store = open_store(context.project_root.as_std_path())?;
+            let family = form
+                .family
+                .filter(|family| !family.trim().is_empty())
+                .map(TagFamilyName::new)
+                .transpose()?;
+            let _ = store.register_tag_in_family(
+                TagName::new(form.name)?,
+                NonEmptyText::new(form.description)?,
+                family,
+            )?;
+            Ok(format!("{}tags", context.base_href))
+        }),
+    )
 }
 
 #[derive(Deserialize)]
@@ -1237,7 +1268,10 @@ fn render_tag_table(
 ) -> Markup {
     html! {
         section.card {
-            h2 { "Tag Registry" }
+            div.card-header {
+                h2 { "Tag Registry" }
+                (render_create_tag_form(families))
+            }
             @if tags.is_empty() {
                 p.muted { "No tags yet." }
             } @else {
@@ -1318,6 +1352,24 @@ fn render_tag_table(
                         }
                     }
                 }
+            }
+        }
+    }
+}
+
+fn render_create_tag_form(families: &[fidget_spinner_core::TagFamilyRecord]) -> Markup {
+    html! {
+        form.tag-create-form method="post" action="tags/create" data-preserve-viewport="true" {
+            input.compact-input type="text" name="name" placeholder="new tag" aria-label="New tag name";
+            input.compact-input.wide-compact-input type="text" name="description" placeholder="description shown to agents" aria-label="New tag description";
+            select.compact-select name="family" aria-label="New tag family" {
+                option value="" { "no family" }
+                @for family in families {
+                    option value=(family.name.as_str()) { (family.name) }
+                }
+            }
+            button.inline-icon-button type="submit" aria-label="Add tag" title="Add tag" {
+                (plus_icon())
             }
         }
     }
@@ -3588,6 +3640,15 @@ fn trash_icon() -> Markup {
     }
 }
 
+fn plus_icon() -> Markup {
+    html! {
+        svg.inline-action-icon aria-hidden="true" viewBox="0 0 24 24" fill="none" {
+            path d="M12 5v14" {}
+            path d="M5 12h14" {}
+        }
+    }
+}
+
 fn render_kv(label: &str, value: &str) -> Markup {
     html! {
         div.kv {
@@ -4650,6 +4711,10 @@ fn styles() -> &'static str {
     }
     .compact-select {
         max-width: 150px;
+    }
+    .wide-compact-input {
+        max-width: 280px;
+        width: min(280px, 42vw);
     }
     .form-button {
         border: 1px solid var(--border);

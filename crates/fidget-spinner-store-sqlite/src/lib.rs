@@ -764,7 +764,16 @@ impl ProjectStore {
         name: TagName,
         description: NonEmptyText,
     ) -> Result<TagRecord, StoreError> {
-        self.register_tag_with_origin(name, description, MutationOrigin::Supervisor)
+        self.register_tag_with_origin(name, description, None, MutationOrigin::Supervisor)
+    }
+
+    pub fn register_tag_in_family(
+        &mut self,
+        name: TagName,
+        description: NonEmptyText,
+        family: Option<TagFamilyName>,
+    ) -> Result<TagRecord, StoreError> {
+        self.register_tag_with_origin(name, description, family, MutationOrigin::Supervisor)
     }
 
     pub fn register_tag_from_mcp(
@@ -772,13 +781,14 @@ impl ProjectStore {
         name: TagName,
         description: NonEmptyText,
     ) -> Result<TagRecord, StoreError> {
-        self.register_tag_with_origin(name, description, MutationOrigin::Mcp)
+        self.register_tag_with_origin(name, description, None, MutationOrigin::Mcp)
     }
 
     fn register_tag_with_origin(
         &mut self,
         name: TagName,
         description: NonEmptyText,
+        family: Option<TagFamilyName>,
         origin: MutationOrigin,
     ) -> Result<TagRecord, StoreError> {
         if origin.is_mcp() {
@@ -788,13 +798,20 @@ impl ProjectStore {
         if self.tag_record_by_name(&name)?.is_some() {
             return Err(StoreError::DuplicateTag(name));
         }
+        let family = family
+            .as_ref()
+            .map(|name| {
+                self.tag_family_by_name(name)?
+                    .ok_or_else(|| StoreError::UnknownTagFamily(name.clone()))
+            })
+            .transpose()?;
         let now = OffsetDateTime::now_utc();
         let record = TagRecord {
             id: TagId::fresh(),
             name,
             description,
-            family_id: None,
-            family: None,
+            family_id: family.as_ref().map(|family| family.id),
+            family: family.as_ref().map(|family| family.name.clone()),
             status: TagStatus::Active,
             revision: 1,
             created_at: now,

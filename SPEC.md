@@ -68,7 +68,7 @@ same-line semantic clusters when an action qualifies or changes the status
 beside it. New rows are reserved for new ideas, not for mechanically convenient
 buttons. Avoid separate edit fields when a chip or label can become editable in
 place. Prefer symbolic square chips over text buttons for common actions such
-as edit, archive, delete, copy, and expand. Delete labels, subtitles, eyebrows,
+as add, edit, archive, delete, copy, and expand. Delete labels, subtitles, eyebrows,
 and helper copy that merely describe the page the user is already on.
 
 ## Supervisory Registry Governance
