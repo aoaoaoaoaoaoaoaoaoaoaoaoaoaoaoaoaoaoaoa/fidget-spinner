@@ -119,8 +119,8 @@ Required dispositions:
 
 Required lock modes:
 
-- `definition`: add lock; no new tags can be created.
-- `family`: edit lock; the supervisor registry edit surface is frozen.
+- `definition`: add lock; MCP cannot create new registry entries.
+- `family`: edit lock; MCP-origin registry edit tools are frozen.
 
 Scope can be null for project-wide locks. Frontier-scoped locks are desirable
 later but should not be in the first implementation unless the schema can carry
@@ -224,11 +224,10 @@ should wire tags, then leave the type surface ready for metrics and dimensions.
 
 Project-wide tag locks:
 
-- `tags/definition`: add lock; blocks new tag creation from MCP and supervisor
-  UI.
-- `tags/family`: edit lock; blocks supervisor registry edits such as rename,
+- `tags/definition`: add lock; blocks new tag creation from MCP.
+- `tags/family`: edit lock; blocks MCP-origin registry edits such as rename,
   merge, delete, family creation, mandatory-family changes, and assigning tags
-  to families.
+  to families if those tools are ever exposed.
 - `metrics/definition`: future metric registry lock.
 - `dimensions/definition`: future run-dimension registry lock.
 
@@ -273,7 +272,7 @@ Good messages:
 
 ```text
 new tag creation is locked; use an existing tag from tag.list or ask the supervisor to unlock additions
-tag registry editing is locked; rename, merge, delete, family creation, mandatory-family changes, and family assignment are disabled
+MCP tag registry editing is locked; ask the supervisor for rename, merge, delete, family creation, mandatory-family changes, or family assignment
 tag `ls` was merged into `search/local`; use `search/local`
 mandatory tag family `phase` is missing; include at least one of: baseline, ablation, optimization
 ```

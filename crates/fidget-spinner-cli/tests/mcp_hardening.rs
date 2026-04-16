@@ -14,8 +14,9 @@ use fidget_spinner_core::{
 };
 use fidget_spinner_store_sqlite::{
     AssignTagFamilyRequest, CreateFrontierRequest, CreateHypothesisRequest, CreateTagFamilyRequest,
-    ListExperimentsQuery, ListFrontiersQuery, OpenExperimentRequest, ProjectStore,
-    RenameTagRequest, SetRegistryLockRequest, UpdateFrontierRequest,
+    DeleteTagRequest, ListExperimentsQuery, ListFrontiersQuery, MergeTagRequest,
+    OpenExperimentRequest, ProjectStore, RenameTagRequest, SetRegistryLockRequest,
+    UpdateFrontierRequest,
 };
 use libmcp as _;
 use libmcp_testkit::assert_no_opaque_ids;
@@ -501,7 +502,7 @@ fn binding_via_git_directory_resolves_repo_root() -> TestResult {
 }
 
 #[test]
-fn tag_add_lock_rejects_new_tag_creation() -> TestResult {
+fn tag_add_lock_only_rejects_mcp_tag_creation() -> TestResult {
     let project_root = temp_project_root("tag_add_lock")?;
     init_project(&project_root)?;
     {
@@ -516,9 +517,12 @@ fn tag_add_lock_rejects_new_tag_creation() -> TestResult {
         )?;
         let supervisor_response = store.register_tag(
             must(TagName::new("supervisor-invented"), "tag")?,
-            must(NonEmptyText::new("should be rejected"), "description")?,
+            must(
+                NonEmptyText::new("supervisor remains authoritative"),
+                "description",
+            )?,
         );
-        assert!(supervisor_response.is_err());
+        assert!(supervisor_response.is_ok());
     }
 
     let mut harness = McpHarness::spawn(Some(&project_root))?;
@@ -706,7 +710,7 @@ fn supervisor_tag_creation_can_attach_family_atomically() -> TestResult {
 }
 
 #[test]
-fn tag_edit_lock_blocks_registry_admin_edits() -> TestResult {
+fn tag_locks_do_not_block_supervisor_registry_admin_edits() -> TestResult {
     let project_root = temp_project_root("tag_edit_lock")?;
     init_project(&project_root)?;
     let mut store = must(ProjectStore::open(&project_root), "open project store")?;
@@ -726,6 +730,21 @@ fn tag_edit_lock_blocks_registry_admin_edits() -> TestResult {
         "register tag",
     )?;
     let _ = must(
+        store.register_tag(
+            must(TagName::new("spare"), "tag")?,
+            must(NonEmptyText::new("delete candidate"), "description")?,
+        ),
+        "register spare tag",
+    )?;
+    let _ = must(
+        store.set_registry_lock(SetRegistryLockRequest {
+            registry: RegistryName::tags(),
+            mode: RegistryLockMode::Definition,
+            locked: true,
+        }),
+        "set add lock",
+    )?;
+    let _ = must(
         store.set_registry_lock(SetRegistryLockRequest {
             registry: RegistryName::tags(),
             mode: RegistryLockMode::Family,
@@ -742,50 +761,58 @@ fn tag_edit_lock_blocks_registry_admin_edits() -> TestResult {
             )
             .is_ok()
     );
-    assert!(
-        store
-            .register_tag_in_family(
-                must(TagName::new("classified"), "tag")?,
-                must(
-                    NonEmptyText::new("family assignment is locked"),
-                    "description"
-                )?,
-                Some(family.name.clone()),
-            )
-            .is_err()
+    let classified = must(
+        store.register_tag_in_family(
+            must(TagName::new("classified"), "tag")?,
+            must(
+                NonEmptyText::new("family assignment remains available"),
+                "description",
+            )?,
+            Some(family.name.clone()),
+        ),
+        "register classified tag",
+    )?;
+    let ui = must(
+        store.assign_tag_family(AssignTagFamilyRequest {
+            tag: must(TagName::new("ui"), "tag")?,
+            expected_revision: None,
+            family: Some(family.name.clone()),
+        }),
+        "assign tag family",
+    )?;
+    assert_eq!(ui.family, Some(family.name.clone()));
+    let renamed = must(
+        store.rename_tag(RenameTagRequest {
+            tag: must(TagName::new("ui"), "tag")?,
+            expected_revision: Some(ui.revision),
+            new_name: must(TagName::new("interface"), "tag")?,
+        }),
+        "rename tag",
+    )?;
+    assert_eq!(renamed.name, must(TagName::new("interface"), "tag")?);
+    let updated_family = must(
+        store.set_tag_family_mandatory(fidget_spinner_store_sqlite::SetTagFamilyMandatoryRequest {
+            family: family.name.clone(),
+            expected_revision: Some(family.revision),
+            mandatory: true,
+        }),
+        "set family mandatory",
+    )?;
+    assert!(updated_family.mandatory);
+    let _ = must(
+        store.merge_tag(MergeTagRequest {
+            source: must(TagName::new("raw"), "tag")?,
+            expected_revision: None,
+            target: classified.name,
+        }),
+        "merge tag",
     );
-    assert!(
-        store
-            .assign_tag_family(AssignTagFamilyRequest {
-                tag: must(TagName::new("ui"), "tag")?,
-                expected_revision: None,
-                family: Some(family.name.clone()),
-            })
-            .is_err()
-    );
-    assert!(
-        store
-            .rename_tag(RenameTagRequest {
-                tag: must(TagName::new("ui"), "tag")?,
-                expected_revision: None,
-                new_name: must(TagName::new("interface"), "tag")?,
-            })
-            .is_err()
-    );
-    assert!(
-        store
-            .set_tag_family_mandatory(fidget_spinner_store_sqlite::SetTagFamilyMandatoryRequest {
-                family: family.name,
-                expected_revision: None,
-                mandatory: true,
-            })
-            .is_err()
-    );
-    let classified = must(TagName::new("classified"), "tag")?;
-    assert!(
-        must(store.list_tags(), "list tags")?
-            .into_iter()
-            .all(|tag| tag.name != classified)
+    let _ = must(
+        store.delete_tag(DeleteTagRequest {
+            tag: must(TagName::new("spare"), "tag")?,
+            expected_revision: None,
+        }),
+        "delete tag",
     );
     Ok(())
 }

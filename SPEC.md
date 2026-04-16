@@ -89,7 +89,8 @@ Before adding a panel, ask:
 Policy controls should be compact inline switches colocated with the facts they
 govern. Use hover help for scope and consequences. Prefer labels that name the
 user-visible effect over implementation categories: `new tags` beats
-`definition`, and `registry edits` beats storage-level lock names.
+`definition`, and `registry edits` beats storage-level lock names. Supervisor
+controls set MCP policy; they must not disable or veto the supervisor UI itself.
 
 ## Supervisory Registry Governance
 
@@ -107,7 +108,7 @@ The core pattern:
 - registry cleanup is a supervisor/UI concern, not a normal MCP tool surface
 - model-facing MCP writes obey current registry policy on every call
 - policy lives in SQLite and takes effect without service reload
-- locks distinguish definition edits from assignment edits
+- locks distinguish new-entry creation from registry-structure edits
 - tag identity is stable and internal; names are human-facing handles
 - stale model context is answered by aliases or tombstones with clear porcelain
   errors

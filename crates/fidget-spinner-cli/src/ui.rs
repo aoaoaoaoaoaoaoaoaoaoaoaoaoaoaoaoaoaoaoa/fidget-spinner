@@ -1031,19 +1031,19 @@ fn render_project_tags(context: ProjectRenderContext) -> Result<Markup, StoreErr
                         "new tags",
                         "add",
                         lock_state.add_locked,
-                        "When locked, no new tags can be created by MCP or supervisor UI. Existing tags remain usable.",
+                        "When locked, MCP cannot create new tags. Supervisor UI can still curate the registry.",
                     ))
                     (render_tag_lock_switch(
                         "registry edits",
                         "edit",
                         lock_state.edit_locked,
-                        "When locked, supervisor registry edits are blocked: rename, merge, delete, family creation, mandatory-family changes, and assigning tags to families. Models can still attach existing tags to hypotheses and experiments.",
+                        "When locked, MCP-origin registry editing is forbidden. Supervisor UI remains authoritative; model assignment of existing tags stays open.",
                     ))
                 }
             }
         }
-        (render_tag_families(&registry.families, lock_state))
-        (render_tag_table(&registry.tags, &registry.families, &usage, lock_state))
+        (render_tag_families(&registry.families))
+        (render_tag_table(&registry.tags, &registry.families, &usage))
         @if !registry.name_history.is_empty() {
             section.card {
                 h2 { "Name History" }
@@ -1318,23 +1318,20 @@ fn render_tag_lock_switch(label: &str, mode: &str, locked: bool, help: &str) -> 
     }
 }
 
-fn render_tag_families(
-    families: &[fidget_spinner_core::TagFamilyRecord],
-    lock_state: TagLockState,
-) -> Markup {
+fn render_tag_families(families: &[fidget_spinner_core::TagFamilyRecord]) -> Markup {
     html! {
         section.card {
             div.card-header {
                 h2 { "Families" }
             }
             form.tag-create-form method="post" action="tags/families/create" data-preserve-viewport="true" {
-                input.compact-input type="text" name="name" placeholder="family name" disabled[lock_state.edit_locked];
-                input.compact-input type="text" name="description" placeholder="description" disabled[lock_state.edit_locked];
+                input.compact-input type="text" name="name" placeholder="family name";
+                input.compact-input type="text" name="description" placeholder="description";
                 label.inline-check {
-                    input type="checkbox" name="mandatory" value="1" disabled[lock_state.edit_locked];
+                    input type="checkbox" name="mandatory" value="1";
                     "mandatory"
                 }
-                button.form-button type="submit" disabled[lock_state.edit_locked] { "Create Family" }
+                button.form-button type="submit" { "Create Family" }
             }
             @if families.is_empty() {
                 p.muted { "No families yet." }
@@ -1350,7 +1347,7 @@ fn render_tag_families(
                                         input type="hidden" name="family" value=(family.name.as_str());
                                         input type="hidden" name="expected_revision" value=(family.revision);
                                         input type="hidden" name="mandatory" value=(if family.mandatory { "optional" } else { "mandatory" });
-                                        button.form-button type="submit" disabled[lock_state.edit_locked] {
+                                        button.form-button type="submit" {
                                             (if family.mandatory { "Make Optional" } else { "Make Mandatory" })
                                         }
                                     }
@@ -1369,13 +1366,12 @@ fn render_tag_table(
     tags: &[fidget_spinner_core::TagRecord],
     families: &[fidget_spinner_core::TagFamilyRecord],
     usage: &BTreeMap<TagName, TagUsage>,
-    lock_state: TagLockState,
 ) -> Markup {
     html! {
         section.card {
             div.card-header {
                 h2 { "Tag Registry" }
-                (render_create_tag_form(families, lock_state))
+                (render_create_tag_form(families))
             }
             @if tags.is_empty() {
                 p.muted { "No tags yet." }
@@ -1400,7 +1396,7 @@ fn render_tag_table(
                                             form.tag-icon-form method="post" action="tags/delete" data-preserve-viewport="true" {
                                                 input type="hidden" name="tag" value=(tag.name.as_str());
                                                 input type="hidden" name="expected_revision" value=(tag.revision);
-                                                button.inline-icon-button.danger-icon-button type="submit" aria-label=(format!("Delete {}", tag.name)) title="Delete tag" disabled[lock_state.edit_locked] {
+                                                button.inline-icon-button.danger-icon-button type="submit" aria-label=(format!("Delete {}", tag.name)) title="Delete tag" {
                                                     (trash_icon())
                                                 }
                                             }
@@ -1408,7 +1404,7 @@ fn render_tag_table(
                                                 input type="hidden" name="tag" value=(tag.name.as_str());
                                                 input type="hidden" name="expected_revision" value=(tag.revision);
                                                 span.tag-chip data-inline-rename-label="true" { (tag.name) }
-                                                button.inline-icon-button type="button" data-inline-rename-trigger="true" aria-label=(format!("Rename {}", tag.name)) title="Rename tag" disabled[lock_state.edit_locked] {
+                                                button.inline-icon-button type="button" data-inline-rename-trigger="true" aria-label=(format!("Rename {}", tag.name)) title="Rename tag" {
                                                     (pencil_icon())
                                                 }
                                                 input.inline-rename-input type="text" name="new_name" value=(tag.name.as_str()) aria-label=(format!("New name for {}", tag.name)) data-inline-rename-input="true";
@@ -1419,7 +1415,7 @@ fn render_tag_table(
                                         form.tag-inline-form method="post" action="tags/tag-family" data-preserve-viewport="true" {
                                             input type="hidden" name="tag" value=(tag.name.as_str());
                                             input type="hidden" name="expected_revision" value=(tag.revision);
-                                            select.compact-select name="family" data-auto-submit="true" aria-label=(format!("Family for {}", tag.name)) disabled[lock_state.edit_locked] {
+                                            select.compact-select name="family" data-auto-submit="true" aria-label=(format!("Family for {}", tag.name)) {
                                                 option value="" selected[tag.family.is_none()] { "none" }
                                                 @for family in families {
                                                     option
@@ -1442,14 +1438,14 @@ fn render_tag_table(
                                         form.tag-inline-form method="post" action="tags/merge" data-preserve-viewport="true" {
                                             input type="hidden" name="source" value=(tag.name.as_str());
                                             input type="hidden" name="expected_revision" value=(tag.revision);
-                                            select.compact-select name="target" disabled[lock_state.edit_locked] {
+                                            select.compact-select name="target" {
                                                 @for target in tags {
                                                     @if target.name != tag.name {
                                                         option value=(target.name.as_str()) { (target.name) }
                                                     }
                                                 }
                                             }
-                                            button.form-button type="submit" disabled[lock_state.edit_locked] { "Merge" }
+                                            button.form-button type="submit" { "Merge" }
                                         }
                                     }
                                 }
@@ -1462,27 +1458,18 @@ fn render_tag_table(
     }
 }
 
-fn render_create_tag_form(
-    families: &[fidget_spinner_core::TagFamilyRecord],
-    lock_state: TagLockState,
-) -> Markup {
-    let family_locked = lock_state.add_locked || lock_state.edit_locked;
-    let family_title = if lock_state.edit_locked {
-        "Registry edits are locked; new tags can be created only without family assignment."
-    } else {
-        "Optional family for the new tag."
-    };
+fn render_create_tag_form(families: &[fidget_spinner_core::TagFamilyRecord]) -> Markup {
     html! {
         form.tag-create-form method="post" action="tags/create" data-preserve-viewport="true" {
-            input.compact-input type="text" name="name" placeholder="new tag" aria-label="New tag name" disabled[lock_state.add_locked];
-            input.compact-input.wide-compact-input type="text" name="description" placeholder="description shown to agents" aria-label="New tag description" disabled[lock_state.add_locked];
-            select.compact-select name="family" aria-label="New tag family" title=(family_title) disabled[family_locked] {
+            input.compact-input type="text" name="name" placeholder="new tag" aria-label="New tag name";
+            input.compact-input.wide-compact-input type="text" name="description" placeholder="description shown to agents" aria-label="New tag description";
+            select.compact-select name="family" aria-label="New tag family" title="Optional family for the new tag." {
                 option value="" { "no family" }
                 @for family in families {
                     option value=(family.name.as_str()) { (family.name) }
                 }
             }
-            button.inline-icon-button type="submit" aria-label="Add tag" title="Add tag" disabled[lock_state.add_locked] {
+            button.inline-icon-button type="submit" aria-label="Add tag" title="Add tag" {
                 (plus_icon())
             }
         }

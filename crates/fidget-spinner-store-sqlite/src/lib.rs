@@ -790,15 +790,12 @@ impl ProjectStore {
         family: Option<TagFamilyName>,
         origin: MutationOrigin,
     ) -> Result<TagRecord, StoreError> {
-        self.assert_tag_add_open()?;
         if origin.is_mcp() {
+            self.assert_tag_add_open()?;
             self.assert_no_stale_tag_name(&name)?;
         }
         if self.tag_record_by_name(&name)?.is_some() {
             return Err(StoreError::DuplicateTag(name));
-        }
-        if family.is_some() {
-            self.assert_tag_registry_edit_open()?;
         }
         let family = family
             .as_ref()
@@ -854,7 +851,6 @@ impl ProjectStore {
         &mut self,
         request: CreateTagFamilyRequest,
     ) -> Result<TagFamilyRecord, StoreError> {
-        self.assert_tag_registry_edit_open()?;
         if self.tag_family_by_name(&request.name)?.is_some() {
             return Err(StoreError::DuplicateTagFamily(request.name));
         }
@@ -884,7 +880,6 @@ impl ProjectStore {
     }
 
     pub fn rename_tag(&mut self, request: RenameTagRequest) -> Result<TagRecord, StoreError> {
-        self.assert_tag_registry_edit_open()?;
         let record = self
             .tag_record_by_name(&request.tag)?
             .ok_or_else(|| StoreError::UnknownTag(request.tag.clone()))?;
@@ -932,7 +927,6 @@ impl ProjectStore {
     }
 
     pub fn merge_tag(&mut self, request: MergeTagRequest) -> Result<TagRecord, StoreError> {
-        self.assert_tag_registry_edit_open()?;
         if request.source == request.target {
             return Err(StoreError::InvalidInput(
                 "cannot merge a tag into itself".to_owned(),
@@ -980,7 +974,6 @@ impl ProjectStore {
     }
 
     pub fn delete_tag(&mut self, request: DeleteTagRequest) -> Result<(), StoreError> {
-        self.assert_tag_registry_edit_open()?;
         let record = self
             .tag_record_by_name(&request.tag)?
             .ok_or_else(|| StoreError::UnknownTag(request.tag.clone()))?;
@@ -1022,7 +1015,6 @@ impl ProjectStore {
         &mut self,
         request: AssignTagFamilyRequest,
     ) -> Result<TagRecord, StoreError> {
-        self.assert_tag_registry_edit_open()?;
         let record = self
             .tag_record_by_name(&request.tag)?
             .ok_or_else(|| StoreError::UnknownTag(request.tag.clone()))?;
@@ -1065,7 +1057,6 @@ impl ProjectStore {
         &mut self,
         request: SetTagFamilyMandatoryRequest,
     ) -> Result<TagFamilyRecord, StoreError> {
-        self.assert_tag_registry_edit_open()?;
         let record = self
             .tag_family_by_name(&request.family)?
             .ok_or_else(|| StoreError::UnknownTagFamily(request.family.clone()))?;
@@ -3267,16 +3258,6 @@ impl ProjectStore {
         Ok(())
     }
 
-    fn assert_tag_registry_edit_open(&self) -> Result<(), StoreError> {
-        if let Some(lock) = self.registry_lock(&RegistryName::tags(), RegistryLockMode::Family)? {
-            return Err(StoreError::PolicyViolation(format!(
-                "tag registry editing is locked; rename, merge, delete, family creation, mandatory-family changes, and family assignment are disabled. Reason: {}",
-                lock.reason
-            )));
-        }
-        Ok(())
-    }
-
     fn assert_mandatory_tag_families(&self, tags: &BTreeSet<TagName>) -> Result<(), StoreError> {
         let selected_ids =
             self.resolve_existing_tag_names(&tags.iter().cloned().collect::<Vec<_>>())?;
@@ -4303,7 +4284,9 @@ fn registry_lock_reason(
         ("tags", RegistryLockMode::Assignment) => {
             "model tag assignment locks are retired; use mandatory families to shape tag use"
         }
-        ("tags", RegistryLockMode::Family) => "tag registry editing is locked from the Tags page",
+        ("tags", RegistryLockMode::Family) => {
+            "MCP tag registry editing is locked from the Tags page"
+        }
         _ => {
             return Ok(NonEmptyText::new(format!(
                 "{} {} writes are locked from the supervisor UI",
