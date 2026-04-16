@@ -414,7 +414,6 @@ async fn create_tag_family(
 struct SetTagLockForm {
     mode: String,
     locked: String,
-    reason: Option<String>,
 }
 
 async fn set_tag_lock(
@@ -429,11 +428,6 @@ async fn set_tag_lock(
                 registry: RegistryName::tags(),
                 mode: parse_ui_lock_mode(&form.mode)?,
                 locked: matches!(form.locked.as_str(), "1" | "true" | "on" | "lock"),
-                reason: form
-                    .reason
-                    .filter(|reason| !reason.trim().is_empty())
-                    .map(NonEmptyText::new)
-                    .transpose()?,
             })?;
             Ok(format!("{}tags", context.base_href))
         }),
@@ -1161,12 +1155,12 @@ fn load_tag_usage(
 }
 
 fn render_tag_locks(locks: &[fidget_spinner_core::RegistryLockRecord]) -> Markup {
-    let definition_lock = locks
+    let definition_locked = locks
         .iter()
-        .find(|lock| lock.mode == RegistryLockMode::Definition);
-    let assignment_lock = locks
+        .any(|lock| lock.mode == RegistryLockMode::Definition);
+    let assignment_locked = locks
         .iter()
-        .find(|lock| lock.mode == RegistryLockMode::Assignment);
+        .any(|lock| lock.mode == RegistryLockMode::Assignment);
     html! {
         section.card {
             h2 { "Locks" }
@@ -1174,21 +1168,14 @@ fn render_tag_locks(locks: &[fidget_spinner_core::RegistryLockRecord]) -> Markup
                 "Locks constrain MCP-origin writes immediately. Supervisor UI operations remain authoritative."
             }
             div.tag-control-grid {
-                (render_tag_lock_control("Definition", "definition", definition_lock))
-                (render_tag_lock_control("Assignment", "assignment", assignment_lock))
+                (render_tag_lock_control("Definition", "definition", definition_locked))
+                (render_tag_lock_control("Assignment", "assignment", assignment_locked))
             }
         }
     }
 }
 
-fn render_tag_lock_control(
-    label: &str,
-    mode: &str,
-    lock: Option<&fidget_spinner_core::RegistryLockRecord>,
-) -> Markup {
-    let locked = lock.is_some();
-    let default_reason = format!("tag {mode}s are locked from the Tags page");
-    let reason = lock.map_or(default_reason.as_str(), |lock| lock.reason.as_str());
+fn render_tag_lock_control(label: &str, mode: &str, locked: bool) -> Markup {
     html! {
         article.mini-card {
             div.card-header {
@@ -1198,17 +1185,6 @@ fn render_tag_lock_control(
             form.tag-inline-form method="post" action="tags/lock" data-preserve-viewport="true" {
                 input type="hidden" name="mode" value=(mode);
                 input type="hidden" name="locked" value=(if locked { "unlock" } else { "lock" });
-                @if locked {
-                    input type="hidden" name="reason" value=(reason);
-                    span.lock-reason title="This text is returned to MCP clients when the lock rejects a write." {
-                        "MCP error: " (reason)
-                    }
-                } @else {
-                    label.lock-reason-field {
-                        span { "MCP error" }
-                        input.compact-input type="text" name="reason" value=(reason) placeholder="message shown to agents" title="Shown to MCP clients when this lock rejects a write.";
-                    }
-                }
                 button.form-button type="submit" {
                     (if locked { format!("Unlock {label}") } else { format!("Lock {label}") })
                 }
@@ -4675,27 +4651,6 @@ fn styles() -> &'static str {
     }
     .tag-inline-rename-form.editing .inline-rename-input {
         display: inline-block;
-    }
-    .lock-reason,
-    .lock-reason-field {
-        display: inline-flex;
-        gap: 5px;
-        align-items: center;
-        min-width: 0;
-        color: var(--muted);
-        font-size: 12px;
-    }
-    .lock-reason {
-        overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
-    }
-    .lock-reason-field span {
-        flex: 0 0 auto;
-        color: var(--muted);
-        font-size: 11px;
-        text-transform: uppercase;
-        letter-spacing: 0.05em;
     }
     .compact-input,
     .compact-select,

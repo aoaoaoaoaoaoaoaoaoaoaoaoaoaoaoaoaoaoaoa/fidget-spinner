@@ -511,10 +511,6 @@ fn tag_definition_lock_rejects_mcp_tag_creation() -> TestResult {
                 registry: RegistryName::tags(),
                 mode: RegistryLockMode::Definition,
                 locked: true,
-                reason: Some(must(
-                    NonEmptyText::new("supervisor cleaned tags"),
-                    "reason",
-                )?),
             }),
             "lock tag registry",
         )?;
@@ -536,7 +532,7 @@ fn tag_definition_lock_rejects_mcp_tag_creation() -> TestResult {
     );
     assert!(
         must_some(tool_error_message(&response), "policy message")?
-            .contains("tag registry is locked")
+            .contains("tag definitions are locked from the Tags page")
     );
     Ok(())
 }

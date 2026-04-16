@@ -251,7 +251,6 @@ pub struct SetRegistryLockRequest {
     pub registry: RegistryName,
     pub mode: RegistryLockMode,
     pub locked: bool,
-    pub reason: Option<NonEmptyText>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -1103,6 +1102,7 @@ impl ProjectStore {
         }
         let now = OffsetDateTime::now_utc();
         let existing = self.registry_lock(&request.registry, request.mode)?;
+        let reason = registry_lock_reason(&request.registry, request.mode)?;
         let record = RegistryLockRecord {
             id: existing
                 .as_ref()
@@ -1111,9 +1111,7 @@ impl ProjectStore {
             mode: request.mode,
             scope_kind: NonEmptyText::new("project")?,
             scope_id: NonEmptyText::new("project")?,
-            reason: request.reason.unwrap_or(NonEmptyText::new(
-                "registry writes are locked from the Tags page",
-            )?),
+            reason,
             revision: existing
                 .as_ref()
                 .map_or(1, |lock| lock.revision.saturating_add(1)),
@@ -4288,6 +4286,25 @@ fn decode_registry_lock_row(
         locked_at: parse_timestamp_sql(&row.get::<_, String>(7)?)?,
         updated_at: parse_timestamp_sql(&row.get::<_, String>(8)?)?,
     })
+}
+
+fn registry_lock_reason(
+    registry: &RegistryName,
+    mode: RegistryLockMode,
+) -> Result<NonEmptyText, StoreError> {
+    let reason = match (registry.as_str(), mode) {
+        ("tags", RegistryLockMode::Definition) => "tag definitions are locked from the Tags page",
+        ("tags", RegistryLockMode::Assignment) => "tag assignments are locked from the Tags page",
+        ("tags", RegistryLockMode::Family) => "tag families are locked from the Tags page",
+        _ => {
+            return Ok(NonEmptyText::new(format!(
+                "{} {} writes are locked from the supervisor UI",
+                registry.as_str(),
+                mode.as_str()
+            ))?);
+        }
+    };
+    Ok(NonEmptyText::new(reason)?)
 }
 
 fn decode_frontier_row(row: &rusqlite::Row<'_>) -> Result<FrontierRecord, rusqlite::Error> {
