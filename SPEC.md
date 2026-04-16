@@ -49,6 +49,28 @@ consume scarce vertical context. Default grids should not allocate vast empty
 columns around short values; short facts belong in fact strips, not sparse
 four-column panels.
 
+Every new element must pass a friction and grouping review before it lands:
+
+- Does this control really need a separate confirmation click, or can the
+  user's selection apply immediately with clear feedback?
+- Does this element have a natural semantic sibling it should sit beside
+  instead of below?
+- Is this an edit affordance that belongs directly beside the value being
+  edited instead of in a detached form field?
+- Do we really need to put this on a new line?
+- Does this string convey anything useful that is not already obvious from
+  context?
+- Is the layout spending a full row on something that is only a modifier,
+  status, or secondary action?
+
+Prefer reactive controls for low-risk, reversible supervisor actions. Prefer
+same-line semantic clusters when an action qualifies or changes the status
+beside it. New rows are reserved for new ideas, not for mechanically convenient
+buttons. Avoid separate edit fields when a chip or label can become editable in
+place. Prefer symbolic square chips over text buttons for common actions such
+as edit, archive, delete, copy, and expand. Delete labels, subtitles, eyebrows,
+and helper copy that merely describe the page the user is already on.
+
 ## Supervisory Registry Governance
 
 Driving models should be allowed to explore quickly and leave imperfect

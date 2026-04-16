@@ -885,15 +885,6 @@ fn render_project_tags(context: ProjectRenderContext) -> Result<Markup, StoreErr
         .count();
     let content = html! {
         section.card {
-            div.card-header {
-                div {
-                    div.eyebrow { "supervisor surface" }
-                    h1 { "Tags" }
-                    p.prose {
-                        "Clean, classify, and lock the tag vocabulary models use while experiments keep running."
-                    }
-                }
-            }
             div.fact-strip {
                 (render_fact("active tags", &registry.tags.len().to_string()))
                 (render_fact("families", &registry.families.len().to_string()))
@@ -920,13 +911,7 @@ fn render_project_tags(context: ProjectRenderContext) -> Result<Markup, StoreErr
         }
     };
     Ok(render_shell(
-        &title,
-        &shell,
-        true,
-        Some("supervisor registry governance"),
-        None,
-        None,
-        content,
+        &title, &shell, true, None, None, None, content,
     ))
 }
 
@@ -1145,12 +1130,12 @@ fn load_tag_usage(
 }
 
 fn render_tag_locks(locks: &[fidget_spinner_core::RegistryLockRecord]) -> Markup {
-    let definition_locked = locks
+    let definition_lock = locks
         .iter()
-        .any(|lock| lock.mode == RegistryLockMode::Definition);
-    let assignment_locked = locks
+        .find(|lock| lock.mode == RegistryLockMode::Definition);
+    let assignment_lock = locks
         .iter()
-        .any(|lock| lock.mode == RegistryLockMode::Assignment);
+        .find(|lock| lock.mode == RegistryLockMode::Assignment);
     html! {
         section.card {
             h2 { "Locks" }
@@ -1158,21 +1143,44 @@ fn render_tag_locks(locks: &[fidget_spinner_core::RegistryLockRecord]) -> Markup
                 "Locks constrain MCP-origin writes immediately. Supervisor UI operations remain authoritative."
             }
             div.tag-control-grid {
-                (render_tag_lock_control("Definition", "definition", definition_locked))
-                (render_tag_lock_control("Assignment", "assignment", assignment_locked))
+                (render_tag_lock_control("Definition", "definition", definition_lock))
+                (render_tag_lock_control("Assignment", "assignment", assignment_lock))
             }
         }
     }
 }
 
-fn render_tag_lock_control(label: &str, mode: &str, locked: bool) -> Markup {
+fn render_tag_lock_control(
+    label: &str,
+    mode: &str,
+    lock: Option<&fidget_spinner_core::RegistryLockRecord>,
+) -> Markup {
+    let locked = lock.is_some();
+    let default_reason = format!("tag {mode}s are locked from the Tags page");
+    let reason = lock.map_or(default_reason.as_str(), |lock| lock.reason.as_str());
     html! {
-        form.tag-inline-form method="post" action="tags/lock" {
-            input type="hidden" name="mode" value=(mode);
-            input type="hidden" name="locked" value=(if locked { "unlock" } else { "lock" });
-            input.compact-input type="text" name="reason" placeholder="reason" value="supervisor policy";
-            button.form-button type="submit" {
-                (if locked { format!("Unlock {label}") } else { format!("Lock {label}") })
+        article.mini-card {
+            div.card-header {
+                strong { (label) }
+                span.status-chip { (if locked { "locked" } else { "open" }) }
+            }
+            form.tag-inline-form method="post" action="tags/lock" data-preserve-viewport="true" {
+                input type="hidden" name="mode" value=(mode);
+                input type="hidden" name="locked" value=(if locked { "unlock" } else { "lock" });
+                @if locked {
+                    input type="hidden" name="reason" value=(reason);
+                    span.lock-reason title="This text is returned to MCP clients when the lock rejects a write." {
+                        "MCP error: " (reason)
+                    }
+                } @else {
+                    label.lock-reason-field {
+                        span { "MCP error" }
+                        input.compact-input type="text" name="reason" value=(reason) placeholder="message shown to agents" title="Shown to MCP clients when this lock rejects a write.";
+                    }
+                }
+                button.form-button type="submit" {
+                    (if locked { format!("Unlock {label}") } else { format!("Lock {label}") })
+                }
             }
         }
     }
@@ -1184,7 +1192,7 @@ fn render_tag_families(families: &[fidget_spinner_core::TagFamilyRecord]) -> Mar
             div.card-header {
                 h2 { "Families" }
             }
-            form.tag-create-form method="post" action="tags/families/create" {
+            form.tag-create-form method="post" action="tags/families/create" data-preserve-viewport="true" {
                 input.compact-input type="text" name="name" placeholder="family name";
                 input.compact-input type="text" name="description" placeholder="description";
                 label.inline-check {
@@ -1201,17 +1209,19 @@ fn render_tag_families(families: &[fidget_spinner_core::TagFamilyRecord]) -> Mar
                         article.mini-card {
                             div.card-header {
                                 strong { (family.name) }
-                                span.status-chip { (if family.mandatory { "mandatory" } else { "optional" }) }
-                            }
-                            p.prose { (family.description) }
-                            form.tag-inline-form method="post" action="tags/family-mandatory" {
-                                input type="hidden" name="family" value=(family.name.as_str());
-                                input type="hidden" name="expected_revision" value=(family.revision);
-                                input type="hidden" name="mandatory" value=(if family.mandatory { "optional" } else { "mandatory" });
-                                button.form-button type="submit" {
-                                    (if family.mandatory { "Make Optional" } else { "Make Mandatory" })
+                                div.family-policy-row {
+                                    span.status-chip { (if family.mandatory { "mandatory" } else { "optional" }) }
+                                    form.tag-inline-form method="post" action="tags/family-mandatory" data-preserve-viewport="true" {
+                                        input type="hidden" name="family" value=(family.name.as_str());
+                                        input type="hidden" name="expected_revision" value=(family.revision);
+                                        input type="hidden" name="mandatory" value=(if family.mandatory { "optional" } else { "mandatory" });
+                                        button.form-button type="submit" {
+                                            (if family.mandatory { "Make Optional" } else { "Make Mandatory" })
+                                        }
+                                    }
                                 }
                             }
+                            p.prose { (family.description) }
                         }
                     }
                 }
@@ -1239,9 +1249,7 @@ fn render_tag_table(
                                 th { "Family" }
                                 th { "Description" }
                                 th { "Use" }
-                                th { "Rename" }
                                 th { "Merge" }
-                                th { "Delete" }
                             }
                         }
                         tbody {
@@ -1249,13 +1257,30 @@ fn render_tag_table(
                                 @let tag_usage = usage.get(&tag.name).copied().unwrap_or_default();
                                 tr {
                                     td.no-truncate {
-                                        span.tag-chip { (tag.name) }
+                                        div.tag-identity-row {
+                                            form.tag-icon-form method="post" action="tags/delete" data-preserve-viewport="true" {
+                                                input type="hidden" name="tag" value=(tag.name.as_str());
+                                                input type="hidden" name="expected_revision" value=(tag.revision);
+                                                button.inline-icon-button.danger-icon-button type="submit" aria-label=(format!("Delete {}", tag.name)) title="Delete tag" {
+                                                    (trash_icon())
+                                                }
+                                            }
+                                            form.tag-inline-rename-form method="post" action="tags/rename" data-preserve-viewport="true" data-inline-rename-form="true" data-original-name=(tag.name.as_str()) {
+                                                input type="hidden" name="tag" value=(tag.name.as_str());
+                                                input type="hidden" name="expected_revision" value=(tag.revision);
+                                                span.tag-chip data-inline-rename-label="true" { (tag.name) }
+                                                button.inline-icon-button type="button" data-inline-rename-trigger="true" aria-label=(format!("Rename {}", tag.name)) title="Rename tag" {
+                                                    (pencil_icon())
+                                                }
+                                                input.inline-rename-input type="text" name="new_name" value=(tag.name.as_str()) aria-label=(format!("New name for {}", tag.name)) data-inline-rename-input="true";
+                                            }
+                                        }
                                     }
                                     td.no-truncate {
-                                        form.tag-inline-form method="post" action="tags/tag-family" {
+                                        form.tag-inline-form method="post" action="tags/tag-family" data-preserve-viewport="true" {
                                             input type="hidden" name="tag" value=(tag.name.as_str());
                                             input type="hidden" name="expected_revision" value=(tag.revision);
-                                            select.compact-select name="family" {
+                                            select.compact-select name="family" data-auto-submit="true" aria-label=(format!("Family for {}", tag.name)) {
                                                 option value="" selected[tag.family.is_none()] { "none" }
                                                 @for family in families {
                                                     option
@@ -1266,7 +1291,6 @@ fn render_tag_table(
                                                     }
                                                 }
                                             }
-                                            button.form-button type="submit" { "Set" }
                                         }
                                     }
                                     td {
@@ -1276,15 +1300,7 @@ fn render_tag_table(
                                         (tag_usage.hypotheses) " H · " (tag_usage.experiments) " E"
                                     }
                                     td.no-truncate {
-                                        form.tag-inline-form method="post" action="tags/rename" {
-                                            input type="hidden" name="tag" value=(tag.name.as_str());
-                                            input type="hidden" name="expected_revision" value=(tag.revision);
-                                            input.compact-input type="text" name="new_name" placeholder="new name";
-                                            button.form-button type="submit" { "Rename" }
-                                        }
-                                    }
-                                    td.no-truncate {
-                                        form.tag-inline-form method="post" action="tags/merge" {
+                                        form.tag-inline-form method="post" action="tags/merge" data-preserve-viewport="true" {
                                             input type="hidden" name="source" value=(tag.name.as_str());
                                             input type="hidden" name="expected_revision" value=(tag.revision);
                                             select.compact-select name="target" {
@@ -1295,13 +1311,6 @@ fn render_tag_table(
                                                 }
                                             }
                                             button.form-button type="submit" { "Merge" }
-                                        }
-                                    }
-                                    td.no-truncate {
-                                        form.tag-inline-form method="post" action="tags/delete" {
-                                            input type="hidden" name="tag" value=(tag.name.as_str());
-                                            input type="hidden" name="expected_revision" value=(tag.revision);
-                                            button.form-button.danger-button type="submit" { "Delete" }
                                         }
                                     }
                                 }
@@ -3249,6 +3258,49 @@ async function copyPlotPng(button) {{
     ]);
 }}
 
+function inlineRenameInput(form) {{
+    const input = form.querySelector("[data-inline-rename-input=\"true\"]");
+    return input instanceof HTMLInputElement ? input : null;
+}}
+
+function openInlineRename(form) {{
+    const input = inlineRenameInput(form);
+    if (!input) {{
+        return;
+    }}
+    const original = form.dataset.originalName || input.defaultValue || input.value;
+    form.dataset.originalName = original;
+    input.value = original;
+    form.classList.add("editing");
+    window.requestAnimationFrame(() => {{
+        input.focus();
+        input.select();
+    }});
+}}
+
+function closeInlineRename(form) {{
+    const input = inlineRenameInput(form);
+    if (input) {{
+        input.value = form.dataset.originalName || input.defaultValue || "";
+    }}
+    form.classList.remove("editing");
+}}
+
+function prepareInlineRenameSubmit(form, event) {{
+    const input = inlineRenameInput(form);
+    if (!input) {{
+        return;
+    }}
+    const original = form.dataset.originalName || input.defaultValue || "";
+    const next = input.value.trim();
+    if (!next || next === original) {{
+        event.preventDefault();
+        closeInlineRename(form);
+        return;
+    }}
+    input.value = next;
+}}
+
 window.setInterval(pollRefreshToken, AUTO_REFRESH_INTERVAL_MS);
 window.addEventListener("focus", pollRefreshToken);
 document.addEventListener("visibilitychange", () => {{
@@ -3282,8 +3334,21 @@ document.addEventListener("click", (event) => {{
             .finally(() => {{
                 copyButton.disabled = false;
                 schedulePlotCopyReset(copyButton);
-            }});
+        }});
         return;
+    }}
+    const renameButton = target.closest("button[data-inline-rename-trigger=\"true\"]");
+    if (renameButton instanceof HTMLButtonElement) {{
+        const form = renameButton.closest("form[data-inline-rename-form=\"true\"]");
+        if (form instanceof HTMLFormElement) {{
+            openInlineRename(form);
+        }}
+        return;
+    }}
+    for (const renameForm of document.querySelectorAll("form[data-inline-rename-form=\"true\"].editing")) {{
+        if (!renameForm.contains(target) && renameForm instanceof HTMLFormElement) {{
+            closeInlineRename(renameForm);
+        }}
     }}
     const navigationLink = target.closest("a[data-preserve-viewport=\"true\"]");
     if (
@@ -3310,6 +3375,12 @@ document.addEventListener("submit", (event) => {{
     if (!(target instanceof HTMLFormElement)) {{
         return;
     }}
+    if (target.hasAttribute("data-inline-rename-form")) {{
+        prepareInlineRenameSubmit(target, event);
+        if (event.defaultPrevented) {{
+            return;
+        }}
+    }}
     if (!target.hasAttribute("data-preserve-viewport")) {{
         return;
     }}
@@ -3317,6 +3388,21 @@ document.addEventListener("submit", (event) => {{
 }});
 
 document.addEventListener("keydown", (event) => {{
+    const target = event.target;
+    if (
+        target instanceof HTMLInputElement
+        && target.hasAttribute("data-inline-rename-input")
+    ) {{
+        const form = target.closest("form[data-inline-rename-form=\"true\"]");
+        if (form instanceof HTMLFormElement && event.key === "Escape") {{
+            event.preventDefault();
+            closeInlineRename(form);
+            return;
+        }}
+        if (form instanceof HTMLFormElement && event.key === "Enter") {{
+            prepareInlineRenameSubmit(form, event);
+        }}
+    }}
     if (event.key !== "Escape") {{
         return;
     }}
@@ -3477,6 +3563,27 @@ fn unarchive_icon() -> Markup {
             path d="M7 4.5h10l1 3H6l1-3Z" {}
             path d="M12 15V10" {}
             path d="M9.5 12.5 12 10l2.5 2.5" {}
+        }
+    }
+}
+
+fn pencil_icon() -> Markup {
+    html! {
+        svg.inline-action-icon aria-hidden="true" viewBox="0 0 24 24" fill="none" {
+            path d="M4.5 17.5 16.8 5.2a1.8 1.8 0 0 1 2.5 0l.5.5a1.8 1.8 0 0 1 0 2.5L7.5 20.5h-3v-3Z" {}
+            path d="m14.5 7.5 2 2" {}
+        }
+    }
+}
+
+fn trash_icon() -> Markup {
+    html! {
+        svg.inline-action-icon aria-hidden="true" viewBox="0 0 24 24" fill="none" {
+            path d="M5 7h14" {}
+            path d="M9 7V4.5h6V7" {}
+            path d="M7 7l1 13h8l1-13" {}
+            path d="M10.5 11v5" {}
+            path d="M13.5 11v5" {}
         }
     }
 }
@@ -4451,8 +4558,87 @@ fn styles() -> &'static str {
         flex-wrap: wrap;
         margin: 0;
     }
+    .family-policy-row {
+        display: inline-flex;
+        gap: 6px;
+        align-items: center;
+        flex-wrap: wrap;
+        justify-content: flex-end;
+    }
+    .tag-identity-row,
+    .tag-icon-form,
+    .tag-inline-rename-form {
+        display: inline-flex;
+        gap: 5px;
+        align-items: center;
+        min-width: 0;
+        margin: 0;
+    }
+    .tag-inline-rename-form {
+        gap: 4px;
+    }
+    .inline-icon-button {
+        display: grid;
+        place-items: center;
+        width: 24px;
+        height: 24px;
+        flex: 0 0 24px;
+        border: 1px solid var(--border);
+        background: var(--panel);
+        color: var(--muted);
+        cursor: pointer;
+        padding: 0;
+    }
+    .inline-icon-button:hover {
+        border-color: var(--border-strong);
+        color: var(--text);
+    }
+    .danger-icon-button {
+        color: var(--rejected);
+    }
+    .inline-action-icon {
+        width: 14px;
+        height: 14px;
+        stroke: currentColor;
+        stroke-width: 1.8;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+    }
+    .inline-rename-input {
+        display: none;
+        width: min(240px, 42vw);
+    }
+    .tag-inline-rename-form.editing .tag-chip,
+    .tag-inline-rename-form.editing .inline-icon-button {
+        display: none;
+    }
+    .tag-inline-rename-form.editing .inline-rename-input {
+        display: inline-block;
+    }
+    .lock-reason,
+    .lock-reason-field {
+        display: inline-flex;
+        gap: 5px;
+        align-items: center;
+        min-width: 0;
+        color: var(--muted);
+        font-size: 12px;
+    }
+    .lock-reason {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+    .lock-reason-field span {
+        flex: 0 0 auto;
+        color: var(--muted);
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+    }
     .compact-input,
-    .compact-select {
+    .compact-select,
+    .inline-rename-input {
         min-width: 0;
         max-width: 180px;
         border: 1px solid var(--border);

@@ -1094,9 +1094,9 @@ impl ProjectStore {
             mode: request.mode,
             scope_kind: NonEmptyText::new("project")?,
             scope_id: NonEmptyText::new("project")?,
-            reason: request
-                .reason
-                .unwrap_or(NonEmptyText::new("supervisor policy")?),
+            reason: request.reason.unwrap_or(NonEmptyText::new(
+                "registry writes are locked from the Tags page",
+            )?),
             revision: existing
                 .as_ref()
                 .map_or(1, |lock| lock.revision.saturating_add(1)),
