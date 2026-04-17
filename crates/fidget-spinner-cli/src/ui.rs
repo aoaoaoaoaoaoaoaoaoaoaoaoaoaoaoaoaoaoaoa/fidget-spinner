@@ -1311,15 +1311,7 @@ fn render_project_home(context: ProjectRenderContext) -> Result<Markup, StoreErr
         (render_project_status(&shell.project_status))
         (render_frontier_grid(&shell.frontiers, context.limit))
     };
-    Ok(render_shell(
-        &title,
-        &shell,
-        true,
-        Some(&shell.project_status.display_name.to_string()),
-        None,
-        None,
-        content,
-    ))
+    Ok(render_shell(&title, &shell, None, content))
 }
 
 fn render_project_tags(context: ProjectRenderContext) -> Result<Markup, StoreError> {
@@ -1385,9 +1377,7 @@ fn render_project_tags(context: ProjectRenderContext) -> Result<Markup, StoreErr
             }
         }
     };
-    Ok(render_shell(
-        &title, &shell, true, None, None, None, content,
-    ))
+    Ok(render_shell(&title, &shell, None, content))
 }
 
 fn render_project_metrics(
@@ -1451,9 +1441,7 @@ fn render_project_metrics(
         (render_kpi_manager(active_frontiers, selected_frontier.as_ref(), &selected_kpis, &metrics))
         (render_metric_registry_table(&metrics))
     };
-    Ok(render_shell(
-        &title, &shell, false, None, None, None, content,
-    ))
+    Ok(render_shell(&title, &shell, None, content))
 }
 
 fn render_frontier_detail(
@@ -1473,18 +1461,10 @@ fn render_frontier_detail(
         requested_or_kpi_metric_keys(&query.metric, &kpi_metric_keys_for_tab_bar);
     let tab = FrontierTab::from_query(query.tab.as_deref());
     let title = format!("{} · frontier", projection.frontier.label);
-    let subtitle = format!(
-        "{} hypotheses active · {} experiments open",
-        projection.active_hypotheses.len(),
-        projection.open_experiments.len()
-    );
     let content = render_frontier_tab_content(&store, &projection, tab, &query, context.limit)?;
     Ok(render_shell(
         &title,
         &shell,
-        false,
-        Some(&subtitle),
-        None,
         Some(render_frontier_tab_bar(
             &projection.frontier.slug,
             tab,
@@ -1512,7 +1492,6 @@ fn render_hypothesis_detail(
     let frontier = store.read_frontier(&detail.record.frontier_id.to_string())?;
     let shell = load_shell_frame(&store, Some(frontier.slug.clone()), &context)?;
     let title = format!("{} · hypothesis", detail.record.title);
-    let subtitle = detail.record.summary.to_string();
     let content = html! {
         (render_hypothesis_header(&detail, &frontier))
         (render_prose_block("Body", detail.record.body.as_str()))
@@ -1529,15 +1508,7 @@ fn render_hypothesis_detail(
             context.limit,
         ))
     };
-    Ok(render_shell(
-        &title,
-        &shell,
-        true,
-        Some(&subtitle),
-        Some((frontier.label.as_str(), frontier_href(&frontier.slug))),
-        None,
-        content,
-    ))
+    Ok(render_shell(&title, &shell, None, content))
 }
 
 fn render_experiment_detail(
@@ -1559,9 +1530,7 @@ fn render_experiment_detail(
         (render_artifact_section(&detail.artifacts, context.limit))
         (render_vertex_relation_sections(&detail.parents, &detail.children, context.limit))
     };
-    Ok(render_shell(
-        &title, &shell, false, None, None, None, content,
-    ))
+    Ok(render_shell(&title, &shell, None, content))
 }
 
 fn render_artifact_detail(
@@ -1577,13 +1546,9 @@ fn render_artifact_detail(
         .map(|target| resolve_attachment_display(&store, *target))
         .collect::<Result<Vec<_>, StoreError>>()?;
     let title = format!("{} · artifact", detail.record.label);
-    let subtitle = detail.record.summary.as_ref().map_or_else(
-        || detail.record.kind.as_str().to_owned(),
-        ToString::to_string,
-    );
     let content = html! {
         section.card {
-            h2 { "Artifact" }
+            h1 { (detail.record.label) }
             div.kv-grid {
                 (render_kv("Kind", detail.record.kind.as_str()))
                 (render_kv("Slug", detail.record.slug.as_str()))
@@ -1613,15 +1578,7 @@ fn render_artifact_detail(
             }
         }
     };
-    Ok(render_shell(
-        &title,
-        &shell,
-        true,
-        Some(&subtitle),
-        None,
-        None,
-        content,
-    ))
+    Ok(render_shell(&title, &shell, None, content))
 }
 
 fn load_shell_frame(
@@ -3766,9 +3723,6 @@ fn render_prose_block(title: &str, body: &str) -> Markup {
 fn render_shell(
     title: &str,
     shell: &ShellFrame,
-    show_page_header: bool,
-    subtitle: Option<&str>,
-    breadcrumb: Option<(&str, String)>,
     tab_bar: Option<Markup>,
     content: Markup,
 ) -> Markup {
@@ -3789,21 +3743,6 @@ fn render_shell(
                         (render_sidebar(shell))
                     }
                     div.main-column {
-                        @if show_page_header {
-                            header.page-header {
-                                div.eyebrow {
-                                    a href="/" { "home" }
-                                    @if let Some((label, href)) = breadcrumb {
-                                        span.sep { "/" }
-                                        a href=(href) { (label) }
-                                    }
-                                }
-                                h1.page-title { (title) }
-                                @if let Some(subtitle) = subtitle {
-                                    p.page-subtitle { (subtitle) }
-                                }
-                            }
-                        }
                         @if let Some(tab_bar) = tab_bar {
                             (tab_bar)
                         }
