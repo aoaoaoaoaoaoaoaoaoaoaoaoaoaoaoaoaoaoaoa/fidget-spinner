@@ -163,6 +163,11 @@ impl WorkerService {
                     self.store.update_frontier(UpdateFrontierRequest {
                         frontier: args.frontier,
                         expected_revision: args.expected_revision,
+                        label: args
+                            .label
+                            .map(NonEmptyText::new)
+                            .transpose()
+                            .map_err(store_fault(&operation))?,
                         objective: args
                             .objective
                             .map(NonEmptyText::new)
@@ -727,6 +732,7 @@ struct FrontierSelectorArgs {
 struct FrontierUpdateArgs {
     frontier: String,
     expected_revision: Option<u64>,
+    label: Option<String>,
     objective: Option<String>,
     status: Option<FrontierStatus>,
     situation: Option<NullableStringArg>,

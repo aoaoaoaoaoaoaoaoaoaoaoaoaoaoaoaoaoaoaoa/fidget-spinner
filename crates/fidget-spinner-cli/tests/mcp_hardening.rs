@@ -378,6 +378,7 @@ fn frontier_archive_hides_default_enumeration_without_breaking_direct_reads() ->
         store.update_frontier(UpdateFrontierRequest {
             frontier: frontier.slug.to_string(),
             expected_revision: Some(frontier.revision),
+            label: None,
             objective: None,
             status: Some(FrontierStatus::Archived),
             situation: None,
@@ -657,12 +658,29 @@ fn mandatory_tag_family_rejects_future_mcp_tag_sets() -> TestResult {
     harness.notify_initialized()?;
 
     assert_tool_ok(&harness.call_tool(
+        70,
+        "metric.define",
+        json!({
+            "key": "nodes_solved",
+            "unit": "count",
+            "objective": "maximize",
+        }),
+    )?);
+    assert_tool_ok(&harness.call_tool(
         71,
         "frontier.create",
         json!({
             "label": "Governed Frontier",
             "objective": "Test mandatory family",
             "slug": "governed",
+        }),
+    )?);
+    assert_tool_ok(&harness.call_tool(
+        710,
+        "kpi.create",
+        json!({
+            "frontier": "governed",
+            "metric": "nodes_solved",
         }),
     )?);
     let rejected = harness.call_tool(
@@ -697,6 +715,75 @@ fn mandatory_tag_family_rejects_future_mcp_tag_sets() -> TestResult {
 }
 
 #[test]
+fn mcp_hypothesis_record_requires_frontier_kpi() -> TestResult {
+    let project_root = temp_project_root("hypothesis_requires_kpi")?;
+    init_project(&project_root)?;
+
+    let mut harness = McpHarness::spawn(Some(&project_root))?;
+    let _ = harness.initialize()?;
+    harness.notify_initialized()?;
+
+    assert_tool_ok(&harness.call_tool(
+        74,
+        "frontier.create",
+        json!({
+            "label": "No KPI Frontier",
+            "objective": "Should be blocked before work starts",
+            "slug": "no-kpi",
+        }),
+    )?);
+
+    let rejected = harness.call_tool(
+        75,
+        "hypothesis.record",
+        json!({
+            "frontier": "no-kpi",
+            "title": "Premature hypothesis",
+            "summary": "No KPI exists yet.",
+            "body": "One paragraph body.",
+        }),
+    )?;
+    assert_tool_error(&rejected);
+    assert_eq!(
+        tool_content(&rejected)["kind"].as_str(),
+        Some("PolicyViolation")
+    );
+    assert!(
+        must_some(tool_error_message(&rejected), "KPI checkpoint message")?
+            .contains("frontier `no-kpi` has no KPI metrics")
+    );
+
+    assert_tool_ok(&harness.call_tool(
+        76,
+        "metric.define",
+        json!({
+            "key": "nodes_solved",
+            "unit": "count",
+            "objective": "maximize",
+        }),
+    )?);
+    assert_tool_ok(&harness.call_tool(
+        77,
+        "kpi.create",
+        json!({
+            "frontier": "no-kpi",
+            "metric": "nodes_solved",
+        }),
+    )?);
+    assert_tool_ok(&harness.call_tool(
+        78,
+        "hypothesis.record",
+        json!({
+            "frontier": "no-kpi",
+            "title": "Grounded hypothesis",
+            "summary": "KPI exists now.",
+            "body": "One paragraph body.",
+        }),
+    )?);
+    Ok(())
+}
+
+#[test]
 fn retired_assignment_lock_does_not_block_mcp_tag_sets() -> TestResult {
     let project_root = temp_project_root("retired_assignment_lock")?;
     init_project(&project_root)?;
@@ -724,6 +811,15 @@ fn retired_assignment_lock_does_not_block_mcp_tag_sets() -> TestResult {
     harness.notify_initialized()?;
 
     assert_tool_ok(&harness.call_tool(
+        169,
+        "metric.define",
+        json!({
+            "key": "nodes_solved",
+            "unit": "count",
+            "objective": "maximize",
+        }),
+    )?);
+    assert_tool_ok(&harness.call_tool(
         170,
         "frontier.create",
         json!({
@@ -732,6 +828,7 @@ fn retired_assignment_lock_does_not_block_mcp_tag_sets() -> TestResult {
             "slug": "assignment-lock",
         }),
     )?);
+    create_nodes_kpi(&mut harness, 1701, "assignment-lock")?;
     assert_tool_ok(&harness.call_tool(
         171,
         "hypothesis.record",
@@ -1479,6 +1576,15 @@ fn artifact_surface_preserves_reference_only() -> TestResult {
     harness.notify_initialized()?;
 
     assert_tool_ok(&harness.call_tool(
+        29,
+        "metric.define",
+        json!({
+            "key": "nodes_solved",
+            "unit": "count",
+            "objective": "maximize",
+        }),
+    )?);
+    assert_tool_ok(&harness.call_tool(
         30,
         "frontier.create",
         json!({
@@ -1487,6 +1593,7 @@ fn artifact_surface_preserves_reference_only() -> TestResult {
             "slug": "artifacts",
         }),
     )?);
+    create_nodes_kpi(&mut harness, 301, "artifacts")?;
     assert_tool_ok(&harness.call_tool(
         31,
         "hypothesis.record",

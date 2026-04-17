@@ -85,7 +85,7 @@ pub enum StoreError {
     #[error("mandatory KPI metric `{kpi}` is missing; report `{metrics}`")]
     MissingMandatoryKpi { kpi: NonEmptyText, metrics: String },
     #[error(
-        "frontier `{frontier}` has no KPI metrics; promote at least one metric before model enumeration or MCP experiment close"
+        "frontier `{frontier}` has no KPI metrics; promote at least one metric before MCP frontier work such as hypothesis.record, experiment.open, or experiment.close"
     )]
     MissingFrontierKpiContract { frontier: String },
     #[error("run dimension `{0}` is not registered")]
@@ -341,6 +341,7 @@ pub enum TextPatch<T> {
 pub struct UpdateFrontierRequest {
     pub frontier: String,
     pub expected_revision: Option<u64>,
+    pub label: Option<NonEmptyText>,
     pub objective: Option<NonEmptyText>,
     pub status: Option<FrontierStatus>,
     pub situation: Option<TextPatch<NonEmptyText>>,
@@ -1773,6 +1774,7 @@ impl ProjectStore {
             },
         };
         let updated = FrontierRecord {
+            label: request.label.unwrap_or(frontier.label.clone()),
             objective: request.objective.unwrap_or(frontier.objective.clone()),
             status: request.status.unwrap_or(frontier.status),
             brief,
@@ -1817,6 +1819,9 @@ impl ProjectStore {
         let tag_ids = self.resolve_tag_set(&request.tags, origin)?;
         self.assert_tag_policy_for_assignment(&request.tags, origin)?;
         let frontier = self.resolve_frontier(&request.frontier)?;
+        if origin == MutationOrigin::Mcp {
+            self.assert_frontier_has_kpis(frontier.id)?;
+        }
         let id = HypothesisId::fresh();
         let slug = self.unique_hypothesis_slug(request.slug, &request.title)?;
         let now = OffsetDateTime::now_utc();
@@ -2006,6 +2011,9 @@ impl ProjectStore {
         let tag_ids = self.resolve_tag_set(&request.tags, origin)?;
         self.assert_tag_policy_for_assignment(&request.tags, origin)?;
         let hypothesis = self.resolve_hypothesis(&request.hypothesis)?;
+        if origin == MutationOrigin::Mcp {
+            self.assert_frontier_has_kpis(hypothesis.frontier_id)?;
+        }
         let id = ExperimentId::fresh();
         let slug = self.unique_experiment_slug(request.slug, &request.title)?;
         let now = OffsetDateTime::now_utc();
@@ -3961,12 +3969,7 @@ impl ProjectStore {
             .chain(supporting_metrics.iter())
             .map(|metric| metric.key.clone())
             .collect::<BTreeSet<_>>();
-        let kpis = self.frontier_kpis(frontier_id)?;
-        if kpis.is_empty() {
-            return Err(StoreError::MissingFrontierKpiContract {
-                frontier: self.frontier_slug_by_id(frontier_id)?,
-            });
-        }
+        let kpis = self.require_frontier_kpis(frontier_id)?;
         for kpi in kpis {
             if reported.contains(&kpi.metric.key) {
                 continue;
@@ -3977,6 +3980,23 @@ impl ProjectStore {
             });
         }
         Ok(())
+    }
+
+    fn assert_frontier_has_kpis(&self, frontier_id: FrontierId) -> Result<(), StoreError> {
+        self.require_frontier_kpis(frontier_id).map(|_| ())
+    }
+
+    fn require_frontier_kpis(
+        &self,
+        frontier_id: FrontierId,
+    ) -> Result<Vec<KpiSummary>, StoreError> {
+        let kpis = self.frontier_kpis(frontier_id)?;
+        if kpis.is_empty() {
+            return Err(StoreError::MissingFrontierKpiContract {
+                frontier: self.frontier_slug_by_id(frontier_id)?,
+            });
+        }
+        Ok(kpis)
     }
 
     fn tag_record_by_name(&self, name: &TagName) -> Result<Option<TagRecord>, StoreError> {

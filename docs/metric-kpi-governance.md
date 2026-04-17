@@ -130,8 +130,10 @@ frontier-local privilege.
 ## Frontier Invariant
 
 An active frontier must have at least one KPI metric before it appears in normal
-MCP enumeration or accepts MCP experiment closes. The clean implementation is to
-require KPI promotion as part of frontier activation.
+MCP enumeration or accepts MCP frontier work. In particular, MCP-origin
+`hypothesis.record`, `experiment.open`, and `experiment.close` are rejected until
+a KPI exists. The clean implementation is to require KPI promotion as part of
+frontier activation.
 
 The supervisor UI may need a temporary draft affordance later. If introduced,
 draft frontiers are invisible to model enumeration and exempt from the KPI

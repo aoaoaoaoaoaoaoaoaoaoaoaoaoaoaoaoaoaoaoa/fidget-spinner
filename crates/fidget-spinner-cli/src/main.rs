@@ -267,6 +267,8 @@ struct FrontierUpdateArgs {
     #[arg(long)]
     expected_revision: Option<u64>,
     #[arg(long)]
+    label: Option<String>,
+    #[arg(long)]
     objective: Option<String>,
     #[arg(long, value_enum)]
     status: Option<CliFrontierStatus>,
@@ -981,6 +983,7 @@ fn run_frontier_update(args: FrontierUpdateArgs) -> Result<(), StoreError> {
     print_json(&store.update_frontier(UpdateFrontierRequest {
         frontier: args.frontier,
         expected_revision: args.expected_revision,
+        label: args.label.map(NonEmptyText::new).transpose()?,
         objective: args.objective.map(NonEmptyText::new).transpose()?,
         status: args.status.map(FrontierStatus::from),
         situation: cli_text_patch(args.situation.situation, args.situation.clear_situation)?,

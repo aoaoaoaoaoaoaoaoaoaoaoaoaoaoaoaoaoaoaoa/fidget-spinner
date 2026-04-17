@@ -313,6 +313,10 @@ pub(crate) fn serve(
                 get(frontier_detail),
             )
             .route(
+                "/project/{project}/frontier/{selector}/summary",
+                post(update_frontier_summary),
+            )
+            .route(
                 "/project/{project}/frontier/{selector}/archive",
                 post(archive_frontier),
             )
@@ -797,6 +801,40 @@ async fn frontier_detail(
 }
 
 #[derive(Debug, Deserialize)]
+struct FrontierSummaryForm {
+    expected_revision: Option<u64>,
+    label: String,
+    objective: String,
+}
+
+async fn update_frontier_summary(
+    State(state): State<NavigatorState>,
+    Path((project, selector)): Path<(String, String)>,
+    Form(form): Form<FrontierSummaryForm>,
+) -> Response {
+    frontier_status_mutation_response(resolve_project_context(&state, &project).and_then(
+        |context| {
+            let mut store = open_store(context.project_root.as_std_path())?;
+            let updated = store.update_frontier(UpdateFrontierRequest {
+                frontier: selector,
+                expected_revision: form.expected_revision,
+                label: Some(NonEmptyText::new(form.label)?),
+                objective: Some(NonEmptyText::new(form.objective)?),
+                status: None,
+                situation: None,
+                roadmap: None,
+                unknowns: None,
+            })?;
+            Ok(format!(
+                "{}{}",
+                context.base_href,
+                frontier_href(&updated.slug)
+            ))
+        },
+    ))
+}
+
+#[derive(Debug, Deserialize)]
 struct FrontierArchiveForm {
     expected_revision: Option<u64>,
 }
@@ -1249,6 +1287,7 @@ fn update_frontier_status(
     let updated = store.update_frontier(UpdateFrontierRequest {
         frontier: selector,
         expected_revision,
+        label: None,
         objective: None,
         status: Some(status),
         situation: None,
@@ -3018,8 +3057,39 @@ fn render_project_status(status: &ProjectStatus) -> Markup {
 
 fn render_frontier_header(frontier: &FrontierRecord) -> Markup {
     html! {
-    section.card {
-        h1 { (frontier.label) }
+    section.card.frontier-heading {
+        div.frontier-title-row {
+            h1 { (frontier.label) }
+            details.control-popout.frontier-summary-editor {
+                summary.inline-icon-button.frontier-edit-toggle aria-label="Edit frontier title and description" title="Edit title and description" {
+                    (pencil_icon())
+                }
+                div.control-popout-panel.frontier-summary-panel {
+                    form.frontier-summary-form method="post" action=(format!("{}/summary", frontier_href(&frontier.slug))) data-preserve-viewport="true" {
+                        input type="hidden" name="expected_revision" value=(frontier.revision);
+                        label.filter-control {
+                            span.filter-label { "Title" }
+                            input.compact-input.frontier-title-input
+                                type="text"
+                                name="label"
+                                value=(frontier.label.as_str())
+                                required;
+                        }
+                        label.filter-control {
+                            span.filter-label { "Description" }
+                            textarea.compact-textarea.frontier-description-input
+                                name="objective"
+                                rows="4"
+                                required
+                            { (frontier.objective.as_str()) }
+                        }
+                        div.filter-actions {
+                            button.form-button type="submit" { "Save" }
+                        }
+                    }
+                }
+            }
+        }
         p.prose { (frontier.objective) }
         div.meta-row {
             span { "slug " code { (frontier.slug) } }
@@ -5301,6 +5371,40 @@ fn styles() -> &'static str {
         stroke-linecap: round;
         stroke-linejoin: round;
     }
+    .frontier-heading {
+        gap: 8px;
+    }
+    .frontier-title-row {
+        display: flex;
+        gap: 8px;
+        align-items: flex-start;
+        justify-content: space-between;
+        min-width: 0;
+    }
+    .frontier-title-row h1 {
+        flex: 1 1 auto;
+    }
+    .frontier-summary-editor {
+        flex: 0 0 auto;
+    }
+    .frontier-edit-toggle {
+        list-style: none;
+    }
+    .frontier-edit-toggle::-webkit-details-marker {
+        display: none;
+    }
+    .frontier-summary-panel {
+        width: min(620px, calc(100vw - 80px));
+    }
+    .frontier-summary-form {
+        display: grid;
+        gap: 10px;
+    }
+    .frontier-title-input,
+    .frontier-description-input {
+        width: 100%;
+        max-width: none;
+    }
     .sidebar-archived {
         display: grid;
         gap: 8px;
@@ -5393,6 +5497,7 @@ fn styles() -> &'static str {
     }
     .compact-input,
     .compact-select,
+    .compact-textarea,
     .inline-rename-input {
         min-width: 0;
         max-width: 180px;
@@ -5405,6 +5510,11 @@ fn styles() -> &'static str {
     }
     .compact-select {
         max-width: 150px;
+    }
+    .compact-textarea {
+        max-width: none;
+        min-height: 92px;
+        resize: vertical;
     }
     .wide-compact-select {
         max-width: 360px;
@@ -5433,7 +5543,8 @@ fn styles() -> &'static str {
     .form-button:disabled,
     .inline-icon-button:disabled,
     .compact-input:disabled,
-    .compact-select:disabled {
+    .compact-select:disabled,
+    .compact-textarea:disabled {
         cursor: not-allowed;
         opacity: 0.48;
     }

@@ -62,7 +62,7 @@ If you need more context, pull it from:
 - `artifact.record` when preserving an external file, link, log, table, plot, dump, or bibliography by reference
 - `artifact.read` only to inspect metadata and attachments, never to read the body
 - `metric.define` when a project-level metric key needs a unit, objective, aggregation, or description; name the measured concept, not the unit, because units are stored separately
-- `kpi.create` only to promote one existing metric into a frontier KPI; supervisor locks may reject KPI creation, and there is intentionally no bulk KPI mutation tool
+- `kpi.create` before `hypothesis.record` on a new frontier, promoting one existing metric into a frontier KPI; supervisor locks may reject KPI creation, and there is intentionally no bulk KPI mutation tool
 - `kpi.list` or `metric.keys --scope kpi` before guessing which mandatory frontier metrics define the real hill
 - `kpi.best` when you need the frontier ranking for one KPI metric
 - `metric.keys --scope live` before guessing which numeric signals matter now

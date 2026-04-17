@@ -386,6 +386,10 @@ fn tool_input_schema(name: &str) -> Value {
                     integer_schema("Optimistic concurrency guard."),
                 ),
                 (
+                    "label",
+                    string_schema("Optional replacement frontier label."),
+                ),
+                (
                     "objective",
                     string_schema("Optional replacement frontier objective."),
                 ),
