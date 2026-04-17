@@ -120,7 +120,7 @@ enum FrontierTab {
     Brief,
     Open,
     Closed,
-    Metrics,
+    Results,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -154,7 +154,7 @@ impl FrontierTab {
         match raw {
             Some("open") => Self::Open,
             Some("closed") => Self::Closed,
-            Some("metrics") => Self::Metrics,
+            Some("results") => Self::Results,
             _ => Self::Brief,
         }
     }
@@ -164,7 +164,7 @@ impl FrontierTab {
             Self::Brief => "brief",
             Self::Open => "open",
             Self::Closed => "closed",
-            Self::Metrics => "metrics",
+            Self::Results => "results",
         }
     }
 
@@ -173,7 +173,7 @@ impl FrontierTab {
             Self::Brief => "Brief",
             Self::Open => "Open",
             Self::Closed => "Closed",
-            Self::Metrics => "Metrics",
+            Self::Results => "Results",
         }
     }
 }
@@ -1863,6 +1863,7 @@ fn render_kpi_manager(
                 h2 { "KPI Contracts" }
                 @if let Some(frontier) = selected_frontier {
                     span.muted { (frontier.label) }
+                    a.form-button href=(frontier_results_href(&frontier.slug)) { "Results" }
                 }
             }
             @if frontiers.is_empty() {
@@ -2074,7 +2075,7 @@ fn render_frontier_tab_content(
                 (render_experiment_section("Closed Experiments", &closed_experiments, limit))
             })
         }
-        FrontierTab::Metrics => {
+        FrontierTab::Results => {
             let kpi_metrics = store.metric_keys(MetricKeysQuery {
                 frontier: Some(projection.frontier.slug.to_string()),
                 scope: MetricScope::Kpi,
@@ -2125,7 +2126,7 @@ fn render_frontier_tab_bar(
         FrontierTab::Brief,
         FrontierTab::Open,
         FrontierTab::Closed,
-        FrontierTab::Metrics,
+        FrontierTab::Results,
     ];
     html! {
         nav.tab-row aria-label="Frontier tabs" {
@@ -2326,6 +2327,7 @@ fn render_metric_series_section(
     section.card id="metric-plot-card" {
         div.card-header.plot-card-header {
             h2 { "Plot" }
+            a.form-button href=(project_metrics_frontier_href(frontier_slug)) { "KPIs" }
             div.plot-toolbar {
                 (render_metric_filter_popout(
                     frontier_slug,
@@ -2371,7 +2373,7 @@ fn render_metric_series_section(
                                 @for metric_series in &filtered_series {
                                     @let href = frontier_tab_href_with_query(
                                         frontier_slug,
-                                        FrontierTab::Metrics,
+                                        FrontierTab::Results,
                                         selected_metrics,
                                         log_y,
                                         dimension_filters,
@@ -2487,7 +2489,7 @@ fn render_metric_filter_popout(
 ) -> Markup {
     let clear_href = frontier_tab_href_with_query(
         frontier_slug,
-        FrontierTab::Metrics,
+        FrontierTab::Results,
         selected_metrics,
         log_y,
         &BTreeMap::new(),
@@ -2507,7 +2509,7 @@ fn render_metric_filter_popout(
                 p.muted { "No dimension filters for the current selection." }
             } @else {
                 form.filter-form.auto-submit-form method="get" action=(frontier_href(frontier_slug)) data-preserve-viewport="true" {
-                    input type="hidden" name="tab" value="metrics";
+                    input type="hidden" name="tab" value="results";
                     (render_metric_selection_hidden_inputs(selected_metrics))
                     (render_log_hidden_input(log_y))
                     (render_table_metric_hidden_input(table_metric))
@@ -2542,7 +2544,7 @@ fn render_metric_filter_popout(
                     @for (key, value) in active_filters {
                         @let href = frontier_tab_href_with_query(
                             frontier_slug,
-                            FrontierTab::Metrics,
+                            FrontierTab::Results,
                             selected_metrics,
                             log_y,
                             &remove_dimension_filter(active_filters, key),
@@ -2576,7 +2578,7 @@ fn render_metric_selection_popout(
         summary.control-popout-toggle { (label) }
         div.control-popout-panel.metric-popout-panel {
             form.metric-picker-form.auto-submit-form method="get" action=(frontier_href(frontier_slug)) data-preserve-viewport="true" {
-                input type="hidden" name="tab" value="metrics";
+                input type="hidden" name="tab" value="results";
                 (render_dimension_filter_hidden_inputs(dimension_filters))
                 (render_table_metric_hidden_input(table_metric))
                 div.metric-popout-layout {
@@ -2671,7 +2673,7 @@ fn render_metric_picker_option(
         let replacement = std::slice::from_ref(metric);
         let href = frontier_tab_href_with_query(
             frontier_slug,
-            FrontierTab::Metrics,
+            FrontierTab::Results,
             replacement,
             log_y,
             dimension_filters,
@@ -3133,7 +3135,7 @@ fn render_frontier_active_sets(projection: &FrontierOpenProjection) -> Markup {
                                         td {
                                             a href=(frontier_tab_href(
                                                 &projection.frontier.slug,
-                                                FrontierTab::Metrics,
+                                                FrontierTab::Results,
                                                 std::slice::from_ref(metric),
                                                 false,
                                                 Some(metric.key.as_str()),
@@ -4424,6 +4426,14 @@ fn decode_query_component(raw: &str) -> Result<String, StoreError> {
 
 fn frontier_href(slug: &Slug) -> String {
     format!("frontier/{}", encode_path_segment(slug.as_str()))
+}
+
+fn frontier_results_href(slug: &Slug) -> String {
+    frontier_tab_href(slug, FrontierTab::Results, &[], false, None)
+}
+
+fn project_metrics_frontier_href(slug: &Slug) -> String {
+    format!("metrics?frontier={}", encode_path_segment(slug.as_str()))
 }
 
 fn frontier_tab_href(
@@ -6471,12 +6481,12 @@ mod tests {
     }
 
     #[test]
-    fn frontier_page_query_accepts_legacy_single_metric_selector() {
+    fn frontier_page_query_accepts_result_metric_selector() {
         let query = must(
-            FrontierPageQuery::parse(Some("tab=metrics&metric=presolve_ms_gmean")),
+            FrontierPageQuery::parse(Some("tab=results&metric=presolve_ms_gmean")),
             "query should parse",
         );
-        assert_eq!(query.tab.as_deref(), Some("metrics"));
+        assert_eq!(query.tab.as_deref(), Some("results"));
         assert_eq!(query.metric, vec!["presolve_ms_gmean".to_owned()]);
     }
 
