@@ -239,6 +239,8 @@ Locks:
 - `metrics/definition`: blocks MCP metric creation.
 - `metrics/family` or a renamed `metrics/edit`: blocks MCP-origin metric
   registry edits if such tools are ever exposed.
+- `kpis/assignment`, frontier-scoped: blocks MCP KPI creation/promotion for
+  that frontier. Supervisor UI and CLI KPI edits remain authoritative.
 
 Supervisor UI operations are never blocked by these locks.
 
@@ -302,6 +304,8 @@ Likely tools:
 - `metric.define`: still project-global.
 - `metric.keys`: lists project-global metric definitions; can filter by KPI
   relevance for a frontier.
+- `kpi.create`: promotes one existing metric into a single-metric frontier KPI;
+  richer KPI alternative editing stays supervisor-owned.
 - `kpi.list`: lists frontier KPI contracts.
 - `kpi.best`: ranks experiments by resolved KPI value.
 - `metric.best`: remains for ad hoc metric inspection, but frontier loops should

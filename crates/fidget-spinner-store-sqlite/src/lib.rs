@@ -276,6 +276,14 @@ pub struct SetRegistryLockRequest {
     pub locked: bool,
 }
 
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct SetFrontierRegistryLockRequest {
+    pub registry: RegistryName,
+    pub mode: RegistryLockMode,
+    pub frontier: String,
+    pub locked: bool,
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct TagRegistryQuery {
     pub include_hidden: bool,
@@ -613,6 +621,12 @@ pub struct CreateKpiRequest {
     pub objective: OptimizationObjective,
     pub description: Option<NonEmptyText>,
     pub metric_keys: Vec<NonEmptyText>,
+}
+
+#[derive(Clone, Debug)]
+pub struct PromoteMetricToKpiRequest {
+    pub frontier: String,
+    pub metric: NonEmptyText,
 }
 
 #[derive(Clone, Debug)]
@@ -965,7 +979,7 @@ impl ProjectStore {
         Ok(TagRegistrySnapshot {
             tags,
             families: self.load_tag_family_records()?,
-            locks: self.load_registry_locks()?,
+            locks: self.load_registry_locks(&RegistryName::tags())?,
             name_history: self.load_tag_name_history()?,
         })
     }
@@ -1255,6 +1269,68 @@ impl ProjectStore {
         Ok(Some(record))
     }
 
+    pub fn set_frontier_registry_lock(
+        &mut self,
+        request: SetFrontierRegistryLockRequest,
+    ) -> Result<Option<RegistryLockRecord>, StoreError> {
+        let frontier = self.resolve_frontier(&request.frontier)?;
+        if !request.locked {
+            let transaction = self.connection.transaction()?;
+            let _ = transaction.execute(
+                "DELETE FROM registry_locks
+                 WHERE registry = ?1 AND mode = ?2 AND scope_kind = 'frontier' AND scope_id = ?3",
+                params![
+                    request.registry.as_str(),
+                    request.mode.as_str(),
+                    frontier.id.to_string()
+                ],
+            )?;
+            transaction.commit()?;
+            return Ok(None);
+        }
+        let now = OffsetDateTime::now_utc();
+        let existing =
+            self.frontier_registry_lock_by_id(&request.registry, request.mode, frontier.id)?;
+        let reason = frontier_registry_lock_reason(&request.registry, request.mode, &frontier)?;
+        let record = RegistryLockRecord {
+            id: existing
+                .as_ref()
+                .map_or_else(RegistryLockId::fresh, |lock| lock.id),
+            registry: request.registry,
+            mode: request.mode,
+            scope_kind: NonEmptyText::new("frontier")?,
+            scope_id: NonEmptyText::new(frontier.id.to_string())?,
+            reason,
+            revision: existing
+                .as_ref()
+                .map_or(1, |lock| lock.revision.saturating_add(1)),
+            locked_at: existing.as_ref().map_or(now, |lock| lock.locked_at),
+            updated_at: now,
+        };
+        let transaction = self.connection.transaction()?;
+        upsert_registry_lock(&transaction, &record)?;
+        record_event(
+            &transaction,
+            "registry_lock",
+            &record.id.to_string(),
+            record.revision,
+            "updated",
+            &record,
+        )?;
+        transaction.commit()?;
+        Ok(Some(record))
+    }
+
+    pub fn frontier_registry_lock(
+        &self,
+        registry: &RegistryName,
+        mode: RegistryLockMode,
+        frontier: &str,
+    ) -> Result<Option<RegistryLockRecord>, StoreError> {
+        let frontier = self.resolve_frontier(frontier)?;
+        self.frontier_registry_lock_by_id(registry, mode, frontier.id)
+    }
+
     pub fn define_metric(
         &mut self,
         request: DefineMetricRequest,
@@ -1470,6 +1546,43 @@ impl ProjectStore {
         )?;
         transaction.commit()?;
         self.kpi_summary(record)
+    }
+
+    pub fn promote_metric_to_kpi_from_mcp(
+        &mut self,
+        request: PromoteMetricToKpiRequest,
+    ) -> Result<KpiSummary, StoreError> {
+        let frontier = self.resolve_frontier(&request.frontier)?;
+        if let Some(lock) = self.frontier_registry_lock_by_id(
+            &RegistryName::kpis(),
+            RegistryLockMode::Assignment,
+            frontier.id,
+        )? {
+            return Err(StoreError::PolicyViolation(format!(
+                "MCP KPI creation is locked for frontier `{}`; ask the supervisor to unlock KPI creation on the Metrics page. Reason: {}",
+                frontier.slug, lock.reason
+            )));
+        }
+        let metric = self
+            .metric_definition(&request.metric)?
+            .ok_or_else(|| StoreError::UnknownMetricDefinition(request.metric.clone()))?;
+        if let Some(kpi) = self.frontier_kpis(frontier.id)?.into_iter().find(|kpi| {
+            kpi.metrics
+                .iter()
+                .any(|candidate| candidate.key == metric.key)
+        }) {
+            return Err(StoreError::PolicyViolation(format!(
+                "metric `{}` is already a KPI metric for frontier `{}` via KPI `{}`",
+                metric.key, frontier.slug, kpi.name
+            )));
+        }
+        self.create_kpi(CreateKpiRequest {
+            frontier: request.frontier,
+            name: metric.key.clone(),
+            objective: metric.objective,
+            description: metric.description,
+            metric_keys: vec![metric.key],
+        })
     }
 
     pub fn update_kpi(&mut self, request: UpdateKpiRequest) -> Result<KpiSummary, StoreError> {
@@ -4135,12 +4248,31 @@ impl ProjectStore {
         registry: &RegistryName,
         mode: RegistryLockMode,
     ) -> Result<Option<RegistryLockRecord>, StoreError> {
+        self.registry_lock_in_scope(registry, mode, "project", "project")
+    }
+
+    fn frontier_registry_lock_by_id(
+        &self,
+        registry: &RegistryName,
+        mode: RegistryLockMode,
+        frontier_id: FrontierId,
+    ) -> Result<Option<RegistryLockRecord>, StoreError> {
+        self.registry_lock_in_scope(registry, mode, "frontier", &frontier_id.to_string())
+    }
+
+    fn registry_lock_in_scope(
+        &self,
+        registry: &RegistryName,
+        mode: RegistryLockMode,
+        scope_kind: &str,
+        scope_id: &str,
+    ) -> Result<Option<RegistryLockRecord>, StoreError> {
         self.connection
             .query_row(
                 "SELECT id, registry, mode, scope_kind, scope_id, reason, revision, locked_at, updated_at
                  FROM registry_locks
-                 WHERE registry = ?1 AND mode = ?2 AND scope_kind = 'project' AND scope_id = 'project'",
-                params![registry.as_str(), mode.as_str()],
+                 WHERE registry = ?1 AND mode = ?2 AND scope_kind = ?3 AND scope_id = ?4",
+                params![registry.as_str(), mode.as_str(), scope_kind, scope_id],
                 decode_registry_lock_row,
             )
             .optional()
@@ -4182,13 +4314,17 @@ impl ProjectStore {
             .map_err(StoreError::from)
     }
 
-    fn load_registry_locks(&self) -> Result<Vec<RegistryLockRecord>, StoreError> {
+    fn load_registry_locks(
+        &self,
+        registry: &RegistryName,
+    ) -> Result<Vec<RegistryLockRecord>, StoreError> {
         let mut statement = self.connection.prepare(
             "SELECT id, registry, mode, scope_kind, scope_id, reason, revision, locked_at, updated_at
              FROM registry_locks
-             ORDER BY registry ASC, mode ASC",
+             WHERE registry = ?1
+             ORDER BY mode ASC, scope_kind ASC, scope_id ASC",
         )?;
-        let rows = statement.query_map([], decode_registry_lock_row)?;
+        let rows = statement.query_map(params![registry.as_str()], decode_registry_lock_row)?;
         rows.collect::<Result<Vec<_>, _>>()
             .map_err(StoreError::from)
     }
@@ -5353,6 +5489,25 @@ fn registry_lock_reason(
         }
     };
     Ok(NonEmptyText::new(reason)?)
+}
+
+fn frontier_registry_lock_reason(
+    registry: &RegistryName,
+    mode: RegistryLockMode,
+    frontier: &FrontierRecord,
+) -> Result<NonEmptyText, StoreError> {
+    if registry.as_str() == "kpis" && mode == RegistryLockMode::Assignment {
+        return Ok(NonEmptyText::new(format!(
+            "MCP KPI creation is locked for frontier `{}` from the Metrics page",
+            frontier.slug
+        ))?);
+    }
+    Ok(NonEmptyText::new(format!(
+        "{} {} writes are locked for frontier `{}` from the supervisor UI",
+        registry.as_str(),
+        mode.as_str(),
+        frontier.slug
+    ))?)
 }
 
 fn decode_frontier_row(row: &rusqlite::Row<'_>) -> Result<FrontierRecord, rusqlite::Error> {

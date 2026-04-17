@@ -17,7 +17,7 @@ use fidget_spinner_store_sqlite::{
     AssignTagFamilyRequest, CreateFrontierRequest, CreateHypothesisRequest, CreateKpiRequest,
     CreateTagFamilyRequest, DefineMetricRequest, DeleteTagRequest, ListExperimentsQuery,
     ListFrontiersQuery, MergeTagRequest, OpenExperimentRequest, ProjectStore, RenameTagRequest,
-    SetRegistryLockRequest, UpdateFrontierRequest,
+    SetFrontierRegistryLockRequest, SetRegistryLockRequest, UpdateFrontierRequest,
 };
 use libmcp as _;
 use libmcp_testkit::assert_no_opaque_ids;
@@ -285,9 +285,7 @@ fn create_nodes_kpi(harness: &mut McpHarness, id: u64, frontier: &str) -> TestRe
         "kpi.create",
         json!({
             "frontier": frontier,
-            "name": "node throughput",
-            "objective": "maximize",
-            "metric_keys": ["nodes_solved"],
+            "metric": "nodes_solved",
         }),
     )?);
     Ok(())
@@ -556,6 +554,72 @@ fn tag_add_lock_only_rejects_mcp_tag_creation() -> TestResult {
     assert!(
         must_some(tool_error_message(&response), "policy message")?
             .contains("new tag creation is locked from the Tags page")
+    );
+    Ok(())
+}
+
+#[test]
+fn kpi_creation_lock_rejects_mcp_only() -> TestResult {
+    let project_root = temp_project_root("kpi_creation_lock")?;
+    init_project(&project_root)?;
+    {
+        let mut store = must(ProjectStore::open(&project_root), "open project store")?;
+        let _ = must(
+            store.create_frontier(CreateFrontierRequest {
+                label: must(NonEmptyText::new("KPI Lock Frontier"), "frontier label")?,
+                objective: must(NonEmptyText::new("Govern model KPI promotion"), "objective")?,
+                slug: Some(must(Slug::new("kpi-lock"), "frontier slug")?),
+            }),
+            "create frontier",
+        )?;
+        for key in ["nodes_solved", "supervisor_nodes"] {
+            let _ = must(
+                store.define_metric(DefineMetricRequest {
+                    key: must(NonEmptyText::new(key), "metric key")?,
+                    unit: must(MetricUnit::new("count"), "metric unit")?,
+                    aggregation: fidget_spinner_core::MetricAggregation::Point,
+                    objective: OptimizationObjective::Maximize,
+                    description: None,
+                }),
+                "define metric",
+            )?;
+        }
+        let _ = must(
+            store.set_frontier_registry_lock(SetFrontierRegistryLockRequest {
+                registry: RegistryName::kpis(),
+                mode: RegistryLockMode::Assignment,
+                frontier: "kpi-lock".to_owned(),
+                locked: true,
+            }),
+            "lock frontier KPI creation",
+        )?;
+        let supervisor_kpi = store.create_kpi(CreateKpiRequest {
+            frontier: "kpi-lock".to_owned(),
+            name: must(NonEmptyText::new("supervisor_nodes"), "kpi name")?,
+            objective: OptimizationObjective::Maximize,
+            description: None,
+            metric_keys: vec![must(NonEmptyText::new("supervisor_nodes"), "metric key")?],
+        });
+        assert!(supervisor_kpi.is_ok());
+    }
+
+    let mut harness = McpHarness::spawn(Some(&project_root))?;
+    let _ = harness.initialize()?;
+    harness.notify_initialized()?;
+
+    let response = harness.call_tool(
+        71,
+        "kpi.create",
+        json!({"frontier": "kpi-lock", "metric": "nodes_solved"}),
+    )?;
+    assert_tool_error(&response);
+    assert_eq!(
+        tool_content(&response)["kind"].as_str(),
+        Some("PolicyViolation")
+    );
+    assert!(
+        must_some(tool_error_message(&response), "policy message")?
+            .contains("MCP KPI creation is locked")
     );
     Ok(())
 }
@@ -1069,9 +1133,7 @@ fn frontier_update_mutates_objective_and_kpi_grounding() -> TestResult {
         "kpi.create",
         json!({
             "frontier": "lp-root",
-            "name": "node throughput",
-            "objective": "maximize",
-            "metric_keys": ["nodes_solved"],
+            "metric": "nodes_solved",
         }),
     )?;
     assert_tool_ok(&kpi);
@@ -1166,9 +1228,7 @@ fn experiment_nearest_finds_structural_buckets_and_champion() -> TestResult {
         "kpi.create",
         json!({
             "frontier": "comparators",
-            "name": "node throughput",
-            "objective": "maximize",
-            "metric_keys": ["nodes_solved"],
+            "metric": "nodes_solved",
         }),
     )?);
     assert_tool_ok(&harness.call_tool(

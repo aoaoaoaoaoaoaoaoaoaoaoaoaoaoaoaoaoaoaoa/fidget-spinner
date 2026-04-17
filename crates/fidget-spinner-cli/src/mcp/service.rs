@@ -14,15 +14,15 @@ use fidget_spinner_core::{
 };
 use fidget_spinner_store_sqlite::{
     AttachmentSelector, CloseExperimentRequest, CreateArtifactRequest, CreateFrontierRequest,
-    CreateHypothesisRequest, CreateKpiRequest, DefineMetricRequest, DefineRunDimensionRequest,
-    EntityHistoryEntry, ExperimentDetail, ExperimentNearestQuery, ExperimentOutcomePatch,
-    ExperimentSummary, FrontierOpenProjection, FrontierRoadmapItemDraft, FrontierSummary,
-    HypothesisDetail, HypothesisSummary, KpiBestEntry, KpiBestQuery, KpiListQuery, KpiSummary,
-    ListArtifactsQuery, ListExperimentsQuery, ListFrontiersQuery, ListHypothesesQuery,
-    MetricBestEntry, MetricBestQuery, MetricKeySummary, MetricKeysQuery, MetricRankOrder,
-    MetricScope, OpenExperimentRequest, ProjectStatus, ProjectStore, StoreError, TagRegistryQuery,
-    TextPatch, UpdateArtifactRequest, UpdateExperimentRequest, UpdateFrontierRequest,
-    UpdateHypothesisRequest, VertexSelector, VertexSummary,
+    CreateHypothesisRequest, DefineMetricRequest, DefineRunDimensionRequest, EntityHistoryEntry,
+    ExperimentDetail, ExperimentNearestQuery, ExperimentOutcomePatch, ExperimentSummary,
+    FrontierOpenProjection, FrontierRoadmapItemDraft, FrontierSummary, HypothesisDetail,
+    HypothesisSummary, KpiBestEntry, KpiBestQuery, KpiListQuery, KpiSummary, ListArtifactsQuery,
+    ListExperimentsQuery, ListFrontiersQuery, ListHypothesesQuery, MetricBestEntry,
+    MetricBestQuery, MetricKeySummary, MetricKeysQuery, MetricRankOrder, MetricScope,
+    OpenExperimentRequest, ProjectStatus, ProjectStore, PromoteMetricToKpiRequest, StoreError,
+    TagRegistryQuery, TextPatch, UpdateArtifactRequest, UpdateExperimentRequest,
+    UpdateFrontierRequest, UpdateHypothesisRequest, VertexSelector, VertexSummary,
 };
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
@@ -600,24 +600,12 @@ impl WorkerService {
             "kpi.create" => {
                 let args = deserialize::<KpiCreateArgs>(arguments)?;
                 reject_frontier_selector_for_mcp(&self.store, &args.frontier, &operation)?;
-                let kpi = lift!(
-                    self.store.create_kpi(CreateKpiRequest {
+                let kpi = lift!(self.store.promote_metric_to_kpi_from_mcp(
+                    PromoteMetricToKpiRequest {
                         frontier: args.frontier,
-                        name: NonEmptyText::new(args.name).map_err(store_fault(&operation))?,
-                        objective: args.objective,
-                        description: args
-                            .description
-                            .map(NonEmptyText::new)
-                            .transpose()
-                            .map_err(store_fault(&operation))?,
-                        metric_keys: args
-                            .metric_keys
-                            .into_iter()
-                            .map(NonEmptyText::new)
-                            .collect::<Result<Vec<_>, _>>()
-                            .map_err(store_fault(&operation))?,
-                    })
-                );
+                        metric: NonEmptyText::new(args.metric).map_err(store_fault(&operation))?,
+                    }
+                ));
                 kpi_record_output(&kpi, &operation)?
             }
             "kpi.list" => {
@@ -946,10 +934,7 @@ struct MetricBestArgs {
 #[derive(Debug, Deserialize)]
 struct KpiCreateArgs {
     frontier: String,
-    name: String,
-    objective: OptimizationObjective,
-    description: Option<String>,
-    metric_keys: Vec<String>,
+    metric: String,
 }
 
 #[derive(Debug, Deserialize)]

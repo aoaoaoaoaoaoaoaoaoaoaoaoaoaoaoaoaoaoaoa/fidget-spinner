@@ -22,9 +22,9 @@ use fidget_spinner_store_sqlite::{
     FrontierMetricSeries, FrontierOpenProjection, FrontierSummary, HypothesisCurrentState,
     HypothesisDetail, KpiSummary, ListExperimentsQuery, ListFrontiersQuery, ListHypothesesQuery,
     MergeMetricRequest, MergeTagRequest, MetricKeysQuery, MetricScope, ProjectStatus,
-    RenameMetricRequest, RenameTagRequest, STATE_DB_NAME, SetRegistryLockRequest,
-    SetTagFamilyMandatoryRequest, StoreError, UpdateFrontierRequest, UpdateKpiRequest,
-    VertexSummary,
+    RenameMetricRequest, RenameTagRequest, STATE_DB_NAME, SetFrontierRegistryLockRequest,
+    SetRegistryLockRequest, SetTagFamilyMandatoryRequest, StoreError, UpdateFrontierRequest,
+    UpdateKpiRequest, VertexSummary,
 };
 use maud::{DOCTYPE, Markup, PreEscaped, html};
 use percent_encoding::{NON_ALPHANUMERIC, percent_decode_str, utf8_percent_encode};
@@ -306,6 +306,7 @@ pub(crate) fn serve(
             .route("/project/{project}/metrics/merge", post(merge_metric))
             .route("/project/{project}/metrics/delete", post(delete_metric))
             .route("/project/{project}/metrics/kpi", post(create_kpi))
+            .route("/project/{project}/metrics/kpi/lock", post(set_kpi_lock))
             .route("/project/{project}/metrics/kpi/update", post(update_kpi))
             .route("/project/{project}/metrics/kpi/delete", post(delete_kpi))
             .route(
@@ -734,6 +735,32 @@ async fn create_kpi(
                 objective: parse_optimization_objective_ui(&form.objective)?,
                 description: optional_text_field(form.description)?,
                 metric_keys,
+            })?;
+            Ok(metrics_frontier_href(&context, &frontier))
+        }),
+    )
+}
+
+#[derive(Deserialize)]
+struct SetKpiLockForm {
+    frontier: String,
+    locked: String,
+}
+
+async fn set_kpi_lock(
+    State(state): State<NavigatorState>,
+    Path(project): Path<String>,
+    Form(form): Form<SetKpiLockForm>,
+) -> Response {
+    metric_mutation_response(
+        resolve_project_context(&state, &project).and_then(|context| {
+            let mut store = open_store(context.project_root.as_std_path())?;
+            let frontier = form.frontier;
+            let _ = store.set_frontier_registry_lock(SetFrontierRegistryLockRequest {
+                registry: RegistryName::kpis(),
+                mode: RegistryLockMode::Assignment,
+                frontier: frontier.clone(),
+                locked: matches!(form.locked.as_str(), "1" | "true" | "on" | "lock"),
             })?;
             Ok(metrics_frontier_href(&context, &frontier))
         }),
@@ -1389,6 +1416,19 @@ fn render_project_metrics(
         })
         .transpose()?
         .unwrap_or_default();
+    let kpi_creation_locked = selected_frontier
+        .as_ref()
+        .map(|frontier| {
+            store
+                .frontier_registry_lock(
+                    &RegistryName::kpis(),
+                    RegistryLockMode::Assignment,
+                    frontier.slug.as_str(),
+                )
+                .map(|lock| lock.is_some())
+        })
+        .transpose()?
+        .unwrap_or(false);
     let kpi_count = active_frontiers
         .iter()
         .map(|frontier| {
@@ -1421,7 +1461,13 @@ fn render_project_metrics(
                 }
             }
         }
-        (render_kpi_manager(active_frontiers, selected_frontier.as_ref(), &selected_kpis, &metrics))
+        (render_kpi_manager(
+            active_frontiers,
+            selected_frontier.as_ref(),
+            &selected_kpis,
+            &metrics,
+            kpi_creation_locked,
+        ))
         (render_metric_registry_table(&metrics))
     };
     Ok(render_shell(&title, &shell, None, content))
@@ -1856,6 +1902,7 @@ fn render_kpi_manager(
     selected_frontier: Option<&FrontierSummary>,
     kpis: &[KpiSummary],
     metrics: &[fidget_spinner_store_sqlite::MetricKeySummary],
+    kpi_creation_locked: bool,
 ) -> Markup {
     html! {
         section.card {
@@ -1864,6 +1911,7 @@ fn render_kpi_manager(
                 @if let Some(frontier) = selected_frontier {
                     span.muted { (frontier.label) }
                     a.form-button href=(frontier_results_href(&frontier.slug)) { "Results" }
+                    (render_kpi_lock_switch(frontier, kpi_creation_locked))
                 }
             }
             @if frontiers.is_empty() {
@@ -1880,6 +1928,27 @@ fn render_kpi_manager(
                 }
                 (render_create_kpi_form(frontier, metrics))
                 (render_kpi_registry(frontier, kpis))
+            }
+        }
+    }
+}
+
+fn render_kpi_lock_switch(frontier: &FrontierSummary, locked: bool) -> Markup {
+    html! {
+        form.tag-lock-switch-form method="post" action="metrics/kpi/lock" data-preserve-viewport="true" {
+            input type="hidden" name="frontier" value=(frontier.slug.as_str());
+            input type="hidden" name="locked" value=(if locked { "unlock" } else { "lock" });
+            button
+                type="submit"
+                class=(if locked { "tag-lock-switch locked" } else { "tag-lock-switch" })
+                aria-pressed=(if locked { "true" } else { "false" })
+                title="When locked, MCP cannot promote metrics into KPIs for this frontier. Supervisor UI and CLI KPI edits remain open."
+            {
+                span.switch-track aria-hidden="true" {
+                    span.switch-thumb {}
+                }
+                span.switch-label { "MCP KPI create" }
+                span.switch-state { (if locked { "locked" } else { "open" }) }
             }
         }
     }

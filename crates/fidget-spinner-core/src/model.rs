@@ -862,6 +862,11 @@ impl RegistryName {
     pub fn tags() -> Self {
         Self("tags".to_owned())
     }
+
+    #[must_use]
+    pub fn kpis() -> Self {
+        Self("kpis".to_owned())
+    }
 }
 
 impl Display for RegistryName {

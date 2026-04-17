@@ -229,7 +229,7 @@ const TOOL_SPECS: &[ToolSpec] = &[
     },
     ToolSpec {
         name: "kpi.create",
-        description: "Create one mandatory frontier KPI from an ordered set of metric alternatives.",
+        description: "Promote one existing metric into a single-metric KPI for one frontier unless KPI creation is locked.",
         dispatch: DispatchTarget::Worker,
         replay: ReplayContract::NeverReplay,
     },
@@ -724,21 +724,12 @@ fn tool_input_schema(name: &str) -> Value {
         "kpi.create" => object_schema(
             &[
                 ("frontier", selector_schema("Owning frontier UUID or slug.")),
-                ("name", string_schema("Human-facing KPI name.")),
                 (
-                    "objective",
-                    enum_string_schema(
-                        &["minimize", "maximize", "target"],
-                        "KPI optimization objective.",
-                    ),
-                ),
-                ("description", string_schema("Optional description.")),
-                (
-                    "metric_keys",
-                    string_array_schema("Ordered metric alternatives, highest precedence first."),
+                    "metric",
+                    string_schema("Existing metric key to promote into a one-metric KPI."),
                 ),
             ],
-            &["frontier", "name", "objective", "metric_keys"],
+            &["frontier", "metric"],
         ),
         "kpi.list" => object_schema(
             &[("frontier", selector_schema("Frontier UUID or slug."))],
