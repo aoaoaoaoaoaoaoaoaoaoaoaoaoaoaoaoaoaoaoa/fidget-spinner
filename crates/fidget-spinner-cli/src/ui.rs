@@ -1452,13 +1452,7 @@ fn render_project_metrics(
         (render_metric_registry_table(&metrics))
     };
     Ok(render_shell(
-        &title,
-        &shell,
-        true,
-        Some(&shell.project_status.display_name.to_string()),
-        None,
-        None,
-        content,
+        &title, &shell, false, None, None, None, content,
     ))
 }
 
@@ -4240,7 +4234,10 @@ fn render_sidebar(shell: &ShellFrame) -> Markup {
     html! {
     section.sidebar-panel {
         div.sidebar-project {
-            a.sidebar-home href=(&shell.project_home_href) { (&shell.project_status.display_name) }
+            div.sidebar-title-row {
+                a.sidebar-home href=(&shell.project_home_href) { (&shell.project_status.display_name) }
+                a.sidebar-home-chip href="/" { "Home" }
+            }
             div.sidebar-actions {
                 a.sidebar-tags href=(format!("{}tags", shell.base_href)) { "Tags" }
                 a.sidebar-tags href=(format!("{}metrics", shell.base_href)) { "Metrics" }
@@ -5249,10 +5246,30 @@ fn styles() -> &'static str {
         display: grid;
         gap: 7px;
     }
+    .sidebar-title-row {
+        display: flex;
+        gap: 8px;
+        align-items: baseline;
+        justify-content: space-between;
+        min-width: 0;
+    }
     .sidebar-home {
         color: var(--text);
         font-size: 18px;
         font-weight: 700;
+        min-width: 0;
+        overflow-wrap: anywhere;
+    }
+    .sidebar-home-chip {
+        flex: 0 0 auto;
+        border: 1px solid var(--border);
+        background: var(--panel-2);
+        color: var(--accent);
+        font-size: 11px;
+        font-weight: 700;
+        letter-spacing: 0.05em;
+        padding: 2px 6px;
+        text-transform: uppercase;
     }
     .sidebar-tags {
         padding: 3px 7px;
