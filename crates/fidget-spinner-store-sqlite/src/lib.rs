@@ -61,7 +61,7 @@ pub enum StoreError {
     #[error("{0}")]
     InvalidInput(String),
     #[error(
-        "project store format {observed} is incompatible with this binary (expected {expected}); reinitialize the store"
+        "project store format {observed} is incompatible with this binary (expected {expected}); restart/upgrade the stale MCP binary if the store is newer, or run the manual store migration if the store is older"
     )]
     IncompatibleStoreFormatVersion { observed: u32, expected: u32 },
     #[error("unknown tag `{0}`")]

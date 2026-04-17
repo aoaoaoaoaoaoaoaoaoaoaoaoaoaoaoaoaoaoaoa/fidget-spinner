@@ -346,6 +346,7 @@ impl HostRuntime {
     ) -> Result<Value, FaultRecord> {
         let binding = self.require_bound_project(&operation)?;
         self.worker.rebind(binding.project_root.clone());
+        self.refresh_worker_for_binary_rollout(&operation)?;
 
         if self.should_crash_worker_once(&operation) {
             self.worker.arm_crash_once();
@@ -361,6 +362,15 @@ impl HostRuntime {
                 Ok(result)
             }
             Err(fault) => {
+                if fault.is_store_format_mismatch() {
+                    return self.retry_after_store_format_rollout(
+                        &operation,
+                        forwarded_request_id.as_ref(),
+                        request_id,
+                        worker_operation,
+                        fault,
+                    );
+                }
                 if replay == ReplayContract::Convergent && fault.retryable {
                     self.telemetry.record_retry(&operation);
                     self.telemetry.record_worker_restart();
@@ -381,6 +391,52 @@ impl HostRuntime {
                     self.complete_forwarded_request(forwarded_request_id.as_ref());
                     Err(fault)
                 }
+            }
+        }
+    }
+
+    fn refresh_worker_for_binary_rollout(&mut self, operation: &str) -> Result<(), FaultRecord> {
+        let rollout_pending = self.binary.rollout_pending().map_err(|error| {
+            FaultRecord::new(
+                FaultKind::Internal,
+                FaultStage::Rollout,
+                operation,
+                format!("failed to inspect MCP binary rollout state: {error}"),
+            )
+        })?;
+        if !rollout_pending {
+            return Ok(());
+        }
+        self.telemetry.record_worker_restart();
+        self.worker.restart()?;
+        Ok(())
+    }
+
+    fn retry_after_store_format_rollout(
+        &mut self,
+        operation: &str,
+        forwarded_request_id: Option<&RequestId>,
+        request_id: HostRequestId,
+        worker_operation: WorkerOperation,
+        first_fault: FaultRecord,
+    ) -> Result<Value, FaultRecord> {
+        self.telemetry.record_retry(operation);
+        self.telemetry.record_worker_restart();
+        self.worker
+            .restart()
+            .map_err(|restart_fault| restart_fault.mark_retried())?;
+        match self.worker.execute(request_id, worker_operation) {
+            Ok(result) => {
+                self.complete_forwarded_request(forwarded_request_id);
+                Ok(result)
+            }
+            Err(retry_fault) if retry_fault.is_store_format_mismatch() => {
+                self.complete_forwarded_request(forwarded_request_id);
+                Err(first_fault.mark_retried())
+            }
+            Err(retry_fault) => {
+                self.complete_forwarded_request(forwarded_request_id);
+                Err(retry_fault.mark_retried())
             }
         }
     }

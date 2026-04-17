@@ -98,4 +98,41 @@ impl FaultRecord {
             FaultKind::Transient | FaultKind::Internal => -32603,
         }
     }
+
+    #[must_use]
+    pub fn is_store_format_mismatch(&self) -> bool {
+        self.kind == FaultKind::Unavailable
+            && self.stage == FaultStage::Store
+            && self.message.contains("project store format ")
+            && self.message.contains(" is incompatible with this binary ")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{FaultKind, FaultRecord, FaultStage};
+
+    #[test]
+    fn recognizes_cross_version_store_format_fault() {
+        let fault = FaultRecord::new(
+            FaultKind::Unavailable,
+            FaultStage::Store,
+            "tools/call:frontier.list",
+            "project store format 7 is incompatible with this binary (expected 6); restart/upgrade the stale MCP binary if the store is newer, or run the manual store migration if the store is older",
+        );
+
+        assert!(fault.is_store_format_mismatch());
+    }
+
+    #[test]
+    fn ignores_generic_unavailable_store_fault() {
+        let fault = FaultRecord::new(
+            FaultKind::Unavailable,
+            FaultStage::Store,
+            "tools/call:frontier.list",
+            "project store is not initialized",
+        );
+
+        assert!(!fault.is_store_format_mismatch());
+    }
 }
