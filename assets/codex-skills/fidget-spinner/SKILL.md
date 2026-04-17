@@ -61,7 +61,7 @@ If you need more context, pull it from:
 - `experiment.open` once a hypothesis has a concrete slice and is ready to be tested
 - `experiment.list` or `experiment.read` when resuming a session and you need to recover open or recently closed state
 - `experiment.update` while the experiment is still live and its summary, tags, or influence parents need refinement
-- `experiment.close` only for an already-open experiment and only when you have measured result, verdict, and rationale; it requires a clean git worktree and records `HEAD` automatically, so make a fast commit first and attach `analysis` only when the result needs interpretation beyond the rationale
+- `experiment.close` only for an already-open experiment and only when you have measured result, verdict, and rationale; it requires a clean git worktree and records `HEAD` automatically, anchoring to `command.working_directory` when provided, so make a fast commit in the actual implementation worktree first and attach `analysis` only when the result needs interpretation beyond the rationale
 - `experiment.nearest` when you need the nearest accepted, kept, rejected, or champion comparator for one structural slice
 - `artifact.record` when preserving an external file, link, log, table, plot, dump, or bibliography by reference
 - `artifact.read` only to inspect metadata and attachments, never to read the body

@@ -3858,10 +3858,11 @@ impl ProjectStore {
         if origin.is_mcp() {
             self.assert_frontier_kpis_satisfied(frontier_id, &primary_metric, &supporting_metrics)?;
         }
+        let git_capture_root = experiment_git_capture_root(&self.project_root, &patch.command);
         let (commit_hash, closed_at) = match existing {
             Some(outcome) => (outcome.commit_hash.clone(), outcome.closed_at),
             None => (
-                Some(capture_clean_git_commit(&self.project_root)?),
+                Some(capture_clean_git_commit(&git_capture_root)?),
                 OffsetDateTime::now_utc(),
             ),
         };
@@ -5419,6 +5420,19 @@ fn capture_clean_git_commit(project_root: &Utf8Path) -> Result<GitCommitHash, St
         });
     }
     Ok(commit_hash)
+}
+
+fn experiment_git_capture_root(project_root: &Utf8Path, command: &CommandRecipe) -> Utf8PathBuf {
+    command.working_directory.as_ref().map_or_else(
+        || project_root.to_path_buf(),
+        |working_directory| {
+            if working_directory.is_absolute() {
+                working_directory.clone()
+            } else {
+                project_root.join(working_directory)
+            }
+        },
+    )
 }
 
 fn assert_git_worktree(project_root: &Utf8Path) -> Result<(), StoreError> {

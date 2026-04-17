@@ -163,7 +163,7 @@ const TOOL_SPECS: &[ToolSpec] = &[
     },
     ToolSpec {
         name: "experiment.close",
-        description: "Close one open experiment with typed dimensions, structured metrics, verdict, rationale, and optional analysis. Requires a clean git worktree and records HEAD automatically.",
+        description: "Close one open experiment with typed dimensions, structured metrics, verdict, rationale, and optional analysis. Requires a clean git worktree and records HEAD automatically from command.working_directory when provided, else from the bound project root.",
         dispatch: DispatchTarget::Worker,
         replay: ReplayContract::NeverReplay,
     },

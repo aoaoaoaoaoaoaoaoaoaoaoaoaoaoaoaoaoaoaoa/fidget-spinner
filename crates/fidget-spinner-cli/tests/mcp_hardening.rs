@@ -1976,6 +1976,127 @@ fn experiment_close_rejects_dirty_worktree() -> TestResult {
 }
 
 #[test]
+fn experiment_close_uses_command_worktree_when_present() -> TestResult {
+    let project_root = temp_project_root("worktree_close")?;
+    init_project(&project_root)?;
+    let _ = seed_clean_git_repository(&project_root)?;
+    let worktree_root = must_some(project_root.parent(), "worktree parent")?.join(format!(
+        "{}-linked-worktree",
+        must_some(project_root.file_name(), "project root name")?
+    ));
+    let _ = run_git(
+        &project_root,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "experiment-branch",
+            worktree_root.as_str(),
+        ],
+    )?;
+    must(
+        fs::write(
+            worktree_root.join("worktree.txt"),
+            "linked worktree commit\n",
+        ),
+        "write linked worktree file",
+    )?;
+    let _ = run_git(&worktree_root, &["add", "worktree.txt"])?;
+    let _ = run_git(
+        &worktree_root,
+        &[
+            "-c",
+            "user.name=Fidget Spinner Tests",
+            "-c",
+            "user.email=fidget-spinner-tests@example.invalid",
+            "commit",
+            "-q",
+            "-m",
+            "worktree experiment state",
+        ],
+    )?;
+    let worktree_commit = run_git(&worktree_root, &["rev-parse", "HEAD"])?;
+    must(
+        fs::write(project_root.join("dirty.txt"), "main checkout dirt\n"),
+        "write dirty main checkout file",
+    )?;
+
+    let mut harness = McpHarness::spawn(Some(&project_root))?;
+    let _ = harness.initialize()?;
+    harness.notify_initialized()?;
+
+    assert_tool_ok(&harness.call_tool(
+        56,
+        "metric.define",
+        json!({
+            "key": "nodes_solved",
+            "unit": "count",
+            "objective": "maximize",
+        }),
+    )?);
+    assert_tool_ok(&harness.call_tool(
+        57,
+        "run.dimension.define",
+        json!({"key": "instance", "value_type": "string"}),
+    )?);
+    assert_tool_ok(&harness.call_tool(
+        58,
+        "frontier.create",
+        json!({
+            "label": "Worktree frontier",
+            "objective": "Close against linked worktree state",
+            "slug": "worktree-frontier",
+        }),
+    )?);
+    create_nodes_kpi(&mut harness, 581, "worktree-frontier")?;
+    assert_tool_ok(&harness.call_tool(
+        59,
+        "hypothesis.record",
+        json!({
+            "frontier": "worktree-frontier",
+            "slug": "worktree-hypothesis",
+            "title": "Linked worktree closes should succeed",
+            "summary": "Main checkout dirt should not block a clean linked worktree close.",
+            "body": "When an experiment command names a linked worktree as its working directory, Spinner should capture cleanliness and HEAD from that worktree rather than from unrelated dirt in the bound checkout.",
+        }),
+    )?);
+    assert_tool_ok(&harness.call_tool(
+        60,
+        "experiment.open",
+        json!({
+            "hypothesis": "worktree-hypothesis",
+            "slug": "worktree-run",
+            "title": "Worktree run",
+            "summary": "Close against the linked worktree.",
+        }),
+    )?);
+
+    let closed = harness.call_tool_full(
+        61,
+        "experiment.close",
+        json!({
+            "experiment": "worktree-run",
+            "backend": "worktree_process",
+            "command": {
+                "working_directory": worktree_root.as_str(),
+                "argv": ["worktree-run"]
+            },
+            "dimensions": {"instance": "4x5-braid"},
+            "primary_metric": {"key": "nodes_solved", "value": 34.0},
+            "verdict": "kept",
+            "rationale": "The linked worktree is clean and should be the recorded implementation anchor.",
+        }),
+    )?;
+    assert_tool_ok(&closed);
+    assert_eq!(
+        tool_content(&closed)["record"]["outcome"]["commit_hash"].as_str(),
+        Some(worktree_commit.as_str())
+    );
+    Ok(())
+}
+
+#[test]
 fn already_bound_worker_refreshes_after_destructive_reseed() -> TestResult {
     let project_root = temp_project_root("same_path_reseed")?;
 
