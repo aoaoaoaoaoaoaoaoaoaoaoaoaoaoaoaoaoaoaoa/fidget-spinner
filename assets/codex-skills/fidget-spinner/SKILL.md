@@ -42,6 +42,9 @@ If you need more context, pull it from:
 - `hypothesis` and `experiment` are the true graph nodes
 - hypotheses are free, eager, and wild: record plausible ideas as soon as they
   appear, even before they have become a polished experiment plan
+- hypotheses and experiments are for KPI-directed scientific work; if a change
+  is not meant to move or explain a frontier KPI, it usually does not belong in
+  Spinner at all
 - stale hypotheses are cheap too; retire an obviously dead or superseded one
   when you notice it rather than keeping the active surface ceremonially tidy
 - every experiment has one mandatory owning hypothesis
@@ -54,9 +57,9 @@ If you need more context, pull it from:
 - `tag.add` when a new campaign or subsystem token is genuinely needed; every tag must carry a description, and supervisor locks may reject model-created tags
 - `tag.list` before inventing tags by memory; it also reports supervisor-defined families, mandatory-family rules, locks, and stale-name guidance
 - `frontier.update` when the objective, situation, roadmap, or unknowns need to change
-- `hypothesis.record` whenever you get a plausible idea, mechanism, suspicion, or branch; hypotheses are cheap idea-capture nodes, not a ritual preamble to one experiment
+- `hypothesis.record` whenever you get a plausible KPI-moving idea, mechanism, suspicion, or branch; hypotheses are cheap idea-capture nodes, not a ritual preamble to one experiment
 - `hypothesis.update` when the title, summary, body, tags, influence parents, or active/retired state need tightening; retire stale hypotheses with `state=retired`
-- `experiment.open` once a hypothesis has a concrete slice and is ready to be tested
+- `experiment.open` once a hypothesis has a concrete KPI-relevant slice and is ready to be tested
 - `experiment.list` or `experiment.read` when resuming a session and you need to recover open or recently closed state
 - `experiment.update` while the experiment is still live and its summary, tags, or influence parents need refinement
 - `experiment.close` only for an already-open experiment and only when you have measured result, verdict, and rationale; it requires a clean git worktree and records `HEAD` automatically, anchoring to `command.working_directory` when provided, so make a fast commit in the actual implementation worktree first and attach `analysis` only when the result needs interpretation beyond the rationale
@@ -73,10 +76,10 @@ If you need more context, pull it from:
 ## Workflow
 
 1. Ground through `frontier.open`.
-2. Record ideas eagerly with `hypothesis.record` as they occur; there is no
-   penalty for many hypotheses.
-3. Choose or record the hypothesis that owns the concrete slice, then open a
-   live experiment with `experiment.open`.
+2. Record KPI-relevant ideas eagerly with `hypothesis.record` as they occur;
+   there is no penalty for many hypotheses.
+3. Choose or record the hypothesis that owns the concrete KPI slice, then open
+   a live experiment with `experiment.open`.
 4. Do the work.
 5. Make a fast commit for the recoverable implementation state before closing the experiment. Bypass heavyweight hooks when necessary; the bar here is recoverability, not release readiness.
 6. Close the experiment with `experiment.close`, including dimensions, metrics, verdict, rationale, and optional analysis. Spinner will reject a dirty worktree and store the closing commit hash automatically.
@@ -98,12 +101,19 @@ If you need more context, pull it from:
 7. A hypothesis is not an experiment and does not need to justify itself by
    immediately producing one. Open experiments explicitly; do not smuggle
    planned work or stray ideas into the frontier brief.
-8. Experiments are the scientific record. If a fact matters later, it should
-   usually live in a closed experiment outcome rather than in freeform text.
-9. Spinner records the closing commit hash as a recoverability anchor, not as experiment identity.
-10. If you run into an obviously stale hypothesis, retire it; stale cleanup is
+8. Not all implementation work deserves a Spinner node. Pure tooling,
+   instrumentation, telemetry, harness repair, refactors, and other enabling
+   changes should usually live only in git unless the change itself is being
+   tested as a KPI-moving mechanism.
+9. If you cannot name the KPI the work is trying to move or explain, do not
+   open an experiment for it.
+10. Experiments are the scientific record for KPI-directed work. If a KPI-relevant
+    fact matters later, it should usually live in a closed experiment outcome
+    rather than in freeform text.
+11. Spinner records the closing commit hash as a recoverability anchor, not as experiment identity.
+12. If you run into an obviously stale hypothesis, retire it; stale cleanup is
     healthy and does not invalidate the experiments it once organized.
-11. Porcelain is the terse triage surface. Use `detail=full` only when concise
-   output stops being decision-sufficient.
-12. When the task becomes a true indefinite optimization push, pair this skill
+13. Porcelain is the terse triage surface. Use `detail=full` only when concise
+    output stops being decision-sufficient.
+14. When the task becomes a true indefinite optimization push, pair this skill
     with `frontier-loop`.

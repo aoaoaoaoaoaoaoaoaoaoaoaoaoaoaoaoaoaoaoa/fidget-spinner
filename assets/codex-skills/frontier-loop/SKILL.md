@@ -61,8 +61,9 @@ ASSUME YOU ARE RUNNING OVERNIGHT.
 1. Start from the current best accepted line or most credible live branch.
 2. Study existing evidence from `fidget-spinner`.
 3. Search outward if the local frontier looks exhausted or you are starting to take unambitious strides.
-4. Record promising mechanisms, suspicions, and branches as hypotheses as soon
-   as they appear; many cheap hypotheses are better than one ceremonial one.
+4. Record promising KPI-moving mechanisms, suspicions, and branches as
+   hypotheses as soon as they appear; many cheap hypotheses are better than one
+   ceremonial one.
 5. Choose or record the concrete owning hypothesis and open the experiment.
 6. Measure it.
 7. If the result is surprising, noisy, or broken, debug the implementation and
@@ -98,10 +99,15 @@ Do not get stuck doing small tweaks.
 
 Every real experiment must leave an auditable record in `fidget-spinner`.
 
-If something matters to the frontier, put it in the DAG.
+But not every code change is a real experiment.
 
-Use off-path records liberally for source capture, side investigations, and dead
-ends.
+Tooling passes, instrumentation, telemetry autopsies, harness repair, and
+refactors are usually implementation work, not DAG nodes. Record them in
+Spinner only when the change itself is being tested as a mechanism expected to
+move or explain a frontier KPI.
+
+If you cannot name the KPI the change is trying to move or explain, it probably
+does not need a hypothesis or experiment.
 
 When a line becomes a real measured experiment, close it through the proper
 `fidget-spinner` path instead of improvising a chain of half-recorded steps:
