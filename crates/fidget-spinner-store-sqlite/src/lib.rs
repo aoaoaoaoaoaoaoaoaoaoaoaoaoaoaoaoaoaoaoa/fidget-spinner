@@ -6,16 +6,15 @@ use std::sync::OnceLock;
 
 use camino::{Utf8Path, Utf8PathBuf};
 use fidget_spinner_core::{
-    ArtifactId, ArtifactKind, ArtifactRecord, AttachmentTargetRef, CommandRecipe, CoreError,
-    DefaultVisibility, ExecutionBackend, ExperimentAnalysis, ExperimentId, ExperimentOutcome,
-    ExperimentRecord, ExperimentStatus, FieldValueType, FrontierBrief, FrontierId,
-    FrontierKpiRecord, FrontierRecord, FrontierRoadmapItem, FrontierStatus, FrontierVerdict,
-    GitCommitHash, HiddenByDefaultReason, HypothesisId, HypothesisRecord, KpiId, MetricAggregation,
-    MetricDefinition, MetricDimension, MetricId, MetricUnit, MetricValue, NonEmptyText,
-    OptimizationObjective, RegistryLockId, RegistryLockMode, RegistryLockRecord, RegistryName,
-    RunDimensionDefinition, RunDimensionValue, Slug, TagFamilyId, TagFamilyName, TagFamilyRecord,
-    TagId, TagName, TagNameDisposition, TagNameHistoryRecord, TagRecord, TagRegistrySnapshot,
-    TagStatus, VertexRef,
+    CommandRecipe, CoreError, DefaultVisibility, ExecutionBackend, ExperimentAnalysis,
+    ExperimentId, ExperimentOutcome, ExperimentRecord, ExperimentStatus, FieldValueType,
+    FrontierBrief, FrontierId, FrontierKpiRecord, FrontierRecord, FrontierRoadmapItem,
+    FrontierStatus, FrontierVerdict, GitCommitHash, HiddenByDefaultReason, HypothesisId,
+    HypothesisRecord, KpiId, MetricAggregation, MetricDefinition, MetricDimension, MetricId,
+    MetricUnit, MetricValue, NonEmptyText, OptimizationObjective, RegistryLockId, RegistryLockMode,
+    RegistryLockRecord, RegistryName, RunDimensionDefinition, RunDimensionValue, Slug, TagFamilyId,
+    TagFamilyName, TagFamilyRecord, TagId, TagName, TagNameDisposition, TagNameHistoryRecord,
+    TagRecord, TagRegistrySnapshot, TagStatus, VertexRef,
 };
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde::{Deserialize, Serialize};
@@ -29,7 +28,7 @@ pub const STORE_DIR_NAME: &str = ".fidget_spinner";
 pub const GIT_DIR_NAME: &str = ".git";
 pub const STATE_DB_NAME: &str = "state.sqlite";
 pub const PROJECT_CONFIG_NAME: &str = "project.json";
-pub const CURRENT_STORE_FORMAT_VERSION: u32 = 9;
+pub const CURRENT_STORE_FORMAT_VERSION: u32 = 10;
 pub const STATE_HOME_DIR_NAME: &str = "fidget-spinner";
 pub const PROJECT_STATE_DIR_NAME: &str = "projects";
 const PROJECT_ROOT_NAMESPACE: Uuid = Uuid::from_u128(0x0df3_58f4_3649_44f1_8f05_0bb2_4ebd_8d31);
@@ -98,8 +97,6 @@ pub enum StoreError {
     UnknownHypothesisSelector(String),
     #[error("experiment selector `{0}` did not resolve")]
     UnknownExperimentSelector(String),
-    #[error("artifact selector `{0}` did not resolve")]
-    UnknownArtifactSelector(String),
     #[error(
         "entity revision mismatch for {kind} `{selector}`: expected {expected}, observed {observed}"
     )]
@@ -194,7 +191,6 @@ pub struct ProjectStatus {
     pub hypothesis_count: u64,
     pub experiment_count: u64,
     pub open_experiment_count: u64,
-    pub artifact_count: u64,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -290,14 +286,6 @@ pub enum MetricRankOrder {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(tag = "kind", content = "selector", rename_all = "snake_case")]
 pub enum VertexSelector {
-    Hypothesis(String),
-    Experiment(String),
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(tag = "kind", content = "selector", rename_all = "snake_case")]
-pub enum AttachmentSelector {
-    Frontier(String),
     Hypothesis(String),
     Experiment(String),
 }
@@ -415,7 +403,6 @@ pub struct HypothesisDetail {
     pub children: Vec<VertexSummary>,
     pub open_experiments: Vec<ExperimentSummary>,
     pub closed_experiments: Vec<ExperimentSummary>,
-    pub artifacts: Vec<ArtifactSummary>,
 }
 
 #[derive(Clone, Debug)]
@@ -515,56 +502,6 @@ pub struct ExperimentDetail {
     pub owning_hypothesis: HypothesisSummary,
     pub parents: Vec<VertexSummary>,
     pub children: Vec<VertexSummary>,
-    pub artifacts: Vec<ArtifactSummary>,
-}
-
-#[derive(Clone, Debug)]
-pub struct CreateArtifactRequest {
-    pub slug: Option<Slug>,
-    pub kind: ArtifactKind,
-    pub label: NonEmptyText,
-    pub summary: Option<NonEmptyText>,
-    pub locator: NonEmptyText,
-    pub media_type: Option<NonEmptyText>,
-    pub attachments: Vec<AttachmentSelector>,
-}
-
-#[derive(Clone, Debug)]
-pub struct UpdateArtifactRequest {
-    pub artifact: String,
-    pub expected_revision: Option<u64>,
-    pub kind: Option<ArtifactKind>,
-    pub label: Option<NonEmptyText>,
-    pub summary: Option<TextPatch<NonEmptyText>>,
-    pub locator: Option<NonEmptyText>,
-    pub media_type: Option<TextPatch<NonEmptyText>>,
-    pub attachments: Option<Vec<AttachmentSelector>>,
-}
-
-#[derive(Clone, Debug, Default)]
-pub struct ListArtifactsQuery {
-    pub frontier: Option<String>,
-    pub kind: Option<ArtifactKind>,
-    pub attached_to: Option<AttachmentSelector>,
-    pub limit: Option<u32>,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub struct ArtifactSummary {
-    pub id: ArtifactId,
-    pub slug: Slug,
-    pub kind: ArtifactKind,
-    pub label: NonEmptyText,
-    pub summary: Option<NonEmptyText>,
-    pub locator: NonEmptyText,
-    pub media_type: Option<NonEmptyText>,
-    pub updated_at: OffsetDateTime,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub struct ArtifactDetail {
-    pub record: ArtifactRecord,
-    pub attachments: Vec<AttachmentTargetRef>,
 }
 
 #[derive(Clone, Debug)]
@@ -794,21 +731,24 @@ impl ProjectStore {
         if !state_root.exists() {
             return Err(StoreError::MissingProjectStore(project_root));
         }
-        let config: ProjectConfig = read_json_file(&state_root.join(PROJECT_CONFIG_NAME))?;
+        let mut config: ProjectConfig = read_json_file(&state_root.join(PROJECT_CONFIG_NAME))?;
+        let database_path = state_root.join(STATE_DB_NAME);
+        let connection = Connection::open(database_path.as_std_path())?;
+        connection.pragma_update(None, "foreign_keys", 1_i64)?;
+        let observed_version = load_store_user_version(&connection)?;
+        if observed_version != CURRENT_STORE_FORMAT_VERSION {
+            migrate_store_to_current(&state_root, &mut config, &connection, observed_version)?;
+        }
         if config.store_format_version != CURRENT_STORE_FORMAT_VERSION {
             return Err(StoreError::IncompatibleStoreFormatVersion {
                 observed: config.store_format_version,
                 expected: CURRENT_STORE_FORMAT_VERSION,
             });
         }
-        let database_path = state_root.join(STATE_DB_NAME);
-        let connection = Connection::open(database_path.as_std_path())?;
-        connection.pragma_update(None, "foreign_keys", 1_i64)?;
-        let observed_version: i64 =
-            connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
-        if u32::try_from(observed_version).ok() != Some(CURRENT_STORE_FORMAT_VERSION) {
+        let observed_version = load_store_user_version(&connection)?;
+        if observed_version != CURRENT_STORE_FORMAT_VERSION {
             return Err(StoreError::IncompatibleStoreFormatVersion {
-                observed: u32::try_from(observed_version).unwrap_or(0),
+                observed: observed_version,
                 expected: CURRENT_STORE_FORMAT_VERSION,
             });
         }
@@ -851,7 +791,6 @@ impl ProjectStore {
                 "experiments",
                 "status = 'open'",
             )?,
-            artifact_count: count_rows(&self.connection, "artifacts")?,
         })
     }
 
@@ -1912,16 +1851,11 @@ impl ProjectStore {
             .into_iter()
             .partition(|experiment| experiment.status == ExperimentStatus::Open);
         Ok(HypothesisDetail {
-            artifacts: self.list_artifacts(ListArtifactsQuery {
-                attached_to: Some(AttachmentSelector::Hypothesis(record.id.to_string())),
-                limit: None,
-                ..ListArtifactsQuery::default()
-            })?,
-            children,
-            closed_experiments,
-            open_experiments,
-            parents,
             record,
+            parents,
+            children,
+            open_experiments,
+            closed_experiments,
         })
     }
 
@@ -2105,11 +2039,6 @@ impl ProjectStore {
     pub fn read_experiment(&self, selector: &str) -> Result<ExperimentDetail, StoreError> {
         let record = self.resolve_experiment(selector)?;
         Ok(ExperimentDetail {
-            artifacts: self.list_artifacts(ListArtifactsQuery {
-                attached_to: Some(AttachmentSelector::Experiment(record.id.to_string())),
-                limit: None,
-                ..ListArtifactsQuery::default()
-            })?,
             children: self.load_vertex_children(VertexRef::Experiment(record.id))?,
             owning_hypothesis: self
                 .hypothesis_summary_from_record(self.hypothesis_by_id(record.hypothesis_id)?)?,
@@ -2275,146 +2204,6 @@ impl ProjectStore {
             &updated.id.to_string(),
             updated.revision,
             "closed",
-            &updated,
-        )?;
-        transaction.commit()?;
-        Ok(updated)
-    }
-
-    pub fn create_artifact(
-        &mut self,
-        request: CreateArtifactRequest,
-    ) -> Result<ArtifactRecord, StoreError> {
-        let id = ArtifactId::fresh();
-        let slug = self.unique_artifact_slug(request.slug, &request.label)?;
-        let now = OffsetDateTime::now_utc();
-        let record = ArtifactRecord {
-            id,
-            slug,
-            kind: request.kind,
-            label: request.label,
-            summary: request.summary,
-            locator: request.locator,
-            media_type: request.media_type,
-            revision: 1,
-            created_at: now,
-            updated_at: now,
-        };
-        let attachments = self.resolve_attachment_targets(&request.attachments)?;
-        let transaction = self.connection.transaction()?;
-        insert_artifact(&transaction, &record)?;
-        replace_artifact_attachments(&transaction, record.id, &attachments)?;
-        record_event(
-            &transaction,
-            "artifact",
-            &record.id.to_string(),
-            1,
-            "created",
-            &record,
-        )?;
-        transaction.commit()?;
-        Ok(record)
-    }
-
-    pub fn list_artifacts(
-        &self,
-        query: ListArtifactsQuery,
-    ) -> Result<Vec<ArtifactSummary>, StoreError> {
-        let records = self.load_artifact_records()?;
-        let frontier_id = query
-            .frontier
-            .as_deref()
-            .map(|selector| self.resolve_frontier(selector).map(|frontier| frontier.id))
-            .transpose()?;
-        let mut filtered = Vec::new();
-        for record in records {
-            if query.kind.is_some_and(|kind| record.kind != kind) {
-                continue;
-            }
-            if let Some(frontier_id) = frontier_id
-                && !self.artifact_attached_to_frontier(record.id, frontier_id)?
-            {
-                continue;
-            }
-            filtered.push(record);
-        }
-        let attached_filtered = match query.attached_to {
-            Some(selector) => {
-                let target = self.resolve_attachment_target(&selector)?;
-                filtered
-                    .into_iter()
-                    .filter(|record| {
-                        self.artifact_attachment_targets(record.id)
-                            .map(|targets| targets.contains(&target))
-                            .unwrap_or(false)
-                    })
-                    .collect()
-            }
-            None => filtered,
-        };
-        Ok(apply_limit(
-            attached_filtered
-                .into_iter()
-                .map(|record| ArtifactSummary {
-                    id: record.id,
-                    slug: record.slug,
-                    kind: record.kind,
-                    label: record.label,
-                    summary: record.summary,
-                    locator: record.locator,
-                    media_type: record.media_type,
-                    updated_at: record.updated_at,
-                })
-                .collect(),
-            query.limit,
-        ))
-    }
-
-    pub fn read_artifact(&self, selector: &str) -> Result<ArtifactDetail, StoreError> {
-        let record = self.resolve_artifact(selector)?;
-        Ok(ArtifactDetail {
-            attachments: self.artifact_attachment_targets(record.id)?,
-            record,
-        })
-    }
-
-    pub fn update_artifact(
-        &mut self,
-        request: UpdateArtifactRequest,
-    ) -> Result<ArtifactRecord, StoreError> {
-        let record = self.resolve_artifact(&request.artifact)?;
-        enforce_revision(
-            "artifact",
-            &request.artifact,
-            request.expected_revision,
-            record.revision,
-        )?;
-        let updated = ArtifactRecord {
-            kind: request.kind.unwrap_or(record.kind),
-            label: request.label.unwrap_or(record.label.clone()),
-            summary: apply_optional_text_patch(request.summary, record.summary.clone()),
-            locator: request.locator.unwrap_or(record.locator.clone()),
-            media_type: apply_optional_text_patch(request.media_type, record.media_type.clone()),
-            revision: record.revision.saturating_add(1),
-            updated_at: OffsetDateTime::now_utc(),
-            ..record
-        };
-        let attachments = request
-            .attachments
-            .as_ref()
-            .map(|selectors| self.resolve_attachment_targets(selectors))
-            .transpose()?;
-        let transaction = self.connection.transaction()?;
-        update_artifact_row(&transaction, &updated)?;
-        if let Some(attachments) = attachments.as_ref() {
-            replace_artifact_attachments(&transaction, updated.id, attachments)?;
-        }
-        record_event(
-            &transaction,
-            "artifact",
-            &updated.id.to_string(),
-            updated.revision,
-            "updated",
             &updated,
         )?;
         transaction.commit()?;
@@ -2825,11 +2614,6 @@ impl ProjectStore {
         self.entity_history("experiment", &experiment.id.to_string())
     }
 
-    pub fn artifact_history(&self, selector: &str) -> Result<Vec<EntityHistoryEntry>, StoreError> {
-        let artifact = self.resolve_artifact(selector)?;
-        self.entity_history("artifact", &artifact.id.to_string())
-    }
-
     fn metric_definition(
         &self,
         key: &NonEmptyText,
@@ -3050,30 +2834,6 @@ impl ProjectStore {
             .and_then(|record| self.hydrate_experiment_tags(record))
     }
 
-    fn resolve_artifact(&self, selector: &str) -> Result<ArtifactRecord, StoreError> {
-        let record = match resolve_selector(selector)? {
-            Selector::Id(uuid) => self
-                .connection
-                .query_row(
-                    "SELECT id, slug, kind, label, summary, locator, media_type, revision, created_at, updated_at
-                     FROM artifacts WHERE id = ?1",
-                    params![uuid.to_string()],
-                    decode_artifact_row,
-                )
-                .optional()?,
-            Selector::Slug(slug) => self
-                .connection
-                .query_row(
-                    "SELECT id, slug, kind, label, summary, locator, media_type, revision, created_at, updated_at
-                     FROM artifacts WHERE slug = ?1",
-                    params![slug.as_str()],
-                    decode_artifact_row,
-                )
-                .optional()?,
-        };
-        record.ok_or_else(|| StoreError::UnknownArtifactSelector(selector.to_owned()))
-    }
-
     fn resolve_vertex_parents(
         &self,
         frontier_id: FrontierId,
@@ -3106,43 +2866,6 @@ impl ProjectStore {
                 Ok(vertex)
             })
             .collect()
-    }
-
-    fn resolve_attachment_targets(
-        &self,
-        selectors: &[AttachmentSelector],
-    ) -> Result<Vec<AttachmentTargetRef>, StoreError> {
-        selectors
-            .iter()
-            .map(|selector| match selector {
-                AttachmentSelector::Frontier(selector) => Ok(AttachmentTargetRef::Frontier(
-                    self.resolve_frontier(selector)?.id,
-                )),
-                AttachmentSelector::Hypothesis(selector) => Ok(AttachmentTargetRef::Hypothesis(
-                    self.resolve_hypothesis(selector)?.id,
-                )),
-                AttachmentSelector::Experiment(selector) => Ok(AttachmentTargetRef::Experiment(
-                    self.resolve_experiment(selector)?.id,
-                )),
-            })
-            .collect()
-    }
-
-    fn resolve_attachment_target(
-        &self,
-        selector: &AttachmentSelector,
-    ) -> Result<AttachmentTargetRef, StoreError> {
-        match selector {
-            AttachmentSelector::Frontier(selector) => Ok(AttachmentTargetRef::Frontier(
-                self.resolve_frontier(selector)?.id,
-            )),
-            AttachmentSelector::Hypothesis(selector) => Ok(AttachmentTargetRef::Hypothesis(
-                self.resolve_hypothesis(selector)?.id,
-            )),
-            AttachmentSelector::Experiment(selector) => Ok(AttachmentTargetRef::Experiment(
-                self.resolve_experiment(selector)?.id,
-            )),
-        }
     }
 
     fn influence_neighborhood(
@@ -3265,17 +2988,6 @@ impl ProjectStore {
                 .filter(|record| !record.archived)
                 .collect()
         })
-    }
-
-    fn load_artifact_records(&self) -> Result<Vec<ArtifactRecord>, StoreError> {
-        let mut statement = self.connection.prepare(
-            "SELECT id, slug, kind, label, summary, locator, media_type, revision, created_at, updated_at
-             FROM artifacts
-             ORDER BY updated_at DESC, created_at DESC",
-        )?;
-        let rows = statement.query_map([], decode_artifact_row)?;
-        rows.collect::<Result<Vec<_>, _>>()
-            .map_err(StoreError::from)
     }
 
     fn decode_hypothesis_row(
@@ -3487,54 +3199,6 @@ impl ProjectStore {
                 })
             }
         }
-    }
-
-    fn artifact_attachment_targets(
-        &self,
-        artifact_id: ArtifactId,
-    ) -> Result<Vec<AttachmentTargetRef>, StoreError> {
-        let mut statement = self.connection.prepare(
-            "SELECT target_kind, target_id
-             FROM artifact_attachments
-             WHERE artifact_id = ?1
-             ORDER BY ordinal ASC, target_kind ASC, target_id ASC",
-        )?;
-        let rows = statement.query_map(params![artifact_id.to_string()], |row| {
-            decode_attachment_target(&row.get::<_, String>(0)?, &row.get::<_, String>(1)?)
-        })?;
-        rows.collect::<Result<Vec<_>, _>>()
-            .map_err(StoreError::from)
-    }
-
-    fn artifact_attached_to_frontier(
-        &self,
-        artifact_id: ArtifactId,
-        frontier_id: FrontierId,
-    ) -> Result<bool, StoreError> {
-        let targets = self.artifact_attachment_targets(artifact_id)?;
-        if targets.contains(&AttachmentTargetRef::Frontier(frontier_id)) {
-            return Ok(true);
-        }
-        for target in targets {
-            match target {
-                AttachmentTargetRef::Hypothesis(hypothesis_id) => {
-                    if self.hypothesis_by_id(hypothesis_id)?.frontier_id == frontier_id {
-                        return Ok(true);
-                    }
-                }
-                AttachmentTargetRef::Experiment(experiment_id) => {
-                    if self
-                        .resolve_experiment(&experiment_id.to_string())?
-                        .frontier_id
-                        == frontier_id
-                    {
-                        return Ok(true);
-                    }
-                }
-                AttachmentTargetRef::Frontier(_) => {}
-            }
-        }
-        Ok(false)
     }
 
     fn active_hypothesis_ids(
@@ -4218,14 +3882,6 @@ impl ProjectStore {
         self.unique_slug("experiments", "slug", explicit, title)
     }
 
-    fn unique_artifact_slug(
-        &self,
-        explicit: Option<Slug>,
-        label: &NonEmptyText,
-    ) -> Result<Slug, StoreError> {
-        self.unique_slug("artifacts", "slug", explicit, label)
-    }
-
     fn unique_slug(
         &self,
         table: &str,
@@ -4391,27 +4047,6 @@ fn install_schema(connection: &Connection) -> Result<(), StoreError> {
             PRIMARY KEY (parent_kind, parent_id, child_kind, child_id)
         );
 
-        CREATE TABLE IF NOT EXISTS artifacts (
-            id TEXT PRIMARY KEY NOT NULL,
-            slug TEXT NOT NULL UNIQUE,
-            kind TEXT NOT NULL,
-            label TEXT NOT NULL,
-            summary TEXT,
-            locator TEXT NOT NULL,
-            media_type TEXT,
-            revision INTEGER NOT NULL,
-            created_at TEXT NOT NULL,
-            updated_at TEXT NOT NULL
-        );
-
-        CREATE TABLE IF NOT EXISTS artifact_attachments (
-            artifact_id TEXT NOT NULL REFERENCES artifacts(id) ON DELETE CASCADE,
-            target_kind TEXT NOT NULL,
-            target_id TEXT NOT NULL,
-            ordinal INTEGER NOT NULL,
-            PRIMARY KEY (artifact_id, target_kind, target_id)
-        );
-
         CREATE TABLE IF NOT EXISTS metric_definitions (
             id TEXT PRIMARY KEY NOT NULL,
             key TEXT NOT NULL UNIQUE,
@@ -4479,6 +4114,46 @@ fn install_schema(connection: &Connection) -> Result<(), StoreError> {
         );
         ",
     )?;
+    Ok(())
+}
+
+fn load_store_user_version(connection: &Connection) -> Result<u32, StoreError> {
+    let observed: i64 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
+    Ok(u32::try_from(observed).unwrap_or(0))
+}
+
+fn migrate_store_to_current(
+    state_root: &Utf8Path,
+    config: &mut ProjectConfig,
+    connection: &Connection,
+    observed_version: u32,
+) -> Result<(), StoreError> {
+    if config.store_format_version == 9 || observed_version == 9 {
+        if observed_version == 9 {
+            migrate_store_v9_to_v10(connection)?;
+        }
+        config.store_format_version = CURRENT_STORE_FORMAT_VERSION;
+        write_json_file(&state_root.join(PROJECT_CONFIG_NAME), config)?;
+        return Ok(());
+    }
+    Err(StoreError::IncompatibleStoreFormatVersion {
+        observed: observed_version,
+        expected: CURRENT_STORE_FORMAT_VERSION,
+    })
+}
+
+fn migrate_store_v9_to_v10(connection: &Connection) -> Result<(), StoreError> {
+    connection.execute_batch(
+        "
+        BEGIN IMMEDIATE;
+        DELETE FROM events WHERE entity_kind = 'artifact';
+        DROP TABLE IF EXISTS artifact_attachments;
+        DROP TABLE IF EXISTS artifacts;
+        PRAGMA user_version = 10;
+        COMMIT;
+        ",
+    )?;
+    let _ = connection.execute_batch("VACUUM");
     Ok(())
 }
 
@@ -4850,76 +4525,6 @@ fn replace_influence_parents(
                 parent.opaque_id(),
                 vertex_kind_name(child),
                 child.opaque_id(),
-                i64::try_from(ordinal).unwrap_or(i64::MAX),
-            ],
-        )?;
-    }
-    Ok(())
-}
-
-fn insert_artifact(
-    transaction: &Transaction<'_>,
-    artifact: &ArtifactRecord,
-) -> Result<(), StoreError> {
-    let _ = transaction.execute(
-        "INSERT INTO artifacts (id, slug, kind, label, summary, locator, media_type, revision, created_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
-        params![
-            artifact.id.to_string(),
-            artifact.slug.as_str(),
-            artifact.kind.as_str(),
-            artifact.label.as_str(),
-            artifact.summary.as_ref().map(NonEmptyText::as_str),
-            artifact.locator.as_str(),
-            artifact.media_type.as_ref().map(NonEmptyText::as_str),
-            artifact.revision,
-            encode_timestamp(artifact.created_at)?,
-            encode_timestamp(artifact.updated_at)?,
-        ],
-    )?;
-    Ok(())
-}
-
-fn update_artifact_row(
-    transaction: &Transaction<'_>,
-    artifact: &ArtifactRecord,
-) -> Result<(), StoreError> {
-    let _ = transaction.execute(
-        "UPDATE artifacts
-         SET slug = ?2, kind = ?3, label = ?4, summary = ?5, locator = ?6, media_type = ?7, revision = ?8, updated_at = ?9
-         WHERE id = ?1",
-        params![
-            artifact.id.to_string(),
-            artifact.slug.as_str(),
-            artifact.kind.as_str(),
-            artifact.label.as_str(),
-            artifact.summary.as_ref().map(NonEmptyText::as_str),
-            artifact.locator.as_str(),
-            artifact.media_type.as_ref().map(NonEmptyText::as_str),
-            artifact.revision,
-            encode_timestamp(artifact.updated_at)?,
-        ],
-    )?;
-    Ok(())
-}
-
-fn replace_artifact_attachments(
-    transaction: &Transaction<'_>,
-    artifact_id: ArtifactId,
-    attachments: &[AttachmentTargetRef],
-) -> Result<(), StoreError> {
-    let _ = transaction.execute(
-        "DELETE FROM artifact_attachments WHERE artifact_id = ?1",
-        params![artifact_id.to_string()],
-    )?;
-    for (ordinal, attachment) in attachments.iter().enumerate() {
-        let _ = transaction.execute(
-            "INSERT INTO artifact_attachments (artifact_id, target_kind, target_id, ordinal)
-             VALUES (?1, ?2, ?3, ?4)",
-            params![
-                artifact_id.to_string(),
-                attachment_target_kind_name(*attachment),
-                attachment.opaque_id(),
                 i64::try_from(ordinal).unwrap_or(i64::MAX),
             ],
         )?;
@@ -5302,21 +4907,6 @@ fn decode_experiment_row(row: &rusqlite::Row<'_>) -> Result<ExperimentRecord, ru
     })
 }
 
-fn decode_artifact_row(row: &rusqlite::Row<'_>) -> Result<ArtifactRecord, rusqlite::Error> {
-    Ok(ArtifactRecord {
-        id: ArtifactId::from_uuid(parse_uuid_sql(&row.get::<_, String>(0)?)?),
-        slug: parse_slug(&row.get::<_, String>(1)?)?,
-        kind: parse_artifact_kind(&row.get::<_, String>(2)?)?,
-        label: parse_non_empty_text(&row.get::<_, String>(3)?)?,
-        summary: parse_optional_non_empty_text(row.get::<_, Option<String>>(4)?)?,
-        locator: parse_non_empty_text(&row.get::<_, String>(5)?)?,
-        media_type: parse_optional_non_empty_text(row.get::<_, Option<String>>(6)?)?,
-        revision: row.get(7)?,
-        created_at: parse_timestamp_sql(&row.get::<_, String>(8)?)?,
-        updated_at: parse_timestamp_sql(&row.get::<_, String>(9)?)?,
-    })
-}
-
 fn decode_metric_definition_row(
     row: &rusqlite::Row<'_>,
 ) -> Result<MetricDefinition, rusqlite::Error> {
@@ -5620,25 +5210,6 @@ fn parse_experiment_status(raw: &str) -> Result<ExperimentStatus, rusqlite::Erro
     }
 }
 
-fn parse_artifact_kind(raw: &str) -> Result<ArtifactKind, rusqlite::Error> {
-    match raw {
-        "document" => Ok(ArtifactKind::Document),
-        "link" => Ok(ArtifactKind::Link),
-        "log" => Ok(ArtifactKind::Log),
-        "table" => Ok(ArtifactKind::Table),
-        "plot" => Ok(ArtifactKind::Plot),
-        "dump" => Ok(ArtifactKind::Dump),
-        "binary" => Ok(ArtifactKind::Binary),
-        "other" => Ok(ArtifactKind::Other),
-        _ => Err(to_sql_conversion_error(StoreError::Json(
-            serde_json::Error::io(io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("invalid artifact kind `{raw}`"),
-            )),
-        ))),
-    }
-}
-
 fn resolve_selector(raw: &str) -> Result<Selector, StoreError> {
     if let Ok(uuid) = Uuid::parse_str(raw) {
         Ok(Selector::Id(uuid))
@@ -5682,14 +5253,6 @@ fn vertex_kind_name(vertex: VertexRef) -> &'static str {
     }
 }
 
-fn attachment_target_kind_name(target: AttachmentTargetRef) -> &'static str {
-    match target {
-        AttachmentTargetRef::Frontier(_) => "frontier",
-        AttachmentTargetRef::Hypothesis(_) => "hypothesis",
-        AttachmentTargetRef::Experiment(_) => "experiment",
-    }
-}
-
 fn decode_vertex_ref(kind: &str, raw_id: &str) -> Result<VertexRef, rusqlite::Error> {
     let uuid = parse_uuid_sql(raw_id)?;
     match kind {
@@ -5699,28 +5262,6 @@ fn decode_vertex_ref(kind: &str, raw_id: &str) -> Result<VertexRef, rusqlite::Er
             serde_json::Error::io(io::Error::new(
                 io::ErrorKind::InvalidData,
                 format!("invalid vertex kind `{kind}`"),
-            )),
-        ))),
-    }
-}
-
-fn decode_attachment_target(
-    kind: &str,
-    raw_id: &str,
-) -> Result<AttachmentTargetRef, rusqlite::Error> {
-    let uuid = parse_uuid_sql(raw_id)?;
-    match kind {
-        "frontier" => Ok(AttachmentTargetRef::Frontier(FrontierId::from_uuid(uuid))),
-        "hypothesis" => Ok(AttachmentTargetRef::Hypothesis(HypothesisId::from_uuid(
-            uuid,
-        ))),
-        "experiment" => Ok(AttachmentTargetRef::Experiment(ExperimentId::from_uuid(
-            uuid,
-        ))),
-        _ => Err(to_sql_conversion_error(StoreError::Json(
-            serde_json::Error::io(io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("invalid attachment target kind `{kind}`"),
             )),
         ))),
     }

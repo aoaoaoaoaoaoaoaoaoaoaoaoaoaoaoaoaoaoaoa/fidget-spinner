@@ -50,10 +50,6 @@ The true graph vertices remain:
 - status
 - brief
 
-### Sidecars
-
-`artifact` remains an attachable reference-only sidecar.
-
 ## Relations
 
 Two relations remain fundamental.

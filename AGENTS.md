@@ -14,7 +14,6 @@ Constraints that are part of the product:
 - every experiment has one mandatory owning hypothesis
 - per-project state lives in centralized per-user SQLite under `~/.local/state/fidget-spinner/`
 - the frontier brief is the one sanctioned freeform overview
-- artifacts are references only; Spinner never reads artifact bodies
 - slow intentional traversal beats giant context dumps
 - `frontier.open` is the only sanctioned overview surface
 
@@ -30,7 +29,7 @@ MVP target:
 
 - dogfood against `libgrid` worktrees
 - replace sprawling freeform experiment markdown with structured
-  frontier/hypothesis/experiment records plus artifact references
+  frontier/hypothesis/experiment records
 - make live metrics and influence lineage discoverable without giant dumps
 - bundle the frontier-loop skill with the MCP surface instead of treating it as
   folklore

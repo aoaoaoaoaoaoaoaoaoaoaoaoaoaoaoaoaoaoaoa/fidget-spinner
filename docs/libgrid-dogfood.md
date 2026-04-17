@@ -61,12 +61,6 @@ The experiment closes with:
 If a tranche doc reports multiple benchmark slices, it should become multiple
 experiments, not one prose blob.
 
-### Artifact
-
-Historical markdown, logs, tables, and other large dumps should be attached as
-artifacts by reference when they matter. They should not live in the ledger as
-default-enumerated prose.
-
 ## Libgrid Workflow
 
 ### 1. Ground
@@ -79,8 +73,7 @@ default-enumerated prose.
 ### 2. Start a line of attack
 
 1. Record a hypothesis.
-2. Attach any necessary artifacts by reference.
-3. Open one experiment for the concrete slice being tested.
+2. Open one experiment for the concrete slice being tested.
 
 ### 3. Execute
 
@@ -93,7 +86,6 @@ default-enumerated prose.
 
 1. Use `accepted`, `kept`, `parked`, and `rejected` honestly.
 2. Let the frontier brief summarize the current strategic state.
-3. Let historical tranche markdown live as artifacts when preservation matters.
 
 ## Benchmark Discipline
 
@@ -123,6 +115,5 @@ Fidget Spinner is ready for serious `libgrid` use when:
 - `frontier.open` gives a truthful, bounded orientation surface
 - active hypotheses and open experiments are obvious
 - closed experiments carry parsed metrics rather than prose-only results
-- artifacts preserve source texture without flooding the hot path
 - the system feels like a machine for evidence rather than a diary with better
   typography

@@ -10,7 +10,6 @@ spine:
 - `hypothesis` is a real graph vertex
 - `experiment` is a real graph vertex with one mandatory owning hypothesis
 - influence edges form a sparse DAG over that canonical tree spine
-- `artifact` is an external reference only; Spinner never reads artifact bodies
 
 The product goal is token austerity. `frontier.open` is the only sanctioned
 overview dump. Everything else should require deliberate traversal one object at
@@ -18,7 +17,7 @@ a time.
 
 ## Current Model
 
-The ledger has four first-class object families:
+The ledger has three first-class object families:
 
 - `frontier`
   - a named scope
@@ -32,21 +31,15 @@ The ledger has four first-class object families:
   - belongs to exactly one hypothesis
   - may cite other hypotheses or experiments as influences
   - when closed, stores dimensions, metrics, verdict, rationale, and optional analysis
-- `artifact`
-  - reference to an external document, link, log, plot, table, dump, or binary
-  - attaches to frontiers, hypotheses, or experiments
-  - only metadata and locator live in Spinner
-  - Spinner never reads the body
 
 There are no canonical freeform `note` or `source` nodes anymore. If a piece of
 text does not belong in a frontier brief, hypothesis, or experiment analysis, it
-probably belongs outside Spinner as an artifact.
+probably belongs outside Spinner.
 
 ## Design Rules
 
 - `frontier.open` is the only overview surface.
 - No broad prose dumps in list-like tools.
-- Artifact bodies are never read through Spinner.
 - Live metrics are derived, not manually curated.
 - Selectors are permissive: UUID or slug, one field, no parallel `_id` / `_slug`.
 - Slow intentional graph walking is preferred to burning context on giant feeds.
@@ -186,19 +179,6 @@ automatically in the closed outcome. Make a fast commit first; bypass
 heavyweight hooks if needed because the goal is recoverable experimental state,
 not production readiness.
 
-Record an external artifact by reference:
-
-```bash
-cargo run -p fidget-spinner-cli -- artifact record \
-  --project . \
-  --kind document \
-  --slug lp-review-doc \
-  --label "LP review tranche" \
-  --summary "External markdown tranche." \
-  --locator /abs/path/to/review.md \
-  --attach hypothesis:node-local-loop
-```
-
 Inspect live metrics:
 
 ```bash
@@ -275,11 +255,6 @@ The main model-facing tools are:
 - `experiment.close`
 - `experiment.nearest`
 - `experiment.history`
-- `artifact.record`
-- `artifact.list`
-- `artifact.read`
-- `artifact.update`
-- `artifact.history`
 - `metric.define`
 - `metric.keys`
 - `metric.best`
@@ -319,9 +294,8 @@ The navigator mirrors the product philosophy:
 
 - root page lists projects when serving a scan root, otherwise frontiers
 - frontier page is the only overview
-- hypothesis / experiment / artifact pages are detail reads
+- hypothesis / experiment pages are detail reads
 - local navigation happens card-to-card
-- artifact bodies are never surfaced
 
 ## Store Layout
 
@@ -342,6 +316,5 @@ the git worktree.
 - experiments carry the real scientific record
 - closed experiments pin the recoverable implementation commit automatically
 - verdicts are explicit: `accepted`, `kept`, `parked`, `rejected`
-- artifacts keep large text and dumps off the token hot path
 - live metrics answer “what matters now?”, not “what has ever existed?”
 - the ledger is about experimental truth, not recreating git inside the database

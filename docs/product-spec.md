@@ -41,7 +41,7 @@ These are explicitly out of scope for the core product:
 - chat as the system of record
 - mandatory remote control planes
 - replacing git
-- storing or rendering large artifact bodies
+- storing or rendering bulky external prose
 
 Git remains the code substrate. Fidget Spinner is the experimental ledger.
 
@@ -62,7 +62,6 @@ The canonical object families are:
 - `frontier`
 - `hypothesis`
 - `experiment`
-- `artifact`
 
 There are no canonical `note` or `source` ledger nodes.
 
@@ -87,22 +86,7 @@ An experiment is a stateful scientific record. Every experiment has:
 
 This gives the product a canonical tree spine plus a sparse influence network.
 
-### 5. Artifacts are references only
-
-Artifacts are metadata plus locators for external material:
-
-- files
-- links
-- logs
-- tables
-- plots
-- dumps
-- bibliographies
-
-Spinner never reads artifact bodies. If a wall of text matters, attach it as an
-artifact and summarize the operational truth elsewhere.
-
-### 6. Experiment closure is atomic
+### 5. Experiment closure is atomic
 
 A closed experiment exists only when all of these exist together:
 
@@ -117,7 +101,7 @@ A closed experiment exists only when all of these exist together:
 Closing an experiment is one atomic mutation, not a loose pile of lower-level
 writes. Spinner must reject closes from a dirty worktree.
 
-### 7. Live metrics are derived
+### 6. Live metrics are derived
 
 The hot-path metric surface is not “all metrics that have ever existed.”
 
@@ -164,13 +148,6 @@ A closed experiment stores:
 - rationale
 - optional analysis
 - closing commit hash
-- attached artifacts
-
-### Artifact
-
-Artifacts preserve external material by reference. They are deliberately off the
-token hot path. Artifact metadata should be enough to discover the thing; the
-body lives elsewhere.
 
 ## Token Discipline
 
@@ -187,10 +164,8 @@ After that, the model should walk explicitly:
 
 - `hypothesis.read`
 - `experiment.read`
-- `artifact.read`
 
-No broad list surface should dump large prose. Artifact bodies are never in the
-MCP path.
+No broad list surface should dump large prose.
 
 ## Storage
 
@@ -233,11 +208,6 @@ The current model-facing surface is:
 - `experiment.close`
 - `experiment.nearest`
 - `experiment.history`
-- `artifact.record`
-- `artifact.list`
-- `artifact.read`
-- `artifact.update`
-- `artifact.history`
 - `metric.define`
 - `metric.keys`
 - `metric.best`
@@ -250,7 +220,5 @@ Still out of scope:
 
 - remote runners
 - hosted multi-user control planes
-- broad artifact ingestion
-- reading artifact bodies through Spinner
 - giant auto-generated context dumps
 - replacing git or reconstructing git inside the ledger

@@ -9,7 +9,7 @@ use time::format_description::well_known::Rfc3339;
 use uuid::Uuid;
 
 use crate::{
-    ArtifactId, CoreError, ExperimentId, FrontierId, HypothesisId, KpiId, MetricId, RegistryLockId,
+    CoreError, ExperimentId, FrontierId, HypothesisId, KpiId, MetricId, RegistryLockId,
     TagFamilyId, TagId,
 };
 
@@ -1064,49 +1064,6 @@ pub struct ExperimentRecord {
     pub updated_at: OffsetDateTime,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ArtifactKind {
-    Document,
-    Link,
-    Log,
-    Table,
-    Plot,
-    Dump,
-    Binary,
-    Other,
-}
-
-impl ArtifactKind {
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Document => "document",
-            Self::Link => "link",
-            Self::Log => "log",
-            Self::Table => "table",
-            Self::Plot => "plot",
-            Self::Dump => "dump",
-            Self::Binary => "binary",
-            Self::Other => "other",
-        }
-    }
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub struct ArtifactRecord {
-    pub id: ArtifactId,
-    pub slug: Slug,
-    pub kind: ArtifactKind,
-    pub label: NonEmptyText,
-    pub summary: Option<NonEmptyText>,
-    pub locator: NonEmptyText,
-    pub media_type: Option<NonEmptyText>,
-    pub revision: u64,
-    pub created_at: OffsetDateTime,
-    pub updated_at: OffsetDateTime,
-}
-
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum VertexKind {
@@ -1143,53 +1100,6 @@ impl VertexRef {
     #[must_use]
     pub fn opaque_id(self) -> String {
         match self {
-            Self::Hypothesis(id) => id.to_string(),
-            Self::Experiment(id) => id.to_string(),
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum AttachmentTargetKind {
-    Frontier,
-    Hypothesis,
-    Experiment,
-}
-
-impl AttachmentTargetKind {
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Frontier => "frontier",
-            Self::Hypothesis => "hypothesis",
-            Self::Experiment => "experiment",
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(tag = "kind", content = "id", rename_all = "snake_case")]
-pub enum AttachmentTargetRef {
-    Frontier(FrontierId),
-    Hypothesis(HypothesisId),
-    Experiment(ExperimentId),
-}
-
-impl AttachmentTargetRef {
-    #[must_use]
-    pub const fn kind(self) -> AttachmentTargetKind {
-        match self {
-            Self::Frontier(_) => AttachmentTargetKind::Frontier,
-            Self::Hypothesis(_) => AttachmentTargetKind::Hypothesis,
-            Self::Experiment(_) => AttachmentTargetKind::Experiment,
-        }
-    }
-
-    #[must_use]
-    pub fn opaque_id(self) -> String {
-        match self {
-            Self::Frontier(id) => id.to_string(),
             Self::Hypothesis(id) => id.to_string(),
             Self::Experiment(id) => id.to_string(),
         }

@@ -21,7 +21,7 @@ spinner MCP host
     +-- disposable MCP worker
     |   |
     |   +-- per-project SQLite store
-    |   +-- frontier / hypothesis / experiment / artifact services
+    |   +-- frontier / hypothesis / experiment services
     |   +-- navigator projections
     |
     v
@@ -112,12 +112,6 @@ The outcome contains:
 - optional analysis
 - closing commit hash captured from clean git `HEAD`
 
-### Artifact
-
-Artifact is metadata plus a locator for an external thing. It attaches to
-frontiers, hypotheses, and experiments. Spinner never reads or stores the
-artifact body.
-
 ## Graph Semantics
 
 Two relations matter:
@@ -147,8 +141,6 @@ The store is normalized around the new ontology:
 - `hypotheses`
 - `experiments`
 - `vertex_influences`
-- `artifacts`
-- `artifact_attachments`
 - `metric_definitions`
 - `run_dimension_definitions`
 - `experiment_metrics`
@@ -157,7 +149,6 @@ The store is normalized around the new ontology:
 The important boundary is this:
 
 - hypotheses and experiments are the scientific ledger
-- artifacts are reference sidecars
 - frontier projections are derived
 
 ## Presentation Model
@@ -177,9 +168,6 @@ Everything after that should require deliberate traversal:
 
 - `hypothesis.read`
 - `experiment.read`
-- `artifact.read`
-
-Artifact reads stay metadata-only by design.
 
 ## Replay Model
 
@@ -208,7 +196,6 @@ The local navigator mirrors the same philosophy:
 - root page lists frontiers
 - frontier page is the only overview page
 - hypothesis and experiment pages are detail reads
-- artifacts are discoverable but never expanded into body dumps
 
 The UI should help a model or operator walk the graph conservatively, not tempt
 it into giant all-history feeds.

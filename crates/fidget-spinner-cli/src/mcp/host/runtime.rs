@@ -232,7 +232,7 @@ impl HostRuntime {
                     "name": SERVER_NAME,
                     "version": env!("CARGO_PKG_VERSION")
                 },
-                "instructions": "Bind the session with project.bind before project-local work when the MCP is unbound. Use frontier.open as the only overview surface, then walk hypotheses and experiments deliberately by selector. Hypotheses are cheap idea-capture nodes: record them eagerly when a plausible branch appears, and retire obviously stale ones with hypothesis.update state=retired. Artifacts are references only; Spinner does not read artifact bodies."
+                "instructions": "Bind the session with project.bind before project-local work when the MCP is unbound. Use frontier.open as the only overview surface, then walk hypotheses and experiments deliberately by selector. Hypotheses are cheap idea-capture nodes: record them eagerly when a plausible branch appears, and retire obviously stale ones with hypothesis.update state=retired."
             }))),
             "notifications/initialized" => {
                 if !self.seed_captured() {
@@ -661,7 +661,6 @@ struct ProjectBindStatus {
     hypothesis_count: u64,
     experiment_count: u64,
     open_experiment_count: u64,
-    artifact_count: u64,
 }
 
 struct ResolvedProjectBinding {
@@ -688,7 +687,6 @@ fn resolve_project_binding(
             hypothesis_count: project_status.hypothesis_count,
             experiment_count: project_status.experiment_count,
             open_experiment_count: project_status.open_experiment_count,
-            artifact_count: project_status.artifact_count,
         },
     })
 }
@@ -801,7 +799,6 @@ fn project_bind_output(status: &ProjectBindStatus) -> Result<ToolOutput, FaultRe
         "open_experiment_count".to_owned(),
         json!(status.open_experiment_count),
     );
-    let _ = concise.insert("artifact_count".to_owned(), json!(status.artifact_count));
     if status.requested_path != status.project_root {
         let _ = concise.insert("requested_path".to_owned(), json!(status.requested_path));
     }
@@ -818,7 +815,6 @@ fn project_bind_output(status: &ProjectBindStatus) -> Result<ToolOutput, FaultRe
                 "experiments: {} total, {} open",
                 status.experiment_count, status.open_experiment_count
             ),
-            format!("artifacts: {}", status.artifact_count),
         ]
         .join("\n"),
         None,

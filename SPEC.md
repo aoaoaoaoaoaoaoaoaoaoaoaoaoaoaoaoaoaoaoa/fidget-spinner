@@ -26,8 +26,7 @@ Experiment pages use this order:
    verdict, tags, and a terse summary.
 2. Outcome, when present. Within outcome: verdict, rationale, analysis, metric
    ledgers, then collapsed provenance.
-3. Artifacts, when present.
-4. Influence network, when present.
+3. Influence network, when present.
 
 Use these component primitives consistently:
 
@@ -39,7 +38,7 @@ Use these component primitives consistently:
 - Provenance disclosures for command recipe, dimensions, backend, commit, and
   other recoverability details.
 - Chip rows for tags, status, verdicts, and compact categorical labels.
-- Link chips for traversing to hypotheses, experiments, and artifacts.
+- Link chips for traversing to hypotheses and experiments.
 - Section cards only when the section carries real content. Empty sections should
   usually disappear instead of announcing absence.
 

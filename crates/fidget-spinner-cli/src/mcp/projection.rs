@@ -1,44 +1,21 @@
 use std::collections::BTreeMap;
 
 use fidget_spinner_core::{
-    AttachmentTargetRef, CommandRecipe, ExperimentAnalysis, ExperimentOutcome, FrontierBrief,
-    FrontierRecord, MetricDefinition, MetricValue, NonEmptyText, RegistryLockRecord,
-    RunDimensionDefinition, RunDimensionValue, TagFamilyRecord, TagNameHistoryRecord, TagRecord,
-    TagRegistrySnapshot,
+    CommandRecipe, ExperimentAnalysis, ExperimentOutcome, FrontierBrief, FrontierRecord,
+    MetricDefinition, MetricValue, NonEmptyText, RegistryLockRecord, RunDimensionDefinition,
+    RunDimensionValue, TagFamilyRecord, TagNameHistoryRecord, TagRecord, TagRegistrySnapshot,
 };
 use fidget_spinner_store_sqlite::{
-    ArtifactDetail, ArtifactSummary, EntityHistoryEntry, ExperimentDetail, ExperimentNearestHit,
-    ExperimentNearestResult, ExperimentSummary, FrontierOpenProjection, FrontierSummary,
-    HypothesisCurrentState, HypothesisDetail, KpiBestEntry, KpiSummary, MetricBestEntry,
-    MetricKeySummary, MetricObservationSummary, ProjectStore, StoreError, VertexSummary,
+    EntityHistoryEntry, ExperimentDetail, ExperimentNearestHit, ExperimentNearestResult,
+    ExperimentSummary, FrontierOpenProjection, FrontierSummary, HypothesisCurrentState,
+    HypothesisDetail, KpiBestEntry, KpiSummary, MetricBestEntry, MetricKeySummary,
+    MetricObservationSummary, ProjectStore, StoreError, VertexSummary,
 };
-use libmcp::{
-    ProjectionError, SelectorProjection, StructuredProjection, SurfaceKind, SurfacePolicy,
-    TimestampText,
-};
+use libmcp::{ProjectionError, StructuredProjection, SurfaceKind, SurfacePolicy, TimestampText};
 use serde::Serialize;
 use serde_json::Value;
 
 use crate::mcp::fault::{FaultKind, FaultRecord, FaultStage};
-
-#[derive(Clone, Serialize, libmcp::SelectorProjection)]
-pub(crate) struct HypothesisSelector {
-    pub(crate) slug: String,
-    pub(crate) title: String,
-}
-
-#[derive(Clone, Serialize, libmcp::SelectorProjection)]
-pub(crate) struct ExperimentSelector {
-    pub(crate) slug: String,
-    pub(crate) title: String,
-}
-
-#[derive(Clone, Serialize, libmcp::SelectorProjection)]
-pub(crate) struct FrontierSelector {
-    pub(crate) slug: String,
-    #[libmcp(title)]
-    pub(crate) label: String,
-}
 
 #[derive(Clone, Serialize)]
 pub(crate) struct FrontierSummaryProjection {
@@ -172,7 +149,6 @@ pub(crate) struct HypothesisDetailConcise {
     pub(crate) open_experiments: Vec<ExperimentSummaryProjection>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) latest_closed_experiment: Option<ExperimentSummaryProjection>,
-    pub(crate) artifact_count: usize,
 }
 
 #[derive(Clone, Serialize)]
@@ -183,7 +159,6 @@ pub(crate) struct HypothesisDetailFull {
     pub(crate) children: Vec<VertexSummaryProjection>,
     pub(crate) open_experiments: Vec<ExperimentSummaryProjection>,
     pub(crate) closed_experiments: Vec<ExperimentSummaryProjection>,
-    pub(crate) artifacts: Vec<ArtifactSummaryProjection>,
 }
 
 pub(crate) struct HypothesisDetailOutput {
@@ -271,7 +246,6 @@ pub(crate) struct ExperimentDetailConcise {
     pub(crate) owning_hypothesis: HypothesisSummaryProjection,
     pub(crate) parents: usize,
     pub(crate) children: usize,
-    pub(crate) artifact_count: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) outcome: Option<ExperimentOutcomeProjection>,
 }
@@ -283,7 +257,6 @@ pub(crate) struct ExperimentDetailFull {
     pub(crate) owning_hypothesis: HypothesisSummaryProjection,
     pub(crate) parents: Vec<VertexSummaryProjection>,
     pub(crate) children: Vec<VertexSummaryProjection>,
-    pub(crate) artifacts: Vec<ArtifactSummaryProjection>,
 }
 
 pub(crate) struct ExperimentDetailOutput {
@@ -316,93 +289,6 @@ pub(crate) struct ExperimentRecordOutput {
 pub(crate) struct ExperimentListOutput {
     pub(crate) count: usize,
     pub(crate) experiments: Vec<ExperimentSummaryProjection>,
-}
-
-#[derive(Clone, Serialize)]
-pub(crate) struct ArtifactSummaryProjection {
-    pub(crate) slug: String,
-    pub(crate) kind: String,
-    pub(crate) label: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) summary: Option<String>,
-    pub(crate) locator: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) media_type: Option<String>,
-    pub(crate) updated_at: TimestampText,
-}
-
-#[derive(Clone, Serialize)]
-pub(crate) struct ArtifactRecordProjection {
-    pub(crate) slug: String,
-    pub(crate) kind: String,
-    pub(crate) label: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) summary: Option<String>,
-    pub(crate) locator: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) media_type: Option<String>,
-    pub(crate) revision: u64,
-    pub(crate) created_at: TimestampText,
-    pub(crate) updated_at: TimestampText,
-}
-
-#[derive(Clone, Serialize)]
-pub(crate) struct ArtifactReadRecordProjection {
-    pub(crate) slug: String,
-    pub(crate) kind: String,
-    pub(crate) label: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) summary: Option<String>,
-    pub(crate) locator: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) media_type: Option<String>,
-    pub(crate) revision: u64,
-    pub(crate) updated_at: TimestampText,
-}
-
-#[derive(Clone, Serialize)]
-pub(crate) struct ArtifactDetailConcise {
-    pub(crate) record: ArtifactReadRecordProjection,
-    pub(crate) attachment_count: usize,
-}
-
-#[derive(Clone, Serialize)]
-pub(crate) struct ArtifactDetailFull {
-    pub(crate) record: ArtifactRecordProjection,
-    pub(crate) attachments: Vec<AttachmentTargetProjection>,
-}
-
-pub(crate) struct ArtifactDetailOutput {
-    concise: ArtifactDetailConcise,
-    full: ArtifactDetailFull,
-}
-
-impl StructuredProjection for ArtifactDetailOutput {
-    fn concise_projection(&self) -> Result<Value, ProjectionError> {
-        Ok(serde_json::to_value(&self.concise)?)
-    }
-
-    fn full_projection(&self) -> Result<Value, ProjectionError> {
-        Ok(serde_json::to_value(&self.full)?)
-    }
-}
-
-impl SurfacePolicy for ArtifactDetailOutput {
-    const KIND: SurfaceKind = SurfaceKind::Read;
-    const REFERENCE_ONLY: bool = true;
-}
-
-#[derive(Clone, Serialize, libmcp::ToolProjection)]
-#[libmcp(kind = "mutation", reference_only)]
-pub(crate) struct ArtifactRecordOutput {
-    pub(crate) record: ArtifactRecordProjection,
-}
-
-#[derive(Clone, Serialize, libmcp::ToolProjection)]
-#[libmcp(kind = "list", reference_only)]
-pub(crate) struct ArtifactListOutput {
-    pub(crate) count: usize,
-    pub(crate) artifacts: Vec<ArtifactSummaryProjection>,
 }
 
 #[derive(Clone, Serialize)]
@@ -522,20 +408,6 @@ pub(crate) struct VertexSummaryProjection {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) summary: Option<String>,
     pub(crate) updated_at: TimestampText,
-}
-
-#[derive(Clone, Serialize)]
-pub(crate) struct AttachmentTargetProjection {
-    pub(crate) kind: String,
-    pub(crate) slug: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) title: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) label: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) summary: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) status: Option<String>,
 }
 
 #[derive(Clone, Serialize, libmcp::ToolProjection)]
@@ -813,7 +685,6 @@ pub(crate) fn hypothesis_detail(
                 .map(experiment_summary)
                 .collect(),
             latest_closed_experiment: detail.closed_experiments.first().map(experiment_summary),
-            artifact_count: detail.artifacts.len(),
         },
         full: HypothesisDetailFull {
             record: hypothesis_record_projection(&detail.record),
@@ -830,7 +701,6 @@ pub(crate) fn hypothesis_detail(
                 .iter()
                 .map(experiment_summary)
                 .collect(),
-            artifacts: detail.artifacts.iter().map(artifact_summary).collect(),
         },
     })
 }
@@ -883,7 +753,6 @@ pub(crate) fn experiment_detail(
             owning_hypothesis: hypothesis_summary(&detail.owning_hypothesis),
             parents: detail.parents.len(),
             children: detail.children.len(),
-            artifact_count: detail.artifacts.len(),
             outcome: detail.record.outcome.as_ref().map(experiment_outcome),
         },
         full: ExperimentDetailFull {
@@ -892,54 +761,6 @@ pub(crate) fn experiment_detail(
             owning_hypothesis: hypothesis_summary(&detail.owning_hypothesis),
             parents: detail.parents.iter().map(vertex_summary).collect(),
             children: detail.children.iter().map(vertex_summary).collect(),
-            artifacts: detail.artifacts.iter().map(artifact_summary).collect(),
-        },
-    })
-}
-
-pub(crate) fn artifact_record(
-    artifact: &fidget_spinner_core::ArtifactRecord,
-) -> ArtifactRecordOutput {
-    ArtifactRecordOutput {
-        record: artifact_record_projection(artifact),
-    }
-}
-
-pub(crate) fn artifact_list(artifacts: &[ArtifactSummary]) -> ArtifactListOutput {
-    ArtifactListOutput {
-        count: artifacts.len(),
-        artifacts: artifacts.iter().map(artifact_summary).collect(),
-    }
-}
-
-pub(crate) fn artifact_detail(
-    store: &ProjectStore,
-    detail: &ArtifactDetail,
-    operation: &str,
-) -> Result<ArtifactDetailOutput, FaultRecord> {
-    let attachments = detail
-        .attachments
-        .iter()
-        .copied()
-        .map(|attachment| attachment_target(store, attachment, operation))
-        .collect::<Result<Vec<_>, _>>()?;
-    Ok(ArtifactDetailOutput {
-        concise: ArtifactDetailConcise {
-            record: ArtifactReadRecordProjection {
-                slug: detail.record.slug.to_string(),
-                kind: detail.record.kind.as_str().to_owned(),
-                label: detail.record.label.to_string(),
-                summary: detail.record.summary.as_ref().map(ToString::to_string),
-                locator: detail.record.locator.to_string(),
-                media_type: detail.record.media_type.as_ref().map(ToString::to_string),
-                revision: detail.record.revision,
-                updated_at: timestamp_value(detail.record.updated_at),
-            },
-            attachment_count: detail.attachments.len(),
-        },
-        full: ArtifactDetailFull {
-            record: artifact_record_projection(&detail.record),
-            attachments,
         },
     })
 }
@@ -1175,34 +996,6 @@ fn experiment_record_projection(
     }
 }
 
-fn artifact_summary(artifact: &ArtifactSummary) -> ArtifactSummaryProjection {
-    ArtifactSummaryProjection {
-        slug: artifact.slug.to_string(),
-        kind: artifact.kind.as_str().to_owned(),
-        label: artifact.label.to_string(),
-        summary: artifact.summary.as_ref().map(ToString::to_string),
-        locator: artifact.locator.to_string(),
-        media_type: artifact.media_type.as_ref().map(ToString::to_string),
-        updated_at: timestamp_value(artifact.updated_at),
-    }
-}
-
-fn artifact_record_projection(
-    artifact: &fidget_spinner_core::ArtifactRecord,
-) -> ArtifactRecordProjection {
-    ArtifactRecordProjection {
-        slug: artifact.slug.to_string(),
-        kind: artifact.kind.as_str().to_owned(),
-        label: artifact.label.to_string(),
-        summary: artifact.summary.as_ref().map(ToString::to_string),
-        locator: artifact.locator.to_string(),
-        media_type: artifact.media_type.as_ref().map(ToString::to_string),
-        revision: artifact.revision,
-        created_at: timestamp_value(artifact.created_at),
-        updated_at: timestamp_value(artifact.updated_at),
-    }
-}
-
 fn hypothesis_current_state(state: &HypothesisCurrentState) -> HypothesisCurrentStateProjection {
     HypothesisCurrentStateProjection {
         hypothesis: hypothesis_summary(&state.hypothesis),
@@ -1430,69 +1223,6 @@ fn vertex_summary(vertex: &VertexSummary) -> VertexSummaryProjection {
         title: vertex.title.to_string(),
         summary: vertex.summary.as_ref().map(ToString::to_string),
         updated_at: timestamp_value(vertex.updated_at),
-    }
-}
-
-fn attachment_target(
-    store: &ProjectStore,
-    attachment: AttachmentTargetRef,
-    operation: &str,
-) -> Result<AttachmentTargetProjection, FaultRecord> {
-    match attachment {
-        AttachmentTargetRef::Frontier(id) => {
-            let frontier = store
-                .read_frontier(&id.to_string())
-                .map_err(store_fault(operation))?;
-            let reference = FrontierSelector {
-                slug: frontier.slug.to_string(),
-                label: frontier.label.to_string(),
-            };
-            let selector = reference.selector_ref();
-            Ok(AttachmentTargetProjection {
-                kind: "frontier".to_owned(),
-                slug: selector.slug,
-                title: None,
-                label: selector.title,
-                summary: None,
-                status: Some(frontier.status.as_str().to_owned()),
-            })
-        }
-        AttachmentTargetRef::Hypothesis(id) => {
-            let hypothesis = store
-                .read_hypothesis(&id.to_string())
-                .map_err(store_fault(operation))?;
-            let reference = HypothesisSelector {
-                slug: hypothesis.record.slug.to_string(),
-                title: hypothesis.record.title.to_string(),
-            };
-            let selector = reference.selector_ref();
-            Ok(AttachmentTargetProjection {
-                kind: "hypothesis".to_owned(),
-                slug: selector.slug,
-                title: selector.title,
-                label: None,
-                summary: Some(hypothesis.record.summary.to_string()),
-                status: None,
-            })
-        }
-        AttachmentTargetRef::Experiment(id) => {
-            let experiment = store
-                .read_experiment(&id.to_string())
-                .map_err(store_fault(operation))?;
-            let reference = ExperimentSelector {
-                slug: experiment.record.slug.to_string(),
-                title: experiment.record.title.to_string(),
-            };
-            let selector = reference.selector_ref();
-            Ok(AttachmentTargetProjection {
-                kind: "experiment".to_owned(),
-                slug: selector.slug,
-                title: selector.title,
-                label: None,
-                summary: experiment.record.summary.as_ref().map(ToString::to_string),
-                status: None,
-            })
-        }
     }
 }
 

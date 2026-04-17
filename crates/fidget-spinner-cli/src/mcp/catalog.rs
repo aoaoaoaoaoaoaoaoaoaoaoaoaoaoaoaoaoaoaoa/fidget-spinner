@@ -121,7 +121,7 @@ const TOOL_SPECS: &[ToolSpec] = &[
     },
     ToolSpec {
         name: "hypothesis.read",
-        description: "Read one hypothesis with its local neighborhood, experiments, and artifacts.",
+        description: "Read one hypothesis with its local neighborhood and experiments.",
         dispatch: DispatchTarget::Worker,
         replay: ReplayContract::Convergent,
     },
@@ -151,7 +151,7 @@ const TOOL_SPECS: &[ToolSpec] = &[
     },
     ToolSpec {
         name: "experiment.read",
-        description: "Read one experiment with its owning hypothesis, local neighborhood, outcome, and artifacts.",
+        description: "Read one experiment with its owning hypothesis, local neighborhood, and outcome.",
         dispatch: DispatchTarget::Worker,
         replay: ReplayContract::Convergent,
     },
@@ -176,36 +176,6 @@ const TOOL_SPECS: &[ToolSpec] = &[
     ToolSpec {
         name: "experiment.history",
         description: "Read the revision history for one experiment.",
-        dispatch: DispatchTarget::Worker,
-        replay: ReplayContract::Convergent,
-    },
-    ToolSpec {
-        name: "artifact.record",
-        description: "Register an external artifact reference and attach it to frontiers, hypotheses, or experiments. Artifact bodies are never read through Spinner.",
-        dispatch: DispatchTarget::Worker,
-        replay: ReplayContract::NeverReplay,
-    },
-    ToolSpec {
-        name: "artifact.list",
-        description: "List artifact references, optionally narrowed by frontier, kind, or attachment target.",
-        dispatch: DispatchTarget::Worker,
-        replay: ReplayContract::Convergent,
-    },
-    ToolSpec {
-        name: "artifact.read",
-        description: "Read one artifact reference and its attachment targets.",
-        dispatch: DispatchTarget::Worker,
-        replay: ReplayContract::Convergent,
-    },
-    ToolSpec {
-        name: "artifact.update",
-        description: "Patch artifact metadata or replace its attachment set.",
-        dispatch: DispatchTarget::Worker,
-        replay: ReplayContract::NeverReplay,
-    },
-    ToolSpec {
-        name: "artifact.history",
-        description: "Read the revision history for one artifact.",
         dispatch: DispatchTarget::Worker,
         replay: ReplayContract::Convergent,
     },
@@ -597,85 +567,6 @@ fn tool_input_schema(name: &str) -> Value {
             ],
             &[],
         ),
-        "artifact.record" => object_schema(
-            &[
-                (
-                    "kind",
-                    enum_string_schema(
-                        &[
-                            "document", "link", "log", "table", "plot", "dump", "binary", "other",
-                        ],
-                        "Artifact kind.",
-                    ),
-                ),
-                ("label", string_schema("Human-facing artifact label.")),
-                ("summary", string_schema("Optional summary.")),
-                (
-                    "locator",
-                    string_schema(
-                        "Opaque locator or URI. Artifact bodies are never read through Spinner.",
-                    ),
-                ),
-                ("media_type", string_schema("Optional media type.")),
-                ("slug", string_schema("Optional stable artifact slug.")),
-                ("attachments", attachment_selector_array_schema()),
-            ],
-            &["kind", "label", "locator"],
-        ),
-        "artifact.list" => object_schema(
-            &[
-                (
-                    "frontier",
-                    selector_schema("Optional frontier UUID or slug."),
-                ),
-                (
-                    "kind",
-                    enum_string_schema(
-                        &[
-                            "document", "link", "log", "table", "plot", "dump", "binary", "other",
-                        ],
-                        "Optional artifact kind.",
-                    ),
-                ),
-                ("attached_to", attachment_selector_schema()),
-                ("limit", integer_schema("Optional row cap.")),
-            ],
-            &[],
-        ),
-        "artifact.read" | "artifact.history" => object_schema(
-            &[("artifact", selector_schema("Artifact UUID or slug."))],
-            &["artifact"],
-        ),
-        "artifact.update" => object_schema(
-            &[
-                ("artifact", selector_schema("Artifact UUID or slug.")),
-                (
-                    "expected_revision",
-                    integer_schema("Optimistic concurrency guard."),
-                ),
-                (
-                    "kind",
-                    enum_string_schema(
-                        &[
-                            "document", "link", "log", "table", "plot", "dump", "binary", "other",
-                        ],
-                        "Replacement artifact kind.",
-                    ),
-                ),
-                ("label", string_schema("Replacement label.")),
-                (
-                    "summary",
-                    nullable_string_schema("Replacement summary or explicit null."),
-                ),
-                ("locator", string_schema("Replacement locator.")),
-                (
-                    "media_type",
-                    nullable_string_schema("Replacement media type or explicit null."),
-                ),
-                ("attachments", attachment_selector_array_schema()),
-            ],
-            &["artifact"],
-        ),
         "metric.define" => object_schema(
             &[
                 ("key", string_schema("Metric key.")),
@@ -866,24 +757,8 @@ fn vertex_selector_schema() -> Value {
     })
 }
 
-fn attachment_selector_schema() -> Value {
-    json!({
-        "type": "object",
-        "properties": {
-            "kind": { "type": "string", "enum": ["frontier", "hypothesis", "experiment"] },
-            "selector": { "type": "string" }
-        },
-        "required": ["kind", "selector"],
-        "additionalProperties": false
-    })
-}
-
 fn vertex_selector_array_schema() -> Value {
     json!({ "type": "array", "items": vertex_selector_schema() })
-}
-
-fn attachment_selector_array_schema() -> Value {
-    json!({ "type": "array", "items": attachment_selector_schema() })
 }
 
 fn roadmap_schema() -> Value {

@@ -36,7 +36,6 @@ macro_rules! define_id {
     };
 }
 
-define_id!(ArtifactId);
 define_id!(ExperimentId);
 define_id!(FrontierId);
 define_id!(HypothesisId);

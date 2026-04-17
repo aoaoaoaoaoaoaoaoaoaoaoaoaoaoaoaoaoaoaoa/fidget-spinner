@@ -11,8 +11,8 @@ use axum::response::{Html, IntoResponse, Redirect, Response};
 use axum::routing::{get, post};
 use camino::Utf8PathBuf;
 use fidget_spinner_core::{
-    AttachmentTargetRef, ExperimentAnalysis, ExperimentOutcome, ExperimentStatus, FrontierRecord,
-    FrontierStatus, FrontierVerdict, KnownMetricUnit, MetricAggregation, MetricUnit, NonEmptyText,
+    ExperimentAnalysis, ExperimentOutcome, ExperimentStatus, FrontierRecord, FrontierStatus,
+    FrontierVerdict, KnownMetricUnit, MetricAggregation, MetricUnit, NonEmptyText,
     OptimizationObjective, RegistryLockMode, RegistryName, RunDimensionValue, Slug, TagFamilyName,
     TagName, VertexRef,
 };
@@ -140,13 +140,6 @@ struct ProjectMetricsQuery {
 struct DimensionFacet {
     key: String,
     values: Vec<String>,
-}
-
-struct AttachmentDisplay {
-    kind: &'static str,
-    href: String,
-    title: String,
-    summary: Option<String>,
 }
 
 impl FrontierTab {
@@ -333,10 +326,6 @@ pub(crate) fn serve(
             .route(
                 "/project/{project}/experiment/{selector}",
                 get(experiment_detail),
-            )
-            .route(
-                "/project/{project}/artifact/{selector}",
-                get(artifact_detail),
             )
             .with_state(state.clone());
         let listener = tokio::net::TcpListener::bind(bind)
@@ -926,23 +915,12 @@ async fn experiment_detail(
     )
 }
 
-async fn artifact_detail(
-    State(state): State<NavigatorState>,
-    Path((project, selector)): Path<(String, String)>,
-) -> Response {
-    render_response(
-        resolve_project_context(&state, &project)
-            .and_then(|context| render_artifact_detail(context, selector)),
-    )
-}
-
 fn render_response(result: Result<Markup, StoreError>) -> Response {
     match result {
         Ok(markup) => Html(harden_autofill_controls(markup.into_string())).into_response(),
         Err(StoreError::UnknownFrontierSelector(_))
         | Err(StoreError::UnknownHypothesisSelector(_))
-        | Err(StoreError::UnknownExperimentSelector(_))
-        | Err(StoreError::UnknownArtifactSelector(_)) => {
+        | Err(StoreError::UnknownExperimentSelector(_)) => {
             (StatusCode::NOT_FOUND, "not found".to_owned()).into_response()
         }
         Err(error) => (
@@ -1576,7 +1554,6 @@ fn render_hypothesis_detail(
         (render_hypothesis_header(&detail, &frontier))
         (render_prose_block("Body", detail.record.body.as_str()))
         (render_vertex_relation_sections(&detail.parents, &detail.children, context.limit))
-        (render_artifact_section(&detail.artifacts, context.limit))
         (render_experiment_section(
             "Open Experiments",
             &detail.open_experiments,
@@ -1607,56 +1584,7 @@ fn render_experiment_detail(
         } @else {
             (render_open_experiment_outcome())
         }
-        (render_artifact_section(&detail.artifacts, context.limit))
         (render_vertex_relation_sections(&detail.parents, &detail.children, context.limit))
-    };
-    Ok(render_shell(&title, &shell, None, content))
-}
-
-fn render_artifact_detail(
-    context: ProjectRenderContext,
-    selector: String,
-) -> Result<Markup, StoreError> {
-    let store = open_store(context.project_root.as_std_path())?;
-    let detail = store.read_artifact(&selector)?;
-    let shell = load_shell_frame(&store, None, &context)?;
-    let attachments = detail
-        .attachments
-        .iter()
-        .map(|target| resolve_attachment_display(&store, *target))
-        .collect::<Result<Vec<_>, StoreError>>()?;
-    let title = format!("{} · artifact", detail.record.label);
-    let content = html! {
-        section.card {
-            h1 { (detail.record.label) }
-            div.kv-grid {
-                (render_kv("Kind", detail.record.kind.as_str()))
-                (render_kv("Slug", detail.record.slug.as_str()))
-                (render_kv("Locator", detail.record.locator.as_str()))
-                @if let Some(media_type) = detail.record.media_type.as_ref() {
-                    (render_kv("Media type", media_type.as_str()))
-                }
-                (render_kv("Updated", &format_timestamp(detail.record.updated_at)))
-            }
-            @if let Some(summary) = detail.record.summary.as_ref() {
-                p.prose { (summary) }
-            }
-            p.muted {
-                "Artifact bodies are intentionally out of band. Spinner only preserves references."
-            }
-        }
-        section.card {
-            h2 { "Attachments" }
-            @if attachments.is_empty() {
-                p.muted { "No attachments." }
-            } @else {
-                div.link-list {
-                    @for attachment in &attachments {
-                        (render_attachment_chip(attachment))
-                    }
-                }
-            }
-        }
     };
     Ok(render_shell(&title, &shell, None, content))
 }
@@ -3167,7 +3095,6 @@ fn render_project_status(status: &ProjectStatus, base_href: &str) -> Markup {
             (render_kv("Hypotheses", &status.hypothesis_count.to_string()))
             (render_kv("Experiments", &status.experiment_count.to_string()))
             (render_kv("Open experiments", &status.open_experiment_count.to_string()))
-            (render_kv("Artifacts", &status.artifact_count.to_string()))
         }
     }
     }
@@ -3737,36 +3664,6 @@ fn render_vertex_relation_sections(
     }
 }
 
-fn render_artifact_section(
-    artifacts: &[fidget_spinner_store_sqlite::ArtifactSummary],
-    limit: Option<u32>,
-) -> Markup {
-    if artifacts.is_empty() {
-        return html! {};
-    }
-    html! {
-    section.card {
-        h2 { "Artifacts" }
-        div.card-grid {
-            @for artifact in limit_items(artifacts, limit) {
-                article.mini-card {
-                    div.card-header {
-                        a.title-link href=(artifact_href(&artifact.slug)) { (artifact.label) }
-                        span class="status-chip classless" { (artifact.kind.as_str()) }
-                    }
-                    @if let Some(summary) = artifact.summary.as_ref() {
-                        p.prose { (summary) }
-                    }
-                    div.meta-row {
-                        span.muted { (artifact.locator) }
-                    }
-                }
-            }
-        }
-    }
-    }
-}
-
 fn render_experiment_section(
     title: &str,
     experiments: &[ExperimentSummary],
@@ -3872,20 +3769,6 @@ fn render_vertex_chip(summary: &VertexSummary) -> Markup {
             }
             @if let Some(summary_text) = summary.summary.as_ref() {
                 span.link-chip-summary { (summary_text) }
-            }
-        }
-    }
-}
-
-fn render_attachment_chip(attachment: &AttachmentDisplay) -> Markup {
-    html! {
-        a.link-chip href=(&attachment.href) {
-            span.link-chip-main {
-                span.kind-chip { (attachment.kind) }
-                span.link-chip-title { (&attachment.title) }
-            }
-            @if let Some(summary) = attachment.summary.as_ref() {
-                span.link-chip-summary { (summary) }
             }
         }
     }
@@ -4761,45 +4644,6 @@ fn hypothesis_title_for_roadmap_item(
 
 fn experiment_href(slug: &Slug) -> String {
     format!("experiment/{}", encode_path_segment(slug.as_str()))
-}
-
-fn artifact_href(slug: &Slug) -> String {
-    format!("artifact/{}", encode_path_segment(slug.as_str()))
-}
-
-fn resolve_attachment_display(
-    store: &fidget_spinner_store_sqlite::ProjectStore,
-    target: AttachmentTargetRef,
-) -> Result<AttachmentDisplay, StoreError> {
-    match target {
-        AttachmentTargetRef::Frontier(id) => {
-            let frontier = store.read_frontier(&id.to_string())?;
-            Ok(AttachmentDisplay {
-                kind: "frontier",
-                href: frontier_href(&frontier.slug),
-                title: frontier.label.to_string(),
-                summary: Some(frontier.objective.to_string()),
-            })
-        }
-        AttachmentTargetRef::Hypothesis(id) => {
-            let detail = store.read_hypothesis(&id.to_string())?;
-            Ok(AttachmentDisplay {
-                kind: "hypothesis",
-                href: hypothesis_href(&detail.record.slug),
-                title: detail.record.title.to_string(),
-                summary: Some(detail.record.summary.to_string()),
-            })
-        }
-        AttachmentTargetRef::Experiment(id) => {
-            let detail = store.read_experiment(&id.to_string())?;
-            Ok(AttachmentDisplay {
-                kind: "experiment",
-                href: experiment_href(&detail.record.slug),
-                title: detail.record.title.to_string(),
-                summary: detail.record.summary.as_ref().map(ToString::to_string),
-            })
-        }
-    }
 }
 
 fn encode_path_segment(value: &str) -> String {

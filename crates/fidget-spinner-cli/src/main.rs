@@ -11,19 +11,17 @@ use std::path::{Path, PathBuf};
 use camino::{Utf8Path, Utf8PathBuf};
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use fidget_spinner_core::{
-    ArtifactKind, CommandRecipe, ExecutionBackend, ExperimentAnalysis, ExperimentStatus,
-    FieldValueType, FrontierStatus, FrontierVerdict, MetricAggregation, MetricUnit, NonEmptyText,
+    CommandRecipe, ExecutionBackend, ExperimentAnalysis, ExperimentStatus, FieldValueType,
+    FrontierStatus, FrontierVerdict, MetricAggregation, MetricUnit, NonEmptyText,
     OptimizationObjective, RunDimensionValue, Slug, TagName,
 };
 use fidget_spinner_store_sqlite::{
-    AttachmentSelector, CloseExperimentRequest, CreateArtifactRequest, CreateFrontierRequest,
-    CreateHypothesisRequest, CreateKpiRequest, DefineMetricRequest, DefineRunDimensionRequest,
-    DeleteMetricRequest, ExperimentOutcomePatch, FrontierRoadmapItemDraft, KpiBestQuery,
-    KpiListQuery, ListArtifactsQuery, ListExperimentsQuery, ListFrontiersQuery,
+    CloseExperimentRequest, CreateFrontierRequest, CreateHypothesisRequest, CreateKpiRequest,
+    DefineMetricRequest, DefineRunDimensionRequest, DeleteMetricRequest, ExperimentOutcomePatch,
+    FrontierRoadmapItemDraft, KpiBestQuery, KpiListQuery, ListExperimentsQuery, ListFrontiersQuery,
     ListHypothesesQuery, MergeMetricRequest, MetricBestQuery, MetricKeysQuery, MetricRankOrder,
     MetricScope, OpenExperimentRequest, ProjectStore, RenameMetricRequest, StoreError, TextPatch,
-    UpdateArtifactRequest, UpdateExperimentRequest, UpdateFrontierRequest, UpdateHypothesisRequest,
-    VertexSelector,
+    UpdateExperimentRequest, UpdateFrontierRequest, UpdateHypothesisRequest, VertexSelector,
 };
 #[cfg(test)]
 use libmcp_testkit as _;
@@ -69,11 +67,6 @@ enum Command {
     Experiment {
         #[command(subcommand)]
         command: ExperimentCommand,
-    },
-    /// Register external references and attach them to the ledger.
-    Artifact {
-        #[command(subcommand)]
-        command: ArtifactCommand,
     },
     /// Manage project-level metric definitions and rankings.
     Metric {
@@ -154,15 +147,6 @@ enum ExperimentCommand {
     Close(ExperimentCloseArgs),
     Nearest(ExperimentNearestArgs),
     History(ExperimentSelectorArgs),
-}
-
-#[derive(Subcommand)]
-enum ArtifactCommand {
-    Record(ArtifactRecordArgs),
-    List(ArtifactListArgs),
-    Read(ArtifactSelectorArgs),
-    Update(ArtifactUpdateArgs),
-    History(ArtifactSelectorArgs),
 }
 
 #[derive(Subcommand)]
@@ -499,76 +483,6 @@ struct ExperimentNearestArgs {
 }
 
 #[derive(Args)]
-struct ArtifactRecordArgs {
-    #[command(flatten)]
-    project: ProjectArg,
-    #[arg(long)]
-    kind: CliArtifactKind,
-    #[arg(long)]
-    label: String,
-    #[arg(long)]
-    summary: Option<String>,
-    #[arg(long)]
-    locator: String,
-    #[arg(long)]
-    media_type: Option<String>,
-    #[arg(long)]
-    slug: Option<String>,
-    #[arg(long = "attach")]
-    attachments: Vec<String>,
-}
-
-#[derive(Args)]
-struct ArtifactListArgs {
-    #[command(flatten)]
-    project: ProjectArg,
-    #[arg(long)]
-    frontier: Option<String>,
-    #[arg(long)]
-    kind: Option<CliArtifactKind>,
-    #[arg(long)]
-    attached_to: Option<String>,
-    #[arg(long)]
-    limit: Option<u32>,
-}
-
-#[derive(Args)]
-struct ArtifactSelectorArgs {
-    #[command(flatten)]
-    project: ProjectArg,
-    #[arg(long)]
-    artifact: String,
-}
-
-#[derive(Args)]
-struct ArtifactUpdateArgs {
-    #[command(flatten)]
-    project: ProjectArg,
-    #[arg(long)]
-    artifact: String,
-    #[arg(long)]
-    expected_revision: Option<u64>,
-    #[arg(long)]
-    kind: Option<CliArtifactKind>,
-    #[arg(long)]
-    label: Option<String>,
-    #[arg(long)]
-    summary: Option<String>,
-    #[arg(long)]
-    clear_summary: bool,
-    #[arg(long)]
-    locator: Option<String>,
-    #[arg(long)]
-    media_type: Option<String>,
-    #[arg(long)]
-    clear_media_type: bool,
-    #[arg(long = "attach")]
-    attachments: Vec<String>,
-    #[arg(long = "replace-attachments")]
-    replace_attachments: bool,
-}
-
-#[derive(Args)]
 struct MetricDefineArgs {
     #[command(flatten)]
     project: ProjectArg,
@@ -766,18 +680,6 @@ enum CliFieldValueType {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
-enum CliArtifactKind {
-    Document,
-    Link,
-    Log,
-    Table,
-    Plot,
-    Dump,
-    Binary,
-    Other,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
 enum CliExecutionBackend {
     Manual,
     LocalProcess,
@@ -880,17 +782,6 @@ fn main() -> Result<(), StoreError> {
             ExperimentCommand::History(args) => print_json(
                 &open_store(&args.project.project)?.experiment_history(&args.experiment)?,
             ),
-        },
-        Command::Artifact { command } => match command {
-            ArtifactCommand::Record(args) => run_artifact_record(args),
-            ArtifactCommand::List(args) => run_artifact_list(args),
-            ArtifactCommand::Read(args) => {
-                print_json(&open_store(&args.project.project)?.read_artifact(&args.artifact)?)
-            }
-            ArtifactCommand::Update(args) => run_artifact_update(args),
-            ArtifactCommand::History(args) => {
-                print_json(&open_store(&args.project.project)?.artifact_history(&args.artifact)?)
-            }
         },
         Command::Metric { command } => match command {
             MetricCommand::Define(args) => run_metric_define(args),
@@ -1138,53 +1029,6 @@ fn run_experiment_nearest(args: ExperimentNearestArgs) -> Result<(), StoreError>
             order: args.order.map(Into::into),
         })?,
     )
-}
-
-fn run_artifact_record(args: ArtifactRecordArgs) -> Result<(), StoreError> {
-    let mut store = open_store(&args.project.project)?;
-    print_json(&store.create_artifact(CreateArtifactRequest {
-        slug: args.slug.map(Slug::new).transpose()?,
-        kind: args.kind.into(),
-        label: NonEmptyText::new(args.label)?,
-        summary: args.summary.map(NonEmptyText::new).transpose()?,
-        locator: NonEmptyText::new(args.locator)?,
-        media_type: args.media_type.map(NonEmptyText::new).transpose()?,
-        attachments: parse_attachment_selectors(args.attachments)?,
-    })?)
-}
-
-fn run_artifact_list(args: ArtifactListArgs) -> Result<(), StoreError> {
-    let store = open_store(&args.project.project)?;
-    print_json(
-        &store.list_artifacts(ListArtifactsQuery {
-            frontier: args.frontier,
-            kind: args.kind.map(Into::into),
-            attached_to: args
-                .attached_to
-                .as_deref()
-                .map(parse_attachment_selector)
-                .transpose()?,
-            limit: args.limit,
-        })?,
-    )
-}
-
-fn run_artifact_update(args: ArtifactUpdateArgs) -> Result<(), StoreError> {
-    let mut store = open_store(&args.project.project)?;
-    print_json(&store.update_artifact(UpdateArtifactRequest {
-        artifact: args.artifact,
-        expected_revision: args.expected_revision,
-        kind: args.kind.map(Into::into),
-        label: args.label.map(NonEmptyText::new).transpose()?,
-        summary: cli_text_patch(args.summary, args.clear_summary)?,
-        locator: args.locator.map(NonEmptyText::new).transpose()?,
-        media_type: cli_text_patch(args.media_type, args.clear_media_type)?,
-        attachments: if args.replace_attachments {
-            Some(parse_attachment_selectors(args.attachments)?)
-        } else {
-            None
-        },
-    })?)
 }
 
 fn run_metric_define(args: MetricDefineArgs) -> Result<(), StoreError> {
@@ -1458,27 +1302,6 @@ pub(crate) fn parse_vertex_selectors(
         .collect()
 }
 
-pub(crate) fn parse_attachment_selectors(
-    values: Vec<String>,
-) -> Result<Vec<AttachmentSelector>, StoreError> {
-    values
-        .into_iter()
-        .map(|raw| parse_attachment_selector(&raw))
-        .collect()
-}
-
-pub(crate) fn parse_attachment_selector(raw: &str) -> Result<AttachmentSelector, StoreError> {
-    let (kind, selector) = raw
-        .split_once(':')
-        .ok_or_else(|| invalid_input("expected attachment selector in the form `frontier:<selector>`, `hypothesis:<selector>`, or `experiment:<selector>`"))?;
-    match kind {
-        "frontier" => Ok(AttachmentSelector::Frontier(selector.to_owned())),
-        "hypothesis" => Ok(AttachmentSelector::Hypothesis(selector.to_owned())),
-        "experiment" => Ok(AttachmentSelector::Experiment(selector.to_owned())),
-        _ => Err(invalid_input(format!("unknown attachment kind `{kind}`"))),
-    }
-}
-
 fn parse_roadmap_item(raw: String) -> Result<FrontierRoadmapItemDraft, StoreError> {
     let mut parts = raw.splitn(3, ':');
     let rank = parts
@@ -1684,21 +1507,6 @@ impl From<CliFieldValueType> for FieldValueType {
             CliFieldValueType::Numeric => Self::Numeric,
             CliFieldValueType::Boolean => Self::Boolean,
             CliFieldValueType::Timestamp => Self::Timestamp,
-        }
-    }
-}
-
-impl From<CliArtifactKind> for ArtifactKind {
-    fn from(value: CliArtifactKind) -> Self {
-        match value {
-            CliArtifactKind::Document => Self::Document,
-            CliArtifactKind::Link => Self::Link,
-            CliArtifactKind::Log => Self::Log,
-            CliArtifactKind::Table => Self::Table,
-            CliArtifactKind::Plot => Self::Plot,
-            CliArtifactKind::Dump => Self::Dump,
-            CliArtifactKind::Binary => Self::Binary,
-            CliArtifactKind::Other => Self::Other,
         }
     }
 }

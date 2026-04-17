@@ -329,7 +329,6 @@ fn cold_start_exposes_bound_surface_and_new_toolset() -> TestResult {
     assert!(tool_names.contains(&"hypothesis.record"));
     assert!(tool_names.contains(&"experiment.close"));
     assert!(tool_names.contains(&"experiment.nearest"));
-    assert!(tool_names.contains(&"artifact.record"));
     assert!(!tool_names.contains(&"node.list"));
     assert!(!tool_names.contains(&"research.record"));
     assert!(!tool_names.contains(&"frontier.brief.update"));
@@ -1273,7 +1272,6 @@ fn frontier_open_is_the_grounding_surface_for_live_state() -> TestResult {
             .get("hypothesis_id")
             .is_none()
     );
-    assert!(content.get("artifacts").is_none());
     assert!(active_hypotheses[0]["hypothesis"].get("body").is_none());
     Ok(())
 }
@@ -1669,80 +1667,6 @@ fn hypothesis_body_discipline_is_enforced_over_mcp() -> TestResult {
     )?;
     assert_tool_error(&response);
     assert!(must_some(tool_error_message(&response), "fault message")?.contains("paragraph"));
-    Ok(())
-}
-
-#[test]
-fn artifact_surface_preserves_reference_only() -> TestResult {
-    let project_root = temp_project_root("artifact_reference")?;
-    init_project(&project_root)?;
-
-    let mut harness = McpHarness::spawn(Some(&project_root))?;
-    let _ = harness.initialize()?;
-    harness.notify_initialized()?;
-
-    assert_tool_ok(&harness.call_tool(
-        29,
-        "metric.define",
-        json!({
-            "key": "nodes_solved",
-            "unit": "count",
-            "objective": "maximize",
-        }),
-    )?);
-    assert_tool_ok(&harness.call_tool(
-        30,
-        "frontier.create",
-        json!({
-            "label": "Artifacts frontier",
-            "objective": "Keep dumps out of the token hot path",
-            "slug": "artifacts",
-        }),
-    )?);
-    create_nodes_kpi(&mut harness, 301, "artifacts")?;
-    assert_tool_ok(&harness.call_tool(
-        31,
-        "hypothesis.record",
-        json!({
-            "frontier": "artifacts",
-            "slug": "sourced-hypothesis",
-            "title": "Sourced hypothesis",
-            "summary": "Attach a large external source by reference only.",
-            "body": "Treat large external writeups as artifact references rather than inline context so the ledger stays scientifically austere.",
-        }),
-    )?);
-    assert_tool_ok(&harness.call_tool(
-        32,
-        "artifact.record",
-        json!({
-            "kind": "document",
-            "slug": "lp-review-doc",
-            "label": "LP review tranche",
-            "summary": "External markdown tranche.",
-            "locator": "/tmp/lp-review.md",
-            "attachments": [{"kind": "hypothesis", "selector": "sourced-hypothesis"}],
-        }),
-    )?);
-
-    let artifact =
-        harness.call_tool_full(33, "artifact.read", json!({"artifact": "lp-review-doc"}))?;
-    assert_tool_ok(&artifact);
-    let content = tool_content(&artifact);
-    assert_no_opaque_ids(content).map_err(|error| io::Error::other(error.to_string()))?;
-    assert_eq!(
-        content["record"]["locator"].as_str(),
-        Some("/tmp/lp-review.md")
-    );
-    assert_eq!(content["record"]["slug"].as_str(), Some("lp-review-doc"));
-    assert!(content["record"].get("body").is_none());
-    assert_eq!(
-        must_some(content["attachments"].as_array(), "artifact attachments")?[0]["kind"].as_str(),
-        Some("hypothesis")
-    );
-    assert_eq!(
-        must_some(content["attachments"].as_array(), "artifact attachments")?[0]["slug"].as_str(),
-        Some("sourced-hypothesis")
-    );
     Ok(())
 }
 

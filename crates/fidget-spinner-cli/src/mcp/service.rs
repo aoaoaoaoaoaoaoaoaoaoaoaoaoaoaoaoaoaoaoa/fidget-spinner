@@ -7,21 +7,19 @@ use std::time::UNIX_EPOCH;
 
 use camino::{Utf8Path, Utf8PathBuf};
 use fidget_spinner_core::{
-    ArtifactKind, AttachmentTargetRef, CommandRecipe, ExecutionBackend, ExperimentAnalysis,
-    ExperimentStatus, FieldValueType, FrontierRecord, FrontierStatus, FrontierVerdict,
-    MetricAggregation, MetricUnit, NonEmptyText, OptimizationObjective, RunDimensionValue, Slug,
-    TagName,
+    CommandRecipe, ExecutionBackend, ExperimentAnalysis, ExperimentStatus, FieldValueType,
+    FrontierRecord, FrontierStatus, FrontierVerdict, MetricAggregation, MetricUnit, NonEmptyText,
+    OptimizationObjective, RunDimensionValue, Slug, TagName,
 };
 use fidget_spinner_store_sqlite::{
-    AttachmentSelector, CloseExperimentRequest, CreateArtifactRequest, CreateFrontierRequest,
-    CreateHypothesisRequest, CreateKpiRequest, DefineMetricRequest, DefineRunDimensionRequest,
-    EntityHistoryEntry, ExperimentDetail, ExperimentNearestQuery, ExperimentOutcomePatch,
-    ExperimentSummary, FrontierOpenProjection, FrontierRoadmapItemDraft, FrontierSummary,
-    HypothesisDetail, HypothesisSummary, KpiBestEntry, KpiBestQuery, KpiListQuery, KpiSummary,
-    ListArtifactsQuery, ListExperimentsQuery, ListFrontiersQuery, ListHypothesesQuery,
-    MetricBestEntry, MetricBestQuery, MetricKeySummary, MetricKeysQuery, MetricRankOrder,
-    MetricScope, OpenExperimentRequest, ProjectStatus, ProjectStore, StoreError, TagRegistryQuery,
-    TextPatch, UpdateArtifactRequest, UpdateExperimentRequest, UpdateFrontierRequest,
+    CloseExperimentRequest, CreateFrontierRequest, CreateHypothesisRequest, CreateKpiRequest,
+    DefineMetricRequest, DefineRunDimensionRequest, EntityHistoryEntry, ExperimentDetail,
+    ExperimentNearestQuery, ExperimentOutcomePatch, ExperimentSummary, FrontierOpenProjection,
+    FrontierRoadmapItemDraft, FrontierSummary, HypothesisDetail, HypothesisSummary, KpiBestEntry,
+    KpiBestQuery, KpiListQuery, KpiSummary, ListExperimentsQuery, ListFrontiersQuery,
+    ListHypothesesQuery, MetricBestEntry, MetricBestQuery, MetricKeySummary, MetricKeysQuery,
+    MetricRankOrder, MetricScope, OpenExperimentRequest, ProjectStatus, ProjectStore, StoreError,
+    TagRegistryQuery, TextPatch, UpdateExperimentRequest, UpdateFrontierRequest,
     UpdateHypothesisRequest, VertexSelector, VertexSummary,
 };
 use serde::Deserialize;
@@ -452,88 +450,6 @@ impl WorkerService {
                     &operation,
                 )?
             }
-            "artifact.record" => {
-                let args = deserialize::<ArtifactRecordArgs>(arguments)?;
-                let artifact = lift!(
-                    self.store.create_artifact(CreateArtifactRequest {
-                        slug: args
-                            .slug
-                            .map(Slug::new)
-                            .transpose()
-                            .map_err(store_fault(&operation))?,
-                        kind: args.kind,
-                        label: NonEmptyText::new(args.label).map_err(store_fault(&operation))?,
-                        summary: args
-                            .summary
-                            .map(NonEmptyText::new)
-                            .transpose()
-                            .map_err(store_fault(&operation))?,
-                        locator: NonEmptyText::new(args.locator)
-                            .map_err(store_fault(&operation))?,
-                        media_type: args
-                            .media_type
-                            .map(NonEmptyText::new)
-                            .transpose()
-                            .map_err(store_fault(&operation))?,
-                        attachments: args.attachments.unwrap_or_default(),
-                    })
-                );
-                artifact_record_output(&artifact, &operation)?
-            }
-            "artifact.list" => {
-                let args = deserialize::<ArtifactListArgs>(arguments)?;
-                reject_optional_frontier_selector_for_mcp(
-                    &self.store,
-                    args.frontier.as_deref(),
-                    &operation,
-                )?;
-                let artifacts = lift!(self.store.list_artifacts(ListArtifactsQuery {
-                    frontier: args.frontier,
-                    kind: args.kind,
-                    attached_to: args.attached_to,
-                    limit: args.limit,
-                }));
-                artifact_list_output(&artifacts, &operation)?
-            }
-            "artifact.read" => {
-                let args = deserialize::<ArtifactSelectorArgs>(arguments)?;
-                artifact_detail_output(
-                    &self.store,
-                    &lift!(self.store.read_artifact(&args.artifact)),
-                    &operation,
-                )?
-            }
-            "artifact.update" => {
-                let args = deserialize::<ArtifactUpdateArgs>(arguments)?;
-                let artifact = lift!(
-                    self.store.update_artifact(UpdateArtifactRequest {
-                        artifact: args.artifact,
-                        expected_revision: args.expected_revision,
-                        kind: args.kind,
-                        label: args
-                            .label
-                            .map(NonEmptyText::new)
-                            .transpose()
-                            .map_err(store_fault(&operation))?,
-                        summary: nullable_text_patch_from_wire(args.summary, &operation)?,
-                        locator: args
-                            .locator
-                            .map(NonEmptyText::new)
-                            .transpose()
-                            .map_err(store_fault(&operation))?,
-                        media_type: nullable_text_patch_from_wire(args.media_type, &operation)?,
-                        attachments: args.attachments,
-                    })
-                );
-                artifact_record_output(&artifact, &operation)?
-            }
-            "artifact.history" => {
-                let args = deserialize::<ArtifactSelectorArgs>(arguments)?;
-                history_output(
-                    &lift!(self.store.artifact_history(&args.artifact)),
-                    &operation,
-                )?
-            }
             "metric.define" => {
                 let args = deserialize::<MetricDefineArgs>(arguments)?;
                 let metric = lift!(
@@ -883,42 +799,6 @@ struct MetricValueWire {
 }
 
 #[derive(Debug, Deserialize)]
-struct ArtifactRecordArgs {
-    kind: ArtifactKind,
-    label: String,
-    summary: Option<String>,
-    locator: String,
-    media_type: Option<String>,
-    slug: Option<String>,
-    attachments: Option<Vec<AttachmentSelector>>,
-}
-
-#[derive(Debug, Deserialize)]
-struct ArtifactListArgs {
-    frontier: Option<String>,
-    kind: Option<ArtifactKind>,
-    attached_to: Option<AttachmentSelector>,
-    limit: Option<u32>,
-}
-
-#[derive(Debug, Deserialize)]
-struct ArtifactSelectorArgs {
-    artifact: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct ArtifactUpdateArgs {
-    artifact: String,
-    expected_revision: Option<u64>,
-    kind: Option<ArtifactKind>,
-    label: Option<String>,
-    summary: Option<NullableStringArg>,
-    locator: Option<String>,
-    media_type: Option<NullableStringArg>,
-    attachments: Option<Vec<AttachmentSelector>>,
-}
-
-#[derive(Debug, Deserialize)]
 #[serde(untagged)]
 enum NullableStringArg {
     Set(String),
@@ -1019,7 +899,6 @@ where
             | StoreError::UnknownFrontierSelector(_)
             | StoreError::UnknownHypothesisSelector(_)
             | StoreError::UnknownExperimentSelector(_)
-            | StoreError::UnknownArtifactSelector(_)
             | StoreError::RevisionMismatch { .. }
             | StoreError::HypothesisBodyMustBeSingleParagraph
             | StoreError::ExperimentHypothesisRequired
@@ -1338,7 +1217,6 @@ fn project_status_output(
         "hypothesis_count": status.hypothesis_count,
         "experiment_count": status.experiment_count,
         "open_experiment_count": status.open_experiment_count,
-        "artifact_count": status.artifact_count,
     });
     fallback_detailed_tool_output(
         &concise,
@@ -1353,7 +1231,6 @@ fn project_status_output(
                 "experiments: {} (open {})",
                 status.experiment_count, status.open_experiment_count
             ),
-            format!("artifacts: {}", status.artifact_count),
         ]
         .join("\n"),
         None,
@@ -1656,12 +1533,11 @@ fn hypothesis_detail_output(
         ));
     }
     lines.push(format!(
-        "parents: {} | children: {} | open experiments: {} | closed experiments: {} | artifacts: {}",
+        "parents: {} | children: {} | open experiments: {} | closed experiments: {}",
         detail.parents.len(),
         detail.children.len(),
         detail.open_experiments.len(),
-        detail.closed_experiments.len(),
-        detail.artifacts.len()
+        detail.closed_experiments.len()
     ));
     projected_tool_output(
         &projection,
@@ -1765,77 +1641,10 @@ fn experiment_detail_output(
         lines.push(format!("rationale: {}", outcome.rationale));
     }
     lines.push(format!(
-        "parents: {} | children: {} | artifacts: {}",
+        "parents: {} | children: {}",
         detail.parents.len(),
-        detail.children.len(),
-        detail.artifacts.len()
+        detail.children.len()
     ));
-    projected_tool_output(
-        &projection,
-        lines.join("\n"),
-        None,
-        FaultStage::Worker,
-        operation,
-    )
-}
-
-fn artifact_record_output(
-    artifact: &fidget_spinner_core::ArtifactRecord,
-    operation: &str,
-) -> Result<ToolOutput, FaultRecord> {
-    let projection = projection::artifact_record(artifact);
-    projected_tool_output(
-        &projection,
-        format!(
-            "artifact {} — {} -> {}",
-            artifact.slug, artifact.label, artifact.locator
-        ),
-        None,
-        FaultStage::Worker,
-        operation,
-    )
-}
-
-fn artifact_list_output(
-    artifacts: &[fidget_spinner_store_sqlite::ArtifactSummary],
-    operation: &str,
-) -> Result<ToolOutput, FaultRecord> {
-    let projection = projection::artifact_list(artifacts);
-    projected_tool_output(
-        &projection,
-        if artifacts.is_empty() {
-            "no artifacts".to_owned()
-        } else {
-            artifacts
-                .iter()
-                .map(|artifact| {
-                    format!(
-                        "{} — {} -> {}",
-                        artifact.slug, artifact.label, artifact.locator
-                    )
-                })
-                .collect::<Vec<_>>()
-                .join("\n")
-        },
-        None,
-        FaultStage::Worker,
-        operation,
-    )
-}
-
-fn artifact_detail_output(
-    store: &ProjectStore,
-    detail: &fidget_spinner_store_sqlite::ArtifactDetail,
-    operation: &str,
-) -> Result<ToolOutput, FaultRecord> {
-    let projection = projection::artifact_detail(store, detail, operation)?;
-    let mut lines = vec![format!(
-        "artifact {} — {} -> {}",
-        detail.record.slug, detail.record.label, detail.record.locator
-    )];
-    if !detail.attachments.is_empty() {
-        lines.push(format!("attachments: {}", detail.attachments.len()));
-    }
     projected_tool_output(
         &projection,
         lines.join("\n"),
@@ -2319,7 +2128,6 @@ mod legacy_projection_values {
                 .closed_experiments
                 .first()
                 .map(experiment_summary_value),
-            "artifact_count": detail.artifacts.len(),
         }))
     }
 
@@ -2350,7 +2158,6 @@ mod legacy_projection_values {
                 .iter()
                 .map(experiment_summary_value)
                 .collect::<Vec<_>>(),
-            "artifacts": detail.artifacts.iter().map(artifact_summary_value).collect::<Vec<_>>(),
         }))
     }
 
@@ -2412,7 +2219,6 @@ mod legacy_projection_values {
             "owning_hypothesis": hypothesis_summary_value(&detail.owning_hypothesis),
             "parents": detail.parents.len(),
             "children": detail.children.len(),
-            "artifact_count": detail.artifacts.len(),
             "outcome": detail.record.outcome.as_ref().map(experiment_outcome_value),
         }))
     }
@@ -2430,73 +2236,11 @@ mod legacy_projection_values {
             "frontier": {
                 "slug": frontier.slug,
                 "label": frontier.label,
-                "status": frontier.status,
-            },
-            "owning_hypothesis": hypothesis_summary_value(&detail.owning_hypothesis),
-            "parents": detail.parents.iter().map(vertex_summary_value).collect::<Vec<_>>(),
-            "children": detail.children.iter().map(vertex_summary_value).collect::<Vec<_>>(),
-            "artifacts": detail.artifacts.iter().map(artifact_summary_value).collect::<Vec<_>>(),
-        }))
-    }
-
-    fn artifact_summary_value(artifact: &fidget_spinner_store_sqlite::ArtifactSummary) -> Value {
-        json!({
-            "slug": artifact.slug,
-            "kind": artifact.kind,
-            "label": artifact.label,
-            "summary": artifact.summary,
-            "locator": artifact.locator,
-            "media_type": artifact.media_type,
-            "updated_at": timestamp_value(artifact.updated_at),
-        })
-    }
-
-    fn artifact_record_value(artifact: &fidget_spinner_core::ArtifactRecord) -> Value {
-        json!({
-            "slug": artifact.slug,
-            "kind": artifact.kind,
-            "label": artifact.label,
-            "summary": artifact.summary,
-            "locator": artifact.locator,
-            "media_type": artifact.media_type,
-            "revision": artifact.revision,
-            "created_at": timestamp_value(artifact.created_at),
-            "updated_at": timestamp_value(artifact.updated_at),
-        })
-    }
-
-    fn artifact_detail_concise_value(
-        detail: &fidget_spinner_store_sqlite::ArtifactDetail,
-    ) -> Value {
-        json!({
-            "record": {
-                "slug": detail.record.slug,
-                "kind": detail.record.kind,
-                "label": detail.record.label,
-                "summary": detail.record.summary,
-                "locator": detail.record.locator,
-                "media_type": detail.record.media_type,
-                "revision": detail.record.revision,
-                "updated_at": timestamp_value(detail.record.updated_at),
-            },
-            "attachment_count": detail.attachments.len(),
-        })
-    }
-
-    fn artifact_detail_full_value(
-        store: &ProjectStore,
-        detail: &fidget_spinner_store_sqlite::ArtifactDetail,
-        operation: &str,
-    ) -> Result<Value, FaultRecord> {
-        let attachments = detail
-            .attachments
-            .iter()
-            .copied()
-            .map(|attachment| attachment_target_value(store, attachment, operation))
-            .collect::<Result<Vec<_>, FaultRecord>>()?;
-        Ok(json!({
-            "record": artifact_record_value(&detail.record),
-            "attachments": attachments,
+            "status": frontier.status,
+        },
+        "owning_hypothesis": hypothesis_summary_value(&detail.owning_hypothesis),
+        "parents": detail.parents.iter().map(vertex_summary_value).collect::<Vec<_>>(),
+        "children": detail.children.iter().map(vertex_summary_value).collect::<Vec<_>>(),
         }))
     }
 
@@ -2631,48 +2375,6 @@ mod legacy_projection_values {
             "summary": vertex.summary,
             "updated_at": timestamp_value(vertex.updated_at),
         })
-    }
-
-    fn attachment_target_value(
-        store: &ProjectStore,
-        attachment: AttachmentTargetRef,
-        operation: &str,
-    ) -> Result<Value, FaultRecord> {
-        match attachment {
-            AttachmentTargetRef::Frontier(id) => {
-                let frontier = store
-                    .read_frontier(&id.to_string())
-                    .map_err(store_fault(operation))?;
-                Ok(json!({
-                    "kind": "frontier",
-                    "slug": frontier.slug,
-                    "label": frontier.label,
-                    "status": frontier.status,
-                }))
-            }
-            AttachmentTargetRef::Hypothesis(id) => {
-                let hypothesis = store
-                    .read_hypothesis(&id.to_string())
-                    .map_err(store_fault(operation))?;
-                Ok(json!({
-                    "kind": "hypothesis",
-                    "slug": hypothesis.record.slug,
-                    "title": hypothesis.record.title,
-                    "summary": hypothesis.record.summary,
-                }))
-            }
-            AttachmentTargetRef::Experiment(id) => {
-                let experiment = store
-                    .read_experiment(&id.to_string())
-                    .map_err(store_fault(operation))?;
-                Ok(json!({
-                    "kind": "experiment",
-                    "slug": experiment.record.slug,
-                    "title": experiment.record.title,
-                    "summary": experiment.record.summary,
-                }))
-            }
-        }
     }
 
     fn timestamp_value(timestamp: time::OffsetDateTime) -> String {
