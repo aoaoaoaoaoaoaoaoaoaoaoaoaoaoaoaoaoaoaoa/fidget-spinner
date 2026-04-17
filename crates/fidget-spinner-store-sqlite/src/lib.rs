@@ -10,11 +10,12 @@ use fidget_spinner_core::{
     ExperimentId, ExperimentOutcome, ExperimentRecord, ExperimentStatus, FieldValueType,
     FrontierBrief, FrontierId, FrontierKpiRecord, FrontierRecord, FrontierRoadmapItem,
     FrontierStatus, FrontierVerdict, GitCommitHash, HiddenByDefaultReason, HypothesisId,
-    HypothesisRecord, KpiId, MetricAggregation, MetricDefinition, MetricDimension, MetricId,
-    MetricUnit, MetricValue, NonEmptyText, OptimizationObjective, RegistryLockId, RegistryLockMode,
-    RegistryLockRecord, RegistryName, ReportedMetricValue, RunDimensionDefinition,
-    RunDimensionValue, Slug, TagFamilyId, TagFamilyName, TagFamilyRecord, TagId, TagName,
-    TagNameDisposition, TagNameHistoryRecord, TagRecord, TagRegistrySnapshot, VertexRef,
+    HypothesisRecord, KpiId, KpiOrdinal, MetricAggregation, MetricDefinition, MetricDimension,
+    MetricId, MetricUnit, MetricValue, NonEmptyText, OptimizationObjective, RegistryLockId,
+    RegistryLockMode, RegistryLockRecord, RegistryName, ReportedMetricValue,
+    RunDimensionDefinition, RunDimensionValue, Slug, TagFamilyId, TagFamilyName, TagFamilyRecord,
+    TagId, TagName, TagNameDisposition, TagNameHistoryRecord, TagRecord, TagRegistrySnapshot,
+    VertexRef,
 };
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde::{Deserialize, Serialize};
@@ -27,7 +28,7 @@ use uuid::Uuid;
 pub const STORE_DIR_NAME: &str = ".fidget_spinner";
 pub const GIT_DIR_NAME: &str = ".git";
 pub const STATE_DB_NAME: &str = "state.sqlite";
-pub const CURRENT_STORE_FORMAT_VERSION: u32 = 12;
+pub const CURRENT_STORE_FORMAT_VERSION: u32 = 13;
 pub const STATE_HOME_DIR_NAME: &str = "fidget-spinner";
 pub const PROJECT_STATE_DIR_NAME: &str = "projects";
 const LEGACY_PROJECT_CONFIG_NAME: &str = "project.json";
@@ -467,6 +468,7 @@ pub struct MetricObservationSummary {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct KpiSummary {
     pub id: KpiId,
+    pub ordinal: KpiOrdinal,
     pub metric: MetricKeySummary,
 }
 
@@ -537,6 +539,20 @@ pub struct CreateKpiRequest {
 pub struct DeleteKpiRequest {
     pub frontier: String,
     pub kpi: String,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MoveKpiDirection {
+    Up,
+    Down,
+}
+
+#[derive(Clone, Debug)]
+pub struct MoveKpiRequest {
+    pub frontier: String,
+    pub kpi: String,
+    pub direction: MoveKpiDirection,
 }
 
 #[derive(Clone, Debug)]
@@ -1461,6 +1477,7 @@ impl ProjectStore {
             id: KpiId::fresh(),
             frontier_id: frontier.id,
             metric_id: metric.id,
+            ordinal: self.next_kpi_ordinal(frontier.id)?,
             created_at: now,
         };
         let transaction = self.connection.transaction()?;
@@ -1505,13 +1522,51 @@ impl ProjectStore {
             "DELETE FROM frontier_kpis WHERE id = ?1",
             params![record.id.to_string()],
         )?;
+        let revision = next_event_revision(&transaction, "kpi", &record.id.to_string())?;
         record_event(
             &transaction,
             "kpi",
             &record.id.to_string(),
-            2,
+            revision,
             "deleted",
             &record,
+        )?;
+        compact_frontier_kpi_ordinals(&transaction, frontier.id)?;
+        transaction.commit()?;
+        Ok(())
+    }
+
+    pub fn move_kpi(&mut self, request: MoveKpiRequest) -> Result<(), StoreError> {
+        let frontier = self.resolve_frontier(&request.frontier)?;
+        let record = self
+            .kpi_by_selector(frontier.id, &request.kpi)?
+            .ok_or_else(|| StoreError::UnknownKpi(request.kpi.clone()))?;
+        let records = self.frontier_kpi_records(frontier.id)?;
+        let index = records
+            .iter()
+            .position(|candidate| candidate.id == record.id)
+            .ok_or_else(|| StoreError::UnknownKpi(request.kpi.clone()))?;
+        let Some(neighbor_index) = (match request.direction {
+            MoveKpiDirection::Up => index.checked_sub(1),
+            MoveKpiDirection::Down => (index + 1 < records.len()).then_some(index + 1),
+        }) else {
+            return Ok(());
+        };
+        let neighbor = records[neighbor_index].clone();
+        let moved = FrontierKpiRecord {
+            ordinal: neighbor.ordinal,
+            ..record.clone()
+        };
+        let transaction = self.connection.transaction()?;
+        swap_kpi_ordinals(&transaction, &record, &neighbor)?;
+        let revision = next_event_revision(&transaction, "kpi", &record.id.to_string())?;
+        record_event(
+            &transaction,
+            "kpi",
+            &record.id.to_string(),
+            revision,
+            "moved",
+            &moved,
         )?;
         transaction.commit()?;
         Ok(())
@@ -2746,7 +2801,7 @@ impl ProjectStore {
     ) -> Result<Option<FrontierKpiRecord>, StoreError> {
         self.connection
             .query_row(
-                "SELECT id, frontier_id, metric_id, created_at
+                "SELECT id, frontier_id, metric_id, ordinal, created_at
                  FROM frontier_kpis
                  WHERE frontier_id = ?1 AND metric_id = ?2",
                 params![frontier_id.to_string(), metric_id.to_string()],
@@ -2764,7 +2819,7 @@ impl ProjectStore {
         self.connection
             .query_row(
                 "SELECT frontier_kpis.id, frontier_kpis.frontier_id, frontier_kpis.metric_id,
-                        frontier_kpis.created_at
+                        frontier_kpis.ordinal, frontier_kpis.created_at
                  FROM frontier_kpis
                  JOIN metric_definitions ON metric_definitions.id = frontier_kpis.metric_id
                  WHERE frontier_kpis.frontier_id = ?1
@@ -2776,17 +2831,29 @@ impl ProjectStore {
             .map_err(StoreError::from)
     }
 
+    fn next_kpi_ordinal(&self, frontier_id: FrontierId) -> Result<KpiOrdinal, StoreError> {
+        self.connection
+            .query_row(
+                "SELECT COALESCE(MAX(ordinal) + 1, 0)
+                 FROM frontier_kpis
+                 WHERE frontier_id = ?1",
+                params![frontier_id.to_string()],
+                |row| parse_kpi_ordinal_sql(row.get::<_, i64>(0)?),
+            )
+            .map_err(StoreError::from)
+    }
+
     fn frontier_kpi_records(
         &self,
         frontier_id: FrontierId,
     ) -> Result<Vec<FrontierKpiRecord>, StoreError> {
         let mut statement = self.connection.prepare(
             "SELECT frontier_kpis.id, frontier_kpis.frontier_id, frontier_kpis.metric_id,
-                    frontier_kpis.created_at
+                    frontier_kpis.ordinal, frontier_kpis.created_at
              FROM frontier_kpis
              JOIN metric_definitions ON metric_definitions.id = frontier_kpis.metric_id
              WHERE frontier_kpis.frontier_id = ?1
-             ORDER BY metric_definitions.key ASC",
+             ORDER BY frontier_kpis.ordinal ASC, metric_definitions.key ASC, frontier_kpis.id ASC",
         )?;
         let rows = statement.query_map(params![frontier_id.to_string()], decode_kpi_row)?;
         rows.collect::<Result<Vec<_>, _>>()
@@ -2800,6 +2867,7 @@ impl ProjectStore {
         )?;
         Ok(KpiSummary {
             id: record.id,
+            ordinal: record.ordinal,
             metric,
         })
     }
@@ -4517,8 +4585,10 @@ fn install_schema(connection: &Connection) -> Result<(), StoreError> {
             id TEXT PRIMARY KEY NOT NULL,
             frontier_id TEXT NOT NULL REFERENCES frontiers(id) ON DELETE CASCADE,
             metric_id TEXT NOT NULL REFERENCES metric_definitions(id) ON DELETE CASCADE,
+            ordinal INTEGER NOT NULL,
             created_at TEXT NOT NULL,
-            UNIQUE (frontier_id, metric_id)
+            UNIQUE (frontier_id, metric_id),
+            UNIQUE (frontier_id, ordinal)
         );
 
         CREATE TABLE IF NOT EXISTS run_dimension_definitions (
@@ -4633,6 +4703,10 @@ fn migrate_store_to_current(
     if version == 11 {
         migrate_store_v11_to_v12(state_root, connection)?;
         version = 12;
+    }
+    if version == 12 {
+        migrate_store_v12_to_v13(connection)?;
+        version = 13;
     }
     if version == CURRENT_STORE_FORMAT_VERSION {
         return Ok(());
@@ -4821,6 +4895,77 @@ fn migrate_store_v11_to_v12(
         Err(error) if error.kind() == io::ErrorKind::NotFound => {}
         Err(error) => return Err(StoreError::Io(error)),
     }
+    Ok(())
+}
+
+fn migrate_store_v12_to_v13(connection: &mut Connection) -> Result<(), StoreError> {
+    struct LegacyKpiEdge {
+        id: String,
+        frontier_id: String,
+        metric_id: String,
+        created_at: String,
+    }
+
+    let transaction = connection.transaction()?;
+    let rows = {
+        let mut statement = transaction.prepare(
+            "SELECT frontier_kpis.id, frontier_kpis.frontier_id, frontier_kpis.metric_id, frontier_kpis.created_at
+             FROM frontier_kpis
+             JOIN metric_definitions ON metric_definitions.id = frontier_kpis.metric_id
+             ORDER BY frontier_kpis.frontier_id ASC,
+                      frontier_kpis.created_at ASC,
+                      metric_definitions.key ASC,
+                      frontier_kpis.id ASC",
+        )?;
+        statement
+            .query_map([], |row| {
+                Ok(LegacyKpiEdge {
+                    id: row.get(0)?,
+                    frontier_id: row.get(1)?,
+                    metric_id: row.get(2)?,
+                    created_at: row.get(3)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?
+    };
+    transaction.execute_batch(
+        "
+        CREATE TABLE frontier_kpis_v13 (
+            id TEXT PRIMARY KEY NOT NULL,
+            frontier_id TEXT NOT NULL REFERENCES frontiers(id) ON DELETE CASCADE,
+            metric_id TEXT NOT NULL REFERENCES metric_definitions(id) ON DELETE CASCADE,
+            ordinal INTEGER NOT NULL,
+            created_at TEXT NOT NULL,
+            UNIQUE (frontier_id, metric_id),
+            UNIQUE (frontier_id, ordinal)
+        );
+        ",
+    )?;
+    let mut next_by_frontier = BTreeMap::<String, u32>::new();
+    for row in rows {
+        let next_ordinal = next_by_frontier.entry(row.frontier_id.clone()).or_insert(0);
+        let ordinal = *next_ordinal;
+        *next_ordinal = (*next_ordinal).saturating_add(1);
+        let _ = transaction.execute(
+            "INSERT INTO frontier_kpis_v13 (id, frontier_id, metric_id, ordinal, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![
+                row.id,
+                row.frontier_id,
+                row.metric_id,
+                i64::from(ordinal),
+                row.created_at,
+            ],
+        )?;
+    }
+    transaction.execute_batch(
+        "
+        DROP TABLE frontier_kpis;
+        ALTER TABLE frontier_kpis_v13 RENAME TO frontier_kpis;
+        ",
+    )?;
+    transaction.commit()?;
+    connection.pragma_update(None, "user_version", 13_i64)?;
     Ok(())
 }
 
@@ -5176,12 +5321,13 @@ fn update_tag_family(
 
 fn insert_kpi(transaction: &Transaction<'_>, record: &FrontierKpiRecord) -> Result<(), StoreError> {
     let _ = transaction.execute(
-        "INSERT INTO frontier_kpis (id, frontier_id, metric_id, created_at)
-         VALUES (?1, ?2, ?3, ?4)",
+        "INSERT INTO frontier_kpis (id, frontier_id, metric_id, ordinal, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5)",
         params![
             record.id.to_string(),
             record.frontier_id.to_string(),
             record.metric_id.to_string(),
+            i64::from(record.ordinal.value()),
             encode_timestamp(record.created_at)?,
         ],
     )?;
@@ -5822,6 +5968,19 @@ fn merge_kpi_metric_edges(
     source: MetricId,
     target: MetricId,
 ) -> Result<(), StoreError> {
+    let affected_frontiers = {
+        let mut statement = transaction.prepare(
+            "SELECT DISTINCT frontier_id
+             FROM frontier_kpis
+             WHERE metric_id IN (?1, ?2)
+             ORDER BY frontier_id ASC",
+        )?;
+        statement
+            .query_map(params![source.to_string(), target.to_string()], |row| {
+                parse_frontier_id_sql(&row.get::<_, String>(0)?)
+            })?
+            .collect::<Result<Vec<_>, _>>()?
+    };
     let _ = transaction.execute(
         "DELETE FROM frontier_kpis
          WHERE metric_id = ?1
@@ -5836,7 +5995,88 @@ fn merge_kpi_metric_edges(
         "UPDATE frontier_kpis SET metric_id = ?2 WHERE metric_id = ?1",
         params![source.to_string(), target.to_string()],
     )?;
+    for frontier_id in affected_frontiers {
+        compact_frontier_kpi_ordinals(transaction, frontier_id)?;
+    }
     Ok(())
+}
+
+fn swap_kpi_ordinals(
+    transaction: &Transaction<'_>,
+    lhs: &FrontierKpiRecord,
+    rhs: &FrontierKpiRecord,
+) -> Result<(), StoreError> {
+    let _ = transaction.execute(
+        "UPDATE frontier_kpis SET ordinal = -1 WHERE id = ?1",
+        params![lhs.id.to_string()],
+    )?;
+    let _ = transaction.execute(
+        "UPDATE frontier_kpis SET ordinal = ?2 WHERE id = ?1",
+        params![rhs.id.to_string(), i64::from(lhs.ordinal.value())],
+    )?;
+    let _ = transaction.execute(
+        "UPDATE frontier_kpis SET ordinal = ?2 WHERE id = ?1",
+        params![lhs.id.to_string(), i64::from(rhs.ordinal.value())],
+    )?;
+    Ok(())
+}
+
+fn compact_frontier_kpi_ordinals(
+    transaction: &Transaction<'_>,
+    frontier_id: FrontierId,
+) -> Result<(), StoreError> {
+    let kpi_ids = {
+        let mut statement = transaction.prepare(
+            "SELECT frontier_kpis.id
+             FROM frontier_kpis
+             JOIN metric_definitions ON metric_definitions.id = frontier_kpis.metric_id
+             WHERE frontier_kpis.frontier_id = ?1
+             ORDER BY frontier_kpis.ordinal ASC, metric_definitions.key ASC, frontier_kpis.id ASC",
+        )?;
+        statement
+            .query_map(params![frontier_id.to_string()], |row| {
+                parse_kpi_id_sql(&row.get::<_, String>(0)?)
+            })?
+            .collect::<Result<Vec<_>, _>>()?
+    };
+    for (index, kpi_id) in kpi_ids.iter().enumerate() {
+        let offset = i64::try_from(index).map_err(|error| {
+            StoreError::InvalidInput(format!("too many KPI edges to compact: {error}"))
+        })?;
+        let _ = transaction.execute(
+            "UPDATE frontier_kpis SET ordinal = ?2 WHERE id = ?1",
+            params![kpi_id.to_string(), -1_i64 - offset],
+        )?;
+    }
+    for (index, kpi_id) in kpi_ids.iter().enumerate() {
+        let ordinal = i64::try_from(index).map_err(|error| {
+            StoreError::InvalidInput(format!("too many KPI edges to compact: {error}"))
+        })?;
+        let _ = transaction.execute(
+            "UPDATE frontier_kpis SET ordinal = ?2 WHERE id = ?1",
+            params![kpi_id.to_string(), ordinal],
+        )?;
+    }
+    Ok(())
+}
+
+fn next_event_revision(
+    transaction: &Transaction<'_>,
+    entity_kind: &str,
+    entity_id: &str,
+) -> Result<u64, StoreError> {
+    let raw = transaction.query_row(
+        "SELECT COALESCE(MAX(revision) + 1, 1)
+         FROM events
+         WHERE entity_kind = ?1 AND entity_id = ?2",
+        params![entity_kind, entity_id],
+        |row| row.get::<_, i64>(0),
+    )?;
+    u64::try_from(raw).map_err(|error| {
+        StoreError::InvalidInput(format!(
+            "invalid next event revision `{raw}` for {entity_kind} `{entity_id}`: {error}"
+        ))
+    })
 }
 
 fn record_event(
@@ -6025,7 +6265,8 @@ fn decode_kpi_row(row: &rusqlite::Row<'_>) -> Result<FrontierKpiRecord, rusqlite
         id: parse_kpi_id_sql(&row.get::<_, String>(0)?)?,
         frontier_id: FrontierId::from_uuid(parse_uuid_sql(&row.get::<_, String>(1)?)?),
         metric_id: parse_metric_id_sql(&row.get::<_, String>(2)?)?,
-        created_at: parse_timestamp_sql(&row.get::<_, String>(3)?)?,
+        ordinal: parse_kpi_ordinal_sql(row.get::<_, i64>(3)?)?,
+        created_at: parse_timestamp_sql(&row.get::<_, String>(4)?)?,
     })
 }
 
@@ -6846,6 +7087,15 @@ fn parse_metric_id_sql(raw: &str) -> Result<MetricId, rusqlite::Error> {
 
 fn parse_kpi_id_sql(raw: &str) -> Result<KpiId, rusqlite::Error> {
     parse_uuid_sql(raw).map(KpiId::from_uuid)
+}
+
+fn parse_kpi_ordinal_sql(raw: i64) -> Result<KpiOrdinal, rusqlite::Error> {
+    let value = u32::try_from(raw).map_err(|error| {
+        to_sql_conversion_error(StoreError::InvalidInput(format!(
+            "invalid KPI ordinal `{raw}`: {error}"
+        )))
+    })?;
+    Ok(KpiOrdinal::new(value))
 }
 
 fn parse_uuid_sql(raw: &str) -> Result<Uuid, rusqlite::Error> {

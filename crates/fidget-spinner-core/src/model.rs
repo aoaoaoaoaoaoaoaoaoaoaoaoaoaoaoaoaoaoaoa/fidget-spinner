@@ -805,7 +805,26 @@ pub struct FrontierKpiRecord {
     pub id: KpiId,
     pub frontier_id: FrontierId,
     pub metric_id: MetricId,
+    pub ordinal: KpiOrdinal,
     pub created_at: OffsetDateTime,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(transparent)]
+pub struct KpiOrdinal(u32);
+
+impl KpiOrdinal {
+    pub const FIRST: Self = Self(0);
+
+    #[must_use]
+    pub const fn new(value: u32) -> Self {
+        Self(value)
+    }
+
+    #[must_use]
+    pub const fn value(self) -> u32 {
+        self.0
+    }
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]

@@ -2,12 +2,13 @@ use super::assets::styles;
 use super::detail::{render_favicon_links, render_shell};
 use super::{
     BTreeMap, BTreeSet, DOCTYPE, FrontierSummary, KpiSummary, ListExperimentsQuery,
-    ListHypothesesQuery, Markup, MetricKeysQuery, MetricScope, NavigatorScope, NavigatorState,
-    NonEmptyText, PreEscaped, ProjectIndexItem, ProjectMetricsQuery, ProjectRenderContext,
-    ProjectStatus, RegistryLockMode, RegistryName, StoreError, TagName, TagUsage, format_timestamp,
-    frontier_href, frontier_results_href, frontier_status_class, html, limit_items,
-    load_shell_frame, open_store, pencil_icon, plus_icon, project_root_href, render_fact,
-    render_kv, status_chip_classes, trash_icon,
+    ListHypothesesQuery, Markup, MetricKeysQuery, MetricScope, MoveKpiDirection, NavigatorScope,
+    NavigatorState, NonEmptyText, PreEscaped, ProjectIndexItem, ProjectMetricsQuery,
+    ProjectRenderContext, ProjectStatus, RegistryLockMode, RegistryName, StoreError, TagName,
+    TagUsage, arrow_down_icon, arrow_up_icon, format_timestamp, frontier_href,
+    frontier_results_href, frontier_status_class, html, limit_items, load_shell_frame, open_store,
+    pencil_icon, plus_icon, project_root_href, render_fact, render_kv, status_chip_classes,
+    trash_icon,
 };
 
 pub(super) fn render_project_index(state: NavigatorState) -> Result<Markup, StoreError> {
@@ -608,6 +609,7 @@ fn render_create_kpi_form(
 }
 
 fn render_kpi_registry(frontier: &FrontierSummary, kpis: &[KpiSummary]) -> Markup {
+    let has_reorder = kpis.len() > 1;
     html! {
         @if kpis.is_empty() {
             p.muted { "No KPI metrics for this frontier yet." }
@@ -624,9 +626,13 @@ fn render_kpi_registry(frontier: &FrontierSummary, kpis: &[KpiSummary]) -> Marku
                         }
                     }
                     tbody {
-                        @for kpi in kpis {
+                        @for (index, kpi) in kpis.iter().enumerate() {
                             tr {
                                 td.no-truncate {
+                                    @if has_reorder {
+                                        (render_kpi_move_button(frontier, kpi, MoveKpiDirection::Up, index == 0))
+                                        (render_kpi_move_button(frontier, kpi, MoveKpiDirection::Down, index + 1 == kpis.len()))
+                                    }
                                     form.tag-icon-form method="post" action="metrics/kpi/delete" data-preserve-viewport="true" {
                                         input type="hidden" name="frontier" value=(frontier.slug.as_str());
                                         input type="hidden" name="kpi" value=(kpi.metric.key.as_str());
@@ -650,6 +656,35 @@ fn render_kpi_registry(frontier: &FrontierSummary, kpis: &[KpiSummary]) -> Marku
                 }
             }
         }
+    }
+}
+
+fn render_kpi_move_button(
+    frontier: &FrontierSummary,
+    kpi: &KpiSummary,
+    direction: MoveKpiDirection,
+    disabled: bool,
+) -> Markup {
+    let (label, title, icon) = match direction {
+        MoveKpiDirection::Up => ("Move KPI metric earlier", "Move earlier", arrow_up_icon()),
+        MoveKpiDirection::Down => ("Move KPI metric later", "Move later", arrow_down_icon()),
+    };
+    html! {
+        form.tag-icon-form method="post" action="metrics/kpi/move" data-preserve-viewport="true" {
+            input type="hidden" name="frontier" value=(frontier.slug.as_str());
+            input type="hidden" name="kpi" value=(kpi.metric.key.as_str());
+            input type="hidden" name="direction" value=(kpi_move_direction_value(direction));
+            button.inline-icon-button type="submit" aria-label=(format!("{label} {}", kpi.metric.key)) title=(title) disabled[disabled] {
+                (icon)
+            }
+        }
+    }
+}
+
+const fn kpi_move_direction_value(direction: MoveKpiDirection) -> &'static str {
+    match direction {
+        MoveKpiDirection::Up => "up",
+        MoveKpiDirection::Down => "down",
     }
 }
 

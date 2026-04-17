@@ -15,8 +15,9 @@ use fidget_spinner_core::{
 };
 use fidget_spinner_store_sqlite::{
     AssignTagFamilyRequest, CreateFrontierRequest, CreateHypothesisRequest, CreateKpiRequest,
-    CreateTagFamilyRequest, DefineMetricRequest, DeleteTagRequest, ListExperimentsQuery,
-    ListFrontiersQuery, MergeTagRequest, OpenExperimentRequest, ProjectStore, RenameTagRequest,
+    CreateTagFamilyRequest, DefineMetricRequest, DeleteKpiRequest, DeleteTagRequest, KpiListQuery,
+    ListExperimentsQuery, ListFrontiersQuery, MergeTagRequest, MetricKeysQuery, MetricScope,
+    MoveKpiDirection, MoveKpiRequest, OpenExperimentRequest, ProjectStore, RenameTagRequest,
     SetFrontierRegistryLockRequest, SetRegistryLockRequest, UpdateFrontierRequest,
 };
 use libmcp as _;
@@ -620,6 +621,110 @@ fn kpi_creation_lock_rejects_mcp_only() -> TestResult {
             .contains("MCP KPI creation is locked")
     );
     Ok(())
+}
+
+#[test]
+fn kpi_order_is_canonical_metric_scope_order() -> TestResult {
+    let project_root = temp_project_root("kpi_order")?;
+    init_project(&project_root)?;
+    let mut store = must(ProjectStore::open(&project_root), "open project store")?;
+    let _ = must(
+        store.create_frontier(CreateFrontierRequest {
+            label: must(NonEmptyText::new("Ordered KPI Frontier"), "frontier label")?,
+            objective: must(NonEmptyText::new("Keep KPI order canonical"), "objective")?,
+            slug: Some(must(Slug::new("kpi-order"), "frontier slug")?),
+        }),
+        "create frontier",
+    )?;
+    for key in ["zeta_nodes", "alpha_nodes"] {
+        let _ = must(
+            store.define_metric(DefineMetricRequest {
+                key: must(NonEmptyText::new(key), "metric key")?,
+                dimension: fidget_spinner_core::MetricDimension::Count,
+                display_unit: Some(must(MetricUnit::new("count"), "metric unit")?),
+                aggregation: fidget_spinner_core::MetricAggregation::Point,
+                objective: OptimizationObjective::Maximize,
+                description: None,
+            }),
+            "define metric",
+        )?;
+        let _ = must(
+            store.create_kpi(CreateKpiRequest {
+                frontier: "kpi-order".to_owned(),
+                metric: must(NonEmptyText::new(key), "metric key")?,
+            }),
+            "create KPI",
+        )?;
+    }
+
+    assert_eq!(
+        kpi_metric_keys(&store)?,
+        ["zeta_nodes".to_owned(), "alpha_nodes".to_owned()]
+    );
+    assert_eq!(kpi_ordinals(&store)?, [0, 1]);
+
+    must(
+        store.move_kpi(MoveKpiRequest {
+            frontier: "kpi-order".to_owned(),
+            kpi: "alpha_nodes".to_owned(),
+            direction: MoveKpiDirection::Up,
+        }),
+        "move KPI up",
+    )?;
+    assert_eq!(
+        kpi_metric_keys(&store)?,
+        ["alpha_nodes".to_owned(), "zeta_nodes".to_owned()]
+    );
+    assert_eq!(kpi_scope_metric_keys(&store)?, kpi_metric_keys(&store)?);
+    assert_eq!(kpi_ordinals(&store)?, [0, 1]);
+
+    must(
+        store.delete_kpi(DeleteKpiRequest {
+            frontier: "kpi-order".to_owned(),
+            kpi: "alpha_nodes".to_owned(),
+        }),
+        "delete KPI",
+    )?;
+    assert_eq!(kpi_metric_keys(&store)?, ["zeta_nodes".to_owned()]);
+    assert_eq!(kpi_ordinals(&store)?, [0]);
+    Ok(())
+}
+
+fn kpi_metric_keys(store: &ProjectStore) -> TestResult<Vec<String>> {
+    Ok(must(
+        store.list_kpis(KpiListQuery {
+            frontier: "kpi-order".to_owned(),
+        }),
+        "list KPIs",
+    )?
+    .into_iter()
+    .map(|kpi| kpi.metric.key.to_string())
+    .collect())
+}
+
+fn kpi_ordinals(store: &ProjectStore) -> TestResult<Vec<u32>> {
+    Ok(must(
+        store.list_kpis(KpiListQuery {
+            frontier: "kpi-order".to_owned(),
+        }),
+        "list KPIs",
+    )?
+    .into_iter()
+    .map(|kpi| kpi.ordinal.value())
+    .collect())
+}
+
+fn kpi_scope_metric_keys(store: &ProjectStore) -> TestResult<Vec<String>> {
+    Ok(must(
+        store.metric_keys(MetricKeysQuery {
+            frontier: Some("kpi-order".to_owned()),
+            scope: MetricScope::Kpi,
+        }),
+        "list KPI metric keys",
+    )?
+    .into_iter()
+    .map(|metric| metric.key.to_string())
+    .collect())
 }
 
 #[test]

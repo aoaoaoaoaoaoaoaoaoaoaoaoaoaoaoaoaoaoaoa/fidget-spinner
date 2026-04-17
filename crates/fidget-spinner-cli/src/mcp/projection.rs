@@ -310,6 +310,7 @@ pub(crate) struct MetricKeySummaryProjection {
 
 #[derive(Clone, Serialize)]
 pub(crate) struct KpiSummaryProjection {
+    pub(crate) ordinal: u32,
     pub(crate) metric: MetricKeySummaryProjection,
 }
 
@@ -1017,6 +1018,7 @@ fn metric_key_summary(metric: &MetricKeySummary) -> MetricKeySummaryProjection {
 
 fn kpi_summary(kpi: &KpiSummary) -> KpiSummaryProjection {
     KpiSummaryProjection {
+        ordinal: kpi.ordinal.value(),
         metric: metric_key_summary(&kpi.metric),
     }
 }

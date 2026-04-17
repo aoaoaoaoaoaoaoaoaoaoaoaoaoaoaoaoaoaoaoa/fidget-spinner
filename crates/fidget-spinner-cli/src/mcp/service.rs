@@ -2271,6 +2271,7 @@ mod legacy_projection_values {
 
     fn kpi_summary_value(kpi: &KpiSummary) -> Value {
         json!({
+            "ordinal": kpi.ordinal.value(),
             "metric": {
                 "key": kpi.metric.key,
                 "display_unit": kpi.metric.display_unit,

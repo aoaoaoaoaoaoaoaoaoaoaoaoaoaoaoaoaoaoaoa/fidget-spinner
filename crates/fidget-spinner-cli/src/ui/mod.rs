@@ -21,10 +21,10 @@ use fidget_spinner_store_sqlite::{
     DeleteKpiRequest, DeleteMetricRequest, DeleteTagRequest, ExperimentDetail, ExperimentSummary,
     FrontierMetricSeries, FrontierOpenProjection, FrontierSummary, HypothesisCurrentState,
     HypothesisDetail, KpiSummary, ListExperimentsQuery, ListFrontiersQuery, ListHypothesesQuery,
-    MergeMetricRequest, MergeTagRequest, MetricKeysQuery, MetricScope, ProjectStatus,
-    RenameMetricRequest, RenameTagRequest, STATE_DB_NAME, SetFrontierRegistryLockRequest,
-    SetRegistryLockRequest, SetTagFamilyMandatoryRequest, StoreError, TextPatch,
-    UpdateFrontierRequest, UpdateProjectRequest, VertexSummary,
+    MergeMetricRequest, MergeTagRequest, MetricKeysQuery, MetricScope, MoveKpiDirection,
+    MoveKpiRequest, ProjectStatus, RenameMetricRequest, RenameTagRequest, STATE_DB_NAME,
+    SetFrontierRegistryLockRequest, SetRegistryLockRequest, SetTagFamilyMandatoryRequest,
+    StoreError, TextPatch, UpdateFrontierRequest, UpdateProjectRequest, VertexSummary,
 };
 use maud::{DOCTYPE, Markup, PreEscaped, html};
 use percent_encoding::{NON_ALPHANUMERIC, percent_decode_str, utf8_percent_encode};
@@ -707,6 +707,24 @@ fn plus_icon() -> Markup {
         svg.inline-action-icon aria-hidden="true" viewBox="0 0 24 24" fill="none" {
             path d="M12 5v14" {}
             path d="M5 12h14" {}
+        }
+    }
+}
+
+fn arrow_up_icon() -> Markup {
+    html! {
+        svg.inline-action-icon aria-hidden="true" viewBox="0 0 24 24" fill="none" {
+            path d="M12 19V5" {}
+            path d="M6.5 10.5 12 5l5.5 5.5" {}
+        }
+    }
+}
+
+fn arrow_down_icon() -> Markup {
+    html! {
+        svg.inline-action-icon aria-hidden="true" viewBox="0 0 24 24" fill="none" {
+            path d="M12 5v14" {}
+            path d="M6.5 13.5 12 19l5.5-5.5" {}
         }
     }
 }

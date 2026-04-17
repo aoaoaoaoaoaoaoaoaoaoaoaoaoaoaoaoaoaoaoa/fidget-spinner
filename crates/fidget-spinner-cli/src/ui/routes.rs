@@ -6,16 +6,16 @@ use super::{
     AssignTagFamilyRequest, CONTENT_TYPE, CreateKpiRequest, CreateTagFamilyRequest,
     DefineMetricRequest, DeleteKpiRequest, DeleteMetricRequest, DeleteTagRequest, FAVICON_SVG,
     Form, FrontierPageQuery, FrontierStatus, IntoResponse, MergeMetricRequest, MergeTagRequest,
-    MetricUnit, NavigatorScope, NavigatorState, NonEmptyText, Path, ProjectMetricsQuery,
-    ProjectRenderContext, RegistryLockMode, RegistryName, RenameMetricRequest, RenameTagRequest,
-    Response, Router, SetFrontierRegistryLockRequest, SetRegistryLockRequest,
-    SetTagFamilyMandatoryRequest, SocketAddr, State, StatusCode, StoreError, TagFamilyName,
-    TagName, UpdateFrontierRequest, Uri, frontier_href, frontier_status_mutation_response, get, io,
-    metric_mutation_response, metrics_frontier_href, open_store, optional_text_field,
-    parse_metric_aggregation_ui, parse_metric_dimension_ui, parse_optimization_objective_ui,
-    parse_ui_lock_mode, post, project_mutation_response, project_refresh_token_for,
-    refresh_token_response, render_response, resolve_project_context, tag_mutation_response,
-    text_patch_field, update_frontier_status, update_project_description,
+    MetricUnit, MoveKpiDirection, MoveKpiRequest, NavigatorScope, NavigatorState, NonEmptyText,
+    Path, ProjectMetricsQuery, ProjectRenderContext, RegistryLockMode, RegistryName,
+    RenameMetricRequest, RenameTagRequest, Response, Router, SetFrontierRegistryLockRequest,
+    SetRegistryLockRequest, SetTagFamilyMandatoryRequest, SocketAddr, State, StatusCode,
+    StoreError, TagFamilyName, TagName, UpdateFrontierRequest, Uri, frontier_href,
+    frontier_status_mutation_response, get, io, metric_mutation_response, metrics_frontier_href,
+    open_store, optional_text_field, parse_metric_aggregation_ui, parse_metric_dimension_ui,
+    parse_optimization_objective_ui, parse_ui_lock_mode, post, project_mutation_response,
+    project_refresh_token_for, refresh_token_response, render_response, resolve_project_context,
+    tag_mutation_response, text_patch_field, update_frontier_status, update_project_description,
 };
 use serde::Deserialize;
 
@@ -72,6 +72,7 @@ pub(crate) fn serve(
             .route("/project/{project}/metrics/delete", post(delete_metric))
             .route("/project/{project}/metrics/kpi", post(create_kpi))
             .route("/project/{project}/metrics/kpi/lock", post(set_kpi_lock))
+            .route("/project/{project}/metrics/kpi/move", post(move_kpi))
             .route("/project/{project}/metrics/kpi/delete", post(delete_kpi))
             .route(
                 "/project/{project}/frontier/{selector}",
@@ -588,6 +589,32 @@ async fn set_kpi_lock(
 struct DeleteKpiForm {
     frontier: String,
     kpi: String,
+}
+
+#[derive(Deserialize)]
+struct MoveKpiForm {
+    frontier: String,
+    kpi: String,
+    direction: MoveKpiDirection,
+}
+
+async fn move_kpi(
+    State(state): State<NavigatorState>,
+    Path(project): Path<String>,
+    Form(form): Form<MoveKpiForm>,
+) -> Response {
+    metric_mutation_response(
+        resolve_project_context(&state, &project).and_then(|context| {
+            let mut store = open_store(context.project_root.as_std_path())?;
+            let frontier = form.frontier;
+            store.move_kpi(MoveKpiRequest {
+                frontier: frontier.clone(),
+                kpi: form.kpi,
+                direction: form.direction,
+            })?;
+            Ok(metrics_frontier_href(&context, &frontier))
+        }),
+    )
 }
 
 async fn delete_kpi(
