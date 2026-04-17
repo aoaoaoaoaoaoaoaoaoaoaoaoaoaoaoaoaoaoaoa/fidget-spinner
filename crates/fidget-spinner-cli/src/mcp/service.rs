@@ -293,7 +293,7 @@ impl WorkerService {
                                 .transpose()
                                 .map_err(store_fault(&operation))?,
                             parents: args.parents,
-                            archived: None,
+                            archived: args.state.map(HypothesisLifecyclePatch::archived_flag),
                         })
                 );
                 hypothesis_record_output(&hypothesis, &operation)?
@@ -779,6 +779,23 @@ struct HypothesisUpdateArgs {
     body: Option<String>,
     tags: Option<Vec<String>>,
     parents: Option<Vec<VertexSelector>>,
+    state: Option<HypothesisLifecyclePatch>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum HypothesisLifecyclePatch {
+    Active,
+    Retired,
+}
+
+impl HypothesisLifecyclePatch {
+    const fn archived_flag(self) -> bool {
+        match self {
+            Self::Active => false,
+            Self::Retired => true,
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]

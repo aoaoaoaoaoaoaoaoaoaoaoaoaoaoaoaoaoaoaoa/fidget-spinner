@@ -41,6 +41,10 @@ If you need more context, pull it from:
 
 - `frontier` is scope and grounding, not a graph vertex
 - `hypothesis` and `experiment` are the true graph nodes
+- hypotheses are free, eager, and wild: record plausible ideas as soon as they
+  appear, even before they have become a polished experiment plan
+- stale hypotheses are cheap too; retire an obviously dead or superseded one
+  when you notice it rather than keeping the active surface ceremonially tidy
 - every experiment has one mandatory owning hypothesis
 - experiments and hypotheses may also cite other hypotheses or experiments as influence parents
 - the frontier brief is the one sanctioned freeform overview
@@ -52,8 +56,8 @@ If you need more context, pull it from:
 - `tag.add` when a new campaign or subsystem token is genuinely needed; every tag must carry a description, and supervisor locks may reject model-created tags
 - `tag.list` before inventing tags by memory; it also reports supervisor-defined families, mandatory-family rules, locks, and stale-name guidance
 - `frontier.update` when the objective, situation, roadmap, or unknowns need to change
-- `hypothesis.record` before core-path work; every experiment must hang off exactly one hypothesis
-- `hypothesis.update` when the title, summary, body, tags, or influence parents need tightening
+- `hypothesis.record` whenever you get a plausible idea, mechanism, suspicion, or branch; hypotheses are cheap idea-capture nodes, not a ritual preamble to one experiment
+- `hypothesis.update` when the title, summary, body, tags, influence parents, or active/retired state need tightening; retire stale hypotheses with `state=retired`
 - `experiment.open` once a hypothesis has a concrete slice and is ready to be tested
 - `experiment.list` or `experiment.read` when resuming a session and you need to recover open or recently closed state
 - `experiment.update` while the experiment is still live and its summary, tags, or influence parents need refinement
@@ -73,8 +77,10 @@ If you need more context, pull it from:
 ## Workflow
 
 1. Ground through `frontier.open`.
-2. State the intended intervention with `hypothesis.record`.
-3. Open a live experiment with `experiment.open`.
+2. Record ideas eagerly with `hypothesis.record` as they occur; there is no
+   penalty for many hypotheses.
+3. Choose or record the hypothesis that owns the concrete slice, then open a
+   live experiment with `experiment.open`.
 4. Do the work.
 5. Make a fast commit for the recoverable implementation state before closing the experiment. Bypass heavyweight hooks when necessary; the bar here is recoverability, not release readiness.
 6. Close the experiment with `experiment.close`, including dimensions, metrics, verdict, rationale, and optional analysis. Spinner will reject a dirty worktree and store the closing commit hash automatically.
@@ -98,12 +104,15 @@ hypothesis, or experiment outcome.
    context or Hungarian unit notation into the metric key: prefer
    `presolve_wallclock` with unit `milliseconds` over `presolve_ms`, and
    `report_size` with unit `bytes` over `report_bytes`.
-8. A hypothesis is not an experiment. Open the experiment explicitly; do not
-   smuggle planned work into the frontier brief.
+8. A hypothesis is not an experiment and does not need to justify itself by
+   immediately producing one. Open experiments explicitly; do not smuggle
+   planned work or stray ideas into the frontier brief.
 9. Experiments are the scientific record. If a fact matters later, it should
    usually live in a closed experiment outcome rather than in freeform text.
 10. Spinner records the closing commit hash as a recoverability anchor, not as experiment identity.
-11. Porcelain is the terse triage surface. Use `detail=full` only when concise
+11. If you run into an obviously stale hypothesis, retire it; stale cleanup is
+    healthy and does not invalidate the experiments it once organized.
+12. Porcelain is the terse triage surface. Use `detail=full` only when concise
    output stops being decision-sufficient.
-12. When the task becomes a true indefinite optimization push, pair this skill
+13. When the task becomes a true indefinite optimization push, pair this skill
     with `frontier-loop`.

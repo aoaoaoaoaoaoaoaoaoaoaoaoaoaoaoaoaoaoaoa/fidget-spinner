@@ -61,8 +61,9 @@ ASSUME YOU ARE RUNNING OVERNIGHT.
 1. Start from the current best accepted line or most credible live branch.
 2. Study existing evidence from `fidget-spinner`.
 3. Search outward if the local frontier looks exhausted or you are starting to take unambitious strides.
-4. Form a strong, falsifiable hypothesis.
-5. Record the hypothesis and open the experiment.
+4. Record promising mechanisms, suspicions, and branches as hypotheses as soon
+   as they appear; many cheap hypotheses are better than one ceremonial one.
+5. Choose or record the concrete owning hypothesis and open the experiment.
 6. Measure it.
 7. If the result is surprising, noisy, or broken, debug the implementation and
    rerun only enough to understand the outcome.
@@ -104,7 +105,12 @@ ends.
 
 When a line becomes a real measured experiment, close it through the proper
 `fidget-spinner` path instead of improvising a chain of half-recorded steps:
-`hypothesis.record` -> `experiment.open` -> `experiment.close`.
+`hypothesis.record` or an existing hypothesis -> `experiment.open` ->
+`experiment.close`.
+
+Hypotheses are not scarce. If you notice an obviously stale or superseded
+hypothesis while walking the graph, retire it through `hypothesis.update`
+rather than leaving it active forever.
 
 ## Resume Discipline
 

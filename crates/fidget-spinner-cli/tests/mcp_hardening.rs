@@ -784,6 +784,112 @@ fn mcp_hypothesis_record_requires_frontier_kpi() -> TestResult {
 }
 
 #[test]
+fn mcp_can_retire_stale_hypotheses_without_archive_language() -> TestResult {
+    let project_root = temp_project_root("hypothesis_retire")?;
+    init_project(&project_root)?;
+
+    let mut harness = McpHarness::spawn(Some(&project_root))?;
+    let _ = harness.initialize()?;
+    harness.notify_initialized()?;
+
+    assert_tool_ok(&harness.call_tool(
+        79,
+        "metric.define",
+        json!({
+            "key": "nodes_solved",
+            "unit": "count",
+            "objective": "maximize",
+        }),
+    )?);
+    assert_tool_ok(&harness.call_tool(
+        80,
+        "frontier.create",
+        json!({
+            "label": "Retirement Frontier",
+            "objective": "Exercise hypothesis lifecycle.",
+            "slug": "retire-frontier",
+        }),
+    )?);
+    assert_tool_ok(&harness.call_tool(
+        81,
+        "kpi.create",
+        json!({
+            "frontier": "retire-frontier",
+            "metric": "nodes_solved",
+        }),
+    )?);
+    assert_tool_ok(&harness.call_tool(
+        82,
+        "hypothesis.record",
+        json!({
+            "frontier": "retire-frontier",
+            "slug": "stale-branch",
+            "title": "Stale branch",
+            "summary": "This branch will be retired.",
+            "body": "One paragraph body.",
+        }),
+    )?);
+    assert_tool_ok(&harness.call_tool(
+        83,
+        "hypothesis.record",
+        json!({
+            "frontier": "retire-frontier",
+            "slug": "live-branch",
+            "title": "Live branch",
+            "summary": "This branch remains active.",
+            "body": "One paragraph body.",
+        }),
+    )?);
+
+    let initial = harness.call_tool_full(
+        84,
+        "hypothesis.list",
+        json!({"frontier": "retire-frontier"}),
+    )?;
+    assert_tool_ok(&initial);
+    assert_eq!(tool_content(&initial)["count"].as_u64(), Some(2));
+
+    assert_tool_ok(&harness.call_tool(
+        85,
+        "hypothesis.update",
+        json!({
+            "hypothesis": "stale-branch",
+            "state": "retired",
+        }),
+    )?);
+
+    let active = harness.call_tool_full(
+        86,
+        "hypothesis.list",
+        json!({"frontier": "retire-frontier"}),
+    )?;
+    assert_tool_ok(&active);
+    let active_hypotheses = must_some(
+        tool_content(&active)["hypotheses"].as_array(),
+        "hypothesis list",
+    )?;
+    assert_eq!(active_hypotheses.len(), 1);
+    assert_eq!(active_hypotheses[0]["slug"].as_str(), Some("live-branch"));
+
+    assert_tool_ok(&harness.call_tool(
+        87,
+        "hypothesis.update",
+        json!({
+            "hypothesis": "stale-branch",
+            "state": "active",
+        }),
+    )?);
+    let restored = harness.call_tool_full(
+        88,
+        "hypothesis.list",
+        json!({"frontier": "retire-frontier"}),
+    )?;
+    assert_tool_ok(&restored);
+    assert_eq!(tool_content(&restored)["count"].as_u64(), Some(2));
+    Ok(())
+}
+
+#[test]
 fn retired_assignment_lock_does_not_block_mcp_tag_sets() -> TestResult {
     let project_root = temp_project_root("retired_assignment_lock")?;
     init_project(&project_root)?;

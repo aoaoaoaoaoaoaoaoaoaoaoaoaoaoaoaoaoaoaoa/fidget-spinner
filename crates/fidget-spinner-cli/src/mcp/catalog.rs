@@ -109,7 +109,7 @@ const TOOL_SPECS: &[ToolSpec] = &[
     },
     ToolSpec {
         name: "hypothesis.record",
-        description: "Record one hypothesis. The body must stay a single paragraph.",
+        description: "Record an idea eagerly as a cheap hypothesis node. The body must stay a single paragraph.",
         dispatch: DispatchTarget::Worker,
         replay: ReplayContract::NeverReplay,
     },
@@ -127,7 +127,7 @@ const TOOL_SPECS: &[ToolSpec] = &[
     },
     ToolSpec {
         name: "hypothesis.update",
-        description: "Patch hypothesis title, summary, body, tags, influence parents, or archive state.",
+        description: "Patch hypothesis title, summary, body, tags, influence parents, or active/retired state.",
         dispatch: DispatchTarget::Worker,
         replay: ReplayContract::NeverReplay,
     },
@@ -415,9 +415,22 @@ fn tool_input_schema(name: &str) -> Value {
         "hypothesis.record" => object_schema(
             &[
                 ("frontier", selector_schema("Owning frontier UUID or slug.")),
-                ("title", string_schema("Terse hypothesis title.")),
-                ("summary", string_schema("One-line hypothesis summary.")),
-                ("body", string_schema("Single-paragraph hypothesis body.")),
+                (
+                    "title",
+                    string_schema(
+                        "Terse idea title; hypotheses are cheap and should be opened eagerly.",
+                    ),
+                ),
+                (
+                    "summary",
+                    string_schema("One-line summary of the idea, branch, suspicion, or mechanism."),
+                ),
+                (
+                    "body",
+                    string_schema(
+                        "Single-paragraph hypothesis body. Capture the thought now; refine later.",
+                    ),
+                ),
                 ("slug", string_schema("Optional stable hypothesis slug.")),
                 ("tags", string_array_schema("Tag names.")),
                 ("parents", vertex_selector_array_schema()),
@@ -451,6 +464,13 @@ fn tool_input_schema(name: &str) -> Value {
                 ("body", string_schema("Replacement single-paragraph body.")),
                 ("tags", string_array_schema("Replacement tag set.")),
                 ("parents", vertex_selector_array_schema()),
+                (
+                    "state",
+                    enum_string_schema(
+                        &["active", "retired"],
+                        "Optional lifecycle patch. Use retired when an obviously stale hypothesis should leave the active surface; use active to restore it.",
+                    ),
+                ),
             ],
             &["hypothesis"],
         ),
