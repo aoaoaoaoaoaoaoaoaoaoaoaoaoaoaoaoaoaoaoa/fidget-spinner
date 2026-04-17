@@ -1992,6 +1992,11 @@ fn render_metric_registry_table(
                 p.muted { "No metrics yet." }
             } @else {
                 div.table-scroll {
+                    datalist id="metric-merge-targets" {
+                        @for target in metrics {
+                            option value=(target.key.as_str()) {}
+                        }
+                    }
                     table.metric-table {
                         thead {
                             tr {
@@ -2033,14 +2038,13 @@ fn render_metric_registry_table(
                                     td.no-truncate {
                                         form.tag-inline-form method="post" action="metrics/merge" data-preserve-viewport="true" {
                                             input type="hidden" name="source" value=(metric.key.as_str());
-                                            select.compact-select name="target" data-auto-submit="true" aria-label=(format!("Merge target for {}", metric.key)) {
-                                                option value="" { "merge into..." }
-                                                @for target in metrics {
-                                                    @if target.key != metric.key {
-                                                        option value=(target.key.as_str()) { (target.key) }
-                                                    }
-                                                }
-                                            }
+                                            input.compact-input
+                                                type="text"
+                                                name="target"
+                                                list="metric-merge-targets"
+                                                placeholder="merge into..."
+                                                aria-label=(format!("Merge target for {}", metric.key))
+                                                data-auto-submit="true";
                                         }
                                     }
                                 }
@@ -3754,7 +3758,7 @@ fn interaction_script() -> String {
     format!(
         r#"
 const UI_NAV_STATE_KEY = "{UI_NAV_STATE_KEY}";
-const AUTO_REFRESH_INTERVAL_MS = 5000;
+const AUTO_REFRESH_INTERVAL_MS = 15000;
 const PLOT_COPY_RESET_MS = 1600;
 const plotCopyResetTimers = new WeakMap();
 
@@ -3871,9 +3875,14 @@ function autoRefreshRoot() {{
 }}
 
 function autoRefreshDeferred() {{
+    const activeElement = document.activeElement;
     return Boolean(
         document.hidden
         || document.querySelector("details.control-popout[open]")
+        || document.querySelector("form[data-inline-rename-form=\"true\"].editing")
+        || activeElement instanceof HTMLInputElement
+        || activeElement instanceof HTMLSelectElement
+        || activeElement instanceof HTMLTextAreaElement
         || document.querySelector("button[data-copy-plot-png=\"true\"]:disabled")
     );
 }}
