@@ -612,6 +612,22 @@ pub struct CreateKpiRequest {
 }
 
 #[derive(Clone, Debug)]
+pub struct UpdateKpiRequest {
+    pub frontier: String,
+    pub kpi: String,
+    pub name: NonEmptyText,
+    pub objective: OptimizationObjective,
+    pub description: Option<NonEmptyText>,
+    pub metric_keys: Vec<NonEmptyText>,
+}
+
+#[derive(Clone, Debug)]
+pub struct DeleteKpiRequest {
+    pub frontier: String,
+    pub kpi: String,
+}
+
+#[derive(Clone, Debug)]
 pub struct KpiListQuery {
     pub frontier: String,
 }
@@ -1407,7 +1423,11 @@ impl ProjectStore {
         {
             return Err(StoreError::DuplicateKpi(request.name));
         }
-        let metrics = self.resolve_kpi_metric_definitions(&request)?;
+        let metrics = self.resolve_kpi_metric_definitions(
+            &request.name,
+            request.objective,
+            &request.metric_keys,
+        )?;
         let now = OffsetDateTime::now_utc();
         let record = FrontierKpiRecord {
             id: KpiId::fresh(),
@@ -1443,6 +1463,81 @@ impl ProjectStore {
         )?;
         transaction.commit()?;
         self.kpi_summary(record)
+    }
+
+    pub fn update_kpi(&mut self, request: UpdateKpiRequest) -> Result<KpiSummary, StoreError> {
+        if request.metric_keys.is_empty() {
+            return Err(StoreError::EmptyKpi { kpi: request.name });
+        }
+        let frontier = self.resolve_frontier(&request.frontier)?;
+        let mut record = self
+            .kpi_by_selector(frontier.id, &request.kpi)?
+            .ok_or_else(|| StoreError::UnknownKpi(request.kpi.clone()))?;
+        if record.name != request.name
+            && self
+                .kpi_by_name(frontier.id, request.name.as_str())?
+                .is_some()
+        {
+            return Err(StoreError::DuplicateKpi(request.name));
+        }
+        let metrics = self.resolve_kpi_metric_definitions(
+            &request.name,
+            request.objective,
+            &request.metric_keys,
+        )?;
+        let now = OffsetDateTime::now_utc();
+        record.name = request.name;
+        record.objective = request.objective;
+        record.description = request.description;
+        record.revision = record.revision.saturating_add(1);
+        record.updated_at = now;
+        let alternatives = metrics
+            .iter()
+            .enumerate()
+            .map(|(index, metric)| KpiMetricAlternativeRecord {
+                kpi_id: record.id,
+                metric_id: metric.id,
+                metric_key: metric.key.clone(),
+                precedence: u32::try_from(index).unwrap_or(u32::MAX),
+            })
+            .collect::<Vec<_>>();
+        let transaction = self.connection.transaction()?;
+        update_kpi(&transaction, &record)?;
+        replace_kpi_alternatives(&transaction, record.id, &alternatives)?;
+        record_event(
+            &transaction,
+            "kpi",
+            &record.id.to_string(),
+            record.revision,
+            "updated",
+            &record,
+        )?;
+        transaction.commit()?;
+        self.kpi_summary(record)
+    }
+
+    pub fn delete_kpi(&mut self, request: DeleteKpiRequest) -> Result<(), StoreError> {
+        let frontier = self.resolve_frontier(&request.frontier)?;
+        let mut record = self
+            .kpi_by_selector(frontier.id, &request.kpi)?
+            .ok_or_else(|| StoreError::UnknownKpi(request.kpi.clone()))?;
+        record.revision = record.revision.saturating_add(1);
+        record.updated_at = OffsetDateTime::now_utc();
+        let transaction = self.connection.transaction()?;
+        let _ = transaction.execute(
+            "DELETE FROM frontier_kpis WHERE id = ?1",
+            params![record.id.to_string()],
+        )?;
+        record_event(
+            &transaction,
+            "kpi",
+            &record.id.to_string(),
+            record.revision,
+            "deleted",
+            &record,
+        )?;
+        transaction.commit()?;
+        Ok(())
     }
 
     pub fn list_kpis(&self, query: KpiListQuery) -> Result<Vec<KpiSummary>, StoreError> {
@@ -2782,24 +2877,26 @@ impl ProjectStore {
 
     fn resolve_kpi_metric_definitions(
         &self,
-        request: &CreateKpiRequest,
+        kpi_name: &NonEmptyText,
+        objective: OptimizationObjective,
+        metric_keys: &[NonEmptyText],
     ) -> Result<Vec<MetricDefinition>, StoreError> {
-        let mut definitions = Vec::with_capacity(request.metric_keys.len());
+        let mut definitions = Vec::with_capacity(metric_keys.len());
         let mut dimension = None;
-        for key in &request.metric_keys {
+        for key in metric_keys {
             let definition = self
                 .metric_definition(key)?
                 .ok_or_else(|| StoreError::UnknownMetricDefinition(key.clone()))?;
-            if definition.objective != request.objective {
+            if definition.objective != objective {
                 return Err(StoreError::KpiMetricObjectiveMismatch {
-                    kpi: request.name.clone(),
+                    kpi: kpi_name.clone(),
                     metric: key.clone(),
                 });
             }
             if let Some(expected) = dimension {
                 if definition.dimension != expected {
                     return Err(StoreError::KpiMetricDimensionMismatch {
-                        kpi: request.name.clone(),
+                        kpi: kpi_name.clone(),
                         metric: key.clone(),
                     });
                 }
@@ -2822,6 +2919,23 @@ impl ProjectStore {
                  FROM frontier_kpis
                  WHERE frontier_id = ?1 AND name = ?2",
                 params![frontier_id.to_string(), name],
+                decode_kpi_row,
+            )
+            .optional()
+            .map_err(StoreError::from)
+    }
+
+    fn kpi_by_selector(
+        &self,
+        frontier_id: FrontierId,
+        selector: &str,
+    ) -> Result<Option<FrontierKpiRecord>, StoreError> {
+        self.connection
+            .query_row(
+                "SELECT id, frontier_id, name, objective, description, status, revision, created_at, updated_at
+                 FROM frontier_kpis
+                 WHERE frontier_id = ?1 AND (name = ?2 OR id = ?2)",
+                params![frontier_id.to_string(), selector],
                 decode_kpi_row,
             )
             .optional()
@@ -4451,6 +4565,24 @@ fn insert_kpi(transaction: &Transaction<'_>, record: &FrontierKpiRecord) -> Resu
             record.status.as_str(),
             record.revision,
             encode_timestamp(record.created_at)?,
+            encode_timestamp(record.updated_at)?,
+        ],
+    )?;
+    Ok(())
+}
+
+fn update_kpi(transaction: &Transaction<'_>, record: &FrontierKpiRecord) -> Result<(), StoreError> {
+    let _ = transaction.execute(
+        "UPDATE frontier_kpis
+         SET name = ?2, objective = ?3, description = ?4, status = ?5, revision = ?6, updated_at = ?7
+         WHERE id = ?1",
+        params![
+            record.id.to_string(),
+            record.name.as_str(),
+            record.objective.as_str(),
+            record.description.as_ref().map(NonEmptyText::as_str),
+            record.status.as_str(),
+            record.revision,
             encode_timestamp(record.updated_at)?,
         ],
     )?;

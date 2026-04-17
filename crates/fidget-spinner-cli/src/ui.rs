@@ -18,12 +18,13 @@ use fidget_spinner_core::{
 };
 use fidget_spinner_store_sqlite::{
     AssignTagFamilyRequest, CreateKpiRequest, CreateTagFamilyRequest, DefineMetricRequest,
-    DeleteMetricRequest, DeleteTagRequest, ExperimentDetail, ExperimentSummary,
+    DeleteKpiRequest, DeleteMetricRequest, DeleteTagRequest, ExperimentDetail, ExperimentSummary,
     FrontierMetricSeries, FrontierOpenProjection, FrontierSummary, HypothesisCurrentState,
     HypothesisDetail, KpiSummary, ListExperimentsQuery, ListFrontiersQuery, ListHypothesesQuery,
     MergeMetricRequest, MergeTagRequest, MetricKeysQuery, MetricScope, ProjectStatus,
     RenameMetricRequest, RenameTagRequest, STATE_DB_NAME, SetRegistryLockRequest,
-    SetTagFamilyMandatoryRequest, StoreError, UpdateFrontierRequest, VertexSummary,
+    SetTagFamilyMandatoryRequest, StoreError, UpdateFrontierRequest, UpdateKpiRequest,
+    VertexSummary,
 };
 use maud::{DOCTYPE, Markup, PreEscaped, html};
 use percent_encoding::{NON_ALPHANUMERIC, percent_decode_str, utf8_percent_encode};
@@ -130,6 +131,11 @@ struct FrontierPageQuery {
     extra: BTreeMap<String, String>,
 }
 
+#[derive(Clone, Debug, Default)]
+struct ProjectMetricsQuery {
+    frontier: Option<String>,
+}
+
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 struct DimensionFacet {
     key: String,
@@ -169,6 +175,28 @@ impl FrontierTab {
             Self::Closed => "Closed",
             Self::Metrics => "Metrics",
         }
+    }
+}
+
+impl ProjectMetricsQuery {
+    fn parse(raw_query: Option<&str>) -> Result<Self, StoreError> {
+        let mut query = Self::default();
+        for segment in raw_query
+            .unwrap_or_default()
+            .split('&')
+            .filter(|segment| !segment.is_empty())
+        {
+            let (raw_key, raw_value) = segment.split_once('=').unwrap_or((segment, ""));
+            let key = decode_query_component(raw_key)?;
+            let value = decode_query_component(raw_value)?;
+            if key == "frontier" {
+                let trimmed = value.trim();
+                if !trimmed.is_empty() {
+                    query.frontier = Some(trimmed.to_owned());
+                }
+            }
+        }
+        Ok(query)
     }
 }
 
@@ -278,6 +306,8 @@ pub(crate) fn serve(
             .route("/project/{project}/metrics/merge", post(merge_metric))
             .route("/project/{project}/metrics/delete", post(delete_metric))
             .route("/project/{project}/metrics/kpi", post(create_kpi))
+            .route("/project/{project}/metrics/kpi/update", post(update_kpi))
+            .route("/project/{project}/metrics/kpi/delete", post(delete_kpi))
             .route(
                 "/project/{project}/frontier/{selector}",
                 get(frontier_detail),
@@ -366,8 +396,14 @@ async fn project_tags(
 async fn project_metrics(
     State(state): State<NavigatorState>,
     Path(project): Path<String>,
+    uri: Uri,
 ) -> Response {
-    render_response(resolve_project_context(&state, &project).and_then(render_project_metrics))
+    render_response(
+        resolve_project_context(&state, &project).and_then(|context| {
+            ProjectMetricsQuery::parse(uri.query())
+                .and_then(|query| render_project_metrics(context, query))
+        }),
+    )
 }
 
 #[derive(Deserialize)]
@@ -692,21 +728,73 @@ async fn create_kpi(
     metric_mutation_response(
         resolve_project_context(&state, &project).and_then(|context| {
             let mut store = open_store(context.project_root.as_std_path())?;
-            let metric_keys = form
-                .metric_keys
-                .split(',')
-                .map(str::trim)
-                .filter(|key| !key.is_empty())
-                .map(|key| NonEmptyText::new(key.to_owned()))
-                .collect::<Result<Vec<_>, _>>()?;
+            let frontier = form.frontier;
+            let metric_keys = parse_metric_key_list(&form.metric_keys)?;
             let _ = store.create_kpi(CreateKpiRequest {
-                frontier: form.frontier,
+                frontier: frontier.clone(),
                 name: NonEmptyText::new(form.name)?,
                 objective: parse_optimization_objective_ui(&form.objective)?,
                 description: optional_text_field(form.description)?,
                 metric_keys,
             })?;
-            Ok(format!("{}metrics", context.base_href))
+            Ok(metrics_frontier_href(&context, &frontier))
+        }),
+    )
+}
+
+#[derive(Deserialize)]
+struct UpdateKpiForm {
+    frontier: String,
+    kpi: String,
+    name: String,
+    objective: String,
+    description: String,
+    metric_keys: String,
+}
+
+async fn update_kpi(
+    State(state): State<NavigatorState>,
+    Path(project): Path<String>,
+    Form(form): Form<UpdateKpiForm>,
+) -> Response {
+    metric_mutation_response(
+        resolve_project_context(&state, &project).and_then(|context| {
+            let mut store = open_store(context.project_root.as_std_path())?;
+            let frontier = form.frontier;
+            let metric_keys = parse_metric_key_list(&form.metric_keys)?;
+            let _ = store.update_kpi(UpdateKpiRequest {
+                frontier: frontier.clone(),
+                kpi: form.kpi,
+                name: NonEmptyText::new(form.name)?,
+                objective: parse_optimization_objective_ui(&form.objective)?,
+                description: optional_text_field(form.description)?,
+                metric_keys,
+            })?;
+            Ok(metrics_frontier_href(&context, &frontier))
+        }),
+    )
+}
+
+#[derive(Deserialize)]
+struct DeleteKpiForm {
+    frontier: String,
+    kpi: String,
+}
+
+async fn delete_kpi(
+    State(state): State<NavigatorState>,
+    Path(project): Path<String>,
+    Form(form): Form<DeleteKpiForm>,
+) -> Response {
+    metric_mutation_response(
+        resolve_project_context(&state, &project).and_then(|context| {
+            let mut store = open_store(context.project_root.as_std_path())?;
+            let frontier = form.frontier;
+            store.delete_kpi(DeleteKpiRequest {
+                frontier: frontier.clone(),
+                kpi: form.kpi,
+            })?;
+            Ok(metrics_frontier_href(&context, &frontier))
         }),
     )
 }
@@ -979,11 +1067,17 @@ fn metric_mutation_response(result: Result<String, StoreError>) -> Response {
     match result {
         Ok(location) => Redirect::to(&location).into_response(),
         Err(StoreError::UnknownMetricDefinition(_))
+        | Err(StoreError::UnknownKpi(_))
         | Err(StoreError::UnknownFrontierSelector(_)) => {
             (StatusCode::NOT_FOUND, "not found".to_owned()).into_response()
         }
         Err(StoreError::DuplicateMetricDefinition(_)) | Err(StoreError::DuplicateKpi(_)) => {
             (StatusCode::CONFLICT, "metric registry conflict".to_owned()).into_response()
+        }
+        Err(StoreError::EmptyKpi { .. })
+        | Err(StoreError::KpiMetricObjectiveMismatch { .. })
+        | Err(StoreError::KpiMetricDimensionMismatch { .. }) => {
+            (StatusCode::BAD_REQUEST, "invalid KPI contract".to_owned()).into_response()
         }
         Err(StoreError::PolicyViolation(message)) => {
             (StatusCode::CONFLICT, message).into_response()
@@ -1012,6 +1106,22 @@ fn optional_text_field(value: String) -> Result<Option<NonEmptyText>, StoreError
     } else {
         NonEmptyText::new(value).map(Some).map_err(StoreError::from)
     }
+}
+
+fn parse_metric_key_list(raw: &str) -> Result<Vec<NonEmptyText>, StoreError> {
+    raw.split(',')
+        .map(str::trim)
+        .filter(|key| !key.is_empty())
+        .map(|key| NonEmptyText::new(key.to_owned()).map_err(StoreError::from))
+        .collect()
+}
+
+fn metrics_frontier_href(context: &ProjectRenderContext, frontier: &str) -> String {
+    format!(
+        "{}metrics?frontier={}",
+        context.base_href,
+        encode_path_segment(frontier)
+    )
 }
 
 fn parse_optimization_objective_ui(raw: &str) -> Result<OptimizationObjective, StoreError> {
@@ -1280,30 +1390,38 @@ fn render_project_tags(context: ProjectRenderContext) -> Result<Markup, StoreErr
     ))
 }
 
-fn render_project_metrics(context: ProjectRenderContext) -> Result<Markup, StoreError> {
+fn render_project_metrics(
+    context: ProjectRenderContext,
+    query: ProjectMetricsQuery,
+) -> Result<Markup, StoreError> {
     let store = open_store(context.project_root.as_std_path())?;
     let shell = load_shell_frame(&store, None, &context)?;
     let metrics = store.metric_keys(MetricKeysQuery {
         frontier: None,
         scope: MetricScope::All,
     })?;
-    let frontiers = store.list_frontiers(ListFrontiersQuery {
-        include_archived: true,
-    })?;
-    let kpis = frontiers
+    let active_frontiers = &shell.frontiers;
+    let selected_frontier = selected_kpi_frontier(active_frontiers, query.frontier.as_deref());
+    let selected_kpis = selected_frontier
+        .as_ref()
+        .map(|frontier| {
+            store.list_kpis(fidget_spinner_store_sqlite::KpiListQuery {
+                frontier: frontier.slug.to_string(),
+            })
+        })
+        .transpose()?
+        .unwrap_or_default();
+    let kpi_count = active_frontiers
         .iter()
         .map(|frontier| {
-            Ok((
-                frontier.clone(),
-                store.list_kpis(fidget_spinner_store_sqlite::KpiListQuery {
+            store
+                .list_kpis(fidget_spinner_store_sqlite::KpiListQuery {
                     frontier: frontier.slug.to_string(),
-                })?,
-            ))
+                })
+                .map(|kpis| kpis.len())
         })
-        .collect::<Result<Vec<_>, StoreError>>()?;
-    let kpi_count = kpis
-        .iter()
-        .map(|(_frontier, kpis)| kpis.len())
+        .collect::<Result<Vec<_>, StoreError>>()?
+        .into_iter()
         .sum::<usize>();
     let hidden_count = metrics
         .iter()
@@ -1330,8 +1448,7 @@ fn render_project_metrics(context: ProjectRenderContext) -> Result<Markup, Store
                 }
             }
         }
-        (render_create_kpi_form(&frontiers, &metrics))
-        (render_kpi_registry(&kpis))
+        (render_kpi_manager(active_frontiers, selected_frontier.as_ref(), &selected_kpis, &metrics))
         (render_metric_registry_table(&metrics))
     };
     Ok(render_shell(
@@ -1792,17 +1909,60 @@ fn render_create_metric_form() -> Markup {
     }
 }
 
-fn render_create_kpi_form(
+fn selected_kpi_frontier(
     frontiers: &[FrontierSummary],
+    requested: Option<&str>,
+) -> Option<FrontierSummary> {
+    requested
+        .and_then(|selector| {
+            frontiers.iter().find(|frontier| {
+                frontier.slug.as_str() == selector || frontier.id.to_string() == selector
+            })
+        })
+        .or_else(|| frontiers.first())
+        .cloned()
+}
+
+fn render_kpi_manager(
+    frontiers: &[FrontierSummary],
+    selected_frontier: Option<&FrontierSummary>,
+    kpis: &[KpiSummary],
+    metrics: &[fidget_spinner_store_sqlite::MetricKeySummary],
+) -> Markup {
+    html! {
+        section.card {
+            div.card-header {
+                h2 { "KPI Contracts" }
+                @if let Some(frontier) = selected_frontier {
+                    span.muted { (frontier.label) }
+                }
+            }
+            @if frontiers.is_empty() {
+                p.muted { "No active frontiers. Archived frontiers are intentionally excluded from KPI management." }
+            } @else if let Some(frontier) = selected_frontier {
+                form.tag-create-form method="get" action="metrics" data-preserve-viewport="true" {
+                    select.compact-select.wide-compact-select name="frontier" aria-label="KPI frontier" data-auto-submit="true" {
+                        @for option in frontiers {
+                            option value=(option.slug.as_str()) selected[option.slug == frontier.slug] {
+                                (option.label)
+                            }
+                        }
+                    }
+                }
+                (render_create_kpi_form(frontier, metrics))
+                (render_kpi_registry(frontier, kpis))
+            }
+        }
+    }
+}
+
+fn render_create_kpi_form(
+    frontier: &FrontierSummary,
     metrics: &[fidget_spinner_store_sqlite::MetricKeySummary],
 ) -> Markup {
     html! {
         form.tag-create-form method="post" action="metrics/kpi" data-preserve-viewport="true" {
-            select.compact-select name="frontier" aria-label="KPI frontier" required {
-                @for frontier in frontiers {
-                    option value=(frontier.slug.as_str()) { (frontier.label) }
-                }
-            }
+            input type="hidden" name="frontier" value=(frontier.slug.as_str());
             input.compact-input type="text" name="name" placeholder="kpi name" aria-label="KPI name" required;
             select.compact-select name="objective" aria-label="KPI objective" {
                 option value="minimize" { "minimize" }
@@ -1823,26 +1983,45 @@ fn render_create_kpi_form(
     }
 }
 
-fn render_kpi_registry(kpis_by_frontier: &[(FrontierSummary, Vec<KpiSummary>)]) -> Markup {
+fn render_kpi_registry(frontier: &FrontierSummary, kpis: &[KpiSummary]) -> Markup {
     html! {
-        section.card {
-            div.card-header { h2 { "KPI Contracts" } }
-            @if kpis_by_frontier.iter().all(|(_frontier, kpis)| kpis.is_empty()) {
-                p.muted { "No KPIs yet." }
-            } @else {
-                div.tag-family-list {
-                    @for (frontier, kpis) in kpis_by_frontier {
-                        @if !kpis.is_empty() {
-                            div.tag-family-row {
-                                div.tag-family-main {
-                                    span.tag-chip { (frontier.label) }
-                                    span.muted { (kpis.len()) " KPI" @if kpis.len() != 1 { "s" } }
+        @if kpis.is_empty() {
+            p.muted { "No KPIs for this frontier yet." }
+        } @else {
+            div.table-scroll {
+                table.metric-table.kpi-table {
+                    thead {
+                        tr {
+                            th { "" }
+                            th { "Contract" }
+                        }
+                    }
+                    tbody {
+                        @for kpi in kpis {
+                            tr {
+                                td.no-truncate {
+                                    form.tag-icon-form method="post" action="metrics/kpi/delete" data-preserve-viewport="true" {
+                                        input type="hidden" name="frontier" value=(frontier.slug.as_str());
+                                        input type="hidden" name="kpi" value=(kpi.id.to_string());
+                                        button.inline-icon-button.danger-icon-button type="submit" aria-label=(format!("Delete KPI {}", kpi.name)) title="Delete KPI" {
+                                            (trash_icon())
+                                        }
+                                    }
                                 }
-                                div.chip-row {
-                                    @for kpi in kpis {
-                                        span.tag-chip title=(kpi.description.as_ref().map_or("", NonEmptyText::as_str)) {
-                                            (kpi.name) " · " (kpi.objective.as_str()) " · "
-                                            (kpi.metrics.iter().map(|metric| metric.key.to_string()).collect::<Vec<_>>().join(" | "))
+                                td.no-truncate {
+                                    form.tag-create-form.kpi-edit-form method="post" action="metrics/kpi/update" data-preserve-viewport="true" {
+                                        input type="hidden" name="frontier" value=(frontier.slug.as_str());
+                                        input type="hidden" name="kpi" value=(kpi.id.to_string());
+                                        input.compact-input type="text" name="name" value=(kpi.name.as_str()) aria-label=(format!("KPI name {}", kpi.name)) required;
+                                        select.compact-select name="objective" aria-label=(format!("KPI objective {}", kpi.name)) {
+                                            option value="minimize" selected[kpi.objective == OptimizationObjective::Minimize] { "minimize" }
+                                            option value="maximize" selected[kpi.objective == OptimizationObjective::Maximize] { "maximize" }
+                                            option value="target" selected[kpi.objective == OptimizationObjective::Target] { "target" }
+                                        }
+                                        input.compact-input.wide-compact-input type="text" name="metric_keys" value=(kpi.metrics.iter().map(|metric| metric.key.to_string()).collect::<Vec<_>>().join(", ")) list="metric-key-list" aria-label=(format!("KPI alternatives {}", kpi.name)) required;
+                                        input.compact-input.wide-compact-input type="text" name="description" value=(kpi.description.as_ref().map_or("", NonEmptyText::as_str)) aria-label=(format!("KPI description {}", kpi.name));
+                                        button.inline-icon-button type="submit" aria-label=(format!("Update KPI {}", kpi.name)) title="Update KPI" {
+                                            (pencil_icon())
                                         }
                                     }
                                 }
@@ -4062,8 +4241,10 @@ fn render_sidebar(shell: &ShellFrame) -> Markup {
     section.sidebar-panel {
         div.sidebar-project {
             a.sidebar-home href=(&shell.project_home_href) { (&shell.project_status.display_name) }
-            a.sidebar-tags href=(format!("{}tags", shell.base_href)) { "Tags" }
-            a.sidebar-tags href=(format!("{}metrics", shell.base_href)) { "Metrics" }
+            div.sidebar-actions {
+                a.sidebar-tags href=(format!("{}tags", shell.base_href)) { "Tags" }
+                a.sidebar-tags href=(format!("{}metrics", shell.base_href)) { "Metrics" }
+            }
             p.sidebar-copy {
                 "Frontier-scoped navigator. Open one frontier, then walk hypotheses and experiments deliberately."
             }
@@ -5066,7 +5247,7 @@ fn styles() -> &'static str {
     }
     .sidebar-project {
         display: grid;
-        gap: 8px;
+        gap: 7px;
     }
     .sidebar-home {
         color: var(--text);
@@ -5074,7 +5255,6 @@ fn styles() -> &'static str {
         font-weight: 700;
     }
     .sidebar-tags {
-        justify-self: start;
         padding: 3px 7px;
         border: 1px solid var(--border);
         background: var(--panel-2);
@@ -5083,6 +5263,12 @@ fn styles() -> &'static str {
         font-weight: 700;
         text-transform: uppercase;
         letter-spacing: 0.05em;
+    }
+    .sidebar-actions {
+        display: inline-flex;
+        gap: 6px;
+        align-items: center;
+        flex-wrap: wrap;
     }
     .sidebar-copy {
         margin: 0;
@@ -5258,6 +5444,10 @@ fn styles() -> &'static str {
     }
     .compact-select {
         max-width: 150px;
+    }
+    .wide-compact-select {
+        max-width: 360px;
+        width: min(360px, 64vw);
     }
     .wide-compact-input {
         max-width: 280px;
