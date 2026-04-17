@@ -10,12 +10,12 @@ use fidget_spinner_core::{
     DefaultVisibility, ExecutionBackend, ExperimentAnalysis, ExperimentId, ExperimentOutcome,
     ExperimentRecord, ExperimentStatus, FieldValueType, FrontierBrief, FrontierId,
     FrontierKpiRecord, FrontierRecord, FrontierRoadmapItem, FrontierStatus, FrontierVerdict,
-    GitCommitHash, HiddenByDefaultReason, HypothesisId, HypothesisRecord, KpiId,
-    KpiMetricAlternativeRecord, MetricAggregation, MetricDefinition, MetricDimension, MetricId,
-    MetricUnit, MetricValue, NonEmptyText, OptimizationObjective, RegistryLockId, RegistryLockMode,
-    RegistryLockRecord, RegistryName, RunDimensionDefinition, RunDimensionValue, Slug, TagFamilyId,
-    TagFamilyName, TagFamilyRecord, TagId, TagName, TagNameDisposition, TagNameHistoryRecord,
-    TagRecord, TagRegistrySnapshot, TagStatus, VertexRef,
+    GitCommitHash, HiddenByDefaultReason, HypothesisId, HypothesisRecord, KpiId, MetricAggregation,
+    MetricDefinition, MetricDimension, MetricId, MetricUnit, MetricValue, NonEmptyText,
+    OptimizationObjective, RegistryLockId, RegistryLockMode, RegistryLockRecord, RegistryName,
+    RunDimensionDefinition, RunDimensionValue, Slug, TagFamilyId, TagFamilyName, TagFamilyRecord,
+    TagId, TagName, TagNameDisposition, TagNameHistoryRecord, TagRecord, TagRegistrySnapshot,
+    TagStatus, VertexRef,
 };
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde::{Deserialize, Serialize};
@@ -29,7 +29,7 @@ pub const STORE_DIR_NAME: &str = ".fidget_spinner";
 pub const GIT_DIR_NAME: &str = ".git";
 pub const STATE_DB_NAME: &str = "state.sqlite";
 pub const PROJECT_CONFIG_NAME: &str = "project.json";
-pub const CURRENT_STORE_FORMAT_VERSION: u32 = 8;
+pub const CURRENT_STORE_FORMAT_VERSION: u32 = 9;
 pub const STATE_HOME_DIR_NAME: &str = "fidget-spinner";
 pub const PROJECT_STATE_DIR_NAME: &str = "projects";
 const PROJECT_ROOT_NAMESPACE: Uuid = Uuid::from_u128(0x0df3_58f4_3649_44f1_8f05_0bb2_4ebd_8d31);
@@ -76,28 +76,16 @@ pub enum StoreError {
     PolicyViolation(String),
     #[error("metric `{0}` is not registered")]
     UnknownMetricDefinition(NonEmptyText),
-    #[error("KPI `{0}` is not registered")]
+    #[error("KPI metric `{0}` is not registered")]
     UnknownKpi(String),
     #[error("metric `{0}` already exists")]
     DuplicateMetricDefinition(NonEmptyText),
-    #[error("KPI `{0}` already exists")]
+    #[error("metric `{0}` is already a KPI metric")]
     DuplicateKpi(NonEmptyText),
-    #[error("KPI `{kpi}` must reference at least one metric")]
-    EmptyKpi { kpi: NonEmptyText },
-    #[error("KPI `{kpi}` objective does not match metric `{metric}`")]
-    KpiMetricObjectiveMismatch {
-        kpi: NonEmptyText,
-        metric: NonEmptyText,
-    },
-    #[error("KPI `{kpi}` dimension does not match metric `{metric}`")]
-    KpiMetricDimensionMismatch {
-        kpi: NonEmptyText,
-        metric: NonEmptyText,
-    },
-    #[error("mandatory KPI `{kpi}` is missing; report one of: {metrics}")]
+    #[error("mandatory KPI metric `{kpi}` is missing; report `{metrics}`")]
     MissingMandatoryKpi { kpi: NonEmptyText, metrics: String },
     #[error(
-        "frontier `{frontier}` has no KPI contract; create at least one KPI before model enumeration or MCP experiment close"
+        "frontier `{frontier}` has no KPI metrics; promote at least one metric before model enumeration or MCP experiment close"
     )]
     MissingFrontierKpiContract { frontier: String },
     #[error("run dimension `{0}` is not registered")]
@@ -494,22 +482,9 @@ pub struct MetricObservationSummary {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub struct KpiMetricSummary {
-    pub key: NonEmptyText,
-    pub precedence: u32,
-    pub unit: MetricUnit,
-    pub dimension: MetricDimension,
-    pub aggregation: MetricAggregation,
-    pub objective: OptimizationObjective,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct KpiSummary {
     pub id: KpiId,
-    pub name: NonEmptyText,
-    pub objective: OptimizationObjective,
-    pub description: Option<NonEmptyText>,
-    pub metrics: Vec<KpiMetricSummary>,
+    pub metric: MetricKeySummary,
     pub revision: u64,
 }
 
@@ -617,26 +592,7 @@ pub struct DeleteMetricRequest {
 #[derive(Clone, Debug)]
 pub struct CreateKpiRequest {
     pub frontier: String,
-    pub name: NonEmptyText,
-    pub objective: OptimizationObjective,
-    pub description: Option<NonEmptyText>,
-    pub metric_keys: Vec<NonEmptyText>,
-}
-
-#[derive(Clone, Debug)]
-pub struct PromoteMetricToKpiRequest {
-    pub frontier: String,
     pub metric: NonEmptyText,
-}
-
-#[derive(Clone, Debug)]
-pub struct UpdateKpiRequest {
-    pub frontier: String,
-    pub kpi: String,
-    pub name: NonEmptyText,
-    pub objective: OptimizationObjective,
-    pub description: Option<NonEmptyText>,
-    pub metric_keys: Vec<NonEmptyText>,
 }
 
 #[derive(Clone, Debug)]
@@ -657,7 +613,6 @@ pub struct KpiBestQuery {
     pub dimensions: BTreeMap<NonEmptyText, RunDimensionValue>,
     pub include_rejected: bool,
     pub limit: Option<u32>,
-    pub strict: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -1436,7 +1391,7 @@ impl ProjectStore {
         let transaction = self.connection.transaction()?;
         rewrite_outcome_metric_key(&transaction, &source.key, &target.key)?;
         merge_experiment_metric_rows(&transaction, source.id, target.id)?;
-        merge_kpi_metric_alternatives(&transaction, source.id, target.id)?;
+        merge_kpi_metric_edges(&transaction, source.id, target.id)?;
         delete_metric_definition_row(&transaction, source.id)?;
         insert_metric_name_history(
             &transaction,
@@ -1469,7 +1424,7 @@ impl ProjectStore {
         let kpi_count = self.kpi_reference_count(metric.id)?;
         if reference_count != 0 || kpi_count != 0 {
             return Err(StoreError::PolicyViolation(format!(
-                "metric `{}` is still referenced by {} observations and {} KPI alternatives; merge or remove those references before deletion",
+                "metric `{}` is still referenced by {} observations and {} KPI edges; merge or remove those references before deletion",
                 metric.key, reference_count, kpi_count
             )));
         }
@@ -1496,46 +1451,24 @@ impl ProjectStore {
     }
 
     pub fn create_kpi(&mut self, request: CreateKpiRequest) -> Result<KpiSummary, StoreError> {
-        if request.metric_keys.is_empty() {
-            return Err(StoreError::EmptyKpi { kpi: request.name });
-        }
         let frontier = self.resolve_frontier(&request.frontier)?;
-        if self
-            .kpi_by_name(frontier.id, request.name.as_str())?
-            .is_some()
-        {
-            return Err(StoreError::DuplicateKpi(request.name));
+        let metric = self
+            .metric_definition(&request.metric)?
+            .ok_or_else(|| StoreError::UnknownMetricDefinition(request.metric.clone()))?;
+        if self.kpi_by_metric(frontier.id, metric.id)?.is_some() {
+            return Err(StoreError::DuplicateKpi(metric.key));
         }
-        let metrics = self.resolve_kpi_metric_definitions(
-            &request.name,
-            request.objective,
-            &request.metric_keys,
-        )?;
         let now = OffsetDateTime::now_utc();
         let record = FrontierKpiRecord {
             id: KpiId::fresh(),
             frontier_id: frontier.id,
-            name: request.name,
-            objective: request.objective,
-            description: request.description,
-            status: TagStatus::Active,
+            metric_id: metric.id,
             revision: 1,
             created_at: now,
             updated_at: now,
         };
-        let alternatives = metrics
-            .iter()
-            .enumerate()
-            .map(|(index, metric)| KpiMetricAlternativeRecord {
-                kpi_id: record.id,
-                metric_id: metric.id,
-                metric_key: metric.key.clone(),
-                precedence: u32::try_from(index).unwrap_or(u32::MAX),
-            })
-            .collect::<Vec<_>>();
         let transaction = self.connection.transaction()?;
         insert_kpi(&transaction, &record)?;
-        replace_kpi_alternatives(&transaction, record.id, &alternatives)?;
         record_event(
             &transaction,
             "kpi",
@@ -1548,9 +1481,9 @@ impl ProjectStore {
         self.kpi_summary(record)
     }
 
-    pub fn promote_metric_to_kpi_from_mcp(
+    pub fn create_kpi_from_mcp(
         &mut self,
-        request: PromoteMetricToKpiRequest,
+        request: CreateKpiRequest,
     ) -> Result<KpiSummary, StoreError> {
         let frontier = self.resolve_frontier(&request.frontier)?;
         if let Some(lock) = self.frontier_registry_lock_by_id(
@@ -1563,77 +1496,7 @@ impl ProjectStore {
                 frontier.slug, lock.reason
             )));
         }
-        let metric = self
-            .metric_definition(&request.metric)?
-            .ok_or_else(|| StoreError::UnknownMetricDefinition(request.metric.clone()))?;
-        if let Some(kpi) = self.frontier_kpis(frontier.id)?.into_iter().find(|kpi| {
-            kpi.metrics
-                .iter()
-                .any(|candidate| candidate.key == metric.key)
-        }) {
-            return Err(StoreError::PolicyViolation(format!(
-                "metric `{}` is already a KPI metric for frontier `{}` via KPI `{}`",
-                metric.key, frontier.slug, kpi.name
-            )));
-        }
-        self.create_kpi(CreateKpiRequest {
-            frontier: request.frontier,
-            name: metric.key.clone(),
-            objective: metric.objective,
-            description: metric.description,
-            metric_keys: vec![metric.key],
-        })
-    }
-
-    pub fn update_kpi(&mut self, request: UpdateKpiRequest) -> Result<KpiSummary, StoreError> {
-        if request.metric_keys.is_empty() {
-            return Err(StoreError::EmptyKpi { kpi: request.name });
-        }
-        let frontier = self.resolve_frontier(&request.frontier)?;
-        let mut record = self
-            .kpi_by_selector(frontier.id, &request.kpi)?
-            .ok_or_else(|| StoreError::UnknownKpi(request.kpi.clone()))?;
-        if record.name != request.name
-            && self
-                .kpi_by_name(frontier.id, request.name.as_str())?
-                .is_some()
-        {
-            return Err(StoreError::DuplicateKpi(request.name));
-        }
-        let metrics = self.resolve_kpi_metric_definitions(
-            &request.name,
-            request.objective,
-            &request.metric_keys,
-        )?;
-        let now = OffsetDateTime::now_utc();
-        record.name = request.name;
-        record.objective = request.objective;
-        record.description = request.description;
-        record.revision = record.revision.saturating_add(1);
-        record.updated_at = now;
-        let alternatives = metrics
-            .iter()
-            .enumerate()
-            .map(|(index, metric)| KpiMetricAlternativeRecord {
-                kpi_id: record.id,
-                metric_id: metric.id,
-                metric_key: metric.key.clone(),
-                precedence: u32::try_from(index).unwrap_or(u32::MAX),
-            })
-            .collect::<Vec<_>>();
-        let transaction = self.connection.transaction()?;
-        update_kpi(&transaction, &record)?;
-        replace_kpi_alternatives(&transaction, record.id, &alternatives)?;
-        record_event(
-            &transaction,
-            "kpi",
-            &record.id.to_string(),
-            record.revision,
-            "updated",
-            &record,
-        )?;
-        transaction.commit()?;
-        self.kpi_summary(record)
+        self.create_kpi(request)
     }
 
     pub fn delete_kpi(&mut self, request: DeleteKpiRequest) -> Result<(), StoreError> {
@@ -1668,16 +1531,15 @@ impl ProjectStore {
     pub fn kpi_best(&self, query: KpiBestQuery) -> Result<Vec<KpiBestEntry>, StoreError> {
         let frontier = self.resolve_frontier(&query.frontier)?;
         let kpi = self.resolve_kpi_for_query(frontier.id, query.kpi.as_deref())?;
-        let order = match kpi.objective {
+        let order = match kpi.metric.objective {
             OptimizationObjective::Minimize => MetricRankOrder::Asc,
             OptimizationObjective::Maximize => MetricRankOrder::Desc,
             OptimizationObjective::Target => {
                 return Err(StoreError::MetricOrderRequired {
-                    key: kpi.name.to_string(),
+                    key: kpi.metric.key.to_string(),
                 });
             }
         };
-        let preferred_key = kpi.metrics.first().map(|metric| metric.key.clone());
         let experiments = self
             .load_experiment_records(Some(frontier.id), None, true)?
             .into_iter()
@@ -1697,8 +1559,7 @@ impl ProjectStore {
                 if !dimension_subset_matches(&query.dimensions, &outcome.dimensions) {
                     return None;
                 }
-                let resolved =
-                    resolve_kpi_metric(&kpi, &outcome, query.strict, preferred_key.as_ref())?;
+                let resolved = resolve_kpi_metric(&kpi, &outcome)?;
                 Some((record, outcome.dimensions.clone(), resolved))
             })
             .map(|(record, dimensions, metric)| {
@@ -2622,9 +2483,13 @@ impl ProjectStore {
             })
             .collect::<Result<Vec<_>, StoreError>>()?;
         points.sort_by_key(|point| point.closed_at);
+        let kpi = self
+            .kpi_by_metric(frontier.id, definition.id)?
+            .map(|record| self.kpi_summary(record))
+            .transpose()?;
         Ok(FrontierMetricSeries {
             metric: self.metric_key_summary_from_definition(definition, Some(frontier.id))?,
-            kpi: None,
+            kpi,
             frontier,
             points,
         })
@@ -2792,12 +2657,7 @@ impl ProjectStore {
                 .as_ref()
                 .map(|frontier| self.frontier_kpis(frontier.id))
                 .transpose()?
-                .and_then(|kpis| {
-                    kpis.into_iter()
-                        .next()
-                        .and_then(|kpi| kpi.metrics.into_iter().next())
-                        .map(|metric| metric.key)
-                })
+                .and_then(|kpis| kpis.into_iter().next().map(|kpi| kpi.metric.key))
                 .map(|key| {
                     self.metric_definition(&key)?
                         .ok_or_else(|| StoreError::UnknownMetricDefinition(key))
@@ -2971,50 +2831,17 @@ impl ProjectStore {
             .map_err(StoreError::from)
     }
 
-    fn resolve_kpi_metric_definitions(
-        &self,
-        kpi_name: &NonEmptyText,
-        objective: OptimizationObjective,
-        metric_keys: &[NonEmptyText],
-    ) -> Result<Vec<MetricDefinition>, StoreError> {
-        let mut definitions = Vec::with_capacity(metric_keys.len());
-        let mut dimension = None;
-        for key in metric_keys {
-            let definition = self
-                .metric_definition(key)?
-                .ok_or_else(|| StoreError::UnknownMetricDefinition(key.clone()))?;
-            if definition.objective != objective {
-                return Err(StoreError::KpiMetricObjectiveMismatch {
-                    kpi: kpi_name.clone(),
-                    metric: key.clone(),
-                });
-            }
-            if let Some(expected) = dimension {
-                if definition.dimension != expected {
-                    return Err(StoreError::KpiMetricDimensionMismatch {
-                        kpi: kpi_name.clone(),
-                        metric: key.clone(),
-                    });
-                }
-            } else {
-                dimension = Some(definition.dimension);
-            }
-            definitions.push(definition);
-        }
-        Ok(definitions)
-    }
-
-    fn kpi_by_name(
+    fn kpi_by_metric(
         &self,
         frontier_id: FrontierId,
-        name: &str,
+        metric_id: MetricId,
     ) -> Result<Option<FrontierKpiRecord>, StoreError> {
         self.connection
             .query_row(
-                "SELECT id, frontier_id, name, objective, description, status, revision, created_at, updated_at
+                "SELECT id, frontier_id, metric_id, revision, created_at, updated_at
                  FROM frontier_kpis
-                 WHERE frontier_id = ?1 AND name = ?2",
-                params![frontier_id.to_string(), name],
+                 WHERE frontier_id = ?1 AND metric_id = ?2",
+                params![frontier_id.to_string(), metric_id.to_string()],
                 decode_kpi_row,
             )
             .optional()
@@ -3028,9 +2855,12 @@ impl ProjectStore {
     ) -> Result<Option<FrontierKpiRecord>, StoreError> {
         self.connection
             .query_row(
-                "SELECT id, frontier_id, name, objective, description, status, revision, created_at, updated_at
+                "SELECT frontier_kpis.id, frontier_kpis.frontier_id, frontier_kpis.metric_id,
+                        frontier_kpis.revision, frontier_kpis.created_at, frontier_kpis.updated_at
                  FROM frontier_kpis
-                 WHERE frontier_id = ?1 AND (name = ?2 OR id = ?2)",
+                 JOIN metric_definitions ON metric_definitions.id = frontier_kpis.metric_id
+                 WHERE frontier_kpis.frontier_id = ?1
+                   AND (frontier_kpis.id = ?2 OR metric_definitions.key = ?2)",
                 params![frontier_id.to_string(), selector],
                 decode_kpi_row,
             )
@@ -3043,54 +2873,26 @@ impl ProjectStore {
         frontier_id: FrontierId,
     ) -> Result<Vec<FrontierKpiRecord>, StoreError> {
         let mut statement = self.connection.prepare(
-            "SELECT id, frontier_id, name, objective, description, status, revision, created_at, updated_at
+            "SELECT frontier_kpis.id, frontier_kpis.frontier_id, frontier_kpis.metric_id,
+                    frontier_kpis.revision, frontier_kpis.created_at, frontier_kpis.updated_at
              FROM frontier_kpis
-             WHERE frontier_id = ?1 AND status = 'active'
-             ORDER BY created_at ASC",
+             JOIN metric_definitions ON metric_definitions.id = frontier_kpis.metric_id
+             WHERE frontier_kpis.frontier_id = ?1
+             ORDER BY metric_definitions.key ASC",
         )?;
         let rows = statement.query_map(params![frontier_id.to_string()], decode_kpi_row)?;
         rows.collect::<Result<Vec<_>, _>>()
             .map_err(StoreError::from)
     }
 
-    fn kpi_alternatives(
-        &self,
-        kpi_id: KpiId,
-    ) -> Result<Vec<KpiMetricAlternativeRecord>, StoreError> {
-        let mut statement = self.connection.prepare(
-            "SELECT alternatives.kpi_id, alternatives.metric_id, definitions.key, alternatives.precedence
-             FROM kpi_metric_alternatives alternatives
-             JOIN metric_definitions definitions ON definitions.id = alternatives.metric_id
-             WHERE alternatives.kpi_id = ?1
-             ORDER BY alternatives.precedence ASC",
-        )?;
-        let rows = statement.query_map(params![kpi_id.to_string()], decode_kpi_alternative_row)?;
-        rows.collect::<Result<Vec<_>, _>>()
-            .map_err(StoreError::from)
-    }
-
     fn kpi_summary(&self, record: FrontierKpiRecord) -> Result<KpiSummary, StoreError> {
-        let metrics = self
-            .kpi_alternatives(record.id)?
-            .into_iter()
-            .map(|alternative| {
-                let definition = self.metric_definition_by_id(alternative.metric_id)?;
-                Ok(KpiMetricSummary {
-                    key: definition.key,
-                    precedence: alternative.precedence,
-                    unit: definition.unit,
-                    dimension: definition.dimension,
-                    aggregation: definition.aggregation,
-                    objective: definition.objective,
-                })
-            })
-            .collect::<Result<Vec<_>, StoreError>>()?;
+        let metric = self.metric_key_summary_from_definition(
+            self.metric_definition_by_id(record.metric_id)?,
+            Some(record.frontier_id),
+        )?;
         Ok(KpiSummary {
             id: record.id,
-            name: record.name,
-            objective: record.objective,
-            description: record.description,
-            metrics,
+            metric,
             revision: record.revision,
         })
     }
@@ -3111,12 +2913,12 @@ impl ProjectStore {
         match selector {
             Some(selector) => kpis
                 .into_iter()
-                .find(|kpi| kpi.name.as_str() == selector || kpi.id.to_string() == selector)
+                .find(|kpi| kpi.metric.key.as_str() == selector || kpi.id.to_string() == selector)
                 .ok_or_else(|| StoreError::UnknownKpi(selector.to_owned())),
             None => kpis
                 .into_iter()
                 .next()
-                .ok_or_else(|| StoreError::UnknownKpi("frontier has no KPIs".to_owned())),
+                .ok_or_else(|| StoreError::UnknownKpi("frontier has no KPI metrics".to_owned())),
         }
     }
 
@@ -3789,23 +3591,17 @@ impl ProjectStore {
         frontier_id: FrontierId,
     ) -> Result<Vec<MetricKeySummary>, StoreError> {
         let mut seen = BTreeSet::new();
-        self.frontier_kpis(frontier_id)?
+        Ok(self
+            .frontier_kpis(frontier_id)?
             .into_iter()
-            .flat_map(|kpi| kpi.metrics)
-            .filter_map(|metric| {
-                if seen.insert(metric.key.clone()) {
-                    Some(metric)
+            .filter_map(|kpi| {
+                if seen.insert(kpi.metric.key.clone()) {
+                    Some(kpi.metric)
                 } else {
                     None
                 }
             })
-            .map(|metric| {
-                let definition = self
-                    .metric_definition(&metric.key)?
-                    .ok_or_else(|| StoreError::UnknownMetricDefinition(metric.key.clone()))?;
-                self.metric_key_summary_from_definition(definition, Some(frontier_id))
-            })
-            .collect()
+            .collect())
     }
 
     fn live_metric_key_names(
@@ -3958,10 +3754,9 @@ impl ProjectStore {
              JOIN experiments ON experiments.id = metrics.experiment_id
              WHERE metrics.metric_id = ?1
              UNION
-             SELECT DISTINCT frontier_kpis.frontier_id
-             FROM kpi_metric_alternatives alternatives
-             JOIN frontier_kpis ON frontier_kpis.id = alternatives.kpi_id
-             WHERE alternatives.metric_id = ?1",
+             SELECT DISTINCT frontier_id
+             FROM frontier_kpis
+             WHERE metric_id = ?1",
         )?;
         let rows = statement.query_map(params![metric_id.to_string()], |row| {
             parse_frontier_id_sql(&row.get::<_, String>(0)?)
@@ -3992,7 +3787,7 @@ impl ProjectStore {
     fn kpi_reference_count(&self, metric_id: MetricId) -> Result<u64, StoreError> {
         self.connection
             .query_row(
-                "SELECT COUNT(*) FROM kpi_metric_alternatives WHERE metric_id = ?1",
+                "SELECT COUNT(*) FROM frontier_kpis WHERE metric_id = ?1",
                 params![metric_id.to_string()],
                 |row| row.get::<_, u64>(0),
             )
@@ -4173,21 +3968,12 @@ impl ProjectStore {
             });
         }
         for kpi in kpis {
-            let alternatives = kpi
-                .metrics
-                .iter()
-                .map(|metric| metric.key.clone())
-                .collect::<Vec<_>>();
-            if alternatives.iter().any(|key| reported.contains(key)) {
+            if reported.contains(&kpi.metric.key) {
                 continue;
             }
             return Err(StoreError::MissingMandatoryKpi {
-                kpi: kpi.name,
-                metrics: alternatives
-                    .into_iter()
-                    .map(|key| key.to_string())
-                    .collect::<Vec<_>>()
-                    .join(", "),
+                kpi: kpi.metric.key.clone(),
+                metrics: kpi.metric.key.to_string(),
             });
         }
         Ok(())
@@ -4611,22 +4397,11 @@ fn install_schema(connection: &Connection) -> Result<(), StoreError> {
         CREATE TABLE IF NOT EXISTS frontier_kpis (
             id TEXT PRIMARY KEY NOT NULL,
             frontier_id TEXT NOT NULL REFERENCES frontiers(id) ON DELETE CASCADE,
-            name TEXT NOT NULL,
-            objective TEXT NOT NULL,
-            description TEXT,
-            status TEXT NOT NULL,
+            metric_id TEXT NOT NULL REFERENCES metric_definitions(id) ON DELETE CASCADE,
             revision INTEGER NOT NULL,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL,
-            UNIQUE (frontier_id, name)
-        );
-
-        CREATE TABLE IF NOT EXISTS kpi_metric_alternatives (
-            kpi_id TEXT NOT NULL REFERENCES frontier_kpis(id) ON DELETE CASCADE,
-            metric_id TEXT NOT NULL REFERENCES metric_definitions(id) ON DELETE CASCADE,
-            precedence INTEGER NOT NULL,
-            PRIMARY KEY (kpi_id, metric_id),
-            UNIQUE (kpi_id, precedence)
+            UNIQUE (frontier_id, metric_id)
         );
 
         CREATE TABLE IF NOT EXISTS run_dimension_definitions (
@@ -4755,61 +4530,17 @@ fn update_tag_family(
 
 fn insert_kpi(transaction: &Transaction<'_>, record: &FrontierKpiRecord) -> Result<(), StoreError> {
     let _ = transaction.execute(
-        "INSERT INTO frontier_kpis (id, frontier_id, name, objective, description, status, revision, created_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+        "INSERT INTO frontier_kpis (id, frontier_id, metric_id, revision, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
         params![
             record.id.to_string(),
             record.frontier_id.to_string(),
-            record.name.as_str(),
-            record.objective.as_str(),
-            record.description.as_ref().map(NonEmptyText::as_str),
-            record.status.as_str(),
+            record.metric_id.to_string(),
             record.revision,
             encode_timestamp(record.created_at)?,
             encode_timestamp(record.updated_at)?,
         ],
     )?;
-    Ok(())
-}
-
-fn update_kpi(transaction: &Transaction<'_>, record: &FrontierKpiRecord) -> Result<(), StoreError> {
-    let _ = transaction.execute(
-        "UPDATE frontier_kpis
-         SET name = ?2, objective = ?3, description = ?4, status = ?5, revision = ?6, updated_at = ?7
-         WHERE id = ?1",
-        params![
-            record.id.to_string(),
-            record.name.as_str(),
-            record.objective.as_str(),
-            record.description.as_ref().map(NonEmptyText::as_str),
-            record.status.as_str(),
-            record.revision,
-            encode_timestamp(record.updated_at)?,
-        ],
-    )?;
-    Ok(())
-}
-
-fn replace_kpi_alternatives(
-    transaction: &Transaction<'_>,
-    kpi_id: KpiId,
-    alternatives: &[KpiMetricAlternativeRecord],
-) -> Result<(), StoreError> {
-    let _ = transaction.execute(
-        "DELETE FROM kpi_metric_alternatives WHERE kpi_id = ?1",
-        params![kpi_id.to_string()],
-    )?;
-    for alternative in alternatives {
-        let _ = transaction.execute(
-            "INSERT INTO kpi_metric_alternatives (kpi_id, metric_id, precedence)
-             VALUES (?1, ?2, ?3)",
-            params![
-                alternative.kpi_id.to_string(),
-                alternative.metric_id.to_string(),
-                alternative.precedence,
-            ],
-        )?;
-    }
     Ok(())
 }
 
@@ -5339,39 +5070,25 @@ fn merge_experiment_metric_rows(
     Ok(())
 }
 
-fn merge_kpi_metric_alternatives(
+fn merge_kpi_metric_edges(
     transaction: &Transaction<'_>,
     source: MetricId,
     target: MetricId,
 ) -> Result<(), StoreError> {
-    let rows = {
-        let mut statement = transaction
-            .prepare("SELECT kpi_id FROM kpi_metric_alternatives WHERE metric_id = ?1")?;
-        statement
-            .query_map(params![source.to_string()], |row| row.get::<_, String>(0))?
-            .collect::<Result<Vec<_>, _>>()?
-    };
-    for kpi_id in rows {
-        let target_exists = transaction
-            .query_row(
-                "SELECT 1 FROM kpi_metric_alternatives WHERE kpi_id = ?1 AND metric_id = ?2",
-                params![kpi_id, target.to_string()],
-                |_row| Ok(()),
-            )
-            .optional()?
-            .is_some();
-        if target_exists {
-            let _ = transaction.execute(
-                "DELETE FROM kpi_metric_alternatives WHERE kpi_id = ?1 AND metric_id = ?2",
-                params![kpi_id, source.to_string()],
-            )?;
-        } else {
-            let _ = transaction.execute(
-                "UPDATE kpi_metric_alternatives SET metric_id = ?2 WHERE kpi_id = ?1 AND metric_id = ?3",
-                params![kpi_id, target.to_string(), source.to_string()],
-            )?;
-        }
-    }
+    let _ = transaction.execute(
+        "DELETE FROM frontier_kpis
+         WHERE metric_id = ?1
+           AND EXISTS (
+             SELECT 1 FROM frontier_kpis target
+             WHERE target.frontier_id = frontier_kpis.frontier_id
+               AND target.metric_id = ?2
+           )",
+        params![source.to_string(), target.to_string()],
+    )?;
+    let _ = transaction.execute(
+        "UPDATE frontier_kpis SET metric_id = ?2 WHERE metric_id = ?1",
+        params![source.to_string(), target.to_string()],
+    )?;
     Ok(())
 }
 
@@ -5581,24 +5298,10 @@ fn decode_kpi_row(row: &rusqlite::Row<'_>) -> Result<FrontierKpiRecord, rusqlite
     Ok(FrontierKpiRecord {
         id: parse_kpi_id_sql(&row.get::<_, String>(0)?)?,
         frontier_id: FrontierId::from_uuid(parse_uuid_sql(&row.get::<_, String>(1)?)?),
-        name: parse_non_empty_text(&row.get::<_, String>(2)?)?,
-        objective: parse_optimization_objective(&row.get::<_, String>(3)?)?,
-        description: parse_optional_non_empty_text(row.get::<_, Option<String>>(4)?)?,
-        status: parse_tag_status(&row.get::<_, String>(5)?)?,
-        revision: row.get(6)?,
-        created_at: parse_timestamp_sql(&row.get::<_, String>(7)?)?,
-        updated_at: parse_timestamp_sql(&row.get::<_, String>(8)?)?,
-    })
-}
-
-fn decode_kpi_alternative_row(
-    row: &rusqlite::Row<'_>,
-) -> Result<KpiMetricAlternativeRecord, rusqlite::Error> {
-    Ok(KpiMetricAlternativeRecord {
-        kpi_id: parse_kpi_id_sql(&row.get::<_, String>(0)?)?,
-        metric_id: parse_metric_id_sql(&row.get::<_, String>(1)?)?,
-        metric_key: parse_non_empty_text(&row.get::<_, String>(2)?)?,
-        precedence: row.get(3)?,
+        metric_id: parse_metric_id_sql(&row.get::<_, String>(2)?)?,
+        revision: row.get(3)?,
+        created_at: parse_timestamp_sql(&row.get::<_, String>(4)?)?,
+        updated_at: parse_timestamp_sql(&row.get::<_, String>(5)?)?,
     })
 }
 
@@ -6014,25 +5717,10 @@ fn all_metrics(outcome: &ExperimentOutcome) -> Vec<MetricValue> {
         .collect()
 }
 
-fn resolve_kpi_metric(
-    kpi: &KpiSummary,
-    outcome: &ExperimentOutcome,
-    strict: bool,
-    preferred_key: Option<&NonEmptyText>,
-) -> Option<MetricValue> {
-    let reported = all_metrics(outcome);
-    if strict {
-        let preferred_key = preferred_key?;
-        return reported
-            .into_iter()
-            .find(|metric| &metric.key == preferred_key);
-    }
-    kpi.metrics.iter().find_map(|alternative| {
-        reported
-            .iter()
-            .find(|metric| metric.key == alternative.key)
-            .cloned()
-    })
+fn resolve_kpi_metric(kpi: &KpiSummary, outcome: &ExperimentOutcome) -> Option<MetricValue> {
+    all_metrics(outcome)
+        .into_iter()
+        .find(|metric| metric.key == kpi.metric.key)
 }
 
 #[derive(Clone)]

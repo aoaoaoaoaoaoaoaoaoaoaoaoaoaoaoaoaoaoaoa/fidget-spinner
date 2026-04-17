@@ -24,7 +24,7 @@ use fidget_spinner_store_sqlite::{
     MergeMetricRequest, MergeTagRequest, MetricKeysQuery, MetricScope, ProjectStatus,
     RenameMetricRequest, RenameTagRequest, STATE_DB_NAME, SetFrontierRegistryLockRequest,
     SetRegistryLockRequest, SetTagFamilyMandatoryRequest, StoreError, UpdateFrontierRequest,
-    UpdateKpiRequest, VertexSummary,
+    VertexSummary,
 };
 use maud::{DOCTYPE, Markup, PreEscaped, html};
 use percent_encoding::{NON_ALPHANUMERIC, percent_decode_str, utf8_percent_encode};
@@ -307,7 +307,6 @@ pub(crate) fn serve(
             .route("/project/{project}/metrics/delete", post(delete_metric))
             .route("/project/{project}/metrics/kpi", post(create_kpi))
             .route("/project/{project}/metrics/kpi/lock", post(set_kpi_lock))
-            .route("/project/{project}/metrics/kpi/update", post(update_kpi))
             .route("/project/{project}/metrics/kpi/delete", post(delete_kpi))
             .route(
                 "/project/{project}/frontier/{selector}",
@@ -713,10 +712,7 @@ async fn delete_metric(
 #[derive(Deserialize)]
 struct CreateKpiForm {
     frontier: String,
-    name: String,
-    objective: String,
-    description: String,
-    metric_keys: String,
+    metric: String,
 }
 
 async fn create_kpi(
@@ -728,13 +724,9 @@ async fn create_kpi(
         resolve_project_context(&state, &project).and_then(|context| {
             let mut store = open_store(context.project_root.as_std_path())?;
             let frontier = form.frontier;
-            let metric_keys = parse_metric_key_list(&form.metric_keys)?;
             let _ = store.create_kpi(CreateKpiRequest {
                 frontier: frontier.clone(),
-                name: NonEmptyText::new(form.name)?,
-                objective: parse_optimization_objective_ui(&form.objective)?,
-                description: optional_text_field(form.description)?,
-                metric_keys,
+                metric: NonEmptyText::new(form.metric)?,
             })?;
             Ok(metrics_frontier_href(&context, &frontier))
         }),
@@ -761,39 +753,6 @@ async fn set_kpi_lock(
                 mode: RegistryLockMode::Assignment,
                 frontier: frontier.clone(),
                 locked: matches!(form.locked.as_str(), "1" | "true" | "on" | "lock"),
-            })?;
-            Ok(metrics_frontier_href(&context, &frontier))
-        }),
-    )
-}
-
-#[derive(Deserialize)]
-struct UpdateKpiForm {
-    frontier: String,
-    kpi: String,
-    name: String,
-    objective: String,
-    description: String,
-    metric_keys: String,
-}
-
-async fn update_kpi(
-    State(state): State<NavigatorState>,
-    Path(project): Path<String>,
-    Form(form): Form<UpdateKpiForm>,
-) -> Response {
-    metric_mutation_response(
-        resolve_project_context(&state, &project).and_then(|context| {
-            let mut store = open_store(context.project_root.as_std_path())?;
-            let frontier = form.frontier;
-            let metric_keys = parse_metric_key_list(&form.metric_keys)?;
-            let _ = store.update_kpi(UpdateKpiRequest {
-                frontier: frontier.clone(),
-                kpi: form.kpi,
-                name: NonEmptyText::new(form.name)?,
-                objective: parse_optimization_objective_ui(&form.objective)?,
-                description: optional_text_field(form.description)?,
-                metric_keys,
             })?;
             Ok(metrics_frontier_href(&context, &frontier))
         }),
@@ -1099,11 +1058,6 @@ fn metric_mutation_response(result: Result<String, StoreError>) -> Response {
         Err(StoreError::DuplicateMetricDefinition(_)) | Err(StoreError::DuplicateKpi(_)) => {
             (StatusCode::CONFLICT, "metric registry conflict".to_owned()).into_response()
         }
-        Err(StoreError::EmptyKpi { .. })
-        | Err(StoreError::KpiMetricObjectiveMismatch { .. })
-        | Err(StoreError::KpiMetricDimensionMismatch { .. }) => {
-            (StatusCode::BAD_REQUEST, "invalid KPI contract".to_owned()).into_response()
-        }
         Err(StoreError::PolicyViolation(message)) => {
             (StatusCode::CONFLICT, message).into_response()
         }
@@ -1131,14 +1085,6 @@ fn optional_text_field(value: String) -> Result<Option<NonEmptyText>, StoreError
     } else {
         NonEmptyText::new(value).map(Some).map_err(StoreError::from)
     }
-}
-
-fn parse_metric_key_list(raw: &str) -> Result<Vec<NonEmptyText>, StoreError> {
-    raw.split(',')
-        .map(str::trim)
-        .filter(|key| !key.is_empty())
-        .map(|key| NonEmptyText::new(key.to_owned()).map_err(StoreError::from))
-        .collect()
 }
 
 fn metrics_frontier_href(context: &ProjectRenderContext, frontier: &str) -> String {
@@ -1907,7 +1853,7 @@ fn render_kpi_manager(
     html! {
         section.card {
             div.card-header {
-                h2 { "KPI Contracts" }
+                h2 { "KPI Metrics" }
                 @if let Some(frontier) = selected_frontier {
                     span.muted { (frontier.label) }
                     a.form-button href=(frontier_results_href(&frontier.slug)) { "Results" }
@@ -1926,7 +1872,7 @@ fn render_kpi_manager(
                         }
                     }
                 }
-                (render_create_kpi_form(frontier, metrics))
+                (render_create_kpi_form(frontier, kpis, metrics))
                 (render_kpi_registry(frontier, kpis))
             }
         }
@@ -1956,25 +1902,33 @@ fn render_kpi_lock_switch(frontier: &FrontierSummary, locked: bool) -> Markup {
 
 fn render_create_kpi_form(
     frontier: &FrontierSummary,
+    kpis: &[KpiSummary],
     metrics: &[fidget_spinner_store_sqlite::MetricKeySummary],
 ) -> Markup {
+    let kpi_keys = kpis
+        .iter()
+        .map(|kpi| kpi.metric.key.clone())
+        .collect::<BTreeSet<_>>();
+    let candidates = metrics
+        .iter()
+        .filter(|metric| !kpi_keys.contains(&metric.key))
+        .collect::<Vec<_>>();
+    let has_candidates = !candidates.is_empty();
     html! {
         form.tag-create-form method="post" action="metrics/kpi" data-preserve-viewport="true" {
             input type="hidden" name="frontier" value=(frontier.slug.as_str());
-            input.compact-input type="text" name="name" placeholder="kpi name" aria-label="KPI name" required;
-            select.compact-select name="objective" aria-label="KPI objective" {
-                option value="minimize" { "minimize" }
-                option value="maximize" { "maximize" }
-                option value="target" { "target" }
-            }
-            input.compact-input.wide-compact-input type="text" name="metric_keys" placeholder="metric_a, metric_b" list="metric-key-list" aria-label="Metric alternatives" required;
-            datalist id="metric-key-list" {
-                @for metric in metrics {
-                    option value=(metric.key.as_str()) {}
+            select.compact-select.wide-compact-select name="metric" aria-label="Metric to promote" required {
+                @if has_candidates {
+                    @for metric in candidates {
+                        option value=(metric.key.as_str()) {
+                            (metric.key) " · " (metric.objective.as_str()) " · " (metric.unit.as_str())
+                        }
+                    }
+                } @else {
+                    option value="" { "all metrics are KPIs" }
                 }
             }
-            input.compact-input.wide-compact-input type="text" name="description" placeholder="description" aria-label="KPI description";
-            button.inline-icon-button type="submit" aria-label="Add KPI" title="Add KPI" {
+            button.inline-icon-button type="submit" aria-label="Promote KPI metric" title="Promote metric to KPI" disabled[!has_candidates] {
                 (plus_icon())
             }
         }
@@ -1984,14 +1938,17 @@ fn render_create_kpi_form(
 fn render_kpi_registry(frontier: &FrontierSummary, kpis: &[KpiSummary]) -> Markup {
     html! {
         @if kpis.is_empty() {
-            p.muted { "No KPIs for this frontier yet." }
+            p.muted { "No KPI metrics for this frontier yet." }
         } @else {
             div.table-scroll {
                 table.metric-table.kpi-table {
                     thead {
                         tr {
                             th { "" }
-                            th { "Contract" }
+                            th { "Metric" }
+                            th { "Unit" }
+                            th { "Shape" }
+                            th { "Refs" }
                         }
                     }
                     tbody {
@@ -2000,29 +1957,21 @@ fn render_kpi_registry(frontier: &FrontierSummary, kpis: &[KpiSummary]) -> Marku
                                 td.no-truncate {
                                     form.tag-icon-form method="post" action="metrics/kpi/delete" data-preserve-viewport="true" {
                                         input type="hidden" name="frontier" value=(frontier.slug.as_str());
-                                        input type="hidden" name="kpi" value=(kpi.id.to_string());
-                                        button.inline-icon-button.danger-icon-button type="submit" aria-label=(format!("Delete KPI {}", kpi.name)) title="Delete KPI" {
+                                        input type="hidden" name="kpi" value=(kpi.metric.key.as_str());
+                                        button.inline-icon-button.danger-icon-button type="submit" aria-label=(format!("Demote KPI metric {}", kpi.metric.key)) title="Demote KPI metric" {
                                             (trash_icon())
                                         }
                                     }
                                 }
                                 td.no-truncate {
-                                    form.tag-create-form.kpi-edit-form method="post" action="metrics/kpi/update" data-preserve-viewport="true" {
-                                        input type="hidden" name="frontier" value=(frontier.slug.as_str());
-                                        input type="hidden" name="kpi" value=(kpi.id.to_string());
-                                        input.compact-input type="text" name="name" value=(kpi.name.as_str()) aria-label=(format!("KPI name {}", kpi.name)) required;
-                                        select.compact-select name="objective" aria-label=(format!("KPI objective {}", kpi.name)) {
-                                            option value="minimize" selected[kpi.objective == OptimizationObjective::Minimize] { "minimize" }
-                                            option value="maximize" selected[kpi.objective == OptimizationObjective::Maximize] { "maximize" }
-                                            option value="target" selected[kpi.objective == OptimizationObjective::Target] { "target" }
-                                        }
-                                        input.compact-input.wide-compact-input type="text" name="metric_keys" value=(kpi.metrics.iter().map(|metric| metric.key.to_string()).collect::<Vec<_>>().join(", ")) list="metric-key-list" aria-label=(format!("KPI alternatives {}", kpi.name)) required;
-                                        input.compact-input.wide-compact-input type="text" name="description" value=(kpi.description.as_ref().map_or("", NonEmptyText::as_str)) aria-label=(format!("KPI description {}", kpi.name));
-                                        button.inline-icon-button type="submit" aria-label=(format!("Update KPI {}", kpi.name)) title="Update KPI" {
-                                            (pencil_icon())
-                                        }
+                                    span.tag-chip { (kpi.metric.key) }
+                                    @if let Some(description) = kpi.metric.description.as_ref() {
+                                        div.muted { (description) }
                                     }
                                 }
+                                td.no-truncate { (kpi.metric.unit.as_str()) }
+                                td.no-truncate { (kpi.metric.objective.as_str()) " · " (kpi.metric.aggregation.as_str()) }
+                                td.no-truncate { (kpi.metric.reference_count) }
                             }
                         }
                     }
@@ -2248,8 +2197,7 @@ fn load_other_metric_keys(
             !projection
                 .kpis
                 .iter()
-                .flat_map(|kpi| kpi.metrics.iter())
-                .any(|kpi_metric| kpi_metric.key == metric.key)
+                .any(|kpi| kpi.metric.key == metric.key)
         })
         .collect())
 }
@@ -3149,33 +3097,25 @@ fn render_frontier_active_sets(projection: &FrontierOpenProjection) -> Markup {
                 }
             }
             div.subcard {
-                h3 { "KPIs" }
+                h3 { "KPI Metrics" }
                 @if projection.kpis.is_empty() {
-                    p.muted { "No frontier KPIs configured." }
+                    p.muted { "No frontier KPI metrics configured." }
                 } @else {
                     div.table-scroll {
                         table.metric-table {
                             thead {
                                 tr {
-                                    th { "KPI" }
-                                    th { "Metrics" }
+                                    th { "Metric" }
+                                    th { "Unit" }
                                     th { "Objective" }
                                 }
                             }
                             tbody {
                                 @for kpi in &projection.kpis {
                                     tr {
-                                        td { (kpi.name) }
-                                        td {
-                                            div.chip-row {
-                                                @for metric in &kpi.metrics {
-                                                    span.tag-chip title=(format!("precedence {}", metric.precedence)) {
-                                                        (metric.key)
-                                                    }
-                                                }
-                                            }
-                                        }
-                                        td { (kpi.objective.as_str()) }
+                                        td { (kpi.metric.key) }
+                                        td { (kpi.metric.unit.as_str()) }
+                                        td { (kpi.metric.objective.as_str()) }
                                     }
                                 }
                             }

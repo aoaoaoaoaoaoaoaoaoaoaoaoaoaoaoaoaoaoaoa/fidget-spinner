@@ -133,14 +133,12 @@ cargo run -p fidget-spinner-cli -- frontier update \
   --situation "Root LP spend is understood; node-local LP churn is the active frontier."
 ```
 
-Create the frontier KPI contract:
+Promote a metric as a frontier KPI:
 
 ```bash
 cargo run -p fidget-spinner-cli -- kpi create \
   --project . \
   --frontier native-mip \
-  --name "node throughput" \
-  --objective maximize \
   --metric nodes_solved
 ```
 

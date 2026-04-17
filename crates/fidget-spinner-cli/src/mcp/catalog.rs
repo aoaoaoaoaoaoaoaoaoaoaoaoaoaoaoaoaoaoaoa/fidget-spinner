@@ -229,19 +229,19 @@ const TOOL_SPECS: &[ToolSpec] = &[
     },
     ToolSpec {
         name: "kpi.create",
-        description: "Promote one existing metric into a single-metric KPI for one frontier unless KPI creation is locked.",
+        description: "Promote one existing metric into a KPI metric for one frontier unless KPI creation is locked.",
         dispatch: DispatchTarget::Worker,
         replay: ReplayContract::NeverReplay,
     },
     ToolSpec {
         name: "kpi.list",
-        description: "List mandatory KPIs for one frontier.",
+        description: "List mandatory KPI metrics for one frontier.",
         dispatch: DispatchTarget::Worker,
         replay: ReplayContract::Convergent,
     },
     ToolSpec {
         name: "kpi.best",
-        description: "Rank closed experiments by one frontier KPI, resolving metric alternatives by precedence.",
+        description: "Rank closed experiments by one frontier KPI metric.",
         dispatch: DispatchTarget::Worker,
         replay: ReplayContract::Convergent,
     },
@@ -740,7 +740,7 @@ fn tool_input_schema(name: &str) -> Value {
                 ("frontier", selector_schema("Frontier UUID or slug.")),
                 (
                     "kpi",
-                    string_schema("Optional KPI name. Required when frontier has multiple KPIs."),
+                    string_schema("Optional KPI metric key. Defaults to the first KPI metric."),
                 ),
                 ("dimensions", run_dimensions_schema()),
                 (
@@ -748,12 +748,6 @@ fn tool_input_schema(name: &str) -> Value {
                     boolean_schema("Include rejected experiments."),
                 ),
                 ("limit", integer_schema("Optional row cap.")),
-                (
-                    "strict",
-                    boolean_schema(
-                        "Require the highest-precedence metric rather than falling back.",
-                    ),
-                ),
             ],
             &["frontier"],
         ),

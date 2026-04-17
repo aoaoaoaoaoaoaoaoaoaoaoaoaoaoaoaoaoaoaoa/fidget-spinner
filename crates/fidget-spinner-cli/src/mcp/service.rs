@@ -14,15 +14,15 @@ use fidget_spinner_core::{
 };
 use fidget_spinner_store_sqlite::{
     AttachmentSelector, CloseExperimentRequest, CreateArtifactRequest, CreateFrontierRequest,
-    CreateHypothesisRequest, DefineMetricRequest, DefineRunDimensionRequest, EntityHistoryEntry,
-    ExperimentDetail, ExperimentNearestQuery, ExperimentOutcomePatch, ExperimentSummary,
-    FrontierOpenProjection, FrontierRoadmapItemDraft, FrontierSummary, HypothesisDetail,
-    HypothesisSummary, KpiBestEntry, KpiBestQuery, KpiListQuery, KpiSummary, ListArtifactsQuery,
-    ListExperimentsQuery, ListFrontiersQuery, ListHypothesesQuery, MetricBestEntry,
-    MetricBestQuery, MetricKeySummary, MetricKeysQuery, MetricRankOrder, MetricScope,
-    OpenExperimentRequest, ProjectStatus, ProjectStore, PromoteMetricToKpiRequest, StoreError,
-    TagRegistryQuery, TextPatch, UpdateArtifactRequest, UpdateExperimentRequest,
-    UpdateFrontierRequest, UpdateHypothesisRequest, VertexSelector, VertexSummary,
+    CreateHypothesisRequest, CreateKpiRequest, DefineMetricRequest, DefineRunDimensionRequest,
+    EntityHistoryEntry, ExperimentDetail, ExperimentNearestQuery, ExperimentOutcomePatch,
+    ExperimentSummary, FrontierOpenProjection, FrontierRoadmapItemDraft, FrontierSummary,
+    HypothesisDetail, HypothesisSummary, KpiBestEntry, KpiBestQuery, KpiListQuery, KpiSummary,
+    ListArtifactsQuery, ListExperimentsQuery, ListFrontiersQuery, ListHypothesesQuery,
+    MetricBestEntry, MetricBestQuery, MetricKeySummary, MetricKeysQuery, MetricRankOrder,
+    MetricScope, OpenExperimentRequest, ProjectStatus, ProjectStore, StoreError, TagRegistryQuery,
+    TextPatch, UpdateArtifactRequest, UpdateExperimentRequest, UpdateFrontierRequest,
+    UpdateHypothesisRequest, VertexSelector, VertexSummary,
 };
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
@@ -600,12 +600,10 @@ impl WorkerService {
             "kpi.create" => {
                 let args = deserialize::<KpiCreateArgs>(arguments)?;
                 reject_frontier_selector_for_mcp(&self.store, &args.frontier, &operation)?;
-                let kpi = lift!(self.store.promote_metric_to_kpi_from_mcp(
-                    PromoteMetricToKpiRequest {
-                        frontier: args.frontier,
-                        metric: NonEmptyText::new(args.metric).map_err(store_fault(&operation))?,
-                    }
-                ));
+                let kpi = lift!(self.store.create_kpi_from_mcp(CreateKpiRequest {
+                    frontier: args.frontier,
+                    metric: NonEmptyText::new(args.metric).map_err(store_fault(&operation))?,
+                }));
                 kpi_record_output(&kpi, &operation)?
             }
             "kpi.list" => {
@@ -628,7 +626,6 @@ impl WorkerService {
                         dimensions: dimension_map_from_wire(args.dimensions)?,
                         include_rejected: args.include_rejected.unwrap_or(false),
                         limit: args.limit,
-                        strict: args.strict.unwrap_or(false),
                     })),
                     &operation,
                 )?
@@ -949,7 +946,6 @@ struct KpiBestArgs {
     dimensions: Option<Map<String, Value>>,
     include_rejected: Option<bool>,
     limit: Option<u32>,
-    strict: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1017,9 +1013,6 @@ where
             | StoreError::DuplicateTagFamily(_)
             | StoreError::DuplicateMetricDefinition(_)
             | StoreError::DuplicateKpi(_)
-            | StoreError::EmptyKpi { .. }
-            | StoreError::KpiMetricObjectiveMismatch { .. }
-            | StoreError::KpiMetricDimensionMismatch { .. }
             | StoreError::DuplicateRunDimension(_)
             | StoreError::GitWorktreeRequired(_)
             | StoreError::GitHeadRequired(_)
@@ -1518,17 +1511,7 @@ fn frontier_open_output(
             projection
                 .kpis
                 .iter()
-                .map(|kpi| {
-                    format!(
-                        "{} ({})",
-                        kpi.name,
-                        kpi.metrics
-                            .iter()
-                            .map(|metric| metric.key.to_string())
-                            .collect::<Vec<_>>()
-                            .join(" | ")
-                    )
-                })
+                .map(|kpi| kpi.metric.key.to_string())
                 .collect::<Vec<_>>()
                 .join(", ")
         ));
@@ -1925,7 +1908,7 @@ fn kpi_record_output(kpi: &KpiSummary, operation: &str) -> Result<ToolOutput, Fa
     let projection = projection::kpi_record(kpi);
     projected_tool_output(
         &projection,
-        format!("KPI {} [{}]", kpi.name, kpi_metric_names(kpi)),
+        format!("KPI metric {}", kpi.metric.key),
         None,
         FaultStage::Worker,
         operation,
@@ -1940,14 +1923,7 @@ fn kpi_list_output(kpis: &[KpiSummary], operation: &str) -> Result<ToolOutput, F
             "no KPIs".to_owned()
         } else {
             kpis.iter()
-                .map(|kpi| {
-                    format!(
-                        "{} [{}] {}",
-                        kpi.name,
-                        kpi.objective.as_str(),
-                        kpi_metric_names(kpi)
-                    )
-                })
+                .map(|kpi| format!("{} [{}]", kpi.metric.key, kpi.metric.objective.as_str()))
                 .collect::<Vec<_>>()
                 .join("\n")
         },
@@ -1988,14 +1964,6 @@ fn kpi_best_output(entries: &[KpiBestEntry], operation: &str) -> Result<ToolOutp
         FaultStage::Worker,
         operation,
     )
-}
-
-fn kpi_metric_names(kpi: &KpiSummary) -> String {
-    kpi.metrics
-        .iter()
-        .map(|metric| metric.key.to_string())
-        .collect::<Vec<_>>()
-        .join(" | ")
 }
 
 fn experiment_nearest_output(
@@ -2539,21 +2507,16 @@ mod legacy_projection_values {
 
     fn kpi_summary_value(kpi: &KpiSummary) -> Value {
         json!({
-            "id": kpi.id.to_string(),
-            "name": kpi.name,
-            "objective": kpi.objective,
-            "description": kpi.description,
+            "metric": {
+                "key": kpi.metric.key,
+                "unit": kpi.metric.unit,
+                "dimension": kpi.metric.dimension,
+                "aggregation": kpi.metric.aggregation,
+                "objective": kpi.metric.objective,
+                "description": kpi.metric.description,
+                "reference_count": kpi.metric.reference_count,
+            },
             "revision": kpi.revision,
-            "metrics": kpi.metrics.iter().map(|metric| {
-                json!({
-                    "key": metric.key,
-                    "precedence": metric.precedence,
-                    "unit": metric.unit,
-                    "dimension": metric.dimension,
-                    "aggregation": metric.aggregation,
-                    "objective": metric.objective,
-                })
-            }).collect::<Vec<_>>(),
         })
     }
 

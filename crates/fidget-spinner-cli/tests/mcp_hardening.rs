@@ -595,10 +595,7 @@ fn kpi_creation_lock_rejects_mcp_only() -> TestResult {
         )?;
         let supervisor_kpi = store.create_kpi(CreateKpiRequest {
             frontier: "kpi-lock".to_owned(),
-            name: must(NonEmptyText::new("supervisor_nodes"), "kpi name")?,
-            objective: OptimizationObjective::Maximize,
-            description: None,
-            metric_keys: vec![must(NonEmptyText::new("supervisor_nodes"), "metric key")?],
+            metric: must(NonEmptyText::new("supervisor_nodes"), "metric key")?,
         });
         assert!(supervisor_kpi.is_ok());
     }
@@ -1152,7 +1149,7 @@ fn frontier_update_mutates_objective_and_kpi_grounding() -> TestResult {
                 .as_array()
                 .and_then(|items| items.first()),
             "frontier KPI entry",
-        )?["metrics"][0]["key"]
+        )?["metric"]["key"]
             .as_str(),
         Some("nodes_solved")
     );
@@ -1831,10 +1828,7 @@ fn already_bound_worker_refreshes_after_destructive_reseed() -> TestResult {
     let _kpi = must(
         reopened.create_kpi(CreateKpiRequest {
             frontier: "beta".to_owned(),
-            name: must(NonEmptyText::new("node throughput"), "kpi name")?,
-            objective: OptimizationObjective::Maximize,
-            description: None,
-            metric_keys: vec![must(NonEmptyText::new("nodes_solved"), "kpi metric")?],
+            metric: must(NonEmptyText::new("nodes_solved"), "kpi metric")?,
         }),
         "create beta KPI",
     )?;

@@ -749,21 +749,10 @@ pub struct MetricValue {
 pub struct FrontierKpiRecord {
     pub id: KpiId,
     pub frontier_id: FrontierId,
-    pub name: NonEmptyText,
-    pub objective: OptimizationObjective,
-    pub description: Option<NonEmptyText>,
-    pub status: TagStatus,
+    pub metric_id: MetricId,
     pub revision: u64,
     pub created_at: OffsetDateTime,
     pub updated_at: OffsetDateTime,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub struct KpiMetricAlternativeRecord {
-    pub kpi_id: KpiId,
-    pub metric_id: MetricId,
-    pub metric_key: NonEmptyText,
-    pub precedence: u32,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]

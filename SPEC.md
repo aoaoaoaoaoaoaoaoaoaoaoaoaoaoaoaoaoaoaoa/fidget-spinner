@@ -116,8 +116,8 @@ The core pattern:
 
 This pattern should generalize to metrics, run dimensions, frontier freezing,
 and other mature-frontier cleanup controls. Metrics should not grow generic
-families or retain backend scoreboard pinning; the durable metric contract is
-frontier-local KPIs with ordered metric alternatives, documented in
+families or retain backend scoreboard pinning; the durable metric contract is a
+frontier-local set of KPI metrics, documented in
 `docs/metric-kpi-governance.md`.
 
 ## Archive Semantics

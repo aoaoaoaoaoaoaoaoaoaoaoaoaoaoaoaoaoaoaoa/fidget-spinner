@@ -427,22 +427,8 @@ pub(crate) struct MetricKeySummaryProjection {
 
 #[derive(Clone, Serialize)]
 pub(crate) struct KpiSummaryProjection {
-    pub(crate) name: String,
-    pub(crate) objective: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) description: Option<String>,
-    pub(crate) metrics: Vec<KpiMetricProjection>,
+    pub(crate) metric: MetricKeySummaryProjection,
     pub(crate) revision: u64,
-}
-
-#[derive(Clone, Serialize)]
-pub(crate) struct KpiMetricProjection {
-    pub(crate) key: String,
-    pub(crate) precedence: u32,
-    pub(crate) unit: String,
-    pub(crate) dimension: String,
-    pub(crate) aggregation: String,
-    pub(crate) objective: String,
 }
 
 #[derive(Clone, Serialize, libmcp::ToolProjection)]
@@ -1246,21 +1232,7 @@ fn metric_key_summary(metric: &MetricKeySummary) -> MetricKeySummaryProjection {
 
 fn kpi_summary(kpi: &KpiSummary) -> KpiSummaryProjection {
     KpiSummaryProjection {
-        name: kpi.name.to_string(),
-        objective: kpi.objective.as_str().to_owned(),
-        description: kpi.description.as_ref().map(ToString::to_string),
-        metrics: kpi
-            .metrics
-            .iter()
-            .map(|metric| KpiMetricProjection {
-                key: metric.key.to_string(),
-                precedence: metric.precedence,
-                unit: metric.unit.as_str().to_owned(),
-                dimension: metric.dimension.as_str().to_owned(),
-                aggregation: metric.aggregation.as_str().to_owned(),
-                objective: metric.objective.as_str().to_owned(),
-            })
-            .collect(),
+        metric: metric_key_summary(&kpi.metric),
         revision: kpi.revision,
     }
 }

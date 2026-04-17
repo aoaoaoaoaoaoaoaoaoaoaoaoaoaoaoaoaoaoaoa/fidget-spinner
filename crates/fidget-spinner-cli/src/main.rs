@@ -80,7 +80,7 @@ enum Command {
         #[command(subcommand)]
         command: MetricCommand,
     },
-    /// Manage frontier KPI definitions and rankings.
+    /// Manage frontier KPI metrics and rankings.
     Kpi {
         #[command(subcommand)]
         command: KpiCommand,
@@ -646,14 +646,8 @@ struct KpiCreateArgs {
     project: ProjectArg,
     #[arg(long)]
     frontier: String,
-    #[arg(long)]
-    name: String,
-    #[arg(long, value_enum)]
-    objective: CliOptimizationObjective,
-    #[arg(long)]
-    description: Option<String>,
     #[arg(long = "metric")]
-    metric_keys: Vec<String>,
+    metric: String,
 }
 
 #[derive(Args)]
@@ -678,8 +672,6 @@ struct KpiBestArgs {
     include_rejected: bool,
     #[arg(long)]
     limit: Option<u32>,
-    #[arg(long)]
-    strict: bool,
 }
 
 #[derive(Args)]
@@ -1251,19 +1243,10 @@ fn run_metric_delete(args: MetricDeleteArgs) -> Result<(), StoreError> {
 
 fn run_kpi_create(args: KpiCreateArgs) -> Result<(), StoreError> {
     let mut store = open_store(&args.project.project)?;
-    print_json(
-        &store.create_kpi(CreateKpiRequest {
-            frontier: args.frontier,
-            name: NonEmptyText::new(args.name)?,
-            objective: args.objective.into(),
-            description: args.description.map(NonEmptyText::new).transpose()?,
-            metric_keys: args
-                .metric_keys
-                .into_iter()
-                .map(NonEmptyText::new)
-                .collect::<Result<Vec<_>, _>>()?,
-        })?,
-    )
+    print_json(&store.create_kpi(CreateKpiRequest {
+        frontier: args.frontier,
+        metric: NonEmptyText::new(args.metric)?,
+    })?)
 }
 
 fn run_kpi_list(args: KpiListArgs) -> Result<(), StoreError> {
@@ -1281,7 +1264,6 @@ fn run_kpi_best(args: KpiBestArgs) -> Result<(), StoreError> {
         dimensions: parse_dimension_assignments(args.dimensions)?,
         include_rejected: args.include_rejected,
         limit: args.limit,
-        strict: args.strict,
     })?)
 }
 
