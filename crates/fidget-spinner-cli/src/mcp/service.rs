@@ -8,20 +8,21 @@ use std::time::UNIX_EPOCH;
 use camino::{Utf8Path, Utf8PathBuf};
 use fidget_spinner_core::{
     ArtifactKind, AttachmentTargetRef, CommandRecipe, ExecutionBackend, ExperimentAnalysis,
-    ExperimentStatus, FieldValueType, FrontierStatus, FrontierVerdict, MetricAggregation,
-    MetricUnit, MetricVisibility, NonEmptyText, OptimizationObjective, RunDimensionValue, Slug,
+    ExperimentStatus, FieldValueType, FrontierRecord, FrontierStatus, FrontierVerdict,
+    MetricAggregation, MetricUnit, NonEmptyText, OptimizationObjective, RunDimensionValue, Slug,
     TagName,
 };
 use fidget_spinner_store_sqlite::{
     AttachmentSelector, CloseExperimentRequest, CreateArtifactRequest, CreateFrontierRequest,
     CreateHypothesisRequest, CreateKpiRequest, DefineMetricRequest, DefineRunDimensionRequest,
-    EntityHistoryEntry, ExperimentNearestQuery, ExperimentOutcomePatch, FrontierOpenProjection,
-    FrontierRoadmapItemDraft, FrontierSummary, KpiBestEntry, KpiBestQuery, KpiListQuery,
-    KpiSummary, ListArtifactsQuery, ListExperimentsQuery, ListFrontiersQuery, ListHypothesesQuery,
+    EntityHistoryEntry, ExperimentDetail, ExperimentNearestQuery, ExperimentOutcomePatch,
+    ExperimentSummary, FrontierOpenProjection, FrontierRoadmapItemDraft, FrontierSummary,
+    HypothesisDetail, HypothesisSummary, KpiBestEntry, KpiBestQuery, KpiListQuery, KpiSummary,
+    ListArtifactsQuery, ListExperimentsQuery, ListFrontiersQuery, ListHypothesesQuery,
     MetricBestEntry, MetricBestQuery, MetricKeySummary, MetricKeysQuery, MetricRankOrder,
-    MetricScope, OpenExperimentRequest, ProjectStatus, ProjectStore, StoreError, TextPatch,
-    UpdateArtifactRequest, UpdateExperimentRequest, UpdateFrontierRequest, UpdateHypothesisRequest,
-    VertexSelector, VertexSummary,
+    MetricScope, OpenExperimentRequest, ProjectStatus, ProjectStore, StoreError, TagRegistryQuery,
+    TextPatch, UpdateArtifactRequest, UpdateExperimentRequest, UpdateFrontierRequest,
+    UpdateHypothesisRequest, VertexSelector, VertexSummary,
 };
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
@@ -107,7 +108,12 @@ impl WorkerService {
                 ));
                 tag_record_output(&tag, &operation)?
             }
-            "tag.list" => tag_registry_output(&lift!(self.store.tag_registry()), &operation)?,
+            "tag.list" => tag_registry_output(
+                &lift!(self.store.tag_registry(TagRegistryQuery {
+                    include_hidden: false,
+                })),
+                &operation,
+            )?,
             "frontier.create" => {
                 let args = deserialize::<FrontierCreateArgs>(arguments)?;
                 let frontier = lift!(
@@ -125,28 +131,34 @@ impl WorkerService {
                 frontier_record_output(&self.store, &frontier, &operation)?
             }
             "frontier.list" => {
-                let args = deserialize::<FrontierListArgs>(arguments)?;
+                let _args = deserialize::<FrontierListArgs>(arguments)?;
                 frontier_list_output(
                     &lift!(self.store.list_frontiers_from_mcp(ListFrontiersQuery {
-                        include_archived: args.include_archived.unwrap_or(false),
+                        include_archived: false,
                     })),
                     &operation,
                 )?
             }
             "frontier.read" => {
                 let args = deserialize::<FrontierSelectorArgs>(arguments)?;
-                frontier_record_output(
-                    &self.store,
-                    &lift!(self.store.read_frontier(&args.frontier)),
-                    &operation,
-                )?
+                let frontier = lift!(self.store.read_frontier(&args.frontier));
+                reject_archived_frontier_for_mcp(&frontier, &operation)?;
+                frontier_record_output(&self.store, &frontier, &operation)?
             }
             "frontier.open" => {
                 let args = deserialize::<FrontierSelectorArgs>(arguments)?;
-                frontier_open_output(&lift!(self.store.frontier_open(&args.frontier)), &operation)?
+                let projection = lift!(self.store.frontier_open(&args.frontier));
+                reject_archived_frontier_for_mcp(&projection.frontier, &operation)?;
+                frontier_open_output(&projection, &operation)?
             }
             "frontier.update" => {
                 let args = deserialize::<FrontierUpdateArgs>(arguments)?;
+                if args.status == Some(FrontierStatus::Archived) {
+                    return Err(store_fault(&operation)(StoreError::PolicyViolation(
+                        "frontier archiving is supervisor-only and is not exposed through MCP"
+                            .to_owned(),
+                    )));
+                }
                 let frontier = lift!(
                     self.store.update_frontier(UpdateFrontierRequest {
                         frontier: args.frontier,
@@ -189,10 +201,13 @@ impl WorkerService {
                             .transpose()?,
                     })
                 );
+                reject_archived_frontier_for_mcp(&frontier, &operation)?;
                 frontier_record_output(&self.store, &frontier, &operation)?
             }
             "frontier.history" => {
                 let args = deserialize::<FrontierSelectorArgs>(arguments)?;
+                let frontier = lift!(self.store.read_frontier(&args.frontier));
+                reject_archived_frontier_for_mcp(&frontier, &operation)?;
                 history_output(
                     &lift!(self.store.frontier_history(&args.frontier)),
                     &operation,
@@ -200,6 +215,8 @@ impl WorkerService {
             }
             "hypothesis.record" => {
                 let args = deserialize::<HypothesisRecordArgs>(arguments)?;
+                let frontier = lift!(self.store.read_frontier(&args.frontier));
+                reject_archived_frontier_for_mcp(&frontier, &operation)?;
                 let hypothesis = lift!(
                     self.store
                         .create_hypothesis_from_mcp(CreateHypothesisRequest {
@@ -228,22 +245,23 @@ impl WorkerService {
                         frontier: args.frontier,
                         tags: tags_to_set(args.tags.unwrap_or_default())
                             .map_err(store_fault(&operation))?,
-                        include_archived: args.include_archived.unwrap_or(false),
+                        include_archived: false,
                         limit: args.limit,
                     })
                 );
+                let hypotheses = mcp_visible_hypotheses(&self.store, hypotheses, &operation)?;
                 hypothesis_list_output(&hypotheses, &operation)?
             }
             "hypothesis.read" => {
                 let args = deserialize::<HypothesisSelectorArgs>(arguments)?;
-                hypothesis_detail_output(
-                    &self.store,
-                    &lift!(self.store.read_hypothesis(&args.hypothesis)),
-                    &operation,
-                )?
+                let detail = lift!(self.store.read_hypothesis(&args.hypothesis));
+                reject_hidden_hypothesis_detail_for_mcp(&self.store, &detail, &operation)?;
+                hypothesis_detail_output(&self.store, &detail, &operation)?
             }
             "hypothesis.update" => {
                 let args = deserialize::<HypothesisUpdateArgs>(arguments)?;
+                let detail = lift!(self.store.read_hypothesis(&args.hypothesis));
+                reject_hidden_hypothesis_detail_for_mcp(&self.store, &detail, &operation)?;
                 let hypothesis = lift!(
                     self.store
                         .update_hypothesis_from_mcp(UpdateHypothesisRequest {
@@ -270,13 +288,15 @@ impl WorkerService {
                                 .transpose()
                                 .map_err(store_fault(&operation))?,
                             parents: args.parents,
-                            archived: args.archived,
+                            archived: None,
                         })
                 );
                 hypothesis_record_output(&hypothesis, &operation)?
             }
             "hypothesis.history" => {
                 let args = deserialize::<HypothesisSelectorArgs>(arguments)?;
+                let detail = lift!(self.store.read_hypothesis(&args.hypothesis));
+                reject_hidden_hypothesis_detail_for_mcp(&self.store, &detail, &operation)?;
                 history_output(
                     &lift!(self.store.hypothesis_history(&args.hypothesis)),
                     &operation,
@@ -284,6 +304,8 @@ impl WorkerService {
             }
             "experiment.open" => {
                 let args = deserialize::<ExperimentOpenArgs>(arguments)?;
+                let hypothesis = lift!(self.store.read_hypothesis(&args.hypothesis));
+                reject_hidden_hypothesis_detail_for_mcp(&self.store, &hypothesis, &operation)?;
                 let experiment = lift!(
                     self.store.open_experiment_from_mcp(OpenExperimentRequest {
                         hypothesis: args.hypothesis,
@@ -313,23 +335,24 @@ impl WorkerService {
                         hypothesis: args.hypothesis,
                         tags: tags_to_set(args.tags.unwrap_or_default())
                             .map_err(store_fault(&operation))?,
-                        include_archived: args.include_archived.unwrap_or(false),
+                        include_archived: false,
                         status: args.status,
                         limit: args.limit,
                     })
                 );
+                let experiments = mcp_visible_experiments(&self.store, experiments, &operation)?;
                 experiment_list_output(&experiments, &operation)?
             }
             "experiment.read" => {
                 let args = deserialize::<ExperimentSelectorArgs>(arguments)?;
-                experiment_detail_output(
-                    &self.store,
-                    &lift!(self.store.read_experiment(&args.experiment)),
-                    &operation,
-                )?
+                let detail = lift!(self.store.read_experiment(&args.experiment));
+                reject_hidden_experiment_detail_for_mcp(&self.store, &detail, &operation)?;
+                experiment_detail_output(&self.store, &detail, &operation)?
             }
             "experiment.update" => {
                 let args = deserialize::<ExperimentUpdateArgs>(arguments)?;
+                let detail = lift!(self.store.read_experiment(&args.experiment));
+                reject_hidden_experiment_detail_for_mcp(&self.store, &detail, &operation)?;
                 let experiment = lift!(
                     self.store
                         .update_experiment_from_mcp(UpdateExperimentRequest {
@@ -347,7 +370,7 @@ impl WorkerService {
                                 .transpose()
                                 .map_err(store_fault(&operation))?,
                             parents: args.parents,
-                            archived: args.archived,
+                            archived: None,
                             outcome: args
                                 .outcome
                                 .map(|wire| experiment_outcome_patch_from_wire(wire, &operation))
@@ -358,6 +381,8 @@ impl WorkerService {
             }
             "experiment.close" => {
                 let args = deserialize::<ExperimentCloseArgs>(arguments)?;
+                let detail = lift!(self.store.read_experiment(&args.experiment));
+                reject_hidden_experiment_detail_for_mcp(&self.store, &detail, &operation)?;
                 let experiment = lift!(
                     self.store
                         .close_experiment_from_mcp(CloseExperimentRequest {
@@ -415,6 +440,8 @@ impl WorkerService {
             }
             "experiment.history" => {
                 let args = deserialize::<ExperimentSelectorArgs>(arguments)?;
+                let detail = lift!(self.store.read_experiment(&args.experiment));
+                reject_hidden_experiment_detail_for_mcp(&self.store, &detail, &operation)?;
                 history_output(
                     &lift!(self.store.experiment_history(&args.experiment)),
                     &operation,
@@ -450,6 +477,11 @@ impl WorkerService {
             }
             "artifact.list" => {
                 let args = deserialize::<ArtifactListArgs>(arguments)?;
+                reject_optional_frontier_selector_for_mcp(
+                    &self.store,
+                    args.frontier.as_deref(),
+                    &operation,
+                )?;
                 let artifacts = lift!(self.store.list_artifacts(ListArtifactsQuery {
                     frontier: args.frontier,
                     kind: args.kind,
@@ -505,7 +537,6 @@ impl WorkerService {
                         unit: args.unit,
                         aggregation: args.aggregation.unwrap_or(MetricAggregation::Point),
                         objective: args.objective,
-                        visibility: args.visibility.unwrap_or(MetricVisibility::Canonical),
                         description: args
                             .description
                             .map(NonEmptyText::new)
@@ -517,21 +548,47 @@ impl WorkerService {
             }
             "metric.keys" => {
                 let args = deserialize::<MetricKeysArgs>(arguments)?;
+                reject_optional_frontier_selector_for_mcp(
+                    &self.store,
+                    args.frontier.as_deref(),
+                    &operation,
+                )?;
+                let scope = args.scope.unwrap_or(MetricScope::Live);
+                if scope == MetricScope::All {
+                    return Err(store_fault(&operation)(StoreError::PolicyViolation(
+                        "MCP metric enumeration cannot inspect hidden-by-archive metrics; use the supervisor UI or CLI for registry cleanup".to_owned(),
+                    )));
+                }
                 metric_keys_output(
                     &lift!(self.store.metric_keys(MetricKeysQuery {
                         frontier: args.frontier,
-                        scope: args.scope.unwrap_or(MetricScope::Live),
+                        scope,
                     })),
                     &operation,
                 )?
             }
             "metric.best" => {
                 let args = deserialize::<MetricBestArgs>(arguments)?;
+                reject_optional_frontier_selector_for_mcp(
+                    &self.store,
+                    args.frontier.as_deref(),
+                    &operation,
+                )?;
+                let key = NonEmptyText::new(args.key).map_err(store_fault(&operation))?;
+                let default_metrics = lift!(self.store.metric_keys(MetricKeysQuery {
+                    frontier: None,
+                    scope: MetricScope::Default,
+                }));
+                if !default_metrics.iter().any(|metric| metric.key == key) {
+                    return Err(store_fault(&operation)(
+                        StoreError::UnknownMetricDefinition(key),
+                    ));
+                }
                 metric_best_output(
                     &lift!(self.store.metric_best(MetricBestQuery {
                         frontier: args.frontier,
                         hypothesis: args.hypothesis,
-                        key: NonEmptyText::new(args.key).map_err(store_fault(&operation))?,
+                        key,
                         dimensions: dimension_map_from_wire(args.dimensions)?,
                         include_rejected: args.include_rejected.unwrap_or(false),
                         limit: args.limit,
@@ -542,6 +599,7 @@ impl WorkerService {
             }
             "kpi.create" => {
                 let args = deserialize::<KpiCreateArgs>(arguments)?;
+                reject_frontier_selector_for_mcp(&self.store, &args.frontier, &operation)?;
                 let kpi = lift!(
                     self.store.create_kpi(CreateKpiRequest {
                         frontier: args.frontier,
@@ -564,6 +622,7 @@ impl WorkerService {
             }
             "kpi.list" => {
                 let args = deserialize::<KpiListArgs>(arguments)?;
+                reject_frontier_selector_for_mcp(&self.store, &args.frontier, &operation)?;
                 kpi_list_output(
                     &lift!(self.store.list_kpis(KpiListQuery {
                         frontier: args.frontier,
@@ -573,6 +632,7 @@ impl WorkerService {
             }
             "kpi.best" => {
                 let args = deserialize::<KpiBestArgs>(arguments)?;
+                reject_frontier_selector_for_mcp(&self.store, &args.frontier, &operation)?;
                 kpi_best_output(
                     &lift!(self.store.kpi_best(KpiBestQuery {
                         frontier: args.frontier,
@@ -671,9 +731,7 @@ struct FrontierCreateArgs {
 }
 
 #[derive(Debug, Deserialize)]
-struct FrontierListArgs {
-    include_archived: Option<bool>,
-}
+struct FrontierListArgs {}
 
 #[derive(Debug, Deserialize)]
 struct FrontierSelectorArgs {
@@ -713,7 +771,6 @@ struct HypothesisRecordArgs {
 struct HypothesisListArgs {
     frontier: Option<String>,
     tags: Option<Vec<String>>,
-    include_archived: Option<bool>,
     limit: Option<u32>,
 }
 
@@ -731,7 +788,6 @@ struct HypothesisUpdateArgs {
     body: Option<String>,
     tags: Option<Vec<String>>,
     parents: Option<Vec<VertexSelector>>,
-    archived: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -749,7 +805,6 @@ struct ExperimentListArgs {
     frontier: Option<String>,
     hypothesis: Option<String>,
     tags: Option<Vec<String>>,
-    include_archived: Option<bool>,
     status: Option<ExperimentStatus>,
     limit: Option<u32>,
 }
@@ -767,7 +822,6 @@ struct ExperimentUpdateArgs {
     summary: Option<NullableStringArg>,
     tags: Option<Vec<String>>,
     parents: Option<Vec<VertexSelector>>,
-    archived: Option<bool>,
     outcome: Option<ExperimentOutcomeWire>,
 }
 
@@ -869,7 +923,6 @@ struct MetricDefineArgs {
     unit: MetricUnit,
     aggregation: Option<MetricAggregation>,
     objective: OptimizationObjective,
-    visibility: Option<MetricVisibility>,
     description: Option<String>,
 }
 
@@ -1010,6 +1063,112 @@ where
     E: Into<StoreError>,
 {
     result.map_err(store_fault(operation))
+}
+
+fn reject_archived_frontier_for_mcp(
+    frontier: &FrontierRecord,
+    operation: &str,
+) -> Result<(), FaultRecord> {
+    if frontier.status == FrontierStatus::Archived {
+        return Err(store_fault(operation)(StoreError::UnknownFrontierSelector(
+            frontier.slug.to_string(),
+        )));
+    }
+    Ok(())
+}
+
+fn reject_archived_frontier_id_for_mcp(
+    store: &ProjectStore,
+    frontier_id: fidget_spinner_core::FrontierId,
+    operation: &str,
+) -> Result<(), FaultRecord> {
+    let frontier = store
+        .read_frontier(&frontier_id.to_string())
+        .map_err(store_fault(operation))?;
+    reject_archived_frontier_for_mcp(&frontier, operation)
+}
+
+fn reject_frontier_selector_for_mcp(
+    store: &ProjectStore,
+    selector: &str,
+    operation: &str,
+) -> Result<(), FaultRecord> {
+    let frontier = store
+        .read_frontier(selector)
+        .map_err(store_fault(operation))?;
+    reject_archived_frontier_for_mcp(&frontier, operation)
+}
+
+fn reject_optional_frontier_selector_for_mcp(
+    store: &ProjectStore,
+    selector: Option<&str>,
+    operation: &str,
+) -> Result<(), FaultRecord> {
+    if let Some(selector) = selector {
+        reject_frontier_selector_for_mcp(store, selector, operation)?;
+    }
+    Ok(())
+}
+
+fn reject_hidden_hypothesis_detail_for_mcp(
+    store: &ProjectStore,
+    detail: &HypothesisDetail,
+    operation: &str,
+) -> Result<(), FaultRecord> {
+    reject_archived_frontier_id_for_mcp(store, detail.record.frontier_id, operation)
+}
+
+fn reject_hidden_experiment_detail_for_mcp(
+    store: &ProjectStore,
+    detail: &ExperimentDetail,
+    operation: &str,
+) -> Result<(), FaultRecord> {
+    reject_archived_frontier_id_for_mcp(store, detail.record.frontier_id, operation)
+}
+
+fn mcp_visible_hypotheses(
+    store: &ProjectStore,
+    hypotheses: Vec<HypothesisSummary>,
+    operation: &str,
+) -> Result<Vec<HypothesisSummary>, FaultRecord> {
+    hypotheses
+        .into_iter()
+        .filter_map(|hypothesis| {
+            match frontier_id_is_mcp_visible(store, hypothesis.frontier_id, operation) {
+                Ok(true) => Some(Ok(hypothesis)),
+                Ok(false) => None,
+                Err(error) => Some(Err(error)),
+            }
+        })
+        .collect()
+}
+
+fn mcp_visible_experiments(
+    store: &ProjectStore,
+    experiments: Vec<ExperimentSummary>,
+    operation: &str,
+) -> Result<Vec<ExperimentSummary>, FaultRecord> {
+    experiments
+        .into_iter()
+        .filter_map(|experiment| {
+            match frontier_id_is_mcp_visible(store, experiment.frontier_id, operation) {
+                Ok(true) => Some(Ok(experiment)),
+                Ok(false) => None,
+                Err(error) => Some(Err(error)),
+            }
+        })
+        .collect()
+}
+
+fn frontier_id_is_mcp_visible(
+    store: &ProjectStore,
+    frontier_id: fidget_spinner_core::FrontierId,
+    operation: &str,
+) -> Result<bool, FaultRecord> {
+    let frontier = store
+        .read_frontier(&frontier_id.to_string())
+        .map_err(store_fault(operation))?;
+    Ok(frontier.status != FrontierStatus::Archived)
 }
 
 fn read_store_identity(project_root: &Utf8Path) -> Result<StoreIdentity, StoreError> {
@@ -1288,7 +1447,7 @@ fn frontier_list_output(
 
 fn frontier_record_output(
     store: &ProjectStore,
-    frontier: &fidget_spinner_core::FrontierRecord,
+    frontier: &FrontierRecord,
     operation: &str,
 ) -> Result<ToolOutput, FaultRecord> {
     let projection = projection::frontier_record(store, frontier, operation)?;
@@ -1446,7 +1605,7 @@ fn hypothesis_record_output(
 }
 
 fn hypothesis_list_output(
-    hypotheses: &[fidget_spinner_store_sqlite::HypothesisSummary],
+    hypotheses: &[HypothesisSummary],
     operation: &str,
 ) -> Result<ToolOutput, FaultRecord> {
     let projection = projection::hypothesis_list(hypotheses);
@@ -1481,7 +1640,7 @@ fn hypothesis_list_output(
 
 fn hypothesis_detail_output(
     store: &ProjectStore,
-    detail: &fidget_spinner_store_sqlite::HypothesisDetail,
+    detail: &HypothesisDetail,
     operation: &str,
 ) -> Result<ToolOutput, FaultRecord> {
     let projection = projection::hypothesis_detail(store, detail, operation)?;
@@ -1549,7 +1708,7 @@ fn experiment_record_output(
 }
 
 fn experiment_list_output(
-    experiments: &[fidget_spinner_store_sqlite::ExperimentSummary],
+    experiments: &[ExperimentSummary],
     operation: &str,
 ) -> Result<ToolOutput, FaultRecord> {
     let projection = projection::experiment_list(experiments);
@@ -1587,7 +1746,7 @@ fn experiment_list_output(
 
 fn experiment_detail_output(
     store: &ProjectStore,
-    detail: &fidget_spinner_store_sqlite::ExperimentDetail,
+    detail: &ExperimentDetail,
     operation: &str,
 ) -> Result<ToolOutput, FaultRecord> {
     let projection = projection::experiment_detail(store, detail, operation)?;
@@ -1707,11 +1866,10 @@ fn metric_keys_output(
             keys.iter()
                 .map(|metric| {
                     format!(
-                        "{} [{} {} {}] refs={}",
+                        "{} [{} {}] refs={}",
                         metric.key,
                         metric.unit.as_str(),
                         metric.objective.as_str(),
-                        metric.visibility.as_str(),
                         metric.reference_count
                     )
                 })
@@ -1732,11 +1890,10 @@ fn metric_definition_output(
     projected_tool_output(
         &projection,
         format!(
-            "metric {} [{} {} {}]",
+            "metric {} [{} {}]",
             metric.key,
             metric.unit.as_str(),
-            metric.objective.as_str(),
-            metric.visibility.as_str()
+            metric.objective.as_str()
         ),
         None,
         FaultStage::Worker,
@@ -2023,7 +2180,7 @@ mod legacy_projection_values {
 
     fn frontier_record_value(
         store: &ProjectStore,
-        frontier: &fidget_spinner_core::FrontierRecord,
+        frontier: &FrontierRecord,
         operation: &str,
     ) -> Result<Value, FaultRecord> {
         let roadmap = frontier
@@ -2127,12 +2284,9 @@ mod legacy_projection_values {
         })
     }
 
-    fn hypothesis_summary_value(
-        hypothesis: &fidget_spinner_store_sqlite::HypothesisSummary,
-    ) -> Value {
+    fn hypothesis_summary_value(hypothesis: &HypothesisSummary) -> Value {
         json!({
             "slug": hypothesis.slug,
-            "archived": hypothesis.archived,
             "title": hypothesis.title,
             "summary": hypothesis.summary,
             "tags": hypothesis.tags,
@@ -2145,7 +2299,6 @@ mod legacy_projection_values {
     fn hypothesis_record_value(hypothesis: &fidget_spinner_core::HypothesisRecord) -> Value {
         json!({
             "slug": hypothesis.slug,
-            "archived": hypothesis.archived,
             "title": hypothesis.title,
             "summary": hypothesis.summary,
             "body": hypothesis.body,
@@ -2158,7 +2311,7 @@ mod legacy_projection_values {
 
     fn hypothesis_detail_concise_value(
         store: &ProjectStore,
-        detail: &fidget_spinner_store_sqlite::HypothesisDetail,
+        detail: &HypothesisDetail,
         operation: &str,
     ) -> Result<Value, FaultRecord> {
         let frontier = store
@@ -2167,7 +2320,6 @@ mod legacy_projection_values {
         Ok(json!({
             "record": {
                 "slug": detail.record.slug,
-                "archived": detail.record.archived,
                 "title": detail.record.title,
                 "summary": detail.record.summary,
                 "tags": detail.record.tags,
@@ -2196,7 +2348,7 @@ mod legacy_projection_values {
 
     fn hypothesis_detail_full_value(
         store: &ProjectStore,
-        detail: &fidget_spinner_store_sqlite::HypothesisDetail,
+        detail: &HypothesisDetail,
         operation: &str,
     ) -> Result<Value, FaultRecord> {
         let frontier = store
@@ -2225,12 +2377,9 @@ mod legacy_projection_values {
         }))
     }
 
-    fn experiment_summary_value(
-        experiment: &fidget_spinner_store_sqlite::ExperimentSummary,
-    ) -> Value {
+    fn experiment_summary_value(experiment: &ExperimentSummary) -> Value {
         json!({
             "slug": experiment.slug,
-            "archived": experiment.archived,
             "title": experiment.title,
             "summary": experiment.summary,
             "tags": experiment.tags,
@@ -2248,7 +2397,6 @@ mod legacy_projection_values {
     fn experiment_record_value(experiment: &fidget_spinner_core::ExperimentRecord) -> Value {
         json!({
             "slug": experiment.slug,
-            "archived": experiment.archived,
             "title": experiment.title,
             "summary": experiment.summary,
             "tags": experiment.tags,
@@ -2262,7 +2410,7 @@ mod legacy_projection_values {
 
     fn experiment_detail_concise_value(
         store: &ProjectStore,
-        detail: &fidget_spinner_store_sqlite::ExperimentDetail,
+        detail: &ExperimentDetail,
         operation: &str,
     ) -> Result<Value, FaultRecord> {
         let frontier = store
@@ -2271,7 +2419,6 @@ mod legacy_projection_values {
         Ok(json!({
             "record": {
                 "slug": detail.record.slug,
-                "archived": detail.record.archived,
                 "title": detail.record.title,
                 "summary": detail.record.summary,
                 "tags": detail.record.tags,
@@ -2295,7 +2442,7 @@ mod legacy_projection_values {
 
     fn experiment_detail_full_value(
         store: &ProjectStore,
-        detail: &fidget_spinner_store_sqlite::ExperimentDetail,
+        detail: &ExperimentDetail,
         operation: &str,
     ) -> Result<Value, FaultRecord> {
         let frontier = store
@@ -2400,7 +2547,6 @@ mod legacy_projection_values {
             "dimension": metric.dimension,
             "aggregation": metric.aggregation,
             "objective": metric.objective,
-            "visibility": metric.visibility,
             "description": metric.description,
             "reference_count": metric.reference_count,
         })
@@ -2509,7 +2655,6 @@ mod legacy_projection_values {
         json!({
             "kind": vertex.vertex.kind().as_str(),
             "slug": vertex.slug,
-            "archived": vertex.archived,
             "title": vertex.title,
             "summary": vertex.summary,
             "updated_at": timestamp_value(vertex.updated_at),

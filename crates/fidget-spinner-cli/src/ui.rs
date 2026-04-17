@@ -12,9 +12,9 @@ use axum::routing::{get, post};
 use camino::Utf8PathBuf;
 use fidget_spinner_core::{
     AttachmentTargetRef, ExperimentAnalysis, ExperimentOutcome, ExperimentStatus, FrontierRecord,
-    FrontierStatus, FrontierVerdict, KnownMetricUnit, MetricAggregation, MetricUnit,
-    MetricVisibility, NonEmptyText, OptimizationObjective, RegistryLockMode, RegistryName,
-    RunDimensionValue, Slug, TagFamilyName, TagName, VertexRef,
+    FrontierStatus, FrontierVerdict, KnownMetricUnit, MetricAggregation, MetricUnit, NonEmptyText,
+    OptimizationObjective, RegistryLockMode, RegistryName, RunDimensionValue, Slug, TagFamilyName,
+    TagName, VertexRef,
 };
 use fidget_spinner_store_sqlite::{
     AssignTagFamilyRequest, CreateKpiRequest, CreateTagFamilyRequest, DefineMetricRequest,
@@ -619,7 +619,6 @@ struct CreateMetricForm {
     unit: String,
     aggregation: String,
     objective: String,
-    visibility: String,
     description: String,
 }
 
@@ -636,7 +635,6 @@ async fn create_metric(
                 unit: MetricUnit::new(form.unit)?,
                 aggregation: parse_metric_aggregation_ui(&form.aggregation)?,
                 objective: parse_optimization_objective_ui(&form.objective)?,
-                visibility: parse_metric_visibility_ui(&form.visibility)?,
                 description: optional_text_field(form.description)?,
             })?;
             Ok(format!("{}metrics", context.base_href))
@@ -1135,18 +1133,6 @@ fn parse_optimization_objective_ui(raw: &str) -> Result<OptimizationObjective, S
     }
 }
 
-fn parse_metric_visibility_ui(raw: &str) -> Result<MetricVisibility, StoreError> {
-    match raw {
-        "canonical" => Ok(MetricVisibility::Canonical),
-        "minor" => Ok(MetricVisibility::Minor),
-        "hidden" => Ok(MetricVisibility::Hidden),
-        "archived" => Ok(MetricVisibility::Archived),
-        _ => Err(StoreError::InvalidInput(format!(
-            "invalid metric visibility `{raw}`"
-        ))),
-    }
-}
-
 fn parse_metric_aggregation_ui(raw: &str) -> Result<MetricAggregation, StoreError> {
     match raw {
         "point" => Ok(MetricAggregation::Point),
@@ -1317,7 +1303,9 @@ fn render_project_home(context: ProjectRenderContext) -> Result<Markup, StoreErr
 fn render_project_tags(context: ProjectRenderContext) -> Result<Markup, StoreError> {
     let store = open_store(context.project_root.as_std_path())?;
     let shell = load_shell_frame(&store, None, &context)?;
-    let registry = store.tag_registry()?;
+    let registry = store.tag_registry(fidget_spinner_store_sqlite::TagRegistryQuery {
+        include_hidden: true,
+    })?;
     let usage = load_tag_usage(&store)?;
     let title = format!("{} · tags", shell.project_status.display_name);
     let mandatory_count = registry
@@ -1415,12 +1403,7 @@ fn render_project_metrics(
         .sum::<usize>();
     let hidden_count = metrics
         .iter()
-        .filter(|metric| {
-            matches!(
-                metric.visibility,
-                MetricVisibility::Hidden | MetricVisibility::Archived
-            )
-        })
+        .filter(|metric| !metric.default_visibility.is_default_visible())
         .count();
     let orphan_count = metrics
         .iter()
@@ -1846,12 +1829,6 @@ fn render_create_metric_form() -> Markup {
                 option value="maximize" { "maximize" }
                 option value="target" { "target" }
             }
-            select.compact-select name="visibility" aria-label="Visibility" {
-                option value="canonical" { "canonical" }
-                option value="minor" { "minor" }
-                option value="hidden" { "hidden" }
-                option value="archived" { "archived" }
-            }
             input.compact-input.wide-compact-input type="text" name="description" placeholder="description" aria-label="Metric description";
             button.inline-icon-button type="submit" aria-label="Add metric" title="Add metric" {
                 (plus_icon())
@@ -2032,7 +2009,7 @@ fn render_metric_registry_table(
                                         }
                                     }
                                     td.no-truncate { (metric.unit.as_str()) " · " (metric.dimension.as_str()) }
-                                    td.no-truncate { (metric.aggregation.as_str()) " · " (metric.objective.as_str()) " · " (metric.visibility.as_str()) }
+                                    td.no-truncate { (metric.aggregation.as_str()) " · " (metric.objective.as_str()) }
                                     td.no-truncate { (metric.reference_count) }
                                     td.no-truncate {
                                         form.tag-inline-form method="post" action="metrics/merge" data-preserve-viewport="true" {
@@ -2190,7 +2167,7 @@ fn load_other_metric_keys(
     let candidate_metrics = if projection.active_metric_keys.is_empty() {
         store.metric_keys(MetricKeysQuery {
             frontier: Some(projection.frontier.slug.to_string()),
-            scope: MetricScope::Visible,
+            scope: MetricScope::Default,
         })?
     } else {
         projection.active_metric_keys.clone()
@@ -6282,9 +6259,9 @@ mod tests {
     use std::collections::BTreeMap;
 
     use fidget_spinner_core::{
-        ExperimentStatus, FrontierBrief, FrontierId, FrontierRecord, FrontierStatus,
-        FrontierVerdict, HypothesisId, MetricAggregation, MetricUnit, MetricVisibility,
-        NonEmptyText, OptimizationObjective, Slug,
+        DefaultVisibility, ExperimentStatus, FrontierBrief, FrontierId, FrontierRecord,
+        FrontierStatus, FrontierVerdict, HypothesisId, MetricAggregation, MetricUnit, NonEmptyText,
+        OptimizationObjective, Slug,
     };
     use fidget_spinner_store_sqlite::{
         ExperimentSummary, FrontierMetricPoint, FrontierMetricSeries, HypothesisSummary,
@@ -6309,7 +6286,7 @@ mod tests {
             unit,
             aggregation: MetricAggregation::Point,
             objective: OptimizationObjective::Minimize,
-            visibility: MetricVisibility::Canonical,
+            default_visibility: DefaultVisibility::visible(),
             description: None,
             reference_count: 0,
         }

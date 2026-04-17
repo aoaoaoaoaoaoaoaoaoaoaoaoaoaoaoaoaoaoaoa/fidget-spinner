@@ -10,8 +10,8 @@ use std::sync::OnceLock;
 
 use camino::Utf8PathBuf;
 use fidget_spinner_core::{
-    FrontierStatus, MetricUnit, MetricVisibility, NonEmptyText, OptimizationObjective,
-    RegistryLockMode, RegistryName, Slug, TagFamilyName, TagName,
+    FrontierStatus, MetricUnit, NonEmptyText, OptimizationObjective, RegistryLockMode,
+    RegistryName, Slug, TagFamilyName, TagName,
 };
 use fidget_spinner_store_sqlite::{
     AssignTagFamilyRequest, CreateFrontierRequest, CreateHypothesisRequest, CreateKpiRequest,
@@ -892,7 +892,6 @@ fn frontier_open_is_the_grounding_surface_for_live_state() -> TestResult {
             "key": "nodes_solved",
             "unit": "count",
             "objective": "maximize",
-            "visibility": "canonical",
         }),
     )?);
     assert_tool_ok(&harness.call_tool(
@@ -1031,7 +1030,6 @@ fn frontier_update_mutates_objective_and_kpi_grounding() -> TestResult {
             "key": "nodes_solved",
             "unit": "count",
             "objective": "maximize",
-            "visibility": "canonical",
         }),
     )?);
     assert_tool_ok(&harness.call_tool(
@@ -1137,7 +1135,6 @@ fn experiment_nearest_finds_structural_buckets_and_champion() -> TestResult {
             "key": "nodes_solved",
             "unit": "count",
             "objective": "maximize",
-            "visibility": "canonical",
         }),
     )?);
     assert_tool_ok(&harness.call_tool(
@@ -1341,7 +1338,6 @@ fn metric_define_accepts_builtin_and_custom_unit_tokens() -> TestResult {
             "key": "oracle_solve_wallclock_micros",
             "unit": "micros",
             "objective": "minimize",
-            "visibility": "canonical",
         }),
     )?;
     assert_tool_ok(&microseconds);
@@ -1357,7 +1353,6 @@ fn metric_define_accepts_builtin_and_custom_unit_tokens() -> TestResult {
             "key": "root_lp_objective_last",
             "unit": "objective",
             "objective": "minimize",
-            "visibility": "canonical",
         }),
     )?;
     assert_tool_ok(&custom);
@@ -1498,7 +1493,6 @@ fn experiment_close_drives_metric_best_and_analysis() -> TestResult {
             "key": "nodes_solved",
             "unit": "count",
             "objective": "maximize",
-            "visibility": "canonical",
         }),
     )?);
     assert_tool_ok(&harness.call_tool(
@@ -1647,7 +1641,6 @@ fn experiment_close_rejects_dirty_worktree() -> TestResult {
             "key": "nodes_solved",
             "unit": "count",
             "objective": "maximize",
-            "visibility": "canonical",
         }),
     )?);
     assert_tool_ok(&harness.call_tool(
@@ -1730,7 +1723,6 @@ fn already_bound_worker_refreshes_after_destructive_reseed() -> TestResult {
             "key": "nodes_solved",
             "unit": "count",
             "objective": "maximize",
-            "visibility": "canonical",
         }),
     )?);
     assert_tool_ok(&harness.call_tool(
@@ -1761,7 +1753,6 @@ fn already_bound_worker_refreshes_after_destructive_reseed() -> TestResult {
             unit: must(MetricUnit::new("count"), "metric unit")?,
             aggregation: fidget_spinner_core::MetricAggregation::Point,
             objective: OptimizationObjective::Maximize,
-            visibility: MetricVisibility::Canonical,
             description: None,
         }),
         "define beta metric",

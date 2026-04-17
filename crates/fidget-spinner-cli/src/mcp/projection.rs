@@ -125,7 +125,6 @@ pub(crate) struct FrontierOpenFrontierProjection {
 #[derive(Clone, Serialize)]
 pub(crate) struct HypothesisSummaryProjection {
     pub(crate) slug: String,
-    pub(crate) archived: bool,
     pub(crate) title: String,
     pub(crate) summary: String,
     pub(crate) tags: Vec<String>,
@@ -138,7 +137,6 @@ pub(crate) struct HypothesisSummaryProjection {
 #[derive(Clone, Serialize)]
 pub(crate) struct HypothesisRecordProjection {
     pub(crate) slug: String,
-    pub(crate) archived: bool,
     pub(crate) title: String,
     pub(crate) summary: String,
     pub(crate) body: String,
@@ -151,7 +149,6 @@ pub(crate) struct HypothesisRecordProjection {
 #[derive(Clone, Serialize)]
 pub(crate) struct HypothesisReadRecordProjection {
     pub(crate) slug: String,
-    pub(crate) archived: bool,
     pub(crate) title: String,
     pub(crate) summary: String,
     pub(crate) tags: Vec<String>,
@@ -224,7 +221,6 @@ pub(crate) struct HypothesisListOutput {
 #[derive(Clone, Serialize)]
 pub(crate) struct ExperimentSummaryProjection {
     pub(crate) slug: String,
-    pub(crate) archived: bool,
     pub(crate) title: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) summary: Option<String>,
@@ -242,7 +238,6 @@ pub(crate) struct ExperimentSummaryProjection {
 #[derive(Clone, Serialize)]
 pub(crate) struct ExperimentRecordProjection {
     pub(crate) slug: String,
-    pub(crate) archived: bool,
     pub(crate) title: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) summary: Option<String>,
@@ -258,7 +253,6 @@ pub(crate) struct ExperimentRecordProjection {
 #[derive(Clone, Serialize)]
 pub(crate) struct ExperimentReadRecordProjection {
     pub(crate) slug: String,
-    pub(crate) archived: bool,
     pub(crate) title: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) summary: Option<String>,
@@ -426,7 +420,6 @@ pub(crate) struct MetricKeySummaryProjection {
     pub(crate) dimension: String,
     pub(crate) aggregation: String,
     pub(crate) objective: String,
-    pub(crate) visibility: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) description: Option<String>,
     pub(crate) reference_count: u64,
@@ -539,7 +532,6 @@ pub(crate) struct CommandRecipeProjection {
 pub(crate) struct VertexSummaryProjection {
     pub(crate) kind: String,
     pub(crate) slug: String,
-    pub(crate) archived: bool,
     pub(crate) title: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) summary: Option<String>,
@@ -662,7 +654,6 @@ pub(crate) struct MetricDefinitionProjection {
     pub(crate) dimension: String,
     pub(crate) aggregation: String,
     pub(crate) objective: String,
-    pub(crate) visibility: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) description: Option<String>,
     pub(crate) created_at: TimestampText,
@@ -821,7 +812,6 @@ pub(crate) fn hypothesis_detail(
         concise: HypothesisDetailConcise {
             record: HypothesisReadRecordProjection {
                 slug: detail.record.slug.to_string(),
-                archived: detail.record.archived,
                 title: detail.record.title.to_string(),
                 summary: detail.record.summary.to_string(),
                 tags: detail.record.tags.iter().map(ToString::to_string).collect(),
@@ -891,7 +881,6 @@ pub(crate) fn experiment_detail(
         concise: ExperimentDetailConcise {
             record: ExperimentReadRecordProjection {
                 slug: detail.record.slug.to_string(),
-                archived: detail.record.archived,
                 title: detail.record.title.to_string(),
                 summary: detail.record.summary.as_ref().map(ToString::to_string),
                 tags: detail.record.tags.iter().map(ToString::to_string).collect(),
@@ -1139,7 +1128,6 @@ fn hypothesis_summary(
 ) -> HypothesisSummaryProjection {
     HypothesisSummaryProjection {
         slug: hypothesis.slug.to_string(),
-        archived: hypothesis.archived,
         title: hypothesis.title.to_string(),
         summary: hypothesis.summary.to_string(),
         tags: hypothesis.tags.iter().map(ToString::to_string).collect(),
@@ -1156,7 +1144,6 @@ fn hypothesis_record_projection(
 ) -> HypothesisRecordProjection {
     HypothesisRecordProjection {
         slug: hypothesis.slug.to_string(),
-        archived: hypothesis.archived,
         title: hypothesis.title.to_string(),
         summary: hypothesis.summary.to_string(),
         body: hypothesis.body.to_string(),
@@ -1170,7 +1157,6 @@ fn hypothesis_record_projection(
 fn experiment_summary(experiment: &ExperimentSummary) -> ExperimentSummaryProjection {
     ExperimentSummaryProjection {
         slug: experiment.slug.to_string(),
-        archived: experiment.archived,
         title: experiment.title.to_string(),
         summary: experiment.summary.as_ref().map(ToString::to_string),
         tags: experiment.tags.iter().map(ToString::to_string).collect(),
@@ -1192,7 +1178,6 @@ fn experiment_record_projection(
 ) -> ExperimentRecordProjection {
     ExperimentRecordProjection {
         slug: experiment.slug.to_string(),
-        archived: experiment.archived,
         title: experiment.title.to_string(),
         summary: experiment.summary.as_ref().map(ToString::to_string),
         tags: experiment.tags.iter().map(ToString::to_string).collect(),
@@ -1254,7 +1239,6 @@ fn metric_key_summary(metric: &MetricKeySummary) -> MetricKeySummaryProjection {
         dimension: metric.dimension.as_str().to_owned(),
         aggregation: metric.aggregation.as_str().to_owned(),
         objective: metric.objective.as_str().to_owned(),
-        visibility: metric.visibility.as_str().to_owned(),
         description: metric.description.as_ref().map(ToString::to_string),
         reference_count: metric.reference_count,
     }
@@ -1331,7 +1315,6 @@ fn metric_definition_projection(metric: &MetricDefinition) -> MetricDefinitionPr
         dimension: metric.dimension.as_str().to_owned(),
         aggregation: metric.aggregation.as_str().to_owned(),
         objective: metric.objective.as_str().to_owned(),
-        visibility: metric.visibility.as_str().to_owned(),
         description: metric.description.as_ref().map(ToString::to_string),
         created_at: timestamp_value(metric.created_at),
         updated_at: timestamp_value(metric.updated_at),
@@ -1472,7 +1455,6 @@ fn vertex_summary(vertex: &VertexSummary) -> VertexSummaryProjection {
     VertexSummaryProjection {
         kind: vertex.vertex.kind().as_str().to_owned(),
         slug: vertex.slug.to_string(),
-        archived: vertex.archived,
         title: vertex.title.to_string(),
         summary: vertex.summary.as_ref().map(ToString::to_string),
         updated_at: timestamp_value(vertex.updated_at),

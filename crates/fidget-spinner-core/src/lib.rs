@@ -16,12 +16,13 @@ pub use crate::id::{
 };
 pub use crate::model::{
     ArtifactKind, ArtifactRecord, AttachmentTargetKind, AttachmentTargetRef, CommandRecipe,
-    ExecutionBackend, ExperimentAnalysis, ExperimentOutcome, ExperimentRecord, ExperimentStatus,
-    FieldValueType, FrontierBrief, FrontierKpiRecord, FrontierRecord, FrontierRoadmapItem,
-    FrontierStatus, FrontierVerdict, GitCommitHash, HypothesisRecord, KnownMetricUnit,
-    KpiMetricAlternativeRecord, MetricAggregation, MetricDefinition, MetricDimension, MetricUnit,
-    MetricValue, MetricVisibility, NonEmptyText, OptimizationObjective, RegistryLockMode,
-    RegistryLockRecord, RegistryName, RunDimensionDefinition, RunDimensionValue, Slug,
-    TagFamilyName, TagFamilyRecord, TagName, TagNameDisposition, TagNameHistoryRecord, TagRecord,
-    TagRegistrySnapshot, TagStatus, VertexKind, VertexRef,
+    DefaultVisibility, ExecutionBackend, ExperimentAnalysis, ExperimentOutcome, ExperimentRecord,
+    ExperimentStatus, FieldValueType, FrontierBrief, FrontierKpiRecord, FrontierRecord,
+    FrontierRoadmapItem, FrontierStatus, FrontierVerdict, GitCommitHash, HiddenByDefaultReason,
+    HypothesisRecord, KnownMetricUnit, KpiMetricAlternativeRecord, MetricAggregation,
+    MetricDefinition, MetricDimension, MetricUnit, MetricValue, NonEmptyText,
+    OptimizationObjective, RegistryLockMode, RegistryLockRecord, RegistryName,
+    RunDimensionDefinition, RunDimensionValue, Slug, TagFamilyName, TagFamilyRecord, TagName,
+    TagNameDisposition, TagNameHistoryRecord, TagRecord, TagRegistrySnapshot, TagStatus,
+    VertexKind, VertexRef,
 };

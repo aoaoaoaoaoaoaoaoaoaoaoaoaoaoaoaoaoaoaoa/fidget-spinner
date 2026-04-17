@@ -12,8 +12,8 @@ use camino::{Utf8Path, Utf8PathBuf};
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use fidget_spinner_core::{
     ArtifactKind, CommandRecipe, ExecutionBackend, ExperimentAnalysis, ExperimentStatus,
-    FieldValueType, FrontierStatus, FrontierVerdict, MetricAggregation, MetricUnit,
-    MetricVisibility, NonEmptyText, OptimizationObjective, RunDimensionValue, Slug, TagName,
+    FieldValueType, FrontierStatus, FrontierVerdict, MetricAggregation, MetricUnit, NonEmptyText,
+    OptimizationObjective, RunDimensionValue, Slug, TagName,
 };
 use fidget_spinner_store_sqlite::{
     AttachmentSelector, CloseExperimentRequest, CreateArtifactRequest, CreateFrontierRequest,
@@ -123,7 +123,7 @@ enum ProjectCommand {
 #[derive(Subcommand)]
 enum TagCommand {
     Add(TagAddArgs),
-    List(ProjectArg),
+    List(TagListArgs),
 }
 
 #[derive(Subcommand)]
@@ -220,6 +220,14 @@ struct TagAddArgs {
     name: String,
     #[arg(long)]
     description: String,
+}
+
+#[derive(Args)]
+struct TagListArgs {
+    #[command(flatten)]
+    project: ProjectArg,
+    #[arg(long)]
+    include_hidden: bool,
 }
 
 #[derive(Args)]
@@ -570,8 +578,6 @@ struct MetricDefineArgs {
     aggregation: CliMetricAggregation,
     #[arg(long, value_enum)]
     objective: CliOptimizationObjective,
-    #[arg(long, value_enum, default_value_t = CliMetricVisibility::Canonical)]
-    visibility: CliMetricVisibility,
     #[arg(long)]
     description: Option<String>,
 }
@@ -732,18 +738,10 @@ enum CliOptimizationObjective {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
-enum CliMetricVisibility {
-    Canonical,
-    Minor,
-    Hidden,
-    Archived,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
 enum CliMetricScope {
     Kpi,
     Live,
-    Visible,
+    Default,
     All,
 }
 
@@ -839,7 +837,13 @@ fn main() -> Result<(), StoreError> {
         },
         Command::Tag { command } => match command {
             TagCommand::Add(args) => run_tag_add(args),
-            TagCommand::List(args) => print_json(&open_store(&args.project)?.list_tags()?),
+            TagCommand::List(args) => {
+                print_json(&open_store(&args.project.project)?.tag_registry(
+                    fidget_spinner_store_sqlite::TagRegistryQuery {
+                        include_hidden: args.include_hidden,
+                    },
+                )?)
+            }
         },
         Command::Frontier { command } => match command {
             FrontierCommand::Create(args) => run_frontier_create(args),
@@ -1195,7 +1199,6 @@ fn run_metric_define(args: MetricDefineArgs) -> Result<(), StoreError> {
         unit: MetricUnit::new(args.unit)?,
         aggregation: args.aggregation.into(),
         objective: args.objective.into(),
-        visibility: args.visibility.into(),
         description: args.description.map(NonEmptyText::new).transpose()?,
     })?)
 }
@@ -1654,23 +1657,12 @@ impl From<CliOptimizationObjective> for OptimizationObjective {
     }
 }
 
-impl From<CliMetricVisibility> for MetricVisibility {
-    fn from(value: CliMetricVisibility) -> Self {
-        match value {
-            CliMetricVisibility::Canonical => Self::Canonical,
-            CliMetricVisibility::Minor => Self::Minor,
-            CliMetricVisibility::Hidden => Self::Hidden,
-            CliMetricVisibility::Archived => Self::Archived,
-        }
-    }
-}
-
 impl From<CliMetricScope> for MetricScope {
     fn from(value: CliMetricScope) -> Self {
         match value {
             CliMetricScope::Kpi => Self::Kpi,
             CliMetricScope::Live => Self::Live,
-            CliMetricScope::Visible => Self::Visible,
+            CliMetricScope::Default => Self::Default,
             CliMetricScope::All => Self::All,
         }
     }

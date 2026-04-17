@@ -119,3 +119,24 @@ and other mature-frontier cleanup controls. Metrics should not grow generic
 families or retain backend scoreboard pinning; the durable metric contract is
 frontier-local KPIs with ordered metric alternatives, documented in
 `docs/metric-kpi-governance.md`.
+
+## Archive Semantics
+
+`Archived` is a reserved term of art: only a frontier can be manually archived,
+and only the supervisor surface can do it. Archiving is not a general lifecycle
+state, not a synonym for closed, stale, superseded, deprecated, inactive, or
+hidden, and not a per-entity cleanup knob.
+
+All non-frontier hiding is derived visibility policy. A registry entity such as
+a metric or tag is hidden by default when it appears on at least one frontier and
+every frontier it appears on is archived. A never-recorded registry entity stays
+default-visible so a supervisor can add vocabulary before models use it. Other
+future hiding mechanisms must name their own cause precisely, such as
+`superseded`, `deprecated`, `closed`, or `inactive`, instead of borrowing
+archive vocabulary.
+
+MCP is an active-world interface. It must not expose archive inspection or
+archive manipulation controls, and it must not dump hidden-by-archive entities
+with warning flags. To MCP-using models, archived frontiers and entities visible
+only through archived frontiers behave as absent. Supervisor UI and CLI paths may
+still inspect hidden records for cleanup, merge, rename, or deletion.

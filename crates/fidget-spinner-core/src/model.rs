@@ -502,27 +502,47 @@ impl OptimizationObjective {
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(rename_all = "snake_case")]
-pub enum MetricVisibility {
-    Canonical,
-    Minor,
-    Hidden,
-    Archived,
+pub enum HiddenByDefaultReason {
+    InArchivedFrontiersOnly,
 }
 
-impl MetricVisibility {
+impl HiddenByDefaultReason {
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
-            Self::Canonical => "canonical",
-            Self::Minor => "minor",
-            Self::Hidden => "hidden",
-            Self::Archived => "archived",
+            Self::InArchivedFrontiersOnly => "in_archived_frontiers_only",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+pub struct DefaultVisibility {
+    hidden_by_default: Option<HiddenByDefaultReason>,
+}
+
+impl DefaultVisibility {
+    #[must_use]
+    pub const fn visible() -> Self {
+        Self {
+            hidden_by_default: None,
+        }
+    }
+
+    #[must_use]
+    pub const fn hidden(reason: HiddenByDefaultReason) -> Self {
+        Self {
+            hidden_by_default: Some(reason),
         }
     }
 
     #[must_use]
     pub const fn is_default_visible(self) -> bool {
-        matches!(self, Self::Canonical | Self::Minor)
+        self.hidden_by_default.is_none()
+    }
+
+    #[must_use]
+    pub const fn hidden_by_default_reason(self) -> Option<HiddenByDefaultReason> {
+        self.hidden_by_default
     }
 }
 
@@ -534,7 +554,6 @@ pub struct MetricDefinition {
     pub unit: MetricUnit,
     pub aggregation: MetricAggregation,
     pub objective: OptimizationObjective,
-    pub visibility: MetricVisibility,
     pub description: Option<NonEmptyText>,
     pub revision: u64,
     pub created_at: OffsetDateTime,
@@ -548,7 +567,6 @@ impl MetricDefinition {
         unit: MetricUnit,
         aggregation: MetricAggregation,
         objective: OptimizationObjective,
-        visibility: MetricVisibility,
         description: Option<NonEmptyText>,
     ) -> Self {
         let now = OffsetDateTime::now_utc();
@@ -560,7 +578,6 @@ impl MetricDefinition {
             unit,
             aggregation,
             objective,
-            visibility,
             description,
             revision: 1,
             created_at: now,

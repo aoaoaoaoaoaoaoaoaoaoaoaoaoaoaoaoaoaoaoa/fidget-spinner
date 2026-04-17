@@ -102,7 +102,6 @@ cargo run -p fidget-spinner-cli -- metric define \
   --key nodes_solved \
   --unit count \
   --objective maximize \
-  --visibility canonical \
   --description "Solved search nodes on the target rail"
 ```
 

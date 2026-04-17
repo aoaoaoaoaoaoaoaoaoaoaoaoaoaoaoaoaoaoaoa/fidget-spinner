@@ -7,15 +7,15 @@ use std::sync::OnceLock;
 use camino::{Utf8Path, Utf8PathBuf};
 use fidget_spinner_core::{
     ArtifactId, ArtifactKind, ArtifactRecord, AttachmentTargetRef, CommandRecipe, CoreError,
-    ExecutionBackend, ExperimentAnalysis, ExperimentId, ExperimentOutcome, ExperimentRecord,
-    ExperimentStatus, FieldValueType, FrontierBrief, FrontierId, FrontierKpiRecord, FrontierRecord,
-    FrontierRoadmapItem, FrontierStatus, FrontierVerdict, GitCommitHash, HypothesisId,
-    HypothesisRecord, KpiId, KpiMetricAlternativeRecord, MetricAggregation, MetricDefinition,
-    MetricDimension, MetricId, MetricUnit, MetricValue, MetricVisibility, NonEmptyText,
-    OptimizationObjective, RegistryLockId, RegistryLockMode, RegistryLockRecord, RegistryName,
-    RunDimensionDefinition, RunDimensionValue, Slug, TagFamilyId, TagFamilyName, TagFamilyRecord,
-    TagId, TagName, TagNameDisposition, TagNameHistoryRecord, TagRecord, TagRegistrySnapshot,
-    TagStatus, VertexRef,
+    DefaultVisibility, ExecutionBackend, ExperimentAnalysis, ExperimentId, ExperimentOutcome,
+    ExperimentRecord, ExperimentStatus, FieldValueType, FrontierBrief, FrontierId,
+    FrontierKpiRecord, FrontierRecord, FrontierRoadmapItem, FrontierStatus, FrontierVerdict,
+    GitCommitHash, HiddenByDefaultReason, HypothesisId, HypothesisRecord, KpiId,
+    KpiMetricAlternativeRecord, MetricAggregation, MetricDefinition, MetricDimension, MetricId,
+    MetricUnit, MetricValue, NonEmptyText, OptimizationObjective, RegistryLockId, RegistryLockMode,
+    RegistryLockRecord, RegistryName, RunDimensionDefinition, RunDimensionValue, Slug, TagFamilyId,
+    TagFamilyName, TagFamilyRecord, TagId, TagName, TagNameDisposition, TagNameHistoryRecord,
+    TagRecord, TagRegistrySnapshot, TagStatus, VertexRef,
 };
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde::{Deserialize, Serialize};
@@ -29,7 +29,7 @@ pub const STORE_DIR_NAME: &str = ".fidget_spinner";
 pub const GIT_DIR_NAME: &str = ".git";
 pub const STATE_DB_NAME: &str = "state.sqlite";
 pub const PROJECT_CONFIG_NAME: &str = "project.json";
-pub const CURRENT_STORE_FORMAT_VERSION: u32 = 7;
+pub const CURRENT_STORE_FORMAT_VERSION: u32 = 8;
 pub const STATE_HOME_DIR_NAME: &str = "fidget-spinner";
 pub const PROJECT_STATE_DIR_NAME: &str = "projects";
 const PROJECT_ROOT_NAMESPACE: Uuid = Uuid::from_u128(0x0df3_58f4_3649_44f1_8f05_0bb2_4ebd_8d31);
@@ -211,7 +211,7 @@ pub struct ProjectStatus {
 pub enum MetricScope {
     Kpi,
     Live,
-    Visible,
+    Default,
     All,
 }
 
@@ -274,6 +274,11 @@ pub struct SetRegistryLockRequest {
     pub registry: RegistryName,
     pub mode: RegistryLockMode,
     pub locked: bool,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct TagRegistryQuery {
+    pub include_hidden: bool,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -581,7 +586,6 @@ pub struct DefineMetricRequest {
     pub unit: MetricUnit,
     pub aggregation: MetricAggregation,
     pub objective: OptimizationObjective,
-    pub visibility: MetricVisibility,
     pub description: Option<NonEmptyText>,
 }
 
@@ -662,7 +666,7 @@ pub struct MetricKeySummary {
     pub dimension: MetricDimension,
     pub aggregation: MetricAggregation,
     pub objective: OptimizationObjective,
-    pub visibility: MetricVisibility,
+    pub default_visibility: DefaultVisibility,
     pub description: Option<NonEmptyText>,
     pub reference_count: u64,
 }
@@ -949,12 +953,17 @@ impl ProjectStore {
     }
 
     pub fn list_tags(&self) -> Result<Vec<TagRecord>, StoreError> {
-        self.load_tag_records()
+        self.default_visible_tag_records()
     }
 
-    pub fn tag_registry(&self) -> Result<TagRegistrySnapshot, StoreError> {
+    pub fn tag_registry(&self, query: TagRegistryQuery) -> Result<TagRegistrySnapshot, StoreError> {
+        let tags = if query.include_hidden {
+            self.load_tag_records()?
+        } else {
+            self.default_visible_tag_records()?
+        };
         Ok(TagRegistrySnapshot {
-            tags: self.load_tag_records()?,
+            tags,
             families: self.load_tag_family_records()?,
             locks: self.load_registry_locks()?,
             name_history: self.load_tag_name_history()?,
@@ -1258,12 +1267,11 @@ impl ProjectStore {
             request.unit,
             request.aggregation,
             request.objective,
-            request.visibility,
             request.description,
         );
         let _ = self.connection.execute(
-            "INSERT INTO metric_definitions (id, key, dimension, display_unit, aggregation, objective, visibility, description, revision, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            "INSERT INTO metric_definitions (id, key, dimension, display_unit, aggregation, objective, description, revision, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
             params![
                 record.id.to_string(),
                 record.key.as_str(),
@@ -1271,7 +1279,6 @@ impl ProjectStore {
                 record.unit.as_str(),
                 record.aggregation.as_str(),
                 record.objective.as_str(),
-                record.visibility.as_str(),
                 record.description.as_ref().map(NonEmptyText::as_str),
                 record.revision,
                 encode_timestamp(record.created_at)?,
@@ -1283,7 +1290,7 @@ impl ProjectStore {
 
     pub fn list_metric_definitions(&self) -> Result<Vec<MetricDefinition>, StoreError> {
         let mut statement = self.connection.prepare(
-            "SELECT id, key, dimension, display_unit, aggregation, objective, visibility, description, revision, created_at, updated_at
+            "SELECT id, key, dimension, display_unit, aggregation, objective, description, revision, created_at, updated_at
              FROM metric_definitions
              ORDER BY key ASC",
         )?;
@@ -2503,16 +2510,7 @@ impl ProjectStore {
             .collect::<Result<Vec<_>, StoreError>>()?;
         points.sort_by_key(|point| point.closed_at);
         Ok(FrontierMetricSeries {
-            metric: MetricKeySummary {
-                key: definition.key.clone(),
-                unit: definition.unit,
-                dimension: definition.dimension,
-                aggregation: definition.aggregation,
-                objective: definition.objective,
-                visibility: definition.visibility,
-                description: definition.description,
-                reference_count: self.metric_reference_count(Some(frontier.id), definition.id)?,
-            },
+            metric: self.metric_key_summary_from_definition(definition, Some(frontier.id))?,
             kpi: None,
             frontier,
             points,
@@ -2542,23 +2540,18 @@ impl ProjectStore {
             .unwrap_or_default();
         let mut keys = definitions
             .into_iter()
-            .filter(|definition| match query.scope {
-                MetricScope::Kpi => unreachable!("handled above"),
-                MetricScope::Live => live_keys.contains(definition.key.as_str()),
-                MetricScope::Visible => definition.visibility.is_default_visible(),
-                MetricScope::All => true,
-            })
-            .map(|definition| {
-                Ok(MetricKeySummary {
-                    reference_count: self.metric_reference_count(frontier_id, definition.id)?,
-                    key: definition.key,
-                    unit: definition.unit,
-                    dimension: definition.dimension,
-                    aggregation: definition.aggregation,
-                    objective: definition.objective,
-                    visibility: definition.visibility,
-                    description: definition.description,
-                })
+            .map(|definition| self.metric_key_summary_from_definition(definition, frontier_id))
+            .filter_map(|summary| match summary {
+                Ok(summary) => {
+                    let keep = match query.scope {
+                        MetricScope::Kpi => unreachable!("handled above"),
+                        MetricScope::Live => live_keys.contains(summary.key.as_str()),
+                        MetricScope::Default => summary.default_visibility.is_default_visible(),
+                        MetricScope::All => true,
+                    };
+                    keep.then_some(Ok(summary))
+                }
+                Err(error) => Some(Err(error)),
             })
             .collect::<Result<Vec<_>, StoreError>>()?;
         keys.sort_by(|left, right| left.key.as_str().cmp(right.key.as_str()));
@@ -2771,20 +2764,10 @@ impl ProjectStore {
             .into_iter()
             .flatten()
             .collect::<Vec<_>>();
-        let metric = if let Some(definition) = metric_definition.as_ref() {
-            Some(MetricKeySummary {
-                reference_count: self.metric_reference_count(frontier_id, definition.id)?,
-                key: definition.key.clone(),
-                unit: definition.unit.clone(),
-                dimension: definition.dimension,
-                aggregation: definition.aggregation,
-                objective: definition.objective,
-                visibility: definition.visibility,
-                description: definition.description.clone(),
-            })
-        } else {
-            None
-        };
+        let metric = metric_definition
+            .clone()
+            .map(|definition| self.metric_key_summary_from_definition(definition, frontier_id))
+            .transpose()?;
         Ok(ExperimentNearestResult {
             metric,
             target_dimensions,
@@ -2853,7 +2836,7 @@ impl ProjectStore {
     ) -> Result<Option<MetricDefinition>, StoreError> {
         self.connection
             .query_row(
-                "SELECT id, key, dimension, display_unit, aggregation, objective, visibility, description, revision, created_at, updated_at
+                "SELECT id, key, dimension, display_unit, aggregation, objective, description, revision, created_at, updated_at
                  FROM metric_definitions
                  WHERE key = ?1",
                 params![key.as_str()],
@@ -2866,7 +2849,7 @@ impl ProjectStore {
     fn metric_definition_by_id(&self, id: MetricId) -> Result<MetricDefinition, StoreError> {
         self.connection
             .query_row(
-                "SELECT id, key, dimension, display_unit, aggregation, objective, visibility, description, revision, created_at, updated_at
+                "SELECT id, key, dimension, display_unit, aggregation, objective, description, revision, created_at, updated_at
                  FROM metric_definitions
                  WHERE id = ?1",
                 params![id.to_string()],
@@ -3648,6 +3631,23 @@ impl ProjectStore {
             .count() as u64)
     }
 
+    fn metric_key_summary_from_definition(
+        &self,
+        definition: MetricDefinition,
+        frontier_id: Option<FrontierId>,
+    ) -> Result<MetricKeySummary, StoreError> {
+        Ok(MetricKeySummary {
+            reference_count: self.metric_reference_count(frontier_id, definition.id)?,
+            key: definition.key,
+            unit: definition.unit,
+            dimension: definition.dimension,
+            aggregation: definition.aggregation,
+            objective: definition.objective,
+            default_visibility: self.default_visibility_for_metric(definition.id)?,
+            description: definition.description,
+        })
+    }
+
     fn live_metric_keys(
         &self,
         frontier_id: FrontierId,
@@ -3663,19 +3663,8 @@ impl ProjectStore {
             .list_metric_definitions()?
             .into_iter()
             .filter(|definition| live_names.contains(definition.key.as_str()))
-            .filter(|definition| definition.visibility.is_default_visible())
             .map(|definition| {
-                Ok(MetricKeySummary {
-                    reference_count: self
-                        .metric_reference_count(Some(frontier_id), definition.id)?,
-                    key: definition.key,
-                    unit: definition.unit,
-                    dimension: definition.dimension,
-                    aggregation: definition.aggregation,
-                    objective: definition.objective,
-                    visibility: definition.visibility,
-                    description: definition.description,
-                })
+                self.metric_key_summary_from_definition(definition, Some(frontier_id))
             })
             .collect::<Result<Vec<_>, StoreError>>()?;
         keys.sort_by(|left, right| left.key.as_str().cmp(right.key.as_str()));
@@ -3701,17 +3690,7 @@ impl ProjectStore {
                 let definition = self
                     .metric_definition(&metric.key)?
                     .ok_or_else(|| StoreError::UnknownMetricDefinition(metric.key.clone()))?;
-                Ok(MetricKeySummary {
-                    reference_count: self
-                        .metric_reference_count(Some(frontier_id), definition.id)?,
-                    key: definition.key,
-                    unit: definition.unit,
-                    dimension: definition.dimension,
-                    aggregation: definition.aggregation,
-                    objective: definition.objective,
-                    visibility: definition.visibility,
-                    description: definition.description,
-                })
+                self.metric_key_summary_from_definition(definition, Some(frontier_id))
             })
             .collect()
     }
@@ -3819,6 +3798,82 @@ impl ProjectStore {
             )?
         };
         Ok(count)
+    }
+
+    fn default_visibility_for_metric(
+        &self,
+        metric_id: MetricId,
+    ) -> Result<DefaultVisibility, StoreError> {
+        self.default_visibility_for_frontier_appearances(
+            self.metric_frontier_appearances(metric_id)?,
+        )
+    }
+
+    fn default_visibility_for_tag(&self, tag_id: TagId) -> Result<DefaultVisibility, StoreError> {
+        self.default_visibility_for_frontier_appearances(self.tag_frontier_appearances(tag_id)?)
+    }
+
+    fn default_visibility_for_frontier_appearances(
+        &self,
+        frontier_ids: BTreeSet<FrontierId>,
+    ) -> Result<DefaultVisibility, StoreError> {
+        if frontier_ids.is_empty() {
+            return Ok(DefaultVisibility::visible());
+        }
+        for frontier_id in frontier_ids {
+            let status = self.connection.query_row(
+                "SELECT status FROM frontiers WHERE id = ?1",
+                params![frontier_id.to_string()],
+                |row| parse_frontier_status(&row.get::<_, String>(0)?),
+            )?;
+            if status != FrontierStatus::Archived {
+                return Ok(DefaultVisibility::visible());
+            }
+        }
+        Ok(DefaultVisibility::hidden(
+            HiddenByDefaultReason::InArchivedFrontiersOnly,
+        ))
+    }
+
+    fn metric_frontier_appearances(
+        &self,
+        metric_id: MetricId,
+    ) -> Result<BTreeSet<FrontierId>, StoreError> {
+        let mut statement = self.connection.prepare(
+            "SELECT DISTINCT experiments.frontier_id
+             FROM experiment_metrics metrics
+             JOIN experiments ON experiments.id = metrics.experiment_id
+             WHERE metrics.metric_id = ?1
+             UNION
+             SELECT DISTINCT frontier_kpis.frontier_id
+             FROM kpi_metric_alternatives alternatives
+             JOIN frontier_kpis ON frontier_kpis.id = alternatives.kpi_id
+             WHERE alternatives.metric_id = ?1",
+        )?;
+        let rows = statement.query_map(params![metric_id.to_string()], |row| {
+            parse_frontier_id_sql(&row.get::<_, String>(0)?)
+        })?;
+        rows.collect::<Result<BTreeSet<_>, _>>()
+            .map_err(StoreError::from)
+    }
+
+    fn tag_frontier_appearances(&self, tag_id: TagId) -> Result<BTreeSet<FrontierId>, StoreError> {
+        let mut statement = self.connection.prepare(
+            "SELECT DISTINCT hypotheses.frontier_id
+             FROM hypothesis_tags tags
+             JOIN hypotheses ON hypotheses.id = tags.hypothesis_id
+             WHERE tags.tag_id = ?1
+             UNION
+             SELECT DISTINCT experiments.frontier_id
+             FROM experiment_tags tags
+             JOIN experiments ON experiments.id = tags.experiment_id
+             WHERE tags.tag_id = ?1",
+        )?;
+        let rows = statement.query_map(params![tag_id.to_string()], |row| {
+            parse_frontier_id_sql(&row.get::<_, String>(0)?)
+        })?;
+        rows.collect::<Result<BTreeSet<_>, _>>()
+            .map_err(StoreError::from)
     }
 
     fn kpi_reference_count(&self, metric_id: MetricId) -> Result<u64, StoreError> {
@@ -4103,6 +4158,17 @@ impl ProjectStore {
         let rows = statement.query_map([], decode_tag_row)?;
         rows.collect::<Result<Vec<_>, _>>()
             .map_err(StoreError::from)
+    }
+
+    fn default_visible_tag_records(&self) -> Result<Vec<TagRecord>, StoreError> {
+        self.load_tag_records()?
+            .into_iter()
+            .filter_map(|tag| match self.default_visibility_for_tag(tag.id) {
+                Ok(visibility) if visibility.is_default_visible() => Some(Ok(tag)),
+                Ok(_) => None,
+                Err(error) => Some(Err(error)),
+            })
+            .collect()
     }
 
     fn load_tag_family_records(&self) -> Result<Vec<TagFamilyRecord>, StoreError> {
@@ -4391,7 +4457,6 @@ fn install_schema(connection: &Connection) -> Result<(), StoreError> {
             display_unit TEXT NOT NULL,
             aggregation TEXT NOT NULL,
             objective TEXT NOT NULL,
-            visibility TEXT NOT NULL,
             description TEXT,
             revision INTEGER NOT NULL,
             created_at TEXT NOT NULL,
@@ -5350,11 +5415,10 @@ fn decode_metric_definition_row(
         unit: parse_metric_unit(&row.get::<_, String>(3)?)?,
         aggregation: parse_metric_aggregation(&row.get::<_, String>(4)?)?,
         objective: parse_optimization_objective(&row.get::<_, String>(5)?)?,
-        visibility: parse_metric_visibility(&row.get::<_, String>(6)?)?,
-        description: parse_optional_non_empty_text(row.get::<_, Option<String>>(7)?)?,
-        revision: row.get::<_, u64>(8)?,
-        created_at: parse_timestamp_sql(&row.get::<_, String>(9)?)?,
-        updated_at: parse_timestamp_sql(&row.get::<_, String>(10)?)?,
+        description: parse_optional_non_empty_text(row.get::<_, Option<String>>(6)?)?,
+        revision: row.get::<_, u64>(7)?,
+        created_at: parse_timestamp_sql(&row.get::<_, String>(8)?)?,
+        updated_at: parse_timestamp_sql(&row.get::<_, String>(9)?)?,
     })
 }
 
@@ -5612,21 +5676,6 @@ fn parse_optimization_objective(raw: &str) -> Result<OptimizationObjective, rusq
             serde_json::Error::io(io::Error::new(
                 io::ErrorKind::InvalidData,
                 format!("invalid objective `{raw}`"),
-            )),
-        ))),
-    }
-}
-
-fn parse_metric_visibility(raw: &str) -> Result<MetricVisibility, rusqlite::Error> {
-    match raw {
-        "canonical" => Ok(MetricVisibility::Canonical),
-        "minor" => Ok(MetricVisibility::Minor),
-        "hidden" => Ok(MetricVisibility::Hidden),
-        "archived" => Ok(MetricVisibility::Archived),
-        _ => Err(to_sql_conversion_error(StoreError::Json(
-            serde_json::Error::io(io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("invalid metric visibility `{raw}`"),
             )),
         ))),
     }
@@ -6249,6 +6298,10 @@ fn parse_tag_id(raw: &str) -> Result<TagId, rusqlite::Error> {
 
 fn parse_tag_family_id(raw: &str) -> Result<TagFamilyId, rusqlite::Error> {
     parse_uuid_sql(raw).map(TagFamilyId::from_uuid)
+}
+
+fn parse_frontier_id_sql(raw: &str) -> Result<FrontierId, rusqlite::Error> {
+    parse_uuid_sql(raw).map(FrontierId::from_uuid)
 }
 
 fn parse_metric_id_sql(raw: &str) -> Result<MetricId, rusqlite::Error> {

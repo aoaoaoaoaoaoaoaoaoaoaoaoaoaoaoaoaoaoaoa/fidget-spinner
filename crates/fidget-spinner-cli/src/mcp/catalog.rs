@@ -373,13 +373,7 @@ fn tool_input_schema(name: &str) -> Value {
             ],
             &["label", "objective"],
         ),
-        "frontier.list" => object_schema(
-            &[(
-                "include_archived",
-                boolean_schema("Include archived frontier scopes."),
-            )],
-            &[],
-        ),
+        "frontier.list" => object_schema(&[], &[]),
         "frontier.read" | "frontier.open" | "frontier.history" => object_schema(
             &[("frontier", selector_schema("Frontier UUID or slug."))],
             &["frontier"],
@@ -398,8 +392,8 @@ fn tool_input_schema(name: &str) -> Value {
                 (
                     "status",
                     enum_string_schema(
-                        &["exploring", "paused", "archived"],
-                        "Optional replacement frontier status.",
+                        &["exploring", "paused"],
+                        "Optional replacement frontier status. Archiving is supervisor-only.",
                     ),
                 ),
                 (
@@ -433,10 +427,6 @@ fn tool_input_schema(name: &str) -> Value {
                     selector_schema("Optional frontier UUID or slug."),
                 ),
                 ("tags", string_array_schema("Require all listed tags.")),
-                (
-                    "include_archived",
-                    boolean_schema("Include archived hypotheses."),
-                ),
                 ("limit", integer_schema("Optional row cap.")),
             ],
             &[],
@@ -457,7 +447,6 @@ fn tool_input_schema(name: &str) -> Value {
                 ("body", string_schema("Replacement single-paragraph body.")),
                 ("tags", string_array_schema("Replacement tag set.")),
                 ("parents", vertex_selector_array_schema()),
-                ("archived", boolean_schema("Archive state override.")),
             ],
             &["hypothesis"],
         ),
@@ -490,10 +479,6 @@ fn tool_input_schema(name: &str) -> Value {
                     "status",
                     enum_string_schema(&["open", "closed"], "Optional experiment status filter."),
                 ),
-                (
-                    "include_archived",
-                    boolean_schema("Include archived experiments."),
-                ),
                 ("limit", integer_schema("Optional row cap.")),
             ],
             &[],
@@ -516,7 +501,6 @@ fn tool_input_schema(name: &str) -> Value {
                 ),
                 ("tags", string_array_schema("Replacement tag set.")),
                 ("parents", vertex_selector_array_schema()),
-                ("archived", boolean_schema("Archive state override.")),
                 ("outcome", experiment_outcome_schema()),
             ],
             &["experiment"],
@@ -693,13 +677,6 @@ fn tool_input_schema(name: &str) -> Value {
                         "Observation aggregation semantics. Defaults to point.",
                     ),
                 ),
-                (
-                    "visibility",
-                    enum_string_schema(
-                        &["canonical", "minor", "hidden", "archived"],
-                        "Metric visibility tier.",
-                    ),
-                ),
                 ("description", string_schema("Optional description.")),
             ],
             &["key", "unit", "objective"],
@@ -713,8 +690,8 @@ fn tool_input_schema(name: &str) -> Value {
                 (
                     "scope",
                     enum_string_schema(
-                        &["kpi", "live", "visible", "all"],
-                        "Registry slice to enumerate.",
+                        &["kpi", "live", "default"],
+                        "Default-visible registry slice to enumerate. Hidden-by-archive entities are supervisor-only and are not exposed through MCP.",
                     ),
                 ),
             ],
