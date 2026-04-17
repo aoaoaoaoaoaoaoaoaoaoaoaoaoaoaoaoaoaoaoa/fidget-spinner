@@ -752,6 +752,9 @@ impl ProjectStore {
                 expected: CURRENT_STORE_FORMAT_VERSION,
             });
         }
+        if legacy_artifact_schema_present(&connection)? {
+            purge_legacy_artifact_schema(&connection)?;
+        }
 
         Ok(Self {
             project_root,
@@ -4143,13 +4146,38 @@ fn migrate_store_to_current(
 }
 
 fn migrate_store_v9_to_v10(connection: &Connection) -> Result<(), StoreError> {
+    purge_legacy_artifact_schema(connection)?;
+    connection.pragma_update(
+        None,
+        "user_version",
+        i64::from(CURRENT_STORE_FORMAT_VERSION),
+    )?;
+    Ok(())
+}
+
+fn legacy_artifact_schema_present(connection: &Connection) -> Result<bool, StoreError> {
+    connection
+        .query_row(
+            "SELECT EXISTS(
+                SELECT 1
+                FROM sqlite_master
+                WHERE type = 'table'
+                  AND name IN ('artifacts', 'artifact_attachments')
+            )",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .map(|exists| exists != 0)
+        .map_err(StoreError::from)
+}
+
+fn purge_legacy_artifact_schema(connection: &Connection) -> Result<(), StoreError> {
     connection.execute_batch(
         "
         BEGIN IMMEDIATE;
         DELETE FROM events WHERE entity_kind = 'artifact';
         DROP TABLE IF EXISTS artifact_attachments;
         DROP TABLE IF EXISTS artifacts;
-        PRAGMA user_version = 10;
         COMMIT;
         ",
     )?;
