@@ -2106,7 +2106,16 @@ fn render_metric_registry_table(
                         thead {
                             tr {
                                 th { "" }
-                                th { "Metric" }
+                                th.metric-registry-filter-heading {
+                                    div.metric-registry-filter-cell {
+                                        span { "Metric" }
+                                        input.compact-input.metric-registry-filter
+                                            type="search"
+                                            placeholder="filter"
+                                            aria-label="Filter metrics"
+                                            data-table-filter-input="metric-registry";
+                                    }
+                                }
                                 th { "Unit" }
                                 th { "Shape" }
                                 th { "Refs" }
@@ -2115,7 +2124,7 @@ fn render_metric_registry_table(
                         }
                         tbody {
                             @for metric in metrics {
-                                tr {
+                                tr data-table-filter-row="metric-registry" data-table-filter-text=(metric_registry_filter_text(metric)) {
                                     td.no-truncate {
                                         form.tag-icon-form method="post" action="metrics/delete" data-preserve-viewport="true" {
                                             input type="hidden" name="metric" value=(metric.key.as_str());
@@ -2154,12 +2163,27 @@ fn render_metric_registry_table(
                                     }
                                 }
                             }
+                            tr data-table-filter-empty="metric-registry" hidden {
+                                td.muted colspan="6" { "No matching metrics." }
+                            }
                         }
                     }
                 }
             }
         }
     }
+}
+
+fn metric_registry_filter_text(metric: &fidget_spinner_store_sqlite::MetricKeySummary) -> String {
+    [
+        metric.key.as_str(),
+        metric.unit.as_str(),
+        metric.dimension.as_str(),
+        metric.aggregation.as_str(),
+        metric.objective.as_str(),
+        metric.description.as_ref().map_or("", NonEmptyText::as_str),
+    ]
+    .join(" ")
 }
 
 fn render_frontier_tab_content(
@@ -4194,6 +4218,44 @@ function prepareInlineRenameSubmit(form, event) {{
     input.value = next;
 }}
 
+function tableFilterRows(filterName) {{
+    return Array.from(document.querySelectorAll("[data-table-filter-row]"))
+        .filter((row) => row instanceof HTMLTableRowElement && row.dataset.tableFilterRow === filterName);
+}}
+
+function tableFilterEmptyRows(filterName) {{
+    return Array.from(document.querySelectorAll("[data-table-filter-empty]"))
+        .filter((row) => row instanceof HTMLTableRowElement && row.dataset.tableFilterEmpty === filterName);
+}}
+
+function applyTableFilter(input) {{
+    const filterName = input.dataset.tableFilterInput;
+    if (!filterName) {{
+        return;
+    }}
+    const query = input.value.trim().toLowerCase();
+    let visibleCount = 0;
+    for (const row of tableFilterRows(filterName)) {{
+        const haystack = (row.dataset.tableFilterText || row.textContent || "").toLowerCase();
+        const visible = !query || haystack.includes(query);
+        row.hidden = !visible;
+        if (visible) {{
+            visibleCount += 1;
+        }}
+    }}
+    for (const emptyRow of tableFilterEmptyRows(filterName)) {{
+        emptyRow.hidden = !query || visibleCount > 0;
+    }}
+}}
+
+function applyAllTableFilters() {{
+    for (const input of document.querySelectorAll("[data-table-filter-input]")) {{
+        if (input instanceof HTMLInputElement) {{
+            applyTableFilter(input);
+        }}
+    }}
+}}
+
 window.setInterval(pollRefreshToken, AUTO_REFRESH_INTERVAL_MS);
 window.addEventListener("focus", pollRefreshToken);
 document.addEventListener("visibilitychange", () => {{
@@ -4202,6 +4264,7 @@ document.addEventListener("visibilitychange", () => {{
     }}
 }});
 pollRefreshToken();
+applyAllTableFilters();
 
 document.addEventListener("click", (event) => {{
     const target = event.target;
@@ -4317,6 +4380,13 @@ document.addEventListener("change", (event) => {{
         return;
     }}
     form.requestSubmit();
+}});
+
+document.addEventListener("input", (event) => {{
+    const target = event.target;
+    if (target instanceof HTMLInputElement && target.hasAttribute("data-table-filter-input")) {{
+        applyTableFilter(target);
+    }}
 }});
 "#
     )
@@ -6350,6 +6420,24 @@ fn styles() -> &'static str {
         letter-spacing: 0.05em;
         font-size: 12px;
     }
+    .metric-registry-filter-heading {
+        min-width: min(36ch, 42vw);
+    }
+    .metric-registry-filter-cell {
+        display: inline-flex;
+        gap: 8px;
+        align-items: center;
+        flex-wrap: wrap;
+        min-width: 0;
+        width: 100%;
+    }
+    .metric-registry-filter {
+        flex: 1 1 18ch;
+        max-width: 28ch;
+        min-width: 14ch;
+        text-transform: none;
+        letter-spacing: normal;
+    }
     .metric-table-fit-heading,
     .metric-table-rank-cell,
     .metric-table-closed-cell,
@@ -6533,8 +6621,8 @@ fn styles() -> &'static str {
 mod tests {
     use super::{
         FrontierPageQuery, METRIC_TABLE_TITLE_MIN_BUDGET_CH, MetricChartAxis,
-        best_metric_table_title_split, harden_autofill_controls, render_metric_series_section,
-        resolve_selected_metric_keys, truncated_entry_count,
+        best_metric_table_title_split, harden_autofill_controls, render_metric_registry_table,
+        render_metric_series_section, resolve_selected_metric_keys, truncated_entry_count,
     };
     use std::collections::BTreeMap;
 
@@ -6600,6 +6688,17 @@ mod tests {
                 .count(),
             3
         );
+    }
+
+    #[test]
+    fn metric_registry_table_exposes_reactive_filter_hooks() {
+        let metrics = vec![test_metric("presolve_wallclock", "milliseconds")];
+        let markup = render_metric_registry_table(&metrics).into_string();
+
+        assert!(markup.contains(r#"data-table-filter-input="metric-registry""#));
+        assert!(markup.contains(r#"data-table-filter-row="metric-registry""#));
+        assert!(markup.contains(r#"data-table-filter-empty="metric-registry" hidden"#));
+        assert!(markup.contains("presolve_wallclock milliseconds time point minimize"));
     }
 
     fn test_frontier() -> FrontierRecord {
