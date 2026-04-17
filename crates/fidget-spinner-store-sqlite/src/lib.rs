@@ -166,6 +166,7 @@ pub enum StoreError {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct ProjectConfig {
     pub display_name: NonEmptyText,
+    pub description: Option<NonEmptyText>,
     pub created_at: OffsetDateTime,
     pub store_format_version: u32,
 }
@@ -175,6 +176,7 @@ impl ProjectConfig {
     pub fn new(display_name: NonEmptyText) -> Self {
         Self {
             display_name,
+            description: None,
             created_at: OffsetDateTime::now_utc(),
             store_format_version: CURRENT_STORE_FORMAT_VERSION,
         }
@@ -186,6 +188,7 @@ pub struct ProjectStatus {
     pub project_root: Utf8PathBuf,
     pub state_root: Utf8PathBuf,
     pub display_name: NonEmptyText,
+    pub description: Option<NonEmptyText>,
     pub store_format_version: u32,
     pub frontier_count: u64,
     pub hypothesis_count: u64,
@@ -750,6 +753,11 @@ pub struct ProjectStore {
     connection: Connection,
 }
 
+#[derive(Clone, Debug)]
+pub struct UpdateProjectRequest {
+    pub description: TextPatch<NonEmptyText>,
+}
+
 impl ProjectStore {
     pub fn init(
         project_root: impl AsRef<Utf8Path>,
@@ -833,6 +841,7 @@ impl ProjectStore {
             project_root: self.project_root.clone(),
             state_root: self.state_root.clone(),
             display_name: self.config.display_name.clone(),
+            description: self.config.description.clone(),
             store_format_version: self.config.store_format_version,
             frontier_count: count_rows(&self.connection, "frontiers")?,
             hypothesis_count: count_rows(&self.connection, "hypotheses")?,
@@ -844,6 +853,16 @@ impl ProjectStore {
             )?,
             artifact_count: count_rows(&self.connection, "artifacts")?,
         })
+    }
+
+    pub fn update_project(
+        &mut self,
+        request: UpdateProjectRequest,
+    ) -> Result<ProjectStatus, StoreError> {
+        self.config.description =
+            apply_optional_text_patch(Some(request.description), self.config.description.clone());
+        write_json_file(&self.state_root.join(PROJECT_CONFIG_NAME), &self.config)?;
+        self.status()
     }
 
     pub fn register_tag(

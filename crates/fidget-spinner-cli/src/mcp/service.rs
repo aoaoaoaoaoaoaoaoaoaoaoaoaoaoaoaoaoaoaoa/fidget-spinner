@@ -1314,6 +1314,7 @@ fn project_status_output(
 ) -> Result<ToolOutput, FaultRecord> {
     let concise = json!({
         "display_name": status.display_name,
+        "description": status.description,
         "project_root": status.project_root,
         "state_root": status.state_root,
         "frontier_count": status.frontier_count,

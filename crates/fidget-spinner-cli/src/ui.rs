@@ -23,8 +23,8 @@ use fidget_spinner_store_sqlite::{
     HypothesisDetail, KpiSummary, ListExperimentsQuery, ListFrontiersQuery, ListHypothesesQuery,
     MergeMetricRequest, MergeTagRequest, MetricKeysQuery, MetricScope, ProjectStatus,
     RenameMetricRequest, RenameTagRequest, STATE_DB_NAME, SetFrontierRegistryLockRequest,
-    SetRegistryLockRequest, SetTagFamilyMandatoryRequest, StoreError, UpdateFrontierRequest,
-    VertexSummary,
+    SetRegistryLockRequest, SetTagFamilyMandatoryRequest, StoreError, TextPatch,
+    UpdateFrontierRequest, UpdateProjectRequest, VertexSummary,
 };
 use maud::{DOCTYPE, Markup, PreEscaped, html};
 use percent_encoding::{NON_ALPHANUMERIC, percent_decode_str, utf8_percent_encode};
@@ -278,6 +278,8 @@ pub(crate) fn serve(
             .route("/refresh-token", get(root_project_refresh_token))
             .route("/project/{project}", get(project_home))
             .route("/project/{project}/", get(project_home))
+            .route("/description", post(root_project_description))
+            .route("/project/{project}/description", post(project_description))
             .route(
                 "/project/{project}/refresh-token",
                 get(project_refresh_token),
@@ -378,6 +380,37 @@ async fn project_home(
     Path(project): Path<String>,
 ) -> Response {
     render_response(resolve_project_context(&state, &project).and_then(render_project_home))
+}
+
+#[derive(Debug, Deserialize)]
+struct ProjectDescriptionForm {
+    description: String,
+}
+
+async fn root_project_description(
+    State(state): State<NavigatorState>,
+    Form(form): Form<ProjectDescriptionForm>,
+) -> Response {
+    match &state.scope {
+        NavigatorScope::Single(project_root) => {
+            project_mutation_response(update_project_description(
+                ProjectRenderContext::root(project_root.clone(), state.limit),
+                form,
+            ))
+        }
+        NavigatorScope::Multi { .. } => (StatusCode::NOT_FOUND, "not found").into_response(),
+    }
+}
+
+async fn project_description(
+    State(state): State<NavigatorState>,
+    Path(project): Path<String>,
+    Form(form): Form<ProjectDescriptionForm>,
+) -> Response {
+    project_mutation_response(
+        resolve_project_context(&state, &project)
+            .and_then(|context| update_project_description(context, form)),
+    )
 }
 
 async fn project_refresh_token(
@@ -1062,6 +1095,17 @@ fn frontier_status_mutation_response(result: Result<String, StoreError>) -> Resp
     }
 }
 
+fn project_mutation_response(result: Result<String, StoreError>) -> Response {
+    match result {
+        Ok(location) => Redirect::to(&location).into_response(),
+        Err(error) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("project metadata update failed: {error}"),
+        )
+            .into_response(),
+    }
+}
+
 fn tag_mutation_response(result: Result<String, StoreError>) -> Response {
     match result {
         Ok(location) => Redirect::to(&location).into_response(),
@@ -1264,7 +1308,16 @@ fn resolve_project_context(
 fn project_refresh_token_for(context: &ProjectRenderContext) -> Result<String, StoreError> {
     let store = open_store(context.project_root.as_std_path())?;
     let database_path = store.state_root().join(STATE_DB_NAME);
-    let metadata = std::fs::metadata(database_path.as_std_path())?;
+    let config_path = store
+        .state_root()
+        .join(fidget_spinner_store_sqlite::PROJECT_CONFIG_NAME);
+    let database = refresh_file_token(&database_path)?;
+    let config = refresh_file_token(&config_path)?;
+    Ok(format!("{database}|{config}"))
+}
+
+fn refresh_file_token(path: &camino::Utf8Path) -> Result<String, StoreError> {
+    let metadata = std::fs::metadata(path.as_std_path())?;
     let modified = metadata
         .modified()?
         .duration_since(UNIX_EPOCH)
@@ -1275,6 +1328,19 @@ fn project_refresh_token_for(context: &ProjectRenderContext) -> Result<String, S
         modified.subsec_nanos(),
         metadata.len()
     ))
+}
+
+fn update_project_description(
+    context: ProjectRenderContext,
+    form: ProjectDescriptionForm,
+) -> Result<String, StoreError> {
+    let mut store = open_store(context.project_root.as_std_path())?;
+    let description = match NonEmptyText::new(form.description) {
+        Ok(description) => TextPatch::Set(description),
+        Err(_) => TextPatch::Clear,
+    };
+    let _status = store.update_project(UpdateProjectRequest { description })?;
+    Ok(context.base_href)
 }
 
 fn update_frontier_status(
@@ -1306,7 +1372,7 @@ fn render_project_home(context: ProjectRenderContext) -> Result<Markup, StoreErr
     let shell = load_shell_frame(&store, None, &context)?;
     let title = format!("{} navigator", shell.project_status.display_name);
     let content = html! {
-        (render_project_status(&shell.project_status))
+        (render_project_status(&shell.project_status, &context.base_href))
         (render_frontier_grid(&shell.frontiers, context.limit))
     };
     Ok(render_shell(&title, &shell, None, content))
@@ -3034,12 +3100,40 @@ fn render_frontier_grid(frontiers: &[FrontierSummary], limit: Option<u32>) -> Ma
     }
 }
 
-fn render_project_status(status: &ProjectStatus) -> Markup {
+fn render_project_status(status: &ProjectStatus, base_href: &str) -> Markup {
     html! {
     section.card {
-        h1 { (status.display_name) }
-        p.prose {
-            "Austere experimental ledger. Frontier overview is the only sanctioned dump; everything else is deliberate traversal."
+        div.frontier-title-row {
+            h1 { (status.display_name) }
+            details.control-popout.frontier-summary-editor {
+                summary.inline-icon-button.frontier-edit-toggle aria-label="Edit project description" title="Edit project description" {
+                    (pencil_icon())
+                }
+                div.control-popout-panel.frontier-summary-panel {
+                    form.frontier-summary-form method="post" action=(format!("{base_href}description")) data-preserve-viewport="true" {
+                        label.filter-control {
+                            span.filter-label { "Project Description" }
+                            textarea.compact-textarea.frontier-description-input
+                                name="description"
+                                rows="4"
+                                placeholder="What is this project ledger for?"
+                            {
+                                @if let Some(description) = status.description.as_ref() {
+                                    (description.as_str())
+                                }
+                            }
+                        }
+                        div.filter-actions {
+                            button.form-button type="submit" { "Save" }
+                        }
+                    }
+                }
+            }
+        }
+        @if let Some(description) = status.description.as_ref() {
+            p.prose { (description) }
+        } @else {
+            p.muted { "No project description recorded." }
         }
         div.kv-grid {
             (render_kv("Project root", status.project_root.as_str()))
