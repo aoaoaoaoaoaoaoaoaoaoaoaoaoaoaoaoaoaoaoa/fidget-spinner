@@ -1,5 +1,10 @@
 # JSON Normalization Audit
 
+Status: implemented in store format 12. The inventory below records the v11
+problem statement and the cutover shape; operational reads and writes now use
+the normalized tables, with only `events.snapshot_json` retained as an archival
+snapshot exception.
+
 ## Intent
 
 Spinner should not keep operational state in ad hoc JSON blobs once the shape is

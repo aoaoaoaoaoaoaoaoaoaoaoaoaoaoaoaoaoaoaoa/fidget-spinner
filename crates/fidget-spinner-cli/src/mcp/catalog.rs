@@ -127,7 +127,7 @@ const TOOL_SPECS: &[ToolSpec] = &[
     },
     ToolSpec {
         name: "hypothesis.update",
-        description: "Patch hypothesis title, summary, body, tags, influence parents, or active/retired state.",
+        description: "Patch hypothesis title, summary, body, tags, or influence parents.",
         dispatch: DispatchTarget::Worker,
         replay: ReplayContract::NeverReplay,
     },
@@ -434,13 +434,6 @@ fn tool_input_schema(name: &str) -> Value {
                 ("body", string_schema("Replacement single-paragraph body.")),
                 ("tags", string_array_schema("Replacement tag set.")),
                 ("parents", vertex_selector_array_schema()),
-                (
-                    "state",
-                    enum_string_schema(
-                        &["active", "retired"],
-                        "Optional lifecycle patch. Use retired when an obviously stale hypothesis should leave the active surface; use active to restore it.",
-                    ),
-                ),
             ],
             &["hypothesis"],
         ),

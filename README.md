@@ -303,7 +303,6 @@ Each initialized project gets a centralized private state root:
 
 ```text
 ~/.local/state/fidget-spinner/projects/<project>-<stable-id>/
-    project.json
     state.sqlite
 ```
 

@@ -34,9 +34,6 @@ pub(crate) struct FrontierBriefProjection {
     pub(crate) situation: Option<String>,
     pub(crate) roadmap: Vec<RoadmapItemProjection>,
     pub(crate) unknowns: Vec<String>,
-    pub(crate) revision: u64,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) updated_at: Option<TimestampText>,
 }
 
 #[derive(Clone, Serialize)]
@@ -314,7 +311,6 @@ pub(crate) struct MetricKeySummaryProjection {
 #[derive(Clone, Serialize)]
 pub(crate) struct KpiSummaryProjection {
     pub(crate) metric: MetricKeySummaryProjection,
-    pub(crate) revision: u64,
 }
 
 #[derive(Clone, Serialize, libmcp::ToolProjection)]
@@ -457,7 +453,6 @@ pub(crate) struct TagRecordProjection {
     pub(crate) name: String,
     pub(crate) description: String,
     pub(crate) family: Option<String>,
-    pub(crate) status: String,
     pub(crate) revision: u64,
     pub(crate) created_at: TimestampText,
     pub(crate) updated_at: TimestampText,
@@ -469,7 +464,6 @@ pub(crate) struct TagFamilyProjection {
     pub(crate) name: String,
     pub(crate) description: String,
     pub(crate) mandatory: bool,
-    pub(crate) status: String,
     pub(crate) revision: u64,
 }
 
@@ -532,7 +526,6 @@ pub(crate) struct RunDimensionDefinitionProjection {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) description: Option<String>,
     pub(crate) created_at: TimestampText,
-    pub(crate) updated_at: TimestampText,
 }
 
 #[derive(Clone, Serialize, libmcp::ToolProjection)]
@@ -926,8 +919,6 @@ fn frontier_brief_projection(
         situation: brief.situation.as_ref().map(ToString::to_string),
         roadmap,
         unknowns: brief.unknowns.iter().map(ToString::to_string).collect(),
-        revision: brief.revision,
-        updated_at: brief.updated_at.map(timestamp_value),
     }
 }
 
@@ -1027,7 +1018,6 @@ fn metric_key_summary(metric: &MetricKeySummary) -> MetricKeySummaryProjection {
 fn kpi_summary(kpi: &KpiSummary) -> KpiSummaryProjection {
     KpiSummaryProjection {
         metric: metric_key_summary(&kpi.metric),
-        revision: kpi.revision,
     }
 }
 
@@ -1037,7 +1027,6 @@ fn tag_record_projection(tag: &TagRecord) -> TagRecordProjection {
         name: tag.name.to_string(),
         description: tag.description.to_string(),
         family: tag.family.as_ref().map(ToString::to_string),
-        status: tag.status.as_str().to_owned(),
         revision: tag.revision,
         created_at: timestamp_value(tag.created_at),
         updated_at: timestamp_value(tag.updated_at),
@@ -1050,7 +1039,6 @@ fn tag_family_projection(family: &TagFamilyRecord) -> TagFamilyProjection {
         name: family.name.to_string(),
         description: family.description.to_string(),
         mandatory: family.mandatory,
-        status: family.status.as_str().to_owned(),
         revision: family.revision,
     }
 }
@@ -1095,7 +1083,6 @@ fn run_dimension_definition_projection(
         value_type: dimension.value_type.as_str().to_owned(),
         description: dimension.description.as_ref().map(ToString::to_string),
         created_at: timestamp_value(dimension.created_at),
-        updated_at: timestamp_value(dimension.updated_at),
     }
 }
 

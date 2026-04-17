@@ -703,7 +703,6 @@ pub struct RunDimensionDefinition {
     pub value_type: FieldValueType,
     pub description: Option<NonEmptyText>,
     pub created_at: OffsetDateTime,
-    pub updated_at: OffsetDateTime,
 }
 
 impl RunDimensionDefinition {
@@ -719,7 +718,6 @@ impl RunDimensionDefinition {
             value_type,
             description,
             created_at: now,
-            updated_at: now,
         }
     }
 }
@@ -807,9 +805,7 @@ pub struct FrontierKpiRecord {
     pub id: KpiId,
     pub frontier_id: FrontierId,
     pub metric_id: MetricId,
-    pub revision: u64,
     pub created_at: OffsetDateTime,
-    pub updated_at: OffsetDateTime,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -850,21 +846,6 @@ impl FrontierVerdict {
             Self::Kept => "kept",
             Self::Parked => "parked",
             Self::Rejected => "rejected",
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum TagStatus {
-    Active,
-}
-
-impl TagStatus {
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Active => "active",
         }
     }
 }
@@ -946,7 +927,6 @@ pub struct TagFamilyRecord {
     pub name: TagFamilyName,
     pub description: NonEmptyText,
     pub mandatory: bool,
-    pub status: TagStatus,
     pub revision: u64,
     pub created_at: OffsetDateTime,
     pub updated_at: OffsetDateTime,
@@ -959,7 +939,6 @@ pub struct TagRecord {
     pub description: NonEmptyText,
     pub family_id: Option<TagFamilyId>,
     pub family: Option<TagFamilyName>,
-    pub status: TagStatus,
     pub revision: u64,
     pub created_at: OffsetDateTime,
     pub updated_at: OffsetDateTime,
@@ -1034,8 +1013,6 @@ pub struct FrontierBrief {
     pub situation: Option<NonEmptyText>,
     pub roadmap: Vec<FrontierRoadmapItem>,
     pub unknowns: Vec<NonEmptyText>,
-    pub revision: u64,
-    pub updated_at: Option<OffsetDateTime>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -1056,7 +1033,6 @@ pub struct HypothesisRecord {
     pub id: HypothesisId,
     pub slug: Slug,
     pub frontier_id: FrontierId,
-    pub archived: bool,
     pub title: NonEmptyText,
     pub summary: NonEmptyText,
     pub body: NonEmptyText,
@@ -1110,7 +1086,6 @@ pub struct ExperimentRecord {
     pub slug: Slug,
     pub frontier_id: FrontierId,
     pub hypothesis_id: HypothesisId,
-    pub archived: bool,
     pub title: NonEmptyText,
     pub summary: Option<NonEmptyText>,
     pub tags: Vec<TagName>,

@@ -14,7 +14,7 @@ use fidget_spinner_core::{
     MetricUnit, MetricValue, NonEmptyText, OptimizationObjective, RegistryLockId, RegistryLockMode,
     RegistryLockRecord, RegistryName, ReportedMetricValue, RunDimensionDefinition,
     RunDimensionValue, Slug, TagFamilyId, TagFamilyName, TagFamilyRecord, TagId, TagName,
-    TagNameDisposition, TagNameHistoryRecord, TagRecord, TagRegistrySnapshot, TagStatus, VertexRef,
+    TagNameDisposition, TagNameHistoryRecord, TagRecord, TagRegistrySnapshot, VertexRef,
 };
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde::{Deserialize, Serialize};
@@ -27,10 +27,10 @@ use uuid::Uuid;
 pub const STORE_DIR_NAME: &str = ".fidget_spinner";
 pub const GIT_DIR_NAME: &str = ".git";
 pub const STATE_DB_NAME: &str = "state.sqlite";
-pub const PROJECT_CONFIG_NAME: &str = "project.json";
-pub const CURRENT_STORE_FORMAT_VERSION: u32 = 11;
+pub const CURRENT_STORE_FORMAT_VERSION: u32 = 12;
 pub const STATE_HOME_DIR_NAME: &str = "fidget-spinner";
 pub const PROJECT_STATE_DIR_NAME: &str = "projects";
+const LEGACY_PROJECT_CONFIG_NAME: &str = "project.json";
 const PROJECT_ROOT_NAMESPACE: Uuid = Uuid::from_u128(0x0df3_58f4_3649_44f1_8f05_0bb2_4ebd_8d31);
 static STATE_HOME_OVERRIDE: OnceLock<Utf8PathBuf> = OnceLock::new();
 
@@ -165,7 +165,6 @@ pub struct ProjectConfig {
     pub display_name: NonEmptyText,
     pub description: Option<NonEmptyText>,
     pub created_at: OffsetDateTime,
-    pub store_format_version: u32,
 }
 
 impl ProjectConfig {
@@ -175,7 +174,6 @@ impl ProjectConfig {
             display_name,
             description: None,
             created_at: OffsetDateTime::now_utc(),
-            store_format_version: CURRENT_STORE_FORMAT_VERSION,
         }
     }
 }
@@ -360,14 +358,12 @@ pub struct UpdateHypothesisRequest {
     pub body: Option<NonEmptyText>,
     pub tags: Option<BTreeSet<TagName>>,
     pub parents: Option<Vec<VertexSelector>>,
-    pub archived: Option<bool>,
 }
 
 #[derive(Clone, Debug, Default)]
 pub struct ListHypothesesQuery {
     pub frontier: Option<String>,
     pub tags: BTreeSet<TagName>,
-    pub include_archived: bool,
     pub limit: Option<u32>,
 }
 
@@ -376,7 +372,6 @@ pub struct VertexSummary {
     pub vertex: VertexRef,
     pub frontier_id: FrontierId,
     pub slug: Slug,
-    pub archived: bool,
     pub title: NonEmptyText,
     pub summary: Option<NonEmptyText>,
     pub updated_at: OffsetDateTime,
@@ -387,7 +382,6 @@ pub struct HypothesisSummary {
     pub id: HypothesisId,
     pub slug: Slug,
     pub frontier_id: FrontierId,
-    pub archived: bool,
     pub title: NonEmptyText,
     pub summary: NonEmptyText,
     pub tags: Vec<TagName>,
@@ -423,7 +417,6 @@ pub struct UpdateExperimentRequest {
     pub summary: Option<TextPatch<NonEmptyText>>,
     pub tags: Option<BTreeSet<TagName>>,
     pub parents: Option<Vec<VertexSelector>>,
-    pub archived: Option<bool>,
     pub outcome: Option<ExperimentOutcomePatch>,
 }
 
@@ -458,7 +451,6 @@ pub struct ListExperimentsQuery {
     pub frontier: Option<String>,
     pub hypothesis: Option<String>,
     pub tags: BTreeSet<TagName>,
-    pub include_archived: bool,
     pub status: Option<ExperimentStatus>,
     pub limit: Option<u32>,
 }
@@ -476,7 +468,6 @@ pub struct MetricObservationSummary {
 pub struct KpiSummary {
     pub id: KpiId,
     pub metric: MetricKeySummary,
-    pub revision: u64,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -485,7 +476,6 @@ pub struct ExperimentSummary {
     pub slug: Slug,
     pub frontier_id: FrontierId,
     pub hypothesis_id: HypothesisId,
-    pub archived: bool,
     pub title: NonEmptyText,
     pub summary: Option<NonEmptyText>,
     pub tags: Vec<TagName>,
@@ -712,7 +702,6 @@ impl ProjectStore {
         let state_root = state_root_for_project_root(&project_root)?;
         fs::create_dir_all(state_root.as_std_path())?;
         let config = ProjectConfig::new(display_name);
-        write_json_file(&state_root.join(PROJECT_CONFIG_NAME), &config)?;
 
         let database_path = state_root.join(STATE_DB_NAME);
         let connection = Connection::open(database_path.as_std_path())?;
@@ -723,6 +712,7 @@ impl ProjectStore {
             i64::from(CURRENT_STORE_FORMAT_VERSION),
         )?;
         install_schema(&connection)?;
+        replace_project_metadata(&connection, &config)?;
 
         Ok(Self {
             project_root,
@@ -738,19 +728,12 @@ impl ProjectStore {
         if !state_root.exists() {
             return Err(StoreError::MissingProjectStore(project_root));
         }
-        let mut config: ProjectConfig = read_json_file(&state_root.join(PROJECT_CONFIG_NAME))?;
         let database_path = state_root.join(STATE_DB_NAME);
         let mut connection = Connection::open(database_path.as_std_path())?;
         connection.pragma_update(None, "foreign_keys", 1_i64)?;
         let observed_version = load_store_user_version(&connection)?;
         if observed_version != CURRENT_STORE_FORMAT_VERSION {
-            migrate_store_to_current(&state_root, &mut config, &mut connection, observed_version)?;
-        }
-        if config.store_format_version != CURRENT_STORE_FORMAT_VERSION {
-            return Err(StoreError::IncompatibleStoreFormatVersion {
-                observed: config.store_format_version,
-                expected: CURRENT_STORE_FORMAT_VERSION,
-            });
+            migrate_store_to_current(&state_root, &mut connection, observed_version)?;
         }
         let observed_version = load_store_user_version(&connection)?;
         if observed_version != CURRENT_STORE_FORMAT_VERSION {
@@ -762,6 +745,7 @@ impl ProjectStore {
         if legacy_artifact_schema_present(&connection)? {
             purge_legacy_artifact_schema(&connection)?;
         }
+        let config = load_project_metadata(&connection)?;
 
         Ok(Self {
             project_root,
@@ -792,14 +776,18 @@ impl ProjectStore {
             state_root: self.state_root.clone(),
             display_name: self.config.display_name.clone(),
             description: self.config.description.clone(),
-            store_format_version: self.config.store_format_version,
+            store_format_version: load_store_user_version(&self.connection)?,
             frontier_count: count_rows(&self.connection, "frontiers")?,
             hypothesis_count: count_rows(&self.connection, "hypotheses")?,
             experiment_count: count_rows(&self.connection, "experiments")?,
             open_experiment_count: count_rows_where(
                 &self.connection,
                 "experiments",
-                "status = 'open'",
+                "NOT EXISTS (
+                    SELECT 1
+                    FROM experiment_outcomes
+                    WHERE experiment_outcomes.experiment_id = experiments.id
+                )",
             )?,
         })
     }
@@ -810,7 +798,7 @@ impl ProjectStore {
     ) -> Result<ProjectStatus, StoreError> {
         self.config.description =
             apply_optional_text_patch(Some(request.description), self.config.description.clone());
-        write_json_file(&self.state_root.join(PROJECT_CONFIG_NAME), &self.config)?;
+        replace_project_metadata(&self.connection, &self.config)?;
         self.status()
     }
 
@@ -867,7 +855,6 @@ impl ProjectStore {
             description,
             family_id: family.as_ref().map(|family| family.id),
             family: family.as_ref().map(|family| family.name.clone()),
-            status: TagStatus::Active,
             revision: 1,
             created_at: now,
             updated_at: now,
@@ -921,7 +908,6 @@ impl ProjectStore {
             name: request.name,
             description: request.description,
             mandatory: request.mandatory,
-            status: TagStatus::Active,
             revision: 1,
             created_at: now,
             updated_at: now,
@@ -1475,9 +1461,7 @@ impl ProjectStore {
             id: KpiId::fresh(),
             frontier_id: frontier.id,
             metric_id: metric.id,
-            revision: 1,
             created_at: now,
-            updated_at: now,
         };
         let transaction = self.connection.transaction()?;
         insert_kpi(&transaction, &record)?;
@@ -1485,7 +1469,7 @@ impl ProjectStore {
             &transaction,
             "kpi",
             &record.id.to_string(),
-            record.revision,
+            1,
             "created",
             &record,
         )?;
@@ -1513,11 +1497,9 @@ impl ProjectStore {
 
     pub fn delete_kpi(&mut self, request: DeleteKpiRequest) -> Result<(), StoreError> {
         let frontier = self.resolve_frontier(&request.frontier)?;
-        let mut record = self
+        let record = self
             .kpi_by_selector(frontier.id, &request.kpi)?
             .ok_or_else(|| StoreError::UnknownKpi(request.kpi.clone()))?;
-        record.revision = record.revision.saturating_add(1);
-        record.updated_at = OffsetDateTime::now_utc();
         let transaction = self.connection.transaction()?;
         let _ = transaction.execute(
             "DELETE FROM frontier_kpis WHERE id = ?1",
@@ -1527,7 +1509,7 @@ impl ProjectStore {
             &transaction,
             "kpi",
             &record.id.to_string(),
-            record.revision,
+            2,
             "deleted",
             &record,
         )?;
@@ -1556,7 +1538,7 @@ impl ProjectStore {
             }
         };
         let experiments = self
-            .load_experiment_records(Some(frontier.id), None, true)?
+            .load_experiment_records(Some(frontier.id), None)?
             .into_iter()
             .filter(|record| record.status == ExperimentStatus::Closed)
             .filter(|record| {
@@ -1618,14 +1600,13 @@ impl ProjectStore {
         let record =
             RunDimensionDefinition::new(request.key, request.value_type, request.description);
         let _ = self.connection.execute(
-            "INSERT INTO run_dimension_definitions (key, value_type, description, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5)",
+            "INSERT INTO run_dimension_definitions (key, value_type, description, created_at)
+             VALUES (?1, ?2, ?3, ?4)",
             params![
                 record.key.as_str(),
                 record.value_type.as_str(),
                 record.description.as_ref().map(NonEmptyText::as_str),
                 encode_timestamp(record.created_at)?,
-                encode_timestamp(record.updated_at)?,
             ],
         )?;
         Ok(record)
@@ -1633,7 +1614,7 @@ impl ProjectStore {
 
     pub fn list_run_dimensions(&self) -> Result<Vec<RunDimensionDefinition>, StoreError> {
         let mut statement = self.connection.prepare(
-            "SELECT key, value_type, description, created_at, updated_at
+            "SELECT key, value_type, description, created_at
              FROM run_dimension_definitions
              ORDER BY key ASC",
         )?;
@@ -1705,13 +1686,15 @@ impl ProjectStore {
 
     fn frontier_records(&self) -> Result<Vec<FrontierRecord>, StoreError> {
         let mut statement = self.connection.prepare(
-            "SELECT id, slug, label, objective, status, brief_json, revision, created_at, updated_at
+            "SELECT id, slug, label, objective, status, revision, created_at, updated_at
              FROM frontiers
              ORDER BY updated_at DESC, created_at DESC",
         )?;
         let rows = statement.query_map([], decode_frontier_row)?;
-        rows.collect::<Result<Vec<_>, _>>()
-            .map_err(StoreError::from)
+        rows.collect::<Result<Vec<_>, _>>()?
+            .into_iter()
+            .map(|record| self.hydrate_frontier_brief(record))
+            .collect()
     }
 
     fn frontier_summary_from_record(
@@ -1728,6 +1711,62 @@ impl ProjectStore {
             status: record.status,
             revision: record.revision,
             updated_at: record.updated_at,
+        })
+    }
+
+    fn hydrate_frontier_brief(
+        &self,
+        mut record: FrontierRecord,
+    ) -> Result<FrontierRecord, StoreError> {
+        record.brief = self.frontier_brief(record.id)?;
+        Ok(record)
+    }
+
+    fn frontier_brief(&self, frontier_id: FrontierId) -> Result<FrontierBrief, StoreError> {
+        let situation = self
+            .connection
+            .query_row(
+                "SELECT situation FROM frontier_briefs WHERE frontier_id = ?1",
+                params![frontier_id.to_string()],
+                |row| parse_optional_non_empty_text(row.get::<_, Option<String>>(0)?),
+            )
+            .optional()?
+            .flatten();
+        let roadmap = {
+            let mut statement = self.connection.prepare(
+                "SELECT ordinal, hypothesis_id, summary
+                 FROM frontier_roadmap_items
+                 WHERE frontier_id = ?1
+                 ORDER BY ordinal ASC",
+            )?;
+            let rows = statement.query_map(params![frontier_id.to_string()], |row| {
+                let ordinal = row.get::<_, u32>(0)?;
+                Ok(FrontierRoadmapItem {
+                    rank: ordinal.saturating_add(1),
+                    hypothesis_id: HypothesisId::from_uuid(parse_uuid_sql(
+                        &row.get::<_, String>(1)?,
+                    )?),
+                    summary: parse_optional_non_empty_text(row.get::<_, Option<String>>(2)?)?,
+                })
+            })?;
+            rows.collect::<Result<Vec<_>, _>>()?
+        };
+        let unknowns = {
+            let mut statement = self.connection.prepare(
+                "SELECT body
+                 FROM frontier_unknowns
+                 WHERE frontier_id = ?1
+                 ORDER BY ordinal ASC",
+            )?;
+            let rows = statement.query_map(params![frontier_id.to_string()], |row| {
+                parse_non_empty_text(&row.get::<_, String>(0)?)
+            })?;
+            rows.collect::<Result<Vec<_>, _>>()?
+        };
+        Ok(FrontierBrief {
+            situation,
+            roadmap,
+            unknowns,
         })
     }
 
@@ -1757,8 +1796,6 @@ impl ProjectStore {
             frontier.revision,
         )?;
         let now = OffsetDateTime::now_utc();
-        let brief_changed =
-            request.situation.is_some() || request.roadmap.is_some() || request.unknowns.is_some();
         let brief = FrontierBrief {
             situation: apply_optional_text_patch(
                 request.situation,
@@ -1778,16 +1815,6 @@ impl ProjectStore {
                 None => frontier.brief.roadmap.clone(),
             },
             unknowns: request.unknowns.unwrap_or(frontier.brief.unknowns.clone()),
-            revision: if brief_changed {
-                frontier.brief.revision.saturating_add(1)
-            } else {
-                frontier.brief.revision
-            },
-            updated_at: if brief_changed {
-                Some(now)
-            } else {
-                frontier.brief.updated_at
-            },
         };
         let updated = FrontierRecord {
             label: request.label.unwrap_or(frontier.label.clone()),
@@ -1845,7 +1872,6 @@ impl ProjectStore {
             id,
             slug,
             frontier_id: frontier.id,
-            archived: false,
             title: request.title,
             summary: request.summary,
             body: request.body,
@@ -1884,7 +1910,7 @@ impl ProjectStore {
             .as_deref()
             .map(|selector| self.resolve_frontier(selector).map(|frontier| frontier.id))
             .transpose()?;
-        let records = self.load_hypothesis_records(frontier_id, query.include_archived)?;
+        let records = self.load_hypothesis_records(frontier_id)?;
         let filtered = records
             .into_iter()
             .filter(|record| {
@@ -1901,7 +1927,6 @@ impl ProjectStore {
         let children = self.load_vertex_children(VertexRef::Hypothesis(record.id))?;
         let experiments = self.list_experiments(ListExperimentsQuery {
             hypothesis: Some(record.id.to_string()),
-            include_archived: true,
             limit: None,
             ..ListExperimentsQuery::default()
         })?;
@@ -1962,7 +1987,6 @@ impl ProjectStore {
                 .tags
                 .clone()
                 .map_or_else(|| record.tags.clone(), |tags| tags.into_iter().collect()),
-            archived: request.archived.unwrap_or(record.archived),
             revision: record.revision.saturating_add(1),
             updated_at: OffsetDateTime::now_utc(),
             ..record
@@ -2033,7 +2057,6 @@ impl ProjectStore {
             slug,
             frontier_id: hypothesis.frontier_id,
             hypothesis_id: hypothesis.id,
-            archived: false,
             title: request.title,
             summary: request.summary,
             tags: request.tags.iter().cloned().collect(),
@@ -2081,8 +2104,7 @@ impl ProjectStore {
                     .map(|hypothesis| hypothesis.id)
             })
             .transpose()?;
-        let records =
-            self.load_experiment_records(frontier_id, hypothesis_id, query.include_archived)?;
+        let records = self.load_experiment_records(frontier_id, hypothesis_id)?;
         let filtered = records
             .into_iter()
             .filter(|record| query.status.is_none_or(|status| record.status == status))
@@ -2155,7 +2177,6 @@ impl ProjectStore {
                 .tags
                 .clone()
                 .map_or_else(|| record.tags.clone(), |tags| tags.into_iter().collect()),
-            archived: request.archived.unwrap_or(record.archived),
             status: if outcome.is_some() {
                 ExperimentStatus::Closed
             } else {
@@ -2329,7 +2350,7 @@ impl ProjectStore {
             .metric_definition(key)?
             .ok_or_else(|| StoreError::UnknownMetricDefinition(key.clone()))?;
         let mut points = self
-            .load_experiment_records(Some(frontier.id), None, true)?
+            .load_experiment_records(Some(frontier.id), None)?
             .into_iter()
             .filter(|record| record.status == ExperimentStatus::Closed)
             .map(|record| {
@@ -2441,7 +2462,7 @@ impl ProjectStore {
             }
         });
         let experiments = self
-            .load_experiment_records(frontier_id, hypothesis_id, true)?
+            .load_experiment_records(frontier_id, hypothesis_id)?
             .into_iter()
             .filter(|record| record.status == ExperimentStatus::Closed)
             .filter(|record| {
@@ -2562,7 +2583,7 @@ impl ProjectStore {
         let influence_neighborhood =
             self.influence_neighborhood(anchor_experiment.as_ref(), anchor_hypothesis_id)?;
         let candidates = self
-            .load_experiment_records(frontier_id, None, false)?
+            .load_experiment_records(frontier_id, None)?
             .into_iter()
             .filter(|record| record.status == ExperimentStatus::Closed)
             .filter(|record| {
@@ -2725,7 +2746,7 @@ impl ProjectStore {
     ) -> Result<Option<FrontierKpiRecord>, StoreError> {
         self.connection
             .query_row(
-                "SELECT id, frontier_id, metric_id, revision, created_at, updated_at
+                "SELECT id, frontier_id, metric_id, created_at
                  FROM frontier_kpis
                  WHERE frontier_id = ?1 AND metric_id = ?2",
                 params![frontier_id.to_string(), metric_id.to_string()],
@@ -2743,7 +2764,7 @@ impl ProjectStore {
         self.connection
             .query_row(
                 "SELECT frontier_kpis.id, frontier_kpis.frontier_id, frontier_kpis.metric_id,
-                        frontier_kpis.revision, frontier_kpis.created_at, frontier_kpis.updated_at
+                        frontier_kpis.created_at
                  FROM frontier_kpis
                  JOIN metric_definitions ON metric_definitions.id = frontier_kpis.metric_id
                  WHERE frontier_kpis.frontier_id = ?1
@@ -2761,7 +2782,7 @@ impl ProjectStore {
     ) -> Result<Vec<FrontierKpiRecord>, StoreError> {
         let mut statement = self.connection.prepare(
             "SELECT frontier_kpis.id, frontier_kpis.frontier_id, frontier_kpis.metric_id,
-                    frontier_kpis.revision, frontier_kpis.created_at, frontier_kpis.updated_at
+                    frontier_kpis.created_at
              FROM frontier_kpis
              JOIN metric_definitions ON metric_definitions.id = frontier_kpis.metric_id
              WHERE frontier_kpis.frontier_id = ?1
@@ -2780,7 +2801,6 @@ impl ProjectStore {
         Ok(KpiSummary {
             id: record.id,
             metric,
-            revision: record.revision,
         })
     }
 
@@ -2815,7 +2835,7 @@ impl ProjectStore {
     ) -> Result<Option<RunDimensionDefinition>, StoreError> {
         self.connection
             .query_row(
-                "SELECT key, value_type, description, created_at, updated_at
+                "SELECT key, value_type, description, created_at
                  FROM run_dimension_definitions
                  WHERE key = ?1",
                 params![key.as_str()],
@@ -2828,7 +2848,7 @@ impl ProjectStore {
     fn hypothesis_by_id(&self, id: HypothesisId) -> Result<HypothesisRecord, StoreError> {
         self.connection
             .query_row(
-                "SELECT id, slug, frontier_id, archived, title, summary, body, revision, created_at, updated_at
+                "SELECT id, slug, frontier_id, title, summary, body, revision, created_at, updated_at
                  FROM hypotheses WHERE id = ?1",
                 params![id.to_string()],
                 |row| self.decode_hypothesis_row(row),
@@ -2841,7 +2861,7 @@ impl ProjectStore {
             Selector::Id(uuid) => self
                 .connection
                 .query_row(
-                    "SELECT id, slug, label, objective, status, brief_json, revision, created_at, updated_at
+                    "SELECT id, slug, label, objective, status, revision, created_at, updated_at
                      FROM frontiers WHERE id = ?1",
                     params![uuid.to_string()],
                     decode_frontier_row,
@@ -2850,14 +2870,17 @@ impl ProjectStore {
             Selector::Slug(slug) => self
                 .connection
                 .query_row(
-                    "SELECT id, slug, label, objective, status, brief_json, revision, created_at, updated_at
+                    "SELECT id, slug, label, objective, status, revision, created_at, updated_at
                      FROM frontiers WHERE slug = ?1",
                     params![slug.as_str()],
                     decode_frontier_row,
                 )
                 .optional()?,
         };
-        record.ok_or_else(|| StoreError::UnknownFrontierSelector(selector.to_owned()))
+        record
+            .map(|record| self.hydrate_frontier_brief(record))
+            .transpose()?
+            .ok_or_else(|| StoreError::UnknownFrontierSelector(selector.to_owned()))
     }
 
     fn resolve_hypothesis(&self, selector: &str) -> Result<HypothesisRecord, StoreError> {
@@ -2865,7 +2888,7 @@ impl ProjectStore {
             Selector::Id(uuid) => self
                 .connection
                 .query_row(
-                    "SELECT id, slug, frontier_id, archived, title, summary, body, revision, created_at, updated_at
+                    "SELECT id, slug, frontier_id, title, summary, body, revision, created_at, updated_at
                      FROM hypotheses WHERE id = ?1",
                     params![uuid.to_string()],
                     |row| self.decode_hypothesis_row(row),
@@ -2874,7 +2897,7 @@ impl ProjectStore {
             Selector::Slug(slug) => self
                 .connection
                 .query_row(
-                    "SELECT id, slug, frontier_id, archived, title, summary, body, revision, created_at, updated_at
+                    "SELECT id, slug, frontier_id, title, summary, body, revision, created_at, updated_at
                      FROM hypotheses WHERE slug = ?1",
                     params![slug.as_str()],
                     |row| self.decode_hypothesis_row(row),
@@ -2889,8 +2912,12 @@ impl ProjectStore {
             Selector::Id(uuid) => self
                 .connection
                 .query_row(
-                    "SELECT id, slug, frontier_id, hypothesis_id, archived, title, summary, status, outcome_json, revision, created_at, updated_at
-                     FROM experiments WHERE id = ?1",
+                    "SELECT experiments.id, experiments.slug, hypotheses.frontier_id,
+                            experiments.hypothesis_id, experiments.title, experiments.summary,
+                            experiments.revision, experiments.created_at, experiments.updated_at
+                     FROM experiments
+                     JOIN hypotheses ON hypotheses.id = experiments.hypothesis_id
+                     WHERE experiments.id = ?1",
                     params![uuid.to_string()],
                     decode_experiment_row,
                 )
@@ -2898,8 +2925,12 @@ impl ProjectStore {
             Selector::Slug(slug) => self
                 .connection
                 .query_row(
-                    "SELECT id, slug, frontier_id, hypothesis_id, archived, title, summary, status, outcome_json, revision, created_at, updated_at
-                     FROM experiments WHERE slug = ?1",
+                    "SELECT experiments.id, experiments.slug, hypotheses.frontier_id,
+                            experiments.hypothesis_id, experiments.title, experiments.summary,
+                            experiments.revision, experiments.created_at, experiments.updated_at
+                     FROM experiments
+                     JOIN hypotheses ON hypotheses.id = experiments.hypothesis_id
+                     WHERE experiments.slug = ?1",
                     params![slug.as_str()],
                     decode_experiment_row,
                 )
@@ -2907,7 +2938,7 @@ impl ProjectStore {
         };
         record
             .ok_or_else(|| StoreError::UnknownExperimentSelector(selector.to_owned()))
-            .and_then(|record| self.hydrate_experiment_tags(record))
+            .and_then(|record| self.hydrate_experiment(record))
     }
 
     fn resolve_vertex_parents(
@@ -2982,11 +3013,10 @@ impl ProjectStore {
     fn load_hypothesis_records(
         &self,
         frontier_id: Option<FrontierId>,
-        include_archived: bool,
     ) -> Result<Vec<HypothesisRecord>, StoreError> {
-        let mut records = if let Some(frontier_id) = frontier_id {
+        let records = if let Some(frontier_id) = frontier_id {
             let mut statement = self.connection.prepare(
-                "SELECT id, slug, frontier_id, archived, title, summary, body, revision, created_at, updated_at
+                "SELECT id, slug, frontier_id, title, summary, body, revision, created_at, updated_at
                  FROM hypotheses
                  WHERE frontier_id = ?1
                  ORDER BY updated_at DESC, created_at DESC",
@@ -2997,16 +3027,13 @@ impl ProjectStore {
             rows.collect::<Result<Vec<_>, _>>()?
         } else {
             let mut statement = self.connection.prepare(
-                "SELECT id, slug, frontier_id, archived, title, summary, body, revision, created_at, updated_at
+                "SELECT id, slug, frontier_id, title, summary, body, revision, created_at, updated_at
                  FROM hypotheses
                  ORDER BY updated_at DESC, created_at DESC",
             )?;
             let rows = statement.query_map([], |row| self.decode_hypothesis_row(row))?;
             rows.collect::<Result<Vec<_>, _>>()?
         };
-        if !include_archived {
-            records.retain(|record| !record.archived);
-        }
         Ok(records)
     }
 
@@ -3014,13 +3041,16 @@ impl ProjectStore {
         &self,
         frontier_id: Option<FrontierId>,
         hypothesis_id: Option<HypothesisId>,
-        include_archived: bool,
     ) -> Result<Vec<ExperimentRecord>, StoreError> {
-        let base_sql = "SELECT id, slug, frontier_id, hypothesis_id, archived, title, summary, status, outcome_json, revision, created_at, updated_at FROM experiments";
+        let base_sql = "SELECT experiments.id, experiments.slug, hypotheses.frontier_id,
+                               experiments.hypothesis_id, experiments.title, experiments.summary,
+                               experiments.revision, experiments.created_at, experiments.updated_at
+                        FROM experiments
+                        JOIN hypotheses ON hypotheses.id = experiments.hypothesis_id";
         let records = match (frontier_id, hypothesis_id) {
             (Some(frontier_id), Some(hypothesis_id)) => {
                 let mut statement = self.connection.prepare(&format!(
-                    "{base_sql} WHERE frontier_id = ?1 AND hypothesis_id = ?2 ORDER BY updated_at DESC, created_at DESC"
+                    "{base_sql} WHERE hypotheses.frontier_id = ?1 AND experiments.hypothesis_id = ?2 ORDER BY experiments.updated_at DESC, experiments.created_at DESC"
                 ))?;
                 let rows = statement.query_map(
                     params![frontier_id.to_string(), hypothesis_id.to_string()],
@@ -3030,7 +3060,7 @@ impl ProjectStore {
             }
             (Some(frontier_id), None) => {
                 let mut statement = self.connection.prepare(&format!(
-                    "{base_sql} WHERE frontier_id = ?1 ORDER BY updated_at DESC, created_at DESC"
+                    "{base_sql} WHERE hypotheses.frontier_id = ?1 ORDER BY experiments.updated_at DESC, experiments.created_at DESC"
                 ))?;
                 let rows =
                     statement.query_map(params![frontier_id.to_string()], decode_experiment_row)?;
@@ -3038,7 +3068,7 @@ impl ProjectStore {
             }
             (None, Some(hypothesis_id)) => {
                 let mut statement = self.connection.prepare(&format!(
-                    "{base_sql} WHERE hypothesis_id = ?1 ORDER BY updated_at DESC, created_at DESC"
+                    "{base_sql} WHERE experiments.hypothesis_id = ?1 ORDER BY experiments.updated_at DESC, experiments.created_at DESC"
                 ))?;
                 let rows = statement
                     .query_map(params![hypothesis_id.to_string()], decode_experiment_row)?;
@@ -3046,7 +3076,7 @@ impl ProjectStore {
             }
             (None, None) => {
                 let mut statement = self.connection.prepare(&format!(
-                    "{base_sql} ORDER BY updated_at DESC, created_at DESC"
+                    "{base_sql} ORDER BY experiments.updated_at DESC, experiments.created_at DESC"
                 ))?;
                 let rows = statement.query_map([], decode_experiment_row)?;
                 rows.collect::<Result<Vec<_>, _>>()?
@@ -3054,16 +3084,9 @@ impl ProjectStore {
         };
         let records = records
             .into_iter()
-            .map(|record| self.hydrate_experiment_tags(record))
+            .map(|record| self.hydrate_experiment(record))
             .collect::<Result<Vec<_>, _>>()?;
-        Ok(if include_archived {
-            records
-        } else {
-            records
-                .into_iter()
-                .filter(|record| !record.archived)
-                .collect()
-        })
+        Ok(records)
     }
 
     fn decode_hypothesis_row(
@@ -3075,14 +3098,13 @@ impl ProjectStore {
             id,
             slug: parse_slug(&row.get::<_, String>(1)?)?,
             frontier_id: FrontierId::from_uuid(parse_uuid_sql(&row.get::<_, String>(2)?)?),
-            archived: row.get::<_, i64>(3)? != 0,
-            title: parse_non_empty_text(&row.get::<_, String>(4)?)?,
-            summary: parse_non_empty_text(&row.get::<_, String>(5)?)?,
-            body: parse_non_empty_text(&row.get::<_, String>(6)?)?,
+            title: parse_non_empty_text(&row.get::<_, String>(3)?)?,
+            summary: parse_non_empty_text(&row.get::<_, String>(4)?)?,
+            body: parse_non_empty_text(&row.get::<_, String>(5)?)?,
             tags: self.hypothesis_tags(id)?,
-            revision: row.get::<_, u64>(7)?,
-            created_at: parse_timestamp_sql(&row.get::<_, String>(8)?)?,
-            updated_at: parse_timestamp_sql(&row.get::<_, String>(9)?)?,
+            revision: row.get::<_, u64>(6)?,
+            created_at: parse_timestamp_sql(&row.get::<_, String>(7)?)?,
+            updated_at: parse_timestamp_sql(&row.get::<_, String>(8)?)?,
         })
     }
 
@@ -3114,12 +3136,272 @@ impl ProjectStore {
         rows.collect::<Result<Vec<_>, _>>()
     }
 
-    fn hydrate_experiment_tags(
+    fn hydrate_experiment(
         &self,
         mut record: ExperimentRecord,
     ) -> Result<ExperimentRecord, StoreError> {
         record.tags = self.experiment_tags(record.id)?;
+        record.outcome = self.experiment_outcome(record.id)?;
+        record.status = if record.outcome.is_some() {
+            ExperimentStatus::Closed
+        } else {
+            ExperimentStatus::Open
+        };
         Ok(record)
+    }
+
+    fn experiment_outcome(
+        &self,
+        experiment_id: ExperimentId,
+    ) -> Result<Option<ExperimentOutcome>, StoreError> {
+        let outcome = self
+            .connection
+            .query_row(
+                "SELECT backend, verdict, rationale, analysis_summary, analysis_body,
+                        working_directory, commit_hash, closed_at
+                 FROM experiment_outcomes
+                 WHERE experiment_id = ?1",
+                params![experiment_id.to_string()],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, Option<String>>(3)?,
+                        row.get::<_, Option<String>>(4)?,
+                        row.get::<_, Option<String>>(5)?,
+                        row.get::<_, Option<String>>(6)?,
+                        row.get::<_, String>(7)?,
+                    ))
+                },
+            )
+            .optional()?;
+        let Some((
+            backend,
+            verdict,
+            rationale,
+            analysis_summary,
+            analysis_body,
+            working_directory,
+            commit_hash,
+            closed_at,
+        )) = outcome
+        else {
+            return Ok(None);
+        };
+        let analysis = match (analysis_summary, analysis_body) {
+            (Some(summary), Some(body)) => Some(ExperimentAnalysis {
+                summary: NonEmptyText::new(summary)?,
+                body: NonEmptyText::new(body)?,
+            }),
+            (None, None) => None,
+            _ => {
+                return Err(StoreError::InvalidInput(
+                    "experiment outcome analysis is partially populated".to_owned(),
+                ));
+            }
+        };
+        let (primary_metric, supporting_metrics) =
+            self.experiment_outcome_metrics(experiment_id)?;
+        Ok(Some(ExperimentOutcome {
+            backend: parse_execution_backend(&backend).map_err(StoreError::from)?,
+            command: self.experiment_command(experiment_id, working_directory)?,
+            dimensions: self.experiment_dimensions(experiment_id)?,
+            primary_metric,
+            supporting_metrics,
+            verdict: parse_frontier_verdict(&verdict).map_err(StoreError::from)?,
+            rationale: NonEmptyText::new(rationale)?,
+            analysis,
+            commit_hash: commit_hash.map(GitCommitHash::new).transpose()?,
+            closed_at: OffsetDateTime::parse(&closed_at, &Rfc3339)?,
+        }))
+    }
+
+    fn experiment_command(
+        &self,
+        experiment_id: ExperimentId,
+        working_directory: Option<String>,
+    ) -> Result<CommandRecipe, StoreError> {
+        let mut argv_statement = self.connection.prepare(
+            "SELECT arg
+             FROM experiment_command_argv
+             WHERE experiment_id = ?1
+             ORDER BY ordinal ASC",
+        )?;
+        let argv = argv_statement
+            .query_map(params![experiment_id.to_string()], |row| {
+                parse_non_empty_text(&row.get::<_, String>(0)?)
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut env_statement = self.connection.prepare(
+            "SELECT key, value
+             FROM experiment_command_env
+             WHERE experiment_id = ?1
+             ORDER BY key ASC",
+        )?;
+        let env = env_statement
+            .query_map(params![experiment_id.to_string()], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?
+            .collect::<Result<BTreeMap<_, _>, _>>()?;
+        Ok(CommandRecipe {
+            working_directory: working_directory.map(Utf8PathBuf::from),
+            argv,
+            env,
+        })
+    }
+
+    fn experiment_dimensions(
+        &self,
+        experiment_id: ExperimentId,
+    ) -> Result<BTreeMap<NonEmptyText, RunDimensionValue>, StoreError> {
+        let mut dimensions = BTreeMap::new();
+        self.load_string_dimensions(experiment_id, &mut dimensions)?;
+        self.load_numeric_dimensions(experiment_id, &mut dimensions)?;
+        self.load_boolean_dimensions(experiment_id, &mut dimensions)?;
+        self.load_timestamp_dimensions(experiment_id, &mut dimensions)?;
+        Ok(dimensions)
+    }
+
+    fn load_string_dimensions(
+        &self,
+        experiment_id: ExperimentId,
+        dimensions: &mut BTreeMap<NonEmptyText, RunDimensionValue>,
+    ) -> Result<(), StoreError> {
+        let mut statement = self.connection.prepare(
+            "SELECT key, value
+             FROM experiment_dimension_strings
+             WHERE experiment_id = ?1
+             ORDER BY key ASC",
+        )?;
+        let rows = statement.query_map(params![experiment_id.to_string()], |row| {
+            Ok((
+                parse_non_empty_text(&row.get::<_, String>(0)?)?,
+                RunDimensionValue::String(parse_non_empty_text(&row.get::<_, String>(1)?)?),
+            ))
+        })?;
+        for row in rows {
+            let (key, value) = row?;
+            reject_duplicate_dimension(dimensions, key, value)?;
+        }
+        Ok(())
+    }
+
+    fn load_numeric_dimensions(
+        &self,
+        experiment_id: ExperimentId,
+        dimensions: &mut BTreeMap<NonEmptyText, RunDimensionValue>,
+    ) -> Result<(), StoreError> {
+        let mut statement = self.connection.prepare(
+            "SELECT key, value
+             FROM experiment_dimension_numbers
+             WHERE experiment_id = ?1
+             ORDER BY key ASC",
+        )?;
+        let rows = statement.query_map(params![experiment_id.to_string()], |row| {
+            Ok((
+                parse_non_empty_text(&row.get::<_, String>(0)?)?,
+                RunDimensionValue::Numeric(row.get::<_, f64>(1)?),
+            ))
+        })?;
+        for row in rows {
+            let (key, value) = row?;
+            reject_duplicate_dimension(dimensions, key, value)?;
+        }
+        Ok(())
+    }
+
+    fn load_boolean_dimensions(
+        &self,
+        experiment_id: ExperimentId,
+        dimensions: &mut BTreeMap<NonEmptyText, RunDimensionValue>,
+    ) -> Result<(), StoreError> {
+        let mut statement = self.connection.prepare(
+            "SELECT key, value
+             FROM experiment_dimension_booleans
+             WHERE experiment_id = ?1
+             ORDER BY key ASC",
+        )?;
+        let rows = statement.query_map(params![experiment_id.to_string()], |row| {
+            Ok((
+                parse_non_empty_text(&row.get::<_, String>(0)?)?,
+                RunDimensionValue::Boolean(row.get::<_, i64>(1)? != 0),
+            ))
+        })?;
+        for row in rows {
+            let (key, value) = row?;
+            reject_duplicate_dimension(dimensions, key, value)?;
+        }
+        Ok(())
+    }
+
+    fn load_timestamp_dimensions(
+        &self,
+        experiment_id: ExperimentId,
+        dimensions: &mut BTreeMap<NonEmptyText, RunDimensionValue>,
+    ) -> Result<(), StoreError> {
+        let mut statement = self.connection.prepare(
+            "SELECT key, value
+             FROM experiment_dimension_timestamps
+             WHERE experiment_id = ?1
+             ORDER BY key ASC",
+        )?;
+        let rows = statement.query_map(params![experiment_id.to_string()], |row| {
+            Ok((
+                parse_non_empty_text(&row.get::<_, String>(0)?)?,
+                RunDimensionValue::Timestamp(parse_non_empty_text(&row.get::<_, String>(1)?)?),
+            ))
+        })?;
+        for row in rows {
+            let (key, value) = row?;
+            reject_duplicate_dimension(dimensions, key, value)?;
+        }
+        Ok(())
+    }
+
+    fn experiment_outcome_metrics(
+        &self,
+        experiment_id: ExperimentId,
+    ) -> Result<(MetricValue, Vec<MetricValue>), StoreError> {
+        let mut statement = self.connection.prepare(
+            "SELECT experiment_metrics.is_primary, experiment_metrics.value,
+                    metric_definitions.key, metric_definitions.display_unit
+             FROM experiment_metrics
+             JOIN metric_definitions ON metric_definitions.id = experiment_metrics.metric_id
+             WHERE experiment_metrics.experiment_id = ?1
+             ORDER BY experiment_metrics.ordinal ASC",
+        )?;
+        let rows = statement.query_map(params![experiment_id.to_string()], |row| {
+            let unit = parse_metric_unit(&row.get::<_, String>(3)?)?;
+            Ok((
+                row.get::<_, i64>(0)? != 0,
+                MetricValue {
+                    key: parse_non_empty_text(&row.get::<_, String>(2)?)?,
+                    value: unit.display_value(row.get::<_, f64>(1)?),
+                    unit,
+                },
+            ))
+        })?;
+        let mut primary_metric = None;
+        let mut supporting_metrics = Vec::new();
+        for row in rows {
+            let (is_primary, metric) = row?;
+            if is_primary {
+                if primary_metric.replace(metric).is_some() {
+                    return Err(StoreError::InvalidInput(format!(
+                        "experiment `{experiment_id}` has multiple primary metric rows"
+                    )));
+                }
+            } else {
+                supporting_metrics.push(metric);
+            }
+        }
+        let Some(primary_metric) = primary_metric else {
+            return Err(StoreError::InvalidInput(format!(
+                "experiment `{experiment_id}` has an outcome without a primary metric row"
+            )));
+        };
+        Ok((primary_metric, supporting_metrics))
     }
 
     fn hypothesis_summary_from_record(
@@ -3133,7 +3415,6 @@ impl ProjectStore {
             id: record.id,
             slug: record.slug,
             frontier_id: record.frontier_id,
-            archived: record.archived,
             title: record.title,
             summary: record.summary,
             tags: record.tags,
@@ -3159,7 +3440,6 @@ impl ProjectStore {
             slug: record.slug,
             frontier_id: record.frontier_id,
             hypothesis_id: record.hypothesis_id,
-            archived: record.archived,
             title: record.title,
             summary: record.summary,
             tags: record.tags,
@@ -3196,7 +3476,7 @@ impl ProjectStore {
         &self,
         hypothesis_id: HypothesisId,
     ) -> Result<Option<ExperimentRecord>, StoreError> {
-        self.load_experiment_records(None, Some(hypothesis_id), true)
+        self.load_experiment_records(None, Some(hypothesis_id))
             .map(|records| {
                 records
                     .into_iter()
@@ -3257,7 +3537,6 @@ impl ProjectStore {
                     vertex,
                     frontier_id: record.frontier_id,
                     slug: record.slug,
-                    archived: record.archived,
                     title: record.title,
                     summary: Some(record.summary),
                     updated_at: record.updated_at,
@@ -3269,7 +3548,6 @@ impl ProjectStore {
                     vertex,
                     frontier_id: record.frontier_id,
                     slug: record.slug,
-                    archived: record.archived,
                     title: record.title,
                     summary: record.summary,
                     updated_at: record.updated_at,
@@ -3308,7 +3586,7 @@ impl ProjectStore {
 
     fn open_experiment_count(&self, frontier_id: Option<FrontierId>) -> Result<u64, StoreError> {
         Ok(self
-            .load_experiment_records(frontier_id, None, false)?
+            .load_experiment_records(frontier_id, None)?
             .into_iter()
             .filter(|record| record.status == ExperimentStatus::Open)
             .count() as u64)
@@ -3458,12 +3736,11 @@ impl ProjectStore {
     ) -> Result<u64, StoreError> {
         let base_sql = "SELECT COUNT(*)
                         FROM experiment_metrics metrics
-                        JOIN experiments experiments ON experiments.id = metrics.experiment_id";
+                        JOIN experiments experiments ON experiments.id = metrics.experiment_id
+                        JOIN hypotheses ON hypotheses.id = experiments.hypothesis_id";
         let count = if let Some(frontier_id) = frontier_id {
             self.connection.query_row(
-                &format!(
-                    "{base_sql} WHERE metrics.metric_id = ?1 AND experiments.frontier_id = ?2"
-                ),
+                &format!("{base_sql} WHERE metrics.metric_id = ?1 AND hypotheses.frontier_id = ?2"),
                 params![metric_id.to_string(), frontier_id.to_string()],
                 |row| row.get::<_, u64>(0),
             )?
@@ -3517,9 +3794,10 @@ impl ProjectStore {
         metric_id: MetricId,
     ) -> Result<BTreeSet<FrontierId>, StoreError> {
         let mut statement = self.connection.prepare(
-            "SELECT DISTINCT experiments.frontier_id
+            "SELECT DISTINCT hypotheses.frontier_id
              FROM experiment_metrics metrics
              JOIN experiments ON experiments.id = metrics.experiment_id
+             JOIN hypotheses ON hypotheses.id = experiments.hypothesis_id
              WHERE metrics.metric_id = ?1
              UNION
              SELECT DISTINCT frontier_id
@@ -3540,9 +3818,10 @@ impl ProjectStore {
              JOIN hypotheses ON hypotheses.id = tags.hypothesis_id
              WHERE tags.tag_id = ?1
              UNION
-             SELECT DISTINCT experiments.frontier_id
+             SELECT DISTINCT hypotheses.frontier_id
              FROM experiment_tags tags
              JOIN experiments ON experiments.id = tags.experiment_id
+             JOIN hypotheses ON hypotheses.id = experiments.hypothesis_id
              WHERE tags.tag_id = ?1",
         )?;
         let rows = statement.query_map(params![tag_id.to_string()], |row| {
@@ -3807,7 +4086,7 @@ impl ProjectStore {
         self.connection
             .query_row(
                 "SELECT tags.id, tags.name, tags.description, tags.family_id, tag_families.name,
-                        tags.status, tags.revision, tags.created_at, tags.updated_at
+                        tags.revision, tags.created_at, tags.updated_at
                  FROM tags
                  LEFT JOIN tag_families ON tag_families.id = tags.family_id
                  WHERE tags.name = ?1",
@@ -3824,7 +4103,7 @@ impl ProjectStore {
     ) -> Result<Option<TagFamilyRecord>, StoreError> {
         self.connection
             .query_row(
-                "SELECT id, name, description, mandatory, status, revision, created_at, updated_at
+                "SELECT id, name, description, mandatory, revision, created_at, updated_at
                  FROM tag_families
                  WHERE name = ?1",
                 params![name.as_str()],
@@ -3892,7 +4171,7 @@ impl ProjectStore {
     fn load_tag_records(&self) -> Result<Vec<TagRecord>, StoreError> {
         let mut statement = self.connection.prepare(
             "SELECT tags.id, tags.name, tags.description, tags.family_id, tag_families.name,
-                    tags.status, tags.revision, tags.created_at, tags.updated_at
+                    tags.revision, tags.created_at, tags.updated_at
              FROM tags
              LEFT JOIN tag_families ON tag_families.id = tags.family_id
              ORDER BY tags.name ASC",
@@ -3915,7 +4194,7 @@ impl ProjectStore {
 
     fn load_tag_family_records(&self) -> Result<Vec<TagFamilyRecord>, StoreError> {
         let mut statement = self.connection.prepare(
-            "SELECT id, name, description, mandatory, status, revision, created_at, updated_at
+            "SELECT id, name, description, mandatory, revision, created_at, updated_at
              FROM tag_families
              ORDER BY name ASC",
         )?;
@@ -4063,12 +4342,18 @@ impl ProjectStore {
 fn install_schema(connection: &Connection) -> Result<(), StoreError> {
     connection.execute_batch(
         "
+        CREATE TABLE IF NOT EXISTS project_metadata (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            display_name TEXT NOT NULL,
+            description TEXT,
+            created_at TEXT NOT NULL
+        );
+
         CREATE TABLE IF NOT EXISTS tags (
             id TEXT PRIMARY KEY NOT NULL,
             name TEXT NOT NULL UNIQUE,
             description TEXT NOT NULL,
             family_id TEXT REFERENCES tag_families(id) ON DELETE SET NULL,
-            status TEXT NOT NULL,
             revision INTEGER NOT NULL,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL
@@ -4079,7 +4364,6 @@ fn install_schema(connection: &Connection) -> Result<(), StoreError> {
             name TEXT NOT NULL UNIQUE,
             description TEXT NOT NULL,
             mandatory INTEGER NOT NULL,
-            status TEXT NOT NULL,
             revision INTEGER NOT NULL,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL
@@ -4112,17 +4396,35 @@ fn install_schema(connection: &Connection) -> Result<(), StoreError> {
             label TEXT NOT NULL,
             objective TEXT NOT NULL,
             status TEXT NOT NULL,
-            brief_json TEXT NOT NULL,
             revision INTEGER NOT NULL,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS frontier_briefs (
+            frontier_id TEXT PRIMARY KEY NOT NULL REFERENCES frontiers(id) ON DELETE CASCADE,
+            situation TEXT
+        );
+
+        CREATE TABLE IF NOT EXISTS frontier_roadmap_items (
+            frontier_id TEXT NOT NULL REFERENCES frontiers(id) ON DELETE CASCADE,
+            ordinal INTEGER NOT NULL,
+            hypothesis_id TEXT NOT NULL REFERENCES hypotheses(id) ON DELETE CASCADE,
+            summary TEXT,
+            PRIMARY KEY (frontier_id, ordinal)
+        );
+
+        CREATE TABLE IF NOT EXISTS frontier_unknowns (
+            frontier_id TEXT NOT NULL REFERENCES frontiers(id) ON DELETE CASCADE,
+            ordinal INTEGER NOT NULL,
+            body TEXT NOT NULL,
+            PRIMARY KEY (frontier_id, ordinal)
         );
 
         CREATE TABLE IF NOT EXISTS hypotheses (
             id TEXT PRIMARY KEY NOT NULL,
             slug TEXT NOT NULL UNIQUE,
             frontier_id TEXT NOT NULL REFERENCES frontiers(id) ON DELETE CASCADE,
-            archived INTEGER NOT NULL,
             title TEXT NOT NULL,
             summary TEXT NOT NULL,
             body TEXT NOT NULL,
@@ -4140,16 +4442,38 @@ fn install_schema(connection: &Connection) -> Result<(), StoreError> {
         CREATE TABLE IF NOT EXISTS experiments (
             id TEXT PRIMARY KEY NOT NULL,
             slug TEXT NOT NULL UNIQUE,
-            frontier_id TEXT NOT NULL REFERENCES frontiers(id) ON DELETE CASCADE,
             hypothesis_id TEXT NOT NULL REFERENCES hypotheses(id) ON DELETE CASCADE,
-            archived INTEGER NOT NULL,
             title TEXT NOT NULL,
             summary TEXT,
-            status TEXT NOT NULL,
-            outcome_json TEXT,
             revision INTEGER NOT NULL,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS experiment_outcomes (
+            experiment_id TEXT PRIMARY KEY NOT NULL REFERENCES experiments(id) ON DELETE CASCADE,
+            backend TEXT NOT NULL,
+            verdict TEXT NOT NULL,
+            rationale TEXT NOT NULL,
+            analysis_summary TEXT,
+            analysis_body TEXT,
+            working_directory TEXT,
+            commit_hash TEXT,
+            closed_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS experiment_command_argv (
+            experiment_id TEXT NOT NULL REFERENCES experiments(id) ON DELETE CASCADE,
+            ordinal INTEGER NOT NULL,
+            arg TEXT NOT NULL,
+            PRIMARY KEY (experiment_id, ordinal)
+        );
+
+        CREATE TABLE IF NOT EXISTS experiment_command_env (
+            experiment_id TEXT NOT NULL REFERENCES experiments(id) ON DELETE CASCADE,
+            key TEXT NOT NULL,
+            value TEXT NOT NULL,
+            PRIMARY KEY (experiment_id, key)
         );
 
         CREATE TABLE IF NOT EXISTS experiment_tags (
@@ -4193,9 +4517,7 @@ fn install_schema(connection: &Connection) -> Result<(), StoreError> {
             id TEXT PRIMARY KEY NOT NULL,
             frontier_id TEXT NOT NULL REFERENCES frontiers(id) ON DELETE CASCADE,
             metric_id TEXT NOT NULL REFERENCES metric_definitions(id) ON DELETE CASCADE,
-            revision INTEGER NOT NULL,
             created_at TEXT NOT NULL,
-            updated_at TEXT NOT NULL,
             UNIQUE (frontier_id, metric_id)
         );
 
@@ -4203,14 +4525,34 @@ fn install_schema(connection: &Connection) -> Result<(), StoreError> {
             key TEXT PRIMARY KEY NOT NULL,
             value_type TEXT NOT NULL,
             description TEXT,
-            created_at TEXT NOT NULL,
-            updated_at TEXT NOT NULL
+            created_at TEXT NOT NULL
         );
 
-        CREATE TABLE IF NOT EXISTS experiment_dimensions (
+        CREATE TABLE IF NOT EXISTS experiment_dimension_strings (
             experiment_id TEXT NOT NULL REFERENCES experiments(id) ON DELETE CASCADE,
             key TEXT NOT NULL REFERENCES run_dimension_definitions(key) ON DELETE CASCADE,
-            value_json TEXT NOT NULL,
+            value TEXT NOT NULL,
+            PRIMARY KEY (experiment_id, key)
+        );
+
+        CREATE TABLE IF NOT EXISTS experiment_dimension_numbers (
+            experiment_id TEXT NOT NULL REFERENCES experiments(id) ON DELETE CASCADE,
+            key TEXT NOT NULL REFERENCES run_dimension_definitions(key) ON DELETE CASCADE,
+            value REAL NOT NULL,
+            PRIMARY KEY (experiment_id, key)
+        );
+
+        CREATE TABLE IF NOT EXISTS experiment_dimension_booleans (
+            experiment_id TEXT NOT NULL REFERENCES experiments(id) ON DELETE CASCADE,
+            key TEXT NOT NULL REFERENCES run_dimension_definitions(key) ON DELETE CASCADE,
+            value INTEGER NOT NULL CHECK (value IN (0, 1)),
+            PRIMARY KEY (experiment_id, key)
+        );
+
+        CREATE TABLE IF NOT EXISTS experiment_dimension_timestamps (
+            experiment_id TEXT NOT NULL REFERENCES experiments(id) ON DELETE CASCADE,
+            key TEXT NOT NULL REFERENCES run_dimension_definitions(key) ON DELETE CASCADE,
+            value TEXT NOT NULL,
             PRIMARY KEY (experiment_id, key)
         );
 
@@ -4242,9 +4584,40 @@ fn load_store_user_version(connection: &Connection) -> Result<u32, StoreError> {
     Ok(u32::try_from(observed).unwrap_or(0))
 }
 
+fn replace_project_metadata(
+    connection: &Connection,
+    config: &ProjectConfig,
+) -> Result<(), StoreError> {
+    let _ = connection.execute(
+        "INSERT OR REPLACE INTO project_metadata (id, display_name, description, created_at)
+         VALUES (1, ?1, ?2, ?3)",
+        params![
+            config.display_name.as_str(),
+            config.description.as_ref().map(NonEmptyText::as_str),
+            encode_timestamp(config.created_at)?,
+        ],
+    )?;
+    Ok(())
+}
+
+fn load_project_metadata(connection: &Connection) -> Result<ProjectConfig, StoreError> {
+    connection
+        .query_row(
+            "SELECT display_name, description, created_at FROM project_metadata WHERE id = 1",
+            [],
+            |row| {
+                Ok(ProjectConfig {
+                    display_name: parse_non_empty_text(&row.get::<_, String>(0)?)?,
+                    description: parse_optional_non_empty_text(row.get::<_, Option<String>>(1)?)?,
+                    created_at: parse_timestamp_sql(&row.get::<_, String>(2)?)?,
+                })
+            },
+        )
+        .map_err(StoreError::from)
+}
+
 fn migrate_store_to_current(
     state_root: &Utf8Path,
-    config: &mut ProjectConfig,
     connection: &mut Connection,
     observed_version: u32,
 ) -> Result<(), StoreError> {
@@ -4257,9 +4630,11 @@ fn migrate_store_to_current(
         migrate_store_v10_to_v11(connection)?;
         version = 11;
     }
+    if version == 11 {
+        migrate_store_v11_to_v12(state_root, connection)?;
+        version = 12;
+    }
     if version == CURRENT_STORE_FORMAT_VERSION {
-        config.store_format_version = CURRENT_STORE_FORMAT_VERSION;
-        write_json_file(&state_root.join(PROJECT_CONFIG_NAME), config)?;
         return Ok(());
     }
     Err(StoreError::IncompatibleStoreFormatVersion {
@@ -4290,12 +4665,198 @@ fn migrate_store_v10_to_v11(connection: &mut Connection) -> Result<(), StoreErro
     normalize_legacy_time_metric_keys(&transaction, &mut definitions)?;
     refresh_experiment_metric_index(&transaction)?;
     transaction.commit()?;
-    connection.pragma_update(
-        None,
-        "user_version",
-        i64::from(CURRENT_STORE_FORMAT_VERSION),
-    )?;
+    connection.pragma_update(None, "user_version", 11_i64)?;
     Ok(())
+}
+
+fn migrate_store_v11_to_v12(
+    state_root: &Utf8Path,
+    connection: &mut Connection,
+) -> Result<(), StoreError> {
+    let config = read_legacy_project_metadata(state_root)?;
+    let transaction = connection.transaction()?;
+    transaction.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS project_metadata (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            display_name TEXT NOT NULL,
+            description TEXT,
+            created_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS frontier_briefs (
+            frontier_id TEXT PRIMARY KEY NOT NULL REFERENCES frontiers(id) ON DELETE CASCADE,
+            situation TEXT
+        );
+
+        CREATE TABLE IF NOT EXISTS frontier_roadmap_items (
+            frontier_id TEXT NOT NULL REFERENCES frontiers(id) ON DELETE CASCADE,
+            ordinal INTEGER NOT NULL,
+            hypothesis_id TEXT NOT NULL REFERENCES hypotheses(id) ON DELETE CASCADE,
+            summary TEXT,
+            PRIMARY KEY (frontier_id, ordinal)
+        );
+
+        CREATE TABLE IF NOT EXISTS frontier_unknowns (
+            frontier_id TEXT NOT NULL REFERENCES frontiers(id) ON DELETE CASCADE,
+            ordinal INTEGER NOT NULL,
+            body TEXT NOT NULL,
+            PRIMARY KEY (frontier_id, ordinal)
+        );
+
+        CREATE TABLE IF NOT EXISTS experiment_outcomes (
+            experiment_id TEXT PRIMARY KEY NOT NULL REFERENCES experiments(id) ON DELETE CASCADE,
+            backend TEXT NOT NULL,
+            verdict TEXT NOT NULL,
+            rationale TEXT NOT NULL,
+            analysis_summary TEXT,
+            analysis_body TEXT,
+            working_directory TEXT,
+            commit_hash TEXT,
+            closed_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS experiment_command_argv (
+            experiment_id TEXT NOT NULL REFERENCES experiments(id) ON DELETE CASCADE,
+            ordinal INTEGER NOT NULL,
+            arg TEXT NOT NULL,
+            PRIMARY KEY (experiment_id, ordinal)
+        );
+
+        CREATE TABLE IF NOT EXISTS experiment_command_env (
+            experiment_id TEXT NOT NULL REFERENCES experiments(id) ON DELETE CASCADE,
+            key TEXT NOT NULL,
+            value TEXT NOT NULL,
+            PRIMARY KEY (experiment_id, key)
+        );
+
+        CREATE TABLE IF NOT EXISTS experiment_dimension_strings (
+            experiment_id TEXT NOT NULL REFERENCES experiments(id) ON DELETE CASCADE,
+            key TEXT NOT NULL REFERENCES run_dimension_definitions(key) ON DELETE CASCADE,
+            value TEXT NOT NULL,
+            PRIMARY KEY (experiment_id, key)
+        );
+
+        CREATE TABLE IF NOT EXISTS experiment_dimension_numbers (
+            experiment_id TEXT NOT NULL REFERENCES experiments(id) ON DELETE CASCADE,
+            key TEXT NOT NULL REFERENCES run_dimension_definitions(key) ON DELETE CASCADE,
+            value REAL NOT NULL,
+            PRIMARY KEY (experiment_id, key)
+        );
+
+        CREATE TABLE IF NOT EXISTS experiment_dimension_booleans (
+            experiment_id TEXT NOT NULL REFERENCES experiments(id) ON DELETE CASCADE,
+            key TEXT NOT NULL REFERENCES run_dimension_definitions(key) ON DELETE CASCADE,
+            value INTEGER NOT NULL CHECK (value IN (0, 1)),
+            PRIMARY KEY (experiment_id, key)
+        );
+
+        CREATE TABLE IF NOT EXISTS experiment_dimension_timestamps (
+            experiment_id TEXT NOT NULL REFERENCES experiments(id) ON DELETE CASCADE,
+            key TEXT NOT NULL REFERENCES run_dimension_definitions(key) ON DELETE CASCADE,
+            value TEXT NOT NULL,
+            PRIMARY KEY (experiment_id, key)
+        );
+        ",
+    )?;
+    let _ = transaction.execute(
+        "INSERT OR REPLACE INTO project_metadata (id, display_name, description, created_at)
+         VALUES (1, ?1, ?2, ?3)",
+        params![
+            config.display_name.as_str(),
+            config.description.as_ref().map(NonEmptyText::as_str),
+            encode_timestamp(config.created_at)?,
+        ],
+    )?;
+    let frontier_briefs = {
+        let mut statement = transaction.prepare("SELECT id, brief_json FROM frontiers")?;
+        statement
+            .query_map([], |row| {
+                Ok((
+                    FrontierId::from_uuid(parse_uuid_sql(&row.get::<_, String>(0)?)?),
+                    row.get::<_, String>(1)?,
+                ))
+            })?
+            .collect::<Result<Vec<_>, _>>()?
+    };
+    for (frontier_id, raw_brief) in frontier_briefs {
+        let brief = decode_json::<FrontierBrief>(&raw_brief)?;
+        replace_frontier_brief(&transaction, frontier_id, &brief)?;
+    }
+    let experiment_outcomes = {
+        let mut statement = transaction
+            .prepare("SELECT id, outcome_json FROM experiments WHERE outcome_json IS NOT NULL")?;
+        statement
+            .query_map([], |row| {
+                Ok((
+                    ExperimentId::from_uuid(parse_uuid_sql(&row.get::<_, String>(0)?)?),
+                    row.get::<_, String>(1)?,
+                ))
+            })?
+            .collect::<Result<Vec<_>, _>>()?
+    };
+    for (experiment_id, raw_outcome) in experiment_outcomes {
+        let outcome = decode_json::<ExperimentOutcome>(&raw_outcome)?;
+        replace_experiment_outcome(&transaction, experiment_id, Some(&outcome))?;
+        replace_experiment_dimensions(&transaction, experiment_id, Some(&outcome))?;
+        replace_experiment_metrics(&transaction, experiment_id, Some(&outcome))?;
+    }
+    drop_column_if_exists(&transaction, "tags", "status")?;
+    drop_column_if_exists(&transaction, "tag_families", "status")?;
+    drop_column_if_exists(&transaction, "frontiers", "brief_json")?;
+    drop_column_if_exists(&transaction, "hypotheses", "archived")?;
+    drop_column_if_exists(&transaction, "experiments", "frontier_id")?;
+    drop_column_if_exists(&transaction, "experiments", "archived")?;
+    drop_column_if_exists(&transaction, "experiments", "status")?;
+    drop_column_if_exists(&transaction, "experiments", "outcome_json")?;
+    drop_column_if_exists(&transaction, "frontier_kpis", "revision")?;
+    drop_column_if_exists(&transaction, "frontier_kpis", "updated_at")?;
+    drop_column_if_exists(&transaction, "run_dimension_definitions", "updated_at")?;
+    let _ = transaction.execute("DROP TABLE IF EXISTS experiment_dimensions", [])?;
+    transaction.commit()?;
+    connection.pragma_update(None, "user_version", 12_i64)?;
+    let legacy_config_path = state_root.join(LEGACY_PROJECT_CONFIG_NAME);
+    match fs::remove_file(legacy_config_path.as_std_path()) {
+        Ok(()) => {}
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(StoreError::Io(error)),
+    }
+    Ok(())
+}
+
+fn read_legacy_project_metadata(state_root: &Utf8Path) -> Result<ProjectConfig, StoreError> {
+    let path = state_root.join(LEGACY_PROJECT_CONFIG_NAME);
+    match read_json_file(&path) {
+        Ok(config) => Ok(config),
+        Err(StoreError::Io(error)) if error.kind() == io::ErrorKind::NotFound => Ok(
+            ProjectConfig::new(NonEmptyText::new("Fidget Spinner Project")?),
+        ),
+        Err(error) => Err(error),
+    }
+}
+
+fn drop_column_if_exists(
+    connection: &Connection,
+    table: &str,
+    column: &str,
+) -> Result<(), StoreError> {
+    if !table_has_column(connection, table, column)? {
+        return Ok(());
+    }
+    let _ = connection.execute(&format!("ALTER TABLE {table} DROP COLUMN {column}"), [])?;
+    Ok(())
+}
+
+fn table_has_column(
+    connection: &Connection,
+    table: &str,
+    column: &str,
+) -> Result<bool, StoreError> {
+    let mut statement = connection.prepare(&format!("PRAGMA table_info({table})"))?;
+    let columns = statement
+        .query_map([], |row| row.get::<_, String>(1))?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(columns.iter().any(|candidate| candidate == column))
 }
 
 fn inject_metric_units_into_legacy_outcomes(
@@ -4533,14 +5094,13 @@ fn purge_legacy_artifact_schema(connection: &Connection) -> Result<(), StoreErro
 
 fn insert_tag(transaction: &Transaction<'_>, tag: &TagRecord) -> Result<(), StoreError> {
     let _ = transaction.execute(
-        "INSERT INTO tags (id, name, description, family_id, status, revision, created_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        "INSERT INTO tags (id, name, description, family_id, revision, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
         params![
             tag.id.to_string(),
             tag.name.as_str(),
             tag.description.as_str(),
             tag.family_id.map(|id| id.to_string()),
-            tag.status.as_str(),
             tag.revision,
             encode_timestamp(tag.created_at)?,
             encode_timestamp(tag.updated_at)?,
@@ -4552,14 +5112,13 @@ fn insert_tag(transaction: &Transaction<'_>, tag: &TagRecord) -> Result<(), Stor
 fn update_tag(transaction: &Transaction<'_>, tag: &TagRecord) -> Result<(), StoreError> {
     let _ = transaction.execute(
         "UPDATE tags
-         SET name = ?2, description = ?3, family_id = ?4, status = ?5, revision = ?6, updated_at = ?7
+         SET name = ?2, description = ?3, family_id = ?4, revision = ?5, updated_at = ?6
          WHERE id = ?1",
         params![
             tag.id.to_string(),
             tag.name.as_str(),
             tag.description.as_str(),
             tag.family_id.map(|id| id.to_string()),
-            tag.status.as_str(),
             tag.revision,
             encode_timestamp(tag.updated_at)?,
         ],
@@ -4580,14 +5139,13 @@ fn insert_tag_family(
     family: &TagFamilyRecord,
 ) -> Result<(), StoreError> {
     let _ = transaction.execute(
-        "INSERT INTO tag_families (id, name, description, mandatory, status, revision, created_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        "INSERT INTO tag_families (id, name, description, mandatory, revision, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
         params![
             family.id.to_string(),
             family.name.as_str(),
             family.description.as_str(),
             bool_to_sql(family.mandatory),
-            family.status.as_str(),
             family.revision,
             encode_timestamp(family.created_at)?,
             encode_timestamp(family.updated_at)?,
@@ -4602,14 +5160,13 @@ fn update_tag_family(
 ) -> Result<(), StoreError> {
     let _ = transaction.execute(
         "UPDATE tag_families
-         SET name = ?2, description = ?3, mandatory = ?4, status = ?5, revision = ?6, updated_at = ?7
+         SET name = ?2, description = ?3, mandatory = ?4, revision = ?5, updated_at = ?6
          WHERE id = ?1",
         params![
             family.id.to_string(),
             family.name.as_str(),
             family.description.as_str(),
             bool_to_sql(family.mandatory),
-            family.status.as_str(),
             family.revision,
             encode_timestamp(family.updated_at)?,
         ],
@@ -4619,15 +5176,13 @@ fn update_tag_family(
 
 fn insert_kpi(transaction: &Transaction<'_>, record: &FrontierKpiRecord) -> Result<(), StoreError> {
     let _ = transaction.execute(
-        "INSERT INTO frontier_kpis (id, frontier_id, metric_id, revision, created_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        "INSERT INTO frontier_kpis (id, frontier_id, metric_id, created_at)
+         VALUES (?1, ?2, ?3, ?4)",
         params![
             record.id.to_string(),
             record.frontier_id.to_string(),
             record.metric_id.to_string(),
-            record.revision,
             encode_timestamp(record.created_at)?,
-            encode_timestamp(record.updated_at)?,
         ],
     )?;
     Ok(())
@@ -4713,20 +5268,70 @@ fn insert_frontier(
     frontier: &FrontierRecord,
 ) -> Result<(), StoreError> {
     let _ = transaction.execute(
-        "INSERT INTO frontiers (id, slug, label, objective, status, brief_json, revision, created_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+        "INSERT INTO frontiers (id, slug, label, objective, status, revision, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
         params![
             frontier.id.to_string(),
             frontier.slug.as_str(),
             frontier.label.as_str(),
             frontier.objective.as_str(),
             frontier.status.as_str(),
-            encode_json(&frontier.brief)?,
             frontier.revision,
             encode_timestamp(frontier.created_at)?,
             encode_timestamp(frontier.updated_at)?,
         ],
     )?;
+    replace_frontier_brief(transaction, frontier.id, &frontier.brief)?;
+    Ok(())
+}
+
+fn replace_frontier_brief(
+    transaction: &Transaction<'_>,
+    frontier_id: FrontierId,
+    brief: &FrontierBrief,
+) -> Result<(), StoreError> {
+    let _ = transaction.execute(
+        "DELETE FROM frontier_briefs WHERE frontier_id = ?1",
+        params![frontier_id.to_string()],
+    )?;
+    let _ = transaction.execute(
+        "DELETE FROM frontier_roadmap_items WHERE frontier_id = ?1",
+        params![frontier_id.to_string()],
+    )?;
+    let _ = transaction.execute(
+        "DELETE FROM frontier_unknowns WHERE frontier_id = ?1",
+        params![frontier_id.to_string()],
+    )?;
+    let _ = transaction.execute(
+        "INSERT INTO frontier_briefs (frontier_id, situation) VALUES (?1, ?2)",
+        params![
+            frontier_id.to_string(),
+            brief.situation.as_ref().map(NonEmptyText::as_str),
+        ],
+    )?;
+    for (ordinal, item) in brief.roadmap.iter().enumerate() {
+        let _ = transaction.execute(
+            "INSERT INTO frontier_roadmap_items (frontier_id, ordinal, hypothesis_id, summary)
+             VALUES (?1, ?2, ?3, ?4)",
+            params![
+                frontier_id.to_string(),
+                i64::try_from(ordinal).unwrap_or(i64::MAX),
+                item.hypothesis_id.to_string(),
+                item.summary.as_ref().map(NonEmptyText::as_str),
+            ],
+        )?;
+    }
+    for (ordinal, unknown) in brief.unknowns.iter().enumerate() {
+        let _ = transaction.execute(
+            "INSERT INTO frontier_unknowns (frontier_id, ordinal, body)
+             VALUES (?1, ?2, ?3)",
+            params![
+                frontier_id.to_string(),
+                i64::try_from(ordinal).unwrap_or(i64::MAX),
+                unknown.as_str(),
+            ],
+        )?;
+    }
     Ok(())
 }
 
@@ -4736,7 +5341,7 @@ fn update_frontier_row(
 ) -> Result<(), StoreError> {
     let _ = transaction.execute(
         "UPDATE frontiers
-         SET slug = ?2, label = ?3, objective = ?4, status = ?5, brief_json = ?6, revision = ?7, updated_at = ?8
+         SET slug = ?2, label = ?3, objective = ?4, status = ?5, revision = ?6, updated_at = ?7
          WHERE id = ?1",
         params![
             frontier.id.to_string(),
@@ -4744,11 +5349,11 @@ fn update_frontier_row(
             frontier.label.as_str(),
             frontier.objective.as_str(),
             frontier.status.as_str(),
-            encode_json(&frontier.brief)?,
             frontier.revision,
             encode_timestamp(frontier.updated_at)?,
         ],
     )?;
+    replace_frontier_brief(transaction, frontier.id, &frontier.brief)?;
     Ok(())
 }
 
@@ -4757,13 +5362,12 @@ fn insert_hypothesis(
     hypothesis: &HypothesisRecord,
 ) -> Result<(), StoreError> {
     let _ = transaction.execute(
-        "INSERT INTO hypotheses (id, slug, frontier_id, archived, title, summary, body, revision, created_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+        "INSERT INTO hypotheses (id, slug, frontier_id, title, summary, body, revision, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
         params![
             hypothesis.id.to_string(),
             hypothesis.slug.as_str(),
             hypothesis.frontier_id.to_string(),
-            bool_to_sql(hypothesis.archived),
             hypothesis.title.as_str(),
             hypothesis.summary.as_str(),
             hypothesis.body.as_str(),
@@ -4781,12 +5385,11 @@ fn update_hypothesis_row(
 ) -> Result<(), StoreError> {
     let _ = transaction.execute(
         "UPDATE hypotheses
-         SET slug = ?2, archived = ?3, title = ?4, summary = ?5, body = ?6, revision = ?7, updated_at = ?8
+         SET slug = ?2, title = ?3, summary = ?4, body = ?5, revision = ?6, updated_at = ?7
          WHERE id = ?1",
         params![
             hypothesis.id.to_string(),
             hypothesis.slug.as_str(),
-            bool_to_sql(hypothesis.archived),
             hypothesis.title.as_str(),
             hypothesis.summary.as_str(),
             hypothesis.body.as_str(),
@@ -4820,23 +5423,22 @@ fn insert_experiment(
     experiment: &ExperimentRecord,
 ) -> Result<(), StoreError> {
     let _ = transaction.execute(
-        "INSERT INTO experiments (id, slug, frontier_id, hypothesis_id, archived, title, summary, status, outcome_json, revision, created_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+        "INSERT INTO experiments (id, slug, hypothesis_id, title, summary, revision, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
         params![
             experiment.id.to_string(),
             experiment.slug.as_str(),
-            experiment.frontier_id.to_string(),
             experiment.hypothesis_id.to_string(),
-            bool_to_sql(experiment.archived),
             experiment.title.as_str(),
             experiment.summary.as_ref().map(NonEmptyText::as_str),
-            experiment.status.as_str(),
-            experiment.outcome.as_ref().map(encode_json).transpose()?,
             experiment.revision,
             encode_timestamp(experiment.created_at)?,
             encode_timestamp(experiment.updated_at)?,
         ],
     )?;
+    replace_experiment_outcome(transaction, experiment.id, experiment.outcome.as_ref())?;
+    replace_experiment_dimensions(transaction, experiment.id, experiment.outcome.as_ref())?;
+    replace_experiment_metrics(transaction, experiment.id, experiment.outcome.as_ref())?;
     Ok(())
 }
 
@@ -4846,20 +5448,18 @@ fn update_experiment_row(
 ) -> Result<(), StoreError> {
     let _ = transaction.execute(
         "UPDATE experiments
-         SET slug = ?2, archived = ?3, title = ?4, summary = ?5, status = ?6, outcome_json = ?7, revision = ?8, updated_at = ?9
+         SET slug = ?2, title = ?3, summary = ?4, revision = ?5, updated_at = ?6
          WHERE id = ?1",
         params![
             experiment.id.to_string(),
             experiment.slug.as_str(),
-            bool_to_sql(experiment.archived),
             experiment.title.as_str(),
             experiment.summary.as_ref().map(NonEmptyText::as_str),
-            experiment.status.as_str(),
-            experiment.outcome.as_ref().map(encode_json).transpose()?,
             experiment.revision,
             encode_timestamp(experiment.updated_at)?,
         ],
     )?;
+    replace_experiment_outcome(transaction, experiment.id, experiment.outcome.as_ref())?;
     Ok(())
 }
 
@@ -4911,15 +5511,134 @@ fn replace_experiment_dimensions(
     experiment_id: ExperimentId,
     outcome: Option<&ExperimentOutcome>,
 ) -> Result<(), StoreError> {
+    delete_experiment_dimension_rows(transaction, experiment_id)?;
+    if let Some(outcome) = outcome {
+        for (key, value) in &outcome.dimensions {
+            insert_experiment_dimension(transaction, experiment_id, key, value)?;
+        }
+    }
+    Ok(())
+}
+
+fn delete_experiment_dimension_rows(
+    transaction: &Transaction<'_>,
+    experiment_id: ExperimentId,
+) -> Result<(), StoreError> {
+    for table in [
+        "experiment_dimension_strings",
+        "experiment_dimension_numbers",
+        "experiment_dimension_booleans",
+        "experiment_dimension_timestamps",
+    ] {
+        let _ = transaction.execute(
+            &format!("DELETE FROM {table} WHERE experiment_id = ?1"),
+            params![experiment_id.to_string()],
+        )?;
+    }
+    Ok(())
+}
+
+fn insert_experiment_dimension(
+    transaction: &Transaction<'_>,
+    experiment_id: ExperimentId,
+    key: &NonEmptyText,
+    value: &RunDimensionValue,
+) -> Result<(), StoreError> {
+    match value {
+        RunDimensionValue::String(value) => {
+            let _ = transaction.execute(
+                "INSERT INTO experiment_dimension_strings (experiment_id, key, value)
+                 VALUES (?1, ?2, ?3)",
+                params![experiment_id.to_string(), key.as_str(), value.as_str()],
+            )?;
+        }
+        RunDimensionValue::Numeric(value) => {
+            let _ = transaction.execute(
+                "INSERT INTO experiment_dimension_numbers (experiment_id, key, value)
+                 VALUES (?1, ?2, ?3)",
+                params![experiment_id.to_string(), key.as_str(), value],
+            )?;
+        }
+        RunDimensionValue::Boolean(value) => {
+            let _ = transaction.execute(
+                "INSERT INTO experiment_dimension_booleans (experiment_id, key, value)
+                 VALUES (?1, ?2, ?3)",
+                params![experiment_id.to_string(), key.as_str(), bool_to_sql(*value)],
+            )?;
+        }
+        RunDimensionValue::Timestamp(value) => {
+            let _ = transaction.execute(
+                "INSERT INTO experiment_dimension_timestamps (experiment_id, key, value)
+                 VALUES (?1, ?2, ?3)",
+                params![experiment_id.to_string(), key.as_str(), value.as_str()],
+            )?;
+        }
+    }
+    Ok(())
+}
+
+fn replace_experiment_outcome(
+    transaction: &Transaction<'_>,
+    experiment_id: ExperimentId,
+    outcome: Option<&ExperimentOutcome>,
+) -> Result<(), StoreError> {
     let _ = transaction.execute(
-        "DELETE FROM experiment_dimensions WHERE experiment_id = ?1",
+        "DELETE FROM experiment_outcomes WHERE experiment_id = ?1",
+        params![experiment_id.to_string()],
+    )?;
+    let _ = transaction.execute(
+        "DELETE FROM experiment_command_argv WHERE experiment_id = ?1",
+        params![experiment_id.to_string()],
+    )?;
+    let _ = transaction.execute(
+        "DELETE FROM experiment_command_env WHERE experiment_id = ?1",
         params![experiment_id.to_string()],
     )?;
     if let Some(outcome) = outcome {
-        for (key, value) in &outcome.dimensions {
+        let _ = transaction.execute(
+            "INSERT INTO experiment_outcomes (
+                experiment_id, backend, verdict, rationale, analysis_summary, analysis_body,
+                working_directory, commit_hash, closed_at
+             )
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params![
+                experiment_id.to_string(),
+                outcome.backend.as_str(),
+                outcome.verdict.as_str(),
+                outcome.rationale.as_str(),
+                outcome
+                    .analysis
+                    .as_ref()
+                    .map(|analysis| analysis.summary.as_str()),
+                outcome
+                    .analysis
+                    .as_ref()
+                    .map(|analysis| analysis.body.as_str()),
+                outcome
+                    .command
+                    .working_directory
+                    .as_ref()
+                    .map(|path| path.as_str()),
+                outcome.commit_hash.as_ref().map(GitCommitHash::as_str),
+                encode_timestamp(outcome.closed_at)?,
+            ],
+        )?;
+        for (ordinal, arg) in outcome.command.argv.iter().enumerate() {
             let _ = transaction.execute(
-                "INSERT INTO experiment_dimensions (experiment_id, key, value_json) VALUES (?1, ?2, ?3)",
-                params![experiment_id.to_string(), key.as_str(), encode_json(value)?],
+                "INSERT INTO experiment_command_argv (experiment_id, ordinal, arg)
+                 VALUES (?1, ?2, ?3)",
+                params![
+                    experiment_id.to_string(),
+                    i64::try_from(ordinal).unwrap_or(i64::MAX),
+                    arg.as_str(),
+                ],
+            )?;
+        }
+        for (key, value) in &outcome.command.env {
+            let _ = transaction.execute(
+                "INSERT INTO experiment_command_env (experiment_id, key, value)
+                 VALUES (?1, ?2, ?3)",
+                params![experiment_id.to_string(), key, value],
             )?;
         }
     }
@@ -5157,10 +5876,9 @@ fn decode_tag_row(row: &rusqlite::Row<'_>) -> Result<TagRecord, rusqlite::Error>
             .map(TagFamilyName::new)
             .transpose()
             .map_err(core_to_sql_conversion_error)?,
-        status: parse_tag_status(&row.get::<_, String>(5)?)?,
-        revision: row.get(6)?,
-        created_at: parse_timestamp_sql(&row.get::<_, String>(7)?)?,
-        updated_at: parse_timestamp_sql(&row.get::<_, String>(8)?)?,
+        revision: row.get(5)?,
+        created_at: parse_timestamp_sql(&row.get::<_, String>(6)?)?,
+        updated_at: parse_timestamp_sql(&row.get::<_, String>(7)?)?,
     })
 }
 
@@ -5170,10 +5888,9 @@ fn decode_tag_family_row(row: &rusqlite::Row<'_>) -> Result<TagFamilyRecord, rus
         name: TagFamilyName::new(row.get::<_, String>(1)?).map_err(core_to_sql_conversion_error)?,
         description: parse_non_empty_text(&row.get::<_, String>(2)?)?,
         mandatory: row.get::<_, i64>(3)? != 0,
-        status: parse_tag_status(&row.get::<_, String>(4)?)?,
-        revision: row.get(5)?,
-        created_at: parse_timestamp_sql(&row.get::<_, String>(6)?)?,
-        updated_at: parse_timestamp_sql(&row.get::<_, String>(7)?)?,
+        revision: row.get(4)?,
+        created_at: parse_timestamp_sql(&row.get::<_, String>(5)?)?,
+        updated_at: parse_timestamp_sql(&row.get::<_, String>(6)?)?,
     })
 }
 
@@ -5262,10 +5979,10 @@ fn decode_frontier_row(row: &rusqlite::Row<'_>) -> Result<FrontierRecord, rusqli
         label: parse_non_empty_text(&row.get::<_, String>(2)?)?,
         objective: parse_non_empty_text(&row.get::<_, String>(3)?)?,
         status: parse_frontier_status(&row.get::<_, String>(4)?)?,
-        brief: decode_json(&row.get::<_, String>(5)?).map_err(to_sql_conversion_error)?,
-        revision: row.get(6)?,
-        created_at: parse_timestamp_sql(&row.get::<_, String>(7)?)?,
-        updated_at: parse_timestamp_sql(&row.get::<_, String>(8)?)?,
+        brief: FrontierBrief::default(),
+        revision: row.get(5)?,
+        created_at: parse_timestamp_sql(&row.get::<_, String>(6)?)?,
+        updated_at: parse_timestamp_sql(&row.get::<_, String>(7)?)?,
     })
 }
 
@@ -5275,18 +5992,14 @@ fn decode_experiment_row(row: &rusqlite::Row<'_>) -> Result<ExperimentRecord, ru
         slug: parse_slug(&row.get::<_, String>(1)?)?,
         frontier_id: FrontierId::from_uuid(parse_uuid_sql(&row.get::<_, String>(2)?)?),
         hypothesis_id: HypothesisId::from_uuid(parse_uuid_sql(&row.get::<_, String>(3)?)?),
-        archived: row.get::<_, i64>(4)? != 0,
-        title: parse_non_empty_text(&row.get::<_, String>(5)?)?,
-        summary: parse_optional_non_empty_text(row.get::<_, Option<String>>(6)?)?,
+        title: parse_non_empty_text(&row.get::<_, String>(4)?)?,
+        summary: parse_optional_non_empty_text(row.get::<_, Option<String>>(5)?)?,
         tags: Vec::new(),
-        status: parse_experiment_status(&row.get::<_, String>(7)?)?,
-        outcome: row
-            .get::<_, Option<String>>(8)?
-            .map(|raw| decode_json(&raw).map_err(to_sql_conversion_error))
-            .transpose()?,
-        revision: row.get(9)?,
-        created_at: parse_timestamp_sql(&row.get::<_, String>(10)?)?,
-        updated_at: parse_timestamp_sql(&row.get::<_, String>(11)?)?,
+        status: ExperimentStatus::Open,
+        outcome: None,
+        revision: row.get(6)?,
+        created_at: parse_timestamp_sql(&row.get::<_, String>(7)?)?,
+        updated_at: parse_timestamp_sql(&row.get::<_, String>(8)?)?,
     })
 }
 
@@ -5312,9 +6025,7 @@ fn decode_kpi_row(row: &rusqlite::Row<'_>) -> Result<FrontierKpiRecord, rusqlite
         id: parse_kpi_id_sql(&row.get::<_, String>(0)?)?,
         frontier_id: FrontierId::from_uuid(parse_uuid_sql(&row.get::<_, String>(1)?)?),
         metric_id: parse_metric_id_sql(&row.get::<_, String>(2)?)?,
-        revision: row.get(3)?,
-        created_at: parse_timestamp_sql(&row.get::<_, String>(4)?)?,
-        updated_at: parse_timestamp_sql(&row.get::<_, String>(5)?)?,
+        created_at: parse_timestamp_sql(&row.get::<_, String>(3)?)?,
     })
 }
 
@@ -5326,7 +6037,6 @@ fn decode_run_dimension_definition_row(
         value_type: parse_field_value_type(&row.get::<_, String>(1)?)?,
         description: parse_optional_non_empty_text(row.get::<_, Option<String>>(2)?)?,
         created_at: parse_timestamp_sql(&row.get::<_, String>(3)?)?,
-        updated_at: parse_timestamp_sql(&row.get::<_, String>(4)?)?,
     })
 }
 
@@ -5467,13 +6177,31 @@ fn parse_frontier_status(raw: &str) -> Result<FrontierStatus, rusqlite::Error> {
     }
 }
 
-fn parse_tag_status(raw: &str) -> Result<TagStatus, rusqlite::Error> {
+fn parse_execution_backend(raw: &str) -> Result<ExecutionBackend, rusqlite::Error> {
     match raw {
-        "active" => Ok(TagStatus::Active),
+        "manual" => Ok(ExecutionBackend::Manual),
+        "local_process" => Ok(ExecutionBackend::LocalProcess),
+        "worktree_process" => Ok(ExecutionBackend::WorktreeProcess),
+        "ssh_process" => Ok(ExecutionBackend::SshProcess),
         _ => Err(to_sql_conversion_error(StoreError::Json(
             serde_json::Error::io(io::Error::new(
                 io::ErrorKind::InvalidData,
-                format!("invalid tag status `{raw}`"),
+                format!("invalid execution backend `{raw}`"),
+            )),
+        ))),
+    }
+}
+
+fn parse_frontier_verdict(raw: &str) -> Result<FrontierVerdict, rusqlite::Error> {
+    match raw {
+        "accepted" => Ok(FrontierVerdict::Accepted),
+        "kept" => Ok(FrontierVerdict::Kept),
+        "parked" => Ok(FrontierVerdict::Parked),
+        "rejected" => Ok(FrontierVerdict::Rejected),
+        _ => Err(to_sql_conversion_error(StoreError::Json(
+            serde_json::Error::io(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("invalid frontier verdict `{raw}`"),
             )),
         ))),
     }
@@ -5580,19 +6308,6 @@ fn parse_field_value_type(raw: &str) -> Result<FieldValueType, rusqlite::Error> 
     }
 }
 
-fn parse_experiment_status(raw: &str) -> Result<ExperimentStatus, rusqlite::Error> {
-    match raw {
-        "open" => Ok(ExperimentStatus::Open),
-        "closed" => Ok(ExperimentStatus::Closed),
-        _ => Err(to_sql_conversion_error(StoreError::Json(
-            serde_json::Error::io(io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("invalid experiment status `{raw}`"),
-            )),
-        ))),
-    }
-}
-
 fn resolve_selector(raw: &str) -> Result<Selector, StoreError> {
     if let Ok(uuid) = Uuid::parse_str(raw) {
         Ok(Selector::Id(uuid))
@@ -5676,6 +6391,19 @@ fn dimension_subset_matches(
             .get(key)
             .is_some_and(|candidate| candidate == value)
     })
+}
+
+fn reject_duplicate_dimension(
+    dimensions: &mut BTreeMap<NonEmptyText, RunDimensionValue>,
+    key: NonEmptyText,
+    value: RunDimensionValue,
+) -> Result<(), StoreError> {
+    if dimensions.insert(key.clone(), value).is_some() {
+        return Err(StoreError::InvalidInput(format!(
+            "experiment dimension `{key}` is stored in multiple typed dimension tables"
+        )));
+    }
+    Ok(())
 }
 
 fn compare_metric_values(left: f64, right: f64, order: MetricRankOrder) -> std::cmp::Ordering {
@@ -5908,12 +6636,6 @@ fn apply_optional_text_patch<T>(patch: Option<TextPatch<T>>, current: Option<T>)
         Some(TextPatch::Set(value)) => Some(value),
         Some(TextPatch::Clear) => None,
     }
-}
-
-fn write_json_file<T: Serialize>(path: &Utf8Path, value: &T) -> Result<(), StoreError> {
-    let bytes = serde_json::to_vec_pretty(value)?;
-    fs::write(path.as_std_path(), bytes)?;
-    Ok(())
 }
 
 fn read_json_file<T: for<'de> Deserialize<'de>>(path: &Utf8Path) -> Result<T, StoreError> {

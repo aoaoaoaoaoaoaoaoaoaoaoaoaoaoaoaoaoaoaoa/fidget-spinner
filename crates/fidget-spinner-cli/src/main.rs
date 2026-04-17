@@ -317,8 +317,6 @@ struct HypothesisListArgs {
     #[arg(long = "tag")]
     tags: Vec<String>,
     #[arg(long)]
-    include_archived: bool,
-    #[arg(long)]
     limit: Option<u32>,
 }
 
@@ -352,8 +350,6 @@ struct HypothesisUpdateArgs {
     parents: Vec<String>,
     #[arg(long = "replace-parents")]
     replace_parents: bool,
-    #[arg(long, value_enum)]
-    state: Option<CliArchivePatch>,
 }
 
 #[derive(Args)]
@@ -386,8 +382,6 @@ struct ExperimentListArgs {
     status: Option<CliExperimentStatus>,
     #[arg(long = "tag")]
     tags: Vec<String>,
-    #[arg(long)]
-    include_archived: bool,
     #[arg(long)]
     limit: Option<u32>,
 }
@@ -422,8 +416,6 @@ struct ExperimentUpdateArgs {
     parents: Vec<String>,
     #[arg(long = "replace-parents")]
     replace_parents: bool,
-    #[arg(long, value_enum)]
-    state: Option<CliArchivePatch>,
     #[arg(long = "outcome-json")]
     outcome_json: Option<String>,
     #[arg(long = "outcome-file")]
@@ -720,12 +712,6 @@ impl From<CliFrontierStatus> for FrontierStatus {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
-enum CliArchivePatch {
-    Archive,
-    Restore,
-}
-
 fn main() -> Result<(), StoreError> {
     let cli = Cli::parse();
     match cli.command {
@@ -903,7 +889,6 @@ fn run_hypothesis_list(args: HypothesisListArgs) -> Result<(), StoreError> {
     print_json(&store.list_hypotheses(ListHypothesesQuery {
         frontier: args.frontier,
         tags: parse_tag_set(args.tags)?,
-        include_archived: args.include_archived,
         limit: args.limit,
     })?)
 }
@@ -928,7 +913,6 @@ fn run_hypothesis_update(args: HypothesisUpdateArgs) -> Result<(), StoreError> {
         body: args.body.map(NonEmptyText::new).transpose()?,
         tags,
         parents,
-        archived: archive_patch(args.state),
     })?)
 }
 
@@ -950,7 +934,6 @@ fn run_experiment_list(args: ExperimentListArgs) -> Result<(), StoreError> {
         frontier: args.frontier,
         hypothesis: args.hypothesis,
         tags: parse_tag_set(args.tags)?,
-        include_archived: args.include_archived,
         status: args.status.map(Into::into),
         limit: args.limit,
     })?)
@@ -975,7 +958,6 @@ fn run_experiment_update(args: ExperimentUpdateArgs) -> Result<(), StoreError> {
         } else {
             None
         },
-        archived: archive_patch(args.state),
         outcome,
     })?)
 }
@@ -1431,14 +1413,6 @@ fn load_optional_json<T: for<'de> serde::Deserialize<'de>>(
         (Some(_), Some(_)) => Err(invalid_input(
             "use only one of --outcome-json or --outcome-file",
         )),
-    }
-}
-
-const fn archive_patch(state: Option<CliArchivePatch>) -> Option<bool> {
-    match state {
-        None => None,
-        Some(CliArchivePatch::Archive) => Some(true),
-        Some(CliArchivePatch::Restore) => Some(false),
     }
 }
 

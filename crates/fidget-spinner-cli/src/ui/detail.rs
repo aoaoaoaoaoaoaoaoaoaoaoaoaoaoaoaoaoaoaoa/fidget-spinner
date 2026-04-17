@@ -296,9 +296,6 @@ fn render_hypothesis_header(detail: &HypothesisDetail, frontier: &FrontierRecord
         div.meta-row {
             span { "frontier " a href=(frontier_href(&frontier.slug)) { (frontier.label) } }
             span { "slug " code { (detail.record.slug) } }
-            @if detail.record.archived {
-                span class="status-chip status-archived" { "archived" }
-            }
             span.muted { "updated " (format_timestamp(detail.record.updated_at)) }
         }
         @if !detail.record.tags.is_empty() {

@@ -249,7 +249,6 @@ impl WorkerService {
                         frontier: args.frontier,
                         tags: tags_to_set(args.tags.unwrap_or_default())
                             .map_err(store_fault(&operation))?,
-                        include_archived: false,
                         limit: args.limit,
                     })
                 );
@@ -264,6 +263,14 @@ impl WorkerService {
             }
             "hypothesis.update" => {
                 let args = deserialize::<HypothesisUpdateArgs>(arguments)?;
+                if args.state.is_some() {
+                    return Err(FaultRecord::new(
+                        FaultKind::InvalidInput,
+                        FaultStage::Worker,
+                        &operation,
+                        "hypothesis lifecycle state is no longer mutable; hypotheses are visible graph vertices, not archived entities",
+                    ));
+                }
                 let detail = lift!(self.store.read_hypothesis(&args.hypothesis));
                 reject_hidden_hypothesis_detail_for_mcp(&self.store, &detail, &operation)?;
                 let hypothesis = lift!(
@@ -292,7 +299,6 @@ impl WorkerService {
                                 .transpose()
                                 .map_err(store_fault(&operation))?,
                             parents: args.parents,
-                            archived: args.state.map(HypothesisLifecyclePatch::archived_flag),
                         })
                 );
                 hypothesis_record_output(&hypothesis, &operation)?
@@ -339,7 +345,6 @@ impl WorkerService {
                         hypothesis: args.hypothesis,
                         tags: tags_to_set(args.tags.unwrap_or_default())
                             .map_err(store_fault(&operation))?,
-                        include_archived: false,
                         status: args.status,
                         limit: args.limit,
                     })
@@ -374,7 +379,6 @@ impl WorkerService {
                                 .transpose()
                                 .map_err(store_fault(&operation))?,
                             parents: args.parents,
-                            archived: None,
                             outcome: args
                                 .outcome
                                 .map(|wire| experiment_outcome_patch_from_wire(wire, &operation))
@@ -707,15 +711,6 @@ enum HypothesisLifecyclePatch {
     Retired,
 }
 
-impl HypothesisLifecyclePatch {
-    const fn archived_flag(self) -> bool {
-        match self {
-            Self::Active => false,
-            Self::Retired => true,
-        }
-    }
-}
-
 #[derive(Debug, Deserialize)]
 struct ExperimentOpenArgs {
     hypothesis: String,
@@ -864,7 +859,6 @@ struct DimensionDefineArgs {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct StoreIdentity {
-    config: FileIdentity,
     database: FileIdentity,
 }
 
@@ -1057,13 +1051,11 @@ fn frontier_id_is_mcp_visible(
 
 fn read_store_identity(project_root: &Utf8Path) -> Result<StoreIdentity, StoreError> {
     let state_root = fidget_spinner_store_sqlite::state_root_for_project_root(project_root)?;
-    let config_path = state_root.join(fidget_spinner_store_sqlite::PROJECT_CONFIG_NAME);
     let database_path = state_root.join(fidget_spinner_store_sqlite::STATE_DB_NAME);
-    if !config_path.exists() || !database_path.exists() {
+    if !database_path.exists() {
         return Err(StoreError::MissingProjectStore(project_root.to_path_buf()));
     }
     Ok(StoreIdentity {
-        config: read_file_identity(&config_path)?,
         database: read_file_identity(&database_path)?,
     })
 }
@@ -2009,8 +2001,6 @@ mod legacy_projection_values {
                     "situation": frontier.brief.situation,
                     "roadmap": roadmap,
                     "unknowns": frontier.brief.unknowns,
-                    "revision": frontier.brief.revision,
-                    "updated_at": frontier.brief.updated_at.map(timestamp_value),
                 },
             }
         }))
@@ -2054,8 +2044,6 @@ mod legacy_projection_values {
                     "situation": projection.frontier.brief.situation,
                     "roadmap": roadmap,
                     "unknowns": projection.frontier.brief.unknowns,
-                    "revision": projection.frontier.brief.revision,
-                    "updated_at": projection.frontier.brief.updated_at.map(timestamp_value),
                 },
             },
             "active_tags": projection.active_tags,
@@ -2292,7 +2280,6 @@ mod legacy_projection_values {
                 "description": kpi.metric.description,
                 "reference_count": kpi.metric.reference_count,
             },
-            "revision": kpi.revision,
         })
     }
 

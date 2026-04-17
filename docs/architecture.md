@@ -52,7 +52,6 @@ Every initialized project owns a private centralized state root:
 
 ```text
 ~/.local/state/fidget-spinner/projects/<project>-<stable-id>/
-    project.json
     state.sqlite
 ```
 

@@ -58,7 +58,7 @@ If you need more context, pull it from:
 - `tag.list` before inventing tags by memory; it also reports supervisor-defined families, mandatory-family rules, locks, and stale-name guidance
 - `frontier.update` when the objective, situation, roadmap, or unknowns need to change
 - `hypothesis.record` whenever you get a plausible KPI-moving idea, mechanism, suspicion, or branch; hypotheses are cheap idea-capture nodes, not a ritual preamble to one experiment
-- `hypothesis.update` when the title, summary, body, tags, influence parents, or active/retired state need tightening; retire stale hypotheses with `state=retired`
+- `hypothesis.update` when the title, summary, body, tags, or influence parents need tightening; hypotheses are not archived, so clean stale wording/tags/parents in place and leave non-frontier visibility policy to the supervisor UI
 - `experiment.open` once a hypothesis has a concrete KPI-relevant slice and is ready to be tested
 - `experiment.list` or `experiment.read` when resuming a session and you need to recover open or recently closed state
 - `experiment.update` while the experiment is still live and its summary, tags, or influence parents need refinement

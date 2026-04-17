@@ -255,7 +255,6 @@ fn load_tag_usage(
 ) -> Result<BTreeMap<TagName, TagUsage>, StoreError> {
     let mut usage = BTreeMap::<TagName, TagUsage>::new();
     for hypothesis in store.list_hypotheses(ListHypothesesQuery {
-        include_archived: true,
         limit: None,
         ..ListHypothesesQuery::default()
     })? {
@@ -264,7 +263,6 @@ fn load_tag_usage(
         }
     }
     for experiment in store.list_experiments(ListExperimentsQuery {
-        include_archived: true,
         limit: None,
         ..ListExperimentsQuery::default()
     })? {

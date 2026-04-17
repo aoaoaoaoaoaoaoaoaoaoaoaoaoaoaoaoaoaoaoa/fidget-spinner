@@ -464,12 +464,7 @@ fn resolve_project_context(
 fn project_refresh_token_for(context: &ProjectRenderContext) -> Result<String, StoreError> {
     let store = open_store(context.project_root.as_std_path())?;
     let database_path = store.state_root().join(STATE_DB_NAME);
-    let config_path = store
-        .state_root()
-        .join(fidget_spinner_store_sqlite::PROJECT_CONFIG_NAME);
-    let database = refresh_file_token(&database_path)?;
-    let config = refresh_file_token(&config_path)?;
-    Ok(format!("{database}|{config}"))
+    refresh_file_token(&database_path)
 }
 
 fn refresh_file_token(path: &camino::Utf8Path) -> Result<String, StoreError> {
@@ -1072,7 +1067,6 @@ mod tests {
             id: HypothesisId::fresh(),
             slug: must(Slug::new(slug), "hypothesis slug"),
             frontier_id,
-            archived: false,
             title: must(NonEmptyText::new(title), "hypothesis title"),
             summary: must(
                 NonEmptyText::new(format!("{title} summary")),
@@ -1097,7 +1091,6 @@ mod tests {
             slug: must(Slug::new(slug), "experiment slug"),
             frontier_id,
             hypothesis_id,
-            archived: false,
             title: must(NonEmptyText::new(title), "experiment title"),
             summary: None,
             tags: Vec::new(),

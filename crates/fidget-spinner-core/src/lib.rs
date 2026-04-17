@@ -20,6 +20,6 @@ pub use crate::model::{
     MetricDimension, MetricUnit, MetricValue, NonEmptyText, OptimizationObjective,
     RegistryLockMode, RegistryLockRecord, RegistryName, ReportedMetricValue,
     RunDimensionDefinition, RunDimensionValue, Slug, TagFamilyName, TagFamilyRecord, TagName,
-    TagNameDisposition, TagNameHistoryRecord, TagRecord, TagRegistrySnapshot, TagStatus,
-    VertexKind, VertexRef,
+    TagNameDisposition, TagNameHistoryRecord, TagRecord, TagRegistrySnapshot, VertexKind,
+    VertexRef,
 };

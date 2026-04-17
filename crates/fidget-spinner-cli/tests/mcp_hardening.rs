@@ -786,8 +786,8 @@ fn mcp_hypothesis_record_requires_frontier_kpi() -> TestResult {
 }
 
 #[test]
-fn mcp_can_retire_stale_hypotheses_without_archive_language() -> TestResult {
-    let project_root = temp_project_root("hypothesis_retire")?;
+fn mcp_rejects_hypothesis_lifecycle_state() -> TestResult {
+    let project_root = temp_project_root("hypothesis_lifecycle_removed")?;
     init_project(&project_root)?;
 
     let mut harness = McpHarness::spawn(Some(&project_root))?;
@@ -828,7 +828,7 @@ fn mcp_can_retire_stale_hypotheses_without_archive_language() -> TestResult {
             "frontier": "retire-frontier",
             "slug": "stale-branch",
             "title": "Stale branch",
-            "summary": "This branch will be retired.",
+            "summary": "This branch remains a visible graph vertex.",
             "body": "One paragraph body.",
         }),
     )?);
@@ -852,14 +852,19 @@ fn mcp_can_retire_stale_hypotheses_without_archive_language() -> TestResult {
     assert_tool_ok(&initial);
     assert_eq!(tool_content(&initial)["count"].as_u64(), Some(2));
 
-    assert_tool_ok(&harness.call_tool(
+    let rejected = harness.call_tool(
         85,
         "hypothesis.update",
         json!({
             "hypothesis": "stale-branch",
             "state": "retired",
         }),
-    )?);
+    )?;
+    assert_tool_error(&rejected);
+    assert!(
+        must_some(tool_error_message(&rejected), "hypothesis lifecycle error")?
+            .contains("hypothesis lifecycle state is no longer mutable")
+    );
 
     let active = harness.call_tool_full(
         86,
@@ -871,24 +876,7 @@ fn mcp_can_retire_stale_hypotheses_without_archive_language() -> TestResult {
         tool_content(&active)["hypotheses"].as_array(),
         "hypothesis list",
     )?;
-    assert_eq!(active_hypotheses.len(), 1);
-    assert_eq!(active_hypotheses[0]["slug"].as_str(), Some("live-branch"));
-
-    assert_tool_ok(&harness.call_tool(
-        87,
-        "hypothesis.update",
-        json!({
-            "hypothesis": "stale-branch",
-            "state": "active",
-        }),
-    )?);
-    let restored = harness.call_tool_full(
-        88,
-        "hypothesis.list",
-        json!({"frontier": "retire-frontier"}),
-    )?;
-    assert_tool_ok(&restored);
-    assert_eq!(tool_content(&restored)["count"].as_u64(), Some(2));
+    assert_eq!(active_hypotheses.len(), 2);
     Ok(())
 }
 
@@ -1547,7 +1535,7 @@ fn registry_and_history_surfaces_render_timestamps_as_strings() -> TestResult {
     )?;
     assert_tool_ok(&dimension);
     assert!(tool_content(&dimension)["record"]["created_at"].is_string());
-    assert!(tool_content(&dimension)["record"]["updated_at"].is_string());
+    assert!(tool_content(&dimension)["record"]["updated_at"].is_null());
 
     let dimensions = harness.call_tool_full(20, "run.dimension.list", json!({}))?;
     assert_tool_ok(&dimensions);
@@ -1558,7 +1546,7 @@ fn registry_and_history_surfaces_render_timestamps_as_strings() -> TestResult {
         "defined run dimension in list",
     )?;
     assert!(listed["created_at"].is_string());
-    assert!(listed["updated_at"].is_string());
+    assert!(listed["updated_at"].is_null());
 
     let frontier = harness.call_tool_full(
         21,
