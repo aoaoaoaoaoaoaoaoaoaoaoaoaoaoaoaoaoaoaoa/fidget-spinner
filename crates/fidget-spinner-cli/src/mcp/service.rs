@@ -8,8 +8,9 @@ use std::time::UNIX_EPOCH;
 use camino::{Utf8Path, Utf8PathBuf};
 use fidget_spinner_core::{
     CommandRecipe, ExecutionBackend, ExperimentAnalysis, ExperimentStatus, FieldValueType,
-    FrontierRecord, FrontierStatus, FrontierVerdict, MetricAggregation, MetricUnit, NonEmptyText,
-    OptimizationObjective, RunDimensionValue, Slug, TagName,
+    FrontierRecord, FrontierStatus, FrontierVerdict, MetricAggregation, MetricDimension,
+    MetricUnit, NonEmptyText, OptimizationObjective, ReportedMetricValue, RunDimensionValue, Slug,
+    TagName,
 };
 use fidget_spinner_store_sqlite::{
     CloseExperimentRequest, CreateFrontierRequest, CreateHypothesisRequest, CreateKpiRequest,
@@ -455,7 +456,8 @@ impl WorkerService {
                 let metric = lift!(
                     self.store.define_metric(DefineMetricRequest {
                         key: NonEmptyText::new(args.key).map_err(store_fault(&operation))?,
-                        unit: args.unit,
+                        dimension: args.dimension,
+                        display_unit: args.display_unit,
                         aggregation: args.aggregation.unwrap_or(MetricAggregation::Point),
                         objective: args.objective,
                         description: args
@@ -796,6 +798,7 @@ struct ExperimentAnalysisWire {
 struct MetricValueWire {
     key: String,
     value: f64,
+    unit: Option<MetricUnit>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -808,7 +811,8 @@ enum NullableStringArg {
 #[derive(Debug, Deserialize)]
 struct MetricDefineArgs {
     key: String,
-    unit: MetricUnit,
+    dimension: MetricDimension,
+    display_unit: Option<MetricUnit>,
     aggregation: Option<MetricAggregation>,
     objective: OptimizationObjective,
     description: Option<String>,
@@ -1091,10 +1095,11 @@ fn tags_to_set(tags: Vec<String>) -> Result<BTreeSet<TagName>, StoreError> {
 fn metric_value_from_wire(
     wire: MetricValueWire,
     operation: &str,
-) -> Result<fidget_spinner_core::MetricValue, FaultRecord> {
-    Ok(fidget_spinner_core::MetricValue {
+) -> Result<ReportedMetricValue, FaultRecord> {
+    Ok(ReportedMetricValue {
         key: NonEmptyText::new(wire.key).map_err(store_fault(operation))?,
         value: wire.value,
+        unit: wire.unit,
     })
 }
 
@@ -1667,9 +1672,10 @@ fn metric_keys_output(
             keys.iter()
                 .map(|metric| {
                     format!(
-                        "{} [{} {}] refs={}",
+                        "{} [{} {} {}] refs={}",
                         metric.key,
-                        metric.unit.as_str(),
+                        metric.dimension.as_str(),
+                        metric.display_unit.as_str(),
                         metric.objective.as_str(),
                         metric.reference_count
                     )
@@ -1691,9 +1697,10 @@ fn metric_definition_output(
     projected_tool_output(
         &projection,
         format!(
-            "metric {} [{} {}]",
+            "metric {} [{} {} {}]",
             metric.key,
-            metric.unit.as_str(),
+            metric.dimension.as_str(),
+            metric.display_unit.as_str(),
             metric.objective.as_str()
         ),
         None,
@@ -1818,9 +1825,10 @@ fn experiment_nearest_output(
     }
     if let Some(metric) = result.metric.as_ref() {
         lines.push(format!(
-            "champion metric: {} [{} {}]",
+            "champion metric: {} [{} {} {}]",
             metric.key,
-            metric.unit.as_str(),
+            metric.dimension.as_str(),
+            metric.display_unit.as_str(),
             metric.objective.as_str()
         ));
     }
@@ -2264,7 +2272,7 @@ mod legacy_projection_values {
     fn metric_key_summary_value(metric: &MetricKeySummary) -> Value {
         json!({
             "key": metric.key,
-            "unit": metric.unit,
+            "display_unit": metric.display_unit,
             "dimension": metric.dimension,
             "aggregation": metric.aggregation,
             "objective": metric.objective,
@@ -2277,7 +2285,7 @@ mod legacy_projection_values {
         json!({
             "metric": {
                 "key": kpi.metric.key,
-                "unit": kpi.metric.unit,
+                "display_unit": kpi.metric.display_unit,
                 "dimension": kpi.metric.dimension,
                 "aggregation": kpi.metric.aggregation,
                 "objective": kpi.metric.objective,
@@ -2303,7 +2311,7 @@ mod legacy_projection_values {
         json!({
             "key": metric.key,
             "value": metric.value,
-            "unit": metric.unit,
+            "display_unit": metric.display_unit,
             "dimension": metric.dimension,
             "objective": metric.objective,
         })
@@ -2339,6 +2347,7 @@ mod legacy_projection_values {
         json!({
             "key": metric.key,
             "value": metric.value,
+            "unit": metric.unit,
         })
     }
 

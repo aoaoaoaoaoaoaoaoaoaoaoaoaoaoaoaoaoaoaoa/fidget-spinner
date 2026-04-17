@@ -61,7 +61,7 @@ If you need more context, pull it from:
 - `experiment.update` while the experiment is still live and its summary, tags, or influence parents need refinement
 - `experiment.close` only for an already-open experiment and only when you have measured result, verdict, and rationale; it requires a clean git worktree and records `HEAD` automatically, anchoring to `command.working_directory` when provided, so make a fast commit in the actual implementation worktree first and attach `analysis` only when the result needs interpretation beyond the rationale
 - `experiment.nearest` when you need the nearest accepted, kept, rejected, or champion comparator for one structural slice
-- `metric.define` when a project-level metric key needs a unit, objective, aggregation, or description; name the measured concept, not the unit, because units are stored separately
+- `metric.define` when a project-level metric key needs a dimension, objective, aggregation, or description; use `display_unit` only as presentation, and keep the key focused on the measured concept rather than the unit
 - `kpi.create` before `hypothesis.record` on a new frontier, promoting one existing metric into a frontier KPI; supervisor locks may reject KPI creation, and there is intentionally no bulk KPI mutation tool
 - `kpi.list` or `metric.keys --scope kpi` before guessing which mandatory frontier metrics define the real hill
 - `kpi.best` when you need the frontier ranking for one KPI metric
@@ -92,8 +92,9 @@ If you need more context, pull it from:
 6. Treat metric keys as project-level registry entries and run dimensions as the
    first-class slice surface for experiment comparison. Do not encode scenario
    context or Hungarian unit notation into the metric key: prefer
-   `presolve_wallclock` with unit `milliseconds` over `presolve_ms`, and
-   `report_size` with unit `bytes` over `report_bytes`.
+   `presolve_wallclock` with `dimension=time` over `presolve_ms`, and
+   `report_size` with `dimension=bytes` over `report_bytes`. Report-time units
+   belong on observations, not in the key.
 7. A hypothesis is not an experiment and does not need to justify itself by
    immediately producing one. Open experiments explicitly; do not smuggle
    planned work or stray ideas into the frontier brief.

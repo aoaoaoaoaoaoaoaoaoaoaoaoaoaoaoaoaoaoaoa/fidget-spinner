@@ -576,7 +576,8 @@ fn kpi_creation_lock_rejects_mcp_only() -> TestResult {
             let _ = must(
                 store.define_metric(DefineMetricRequest {
                     key: must(NonEmptyText::new(key), "metric key")?,
-                    unit: must(MetricUnit::new("count"), "metric unit")?,
+                    dimension: fidget_spinner_core::MetricDimension::Count,
+                    display_unit: Some(must(MetricUnit::new("count"), "metric unit")?),
                     aggregation: fidget_spinner_core::MetricAggregation::Point,
                     objective: OptimizationObjective::Maximize,
                     description: None,
@@ -661,7 +662,8 @@ fn mandatory_tag_family_rejects_future_mcp_tag_sets() -> TestResult {
         "metric.define",
         json!({
             "key": "nodes_solved",
-            "unit": "count",
+            "dimension": "count",
+            "display_unit": "count",
             "objective": "maximize",
         }),
     )?);
@@ -757,7 +759,8 @@ fn mcp_hypothesis_record_requires_frontier_kpi() -> TestResult {
         "metric.define",
         json!({
             "key": "nodes_solved",
-            "unit": "count",
+            "dimension": "count",
+            "display_unit": "count",
             "objective": "maximize",
         }),
     )?);
@@ -796,7 +799,8 @@ fn mcp_can_retire_stale_hypotheses_without_archive_language() -> TestResult {
         "metric.define",
         json!({
             "key": "nodes_solved",
-            "unit": "count",
+            "dimension": "count",
+            "display_unit": "count",
             "objective": "maximize",
         }),
     )?);
@@ -920,7 +924,8 @@ fn retired_assignment_lock_does_not_block_mcp_tag_sets() -> TestResult {
         "metric.define",
         json!({
             "key": "nodes_solved",
-            "unit": "count",
+            "dimension": "count",
+            "display_unit": "count",
             "objective": "maximize",
         }),
     )?);
@@ -1153,7 +1158,8 @@ fn frontier_open_is_the_grounding_surface_for_live_state() -> TestResult {
         "metric.define",
         json!({
             "key": "nodes_solved",
-            "unit": "count",
+            "dimension": "count",
+            "display_unit": "count",
             "objective": "maximize",
         }),
     )?);
@@ -1290,7 +1296,8 @@ fn frontier_update_mutates_objective_and_kpi_grounding() -> TestResult {
         "metric.define",
         json!({
             "key": "nodes_solved",
-            "unit": "count",
+            "dimension": "count",
+            "display_unit": "count",
             "objective": "maximize",
         }),
     )?);
@@ -1393,7 +1400,8 @@ fn experiment_nearest_finds_structural_buckets_and_champion() -> TestResult {
         "metric.define",
         json!({
             "key": "nodes_solved",
-            "unit": "count",
+            "dimension": "count",
+            "display_unit": "count",
             "objective": "maximize",
         }),
     )?);
@@ -1594,29 +1602,31 @@ fn metric_define_accepts_builtin_and_custom_unit_tokens() -> TestResult {
         "metric.define",
         json!({
             "key": "oracle_solve_wallclock_micros",
-            "unit": "micros",
+            "dimension": "time",
+            "display_unit": "micros",
             "objective": "minimize",
         }),
     )?;
     assert_tool_ok(&microseconds);
     assert_eq!(
-        tool_content(&microseconds)["record"]["unit"].as_str(),
+        tool_content(&microseconds)["record"]["display_unit"].as_str(),
         Some("microseconds")
     );
 
-    let custom = harness.call_tool_full(
+    let bytes = harness.call_tool_full(
         24,
         "metric.define",
         json!({
-            "key": "root_lp_objective_last",
-            "unit": "objective",
+            "key": "telemetry_payload",
+            "dimension": "bytes",
+            "display_unit": "mib",
             "objective": "minimize",
         }),
     )?;
-    assert_tool_ok(&custom);
+    assert_tool_ok(&bytes);
     assert_eq!(
-        tool_content(&custom)["record"]["unit"].as_str(),
-        Some("objective")
+        tool_content(&bytes)["record"]["display_unit"].as_str(),
+        Some("mebibytes")
     );
 
     let placeholder = harness.call_tool(
@@ -1624,7 +1634,8 @@ fn metric_define_accepts_builtin_and_custom_unit_tokens() -> TestResult {
         "metric.define",
         json!({
             "key": "bad_custom_placeholder",
-            "unit": "custom",
+            "dimension": "dimensionless",
+            "display_unit": "custom",
             "objective": "minimize",
         }),
     )?;
@@ -1685,7 +1696,8 @@ fn experiment_close_drives_metric_best_and_analysis() -> TestResult {
         "metric.define",
         json!({
             "key": "nodes_solved",
-            "unit": "count",
+            "dimension": "count",
+            "display_unit": "count",
             "objective": "maximize",
         }),
     )?);
@@ -1833,7 +1845,8 @@ fn experiment_close_rejects_dirty_worktree() -> TestResult {
         "metric.define",
         json!({
             "key": "nodes_solved",
-            "unit": "count",
+            "dimension": "count",
+            "display_unit": "count",
             "objective": "maximize",
         }),
     )?);
@@ -1955,7 +1968,8 @@ fn experiment_close_uses_command_worktree_when_present() -> TestResult {
         "metric.define",
         json!({
             "key": "nodes_solved",
-            "unit": "count",
+            "dimension": "count",
+            "display_unit": "count",
             "objective": "maximize",
         }),
     )?);
@@ -2036,7 +2050,8 @@ fn already_bound_worker_refreshes_after_destructive_reseed() -> TestResult {
         "metric.define",
         json!({
             "key": "nodes_solved",
-            "unit": "count",
+            "dimension": "count",
+            "display_unit": "count",
             "objective": "maximize",
         }),
     )?);
@@ -2065,7 +2080,8 @@ fn already_bound_worker_refreshes_after_destructive_reseed() -> TestResult {
     let _metric = must(
         reopened.define_metric(DefineMetricRequest {
             key: must(NonEmptyText::new("nodes_solved"), "metric key")?,
-            unit: must(MetricUnit::new("count"), "metric unit")?,
+            dimension: fidget_spinner_core::MetricDimension::Count,
+            display_unit: Some(must(MetricUnit::new("count"), "metric unit")?),
             aggregation: fidget_spinner_core::MetricAggregation::Point,
             objective: OptimizationObjective::Maximize,
             description: None,

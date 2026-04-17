@@ -12,9 +12,9 @@ use fidget_spinner_core::{
     FrontierStatus, FrontierVerdict, GitCommitHash, HiddenByDefaultReason, HypothesisId,
     HypothesisRecord, KpiId, MetricAggregation, MetricDefinition, MetricDimension, MetricId,
     MetricUnit, MetricValue, NonEmptyText, OptimizationObjective, RegistryLockId, RegistryLockMode,
-    RegistryLockRecord, RegistryName, RunDimensionDefinition, RunDimensionValue, Slug, TagFamilyId,
-    TagFamilyName, TagFamilyRecord, TagId, TagName, TagNameDisposition, TagNameHistoryRecord,
-    TagRecord, TagRegistrySnapshot, TagStatus, VertexRef,
+    RegistryLockRecord, RegistryName, ReportedMetricValue, RunDimensionDefinition,
+    RunDimensionValue, Slug, TagFamilyId, TagFamilyName, TagFamilyRecord, TagId, TagName,
+    TagNameDisposition, TagNameHistoryRecord, TagRecord, TagRegistrySnapshot, TagStatus, VertexRef,
 };
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde::{Deserialize, Serialize};
@@ -28,7 +28,7 @@ pub const STORE_DIR_NAME: &str = ".fidget_spinner";
 pub const GIT_DIR_NAME: &str = ".git";
 pub const STATE_DB_NAME: &str = "state.sqlite";
 pub const PROJECT_CONFIG_NAME: &str = "project.json";
-pub const CURRENT_STORE_FORMAT_VERSION: u32 = 10;
+pub const CURRENT_STORE_FORMAT_VERSION: u32 = 11;
 pub const STATE_HOME_DIR_NAME: &str = "fidget-spinner";
 pub const PROJECT_STATE_DIR_NAME: &str = "projects";
 const PROJECT_ROOT_NAMESPACE: Uuid = Uuid::from_u128(0x0df3_58f4_3649_44f1_8f05_0bb2_4ebd_8d31);
@@ -432,8 +432,8 @@ pub struct ExperimentOutcomePatch {
     pub backend: ExecutionBackend,
     pub command: CommandRecipe,
     pub dimensions: BTreeMap<NonEmptyText, RunDimensionValue>,
-    pub primary_metric: MetricValue,
-    pub supporting_metrics: Vec<MetricValue>,
+    pub primary_metric: ReportedMetricValue,
+    pub supporting_metrics: Vec<ReportedMetricValue>,
     pub verdict: FrontierVerdict,
     pub rationale: NonEmptyText,
     pub analysis: Option<ExperimentAnalysis>,
@@ -446,8 +446,8 @@ pub struct CloseExperimentRequest {
     pub backend: ExecutionBackend,
     pub command: CommandRecipe,
     pub dimensions: BTreeMap<NonEmptyText, RunDimensionValue>,
-    pub primary_metric: MetricValue,
-    pub supporting_metrics: Vec<MetricValue>,
+    pub primary_metric: ReportedMetricValue,
+    pub supporting_metrics: Vec<ReportedMetricValue>,
     pub verdict: FrontierVerdict,
     pub rationale: NonEmptyText,
     pub analysis: Option<ExperimentAnalysis>,
@@ -467,7 +467,7 @@ pub struct ListExperimentsQuery {
 pub struct MetricObservationSummary {
     pub key: NonEmptyText,
     pub value: f64,
-    pub unit: MetricUnit,
+    pub display_unit: MetricUnit,
     pub dimension: MetricDimension,
     pub objective: OptimizationObjective,
 }
@@ -507,7 +507,8 @@ pub struct ExperimentDetail {
 #[derive(Clone, Debug)]
 pub struct DefineMetricRequest {
     pub key: NonEmptyText,
-    pub unit: MetricUnit,
+    pub dimension: MetricDimension,
+    pub display_unit: Option<MetricUnit>,
     pub aggregation: MetricAggregation,
     pub objective: OptimizationObjective,
     pub description: Option<NonEmptyText>,
@@ -572,7 +573,7 @@ pub struct MetricKeysQuery {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct MetricKeySummary {
     pub key: NonEmptyText,
-    pub unit: MetricUnit,
+    pub display_unit: MetricUnit,
     pub dimension: MetricDimension,
     pub aggregation: MetricAggregation,
     pub objective: OptimizationObjective,
@@ -733,11 +734,11 @@ impl ProjectStore {
         }
         let mut config: ProjectConfig = read_json_file(&state_root.join(PROJECT_CONFIG_NAME))?;
         let database_path = state_root.join(STATE_DB_NAME);
-        let connection = Connection::open(database_path.as_std_path())?;
+        let mut connection = Connection::open(database_path.as_std_path())?;
         connection.pragma_update(None, "foreign_keys", 1_i64)?;
         let observed_version = load_store_user_version(&connection)?;
         if observed_version != CURRENT_STORE_FORMAT_VERSION {
-            migrate_store_to_current(&state_root, &mut config, &connection, observed_version)?;
+            migrate_store_to_current(&state_root, &mut config, &mut connection, observed_version)?;
         }
         if config.store_format_version != CURRENT_STORE_FORMAT_VERSION {
             return Err(StoreError::IncompatibleStoreFormatVersion {
@@ -1255,9 +1256,22 @@ impl ProjectStore {
         if self.metric_definition(&request.key)?.is_some() {
             return Err(StoreError::DuplicateMetricDefinition(request.key));
         }
+        let display_unit = request
+            .display_unit
+            .unwrap_or_else(|| request.dimension.default_display_unit());
+        if !request.dimension.supports(display_unit) {
+            return Err(StoreError::InvalidInput(format!(
+                "metric `{}` has dimension `{}`; display unit `{}` belongs to `{}`",
+                request.key,
+                request.dimension.as_str(),
+                display_unit.as_str(),
+                display_unit.dimension().as_str()
+            )));
+        }
         let record = MetricDefinition::new(
             request.key,
-            request.unit,
+            request.dimension,
+            display_unit,
             request.aggregation,
             request.objective,
             request.description,
@@ -1269,7 +1283,7 @@ impl ProjectStore {
                 record.id.to_string(),
                 record.key.as_str(),
                 record.dimension.as_str(),
-                record.unit.as_str(),
+                record.display_unit.as_str(),
                 record.aggregation.as_str(),
                 record.objective.as_str(),
                 record.description.as_ref().map(NonEmptyText::as_str),
@@ -1493,6 +1507,9 @@ impl ProjectStore {
     pub fn kpi_best(&self, query: KpiBestQuery) -> Result<Vec<KpiBestEntry>, StoreError> {
         let frontier = self.resolve_frontier(&query.frontier)?;
         let kpi = self.resolve_kpi_for_query(frontier.id, query.kpi.as_deref())?;
+        let definition = self
+            .metric_definition(&kpi.metric.key)?
+            .ok_or_else(|| StoreError::UnknownMetricDefinition(kpi.metric.key.clone()))?;
         let order = match kpi.metric.objective {
             OptimizationObjective::Minimize => MetricRankOrder::Asc,
             OptimizationObjective::Maximize => MetricRankOrder::Desc,
@@ -1516,33 +1533,35 @@ impl ProjectStore {
             .collect::<Vec<_>>();
         let mut entries = experiments
             .into_iter()
-            .filter_map(|record| {
-                let outcome = record.outcome.clone()?;
+            .map(|record| {
+                let Some(outcome) = record.outcome.clone() else {
+                    return Ok(None);
+                };
                 if !dimension_subset_matches(&query.dimensions, &outcome.dimensions) {
-                    return None;
+                    return Ok(None);
                 }
-                let resolved = resolve_kpi_metric(&kpi, &outcome)?;
-                Some((record, outcome.dimensions.clone(), resolved))
-            })
-            .map(|(record, dimensions, metric)| {
-                let definition = self
-                    .metric_definition(&metric.key)?
-                    .ok_or_else(|| StoreError::UnknownMetricDefinition(metric.key.clone()))?;
-                let sort_value = definition.unit.canonical_value(metric.value);
-                Ok((
+                let Some(canonical_value) =
+                    self.experiment_metric_canonical_value(record.id, definition.id)?
+                else {
+                    return Ok(None);
+                };
+                Ok(Some((
                     KpiBestEntry {
                         experiment: self.experiment_summary_from_record(record.clone())?,
                         hypothesis: self.hypothesis_summary_from_record(
                             self.hypothesis_by_id(record.hypothesis_id)?,
                         )?,
-                        value: metric.value,
-                        metric_key: metric.key,
-                        dimensions,
+                        value: definition.display_unit.display_value(canonical_value),
+                        metric_key: definition.key.clone(),
+                        dimensions: outcome.dimensions.clone(),
                     },
-                    sort_value,
-                ))
+                    canonical_value,
+                )))
             })
-            .collect::<Result<Vec<_>, StoreError>>()?;
+            .collect::<Result<Vec<_>, StoreError>>()?
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>();
         entries.sort_by(|left, right| compare_metric_values(left.1, right.1, order));
         Ok(apply_limit(
             entries
@@ -2277,30 +2296,34 @@ impl ProjectStore {
             .load_experiment_records(Some(frontier.id), None, true)?
             .into_iter()
             .filter(|record| record.status == ExperimentStatus::Closed)
-            .filter_map(|record| {
-                let outcome = record.outcome.clone()?;
+            .map(|record| {
+                let Some(outcome) = record.outcome.clone() else {
+                    return Ok(None);
+                };
                 if !include_rejected && outcome.verdict == FrontierVerdict::Rejected {
-                    return None;
+                    return Ok(None);
                 }
-                let metric = all_metrics(&outcome)
-                    .into_iter()
-                    .find(|metric| metric.key == *key)?;
-                Some((record, outcome, metric.value))
-            })
-            .map(|(record, outcome, value)| {
-                Ok(FrontierMetricPoint {
+                let Some(canonical_value) =
+                    self.experiment_metric_canonical_value(record.id, definition.id)?
+                else {
+                    return Ok(None);
+                };
+                Ok(Some(FrontierMetricPoint {
                     closed_at: outcome.closed_at,
                     dimensions: outcome.dimensions.clone(),
                     experiment: self.experiment_summary_from_record(record.clone())?,
                     hypothesis: self.hypothesis_summary_from_record(
                         self.hypothesis_by_id(record.hypothesis_id)?,
                     )?,
-                    value,
+                    value: definition.display_unit.display_value(canonical_value),
                     metric_key: definition.key.clone(),
                     verdict: outcome.verdict,
-                })
+                }))
             })
-            .collect::<Result<Vec<_>, StoreError>>()?;
+            .collect::<Result<Vec<_>, StoreError>>()?
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>();
         points.sort_by_key(|point| point.closed_at);
         let kpi = self
             .kpi_by_metric(frontier.id, definition.id)?
@@ -2395,28 +2418,38 @@ impl ProjectStore {
             .collect::<Vec<_>>();
         let mut entries = experiments
             .into_iter()
-            .filter_map(|record| {
-                let outcome = record.outcome.clone()?;
+            .map(|record| {
+                let Some(outcome) = record.outcome.clone() else {
+                    return Ok(None);
+                };
                 if !dimension_subset_matches(&query.dimensions, &outcome.dimensions) {
-                    return None;
+                    return Ok(None);
                 }
-                let metric = all_metrics(&outcome)
-                    .into_iter()
-                    .find(|metric| metric.key == query.key)?;
-                Some((record, outcome.dimensions.clone(), metric.value))
-            })
-            .map(|(record, dimensions, display_value)| {
-                Ok(MetricBestEntry {
+                let Some(canonical_value) =
+                    self.experiment_metric_canonical_value(record.id, definition.id)?
+                else {
+                    return Ok(None);
+                };
+                Ok(Some(MetricBestEntry {
                     experiment: self.experiment_summary_from_record(record.clone())?,
                     hypothesis: self.hypothesis_summary_from_record(
                         self.hypothesis_by_id(record.hypothesis_id)?,
                     )?,
-                    value: display_value,
-                    dimensions,
-                })
+                    value: definition.display_unit.display_value(canonical_value),
+                    dimensions: outcome.dimensions.clone(),
+                }))
             })
-            .collect::<Result<Vec<_>, StoreError>>()?;
-        entries.sort_by(|left, right| compare_metric_values(left.value, right.value, order));
+            .collect::<Result<Vec<_>, StoreError>>()?
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>();
+        entries.sort_by(|left, right| {
+            compare_metric_values(
+                definition.display_unit.canonical_value(left.value),
+                definition.display_unit.canonical_value(right.value),
+                order,
+            )
+        });
         Ok(apply_limit(entries, query.limit))
     }
 
@@ -2530,18 +2563,22 @@ impl ProjectStore {
                     record.id,
                     &influence_neighborhood,
                 );
-                let metric_value = metric_definition.as_ref().and_then(|definition| {
-                    all_metrics(&outcome)
-                        .into_iter()
-                        .find(|metric| metric.key == definition.key)
-                        .map(|metric| MetricObservationSummary {
-                            key: metric.key.clone(),
-                            value: metric.value,
-                            unit: definition.unit.clone(),
-                            dimension: definition.dimension,
-                            objective: definition.objective,
-                        })
-                });
+                let metric_value = metric_definition
+                    .as_ref()
+                    .map(|definition| {
+                        self.experiment_metric_canonical_value(record.id, definition.id)
+                            .map(|maybe_value| {
+                                maybe_value.map(|canonical_value| MetricObservationSummary {
+                                    key: definition.key.clone(),
+                                    value: definition.display_unit.display_value(canonical_value),
+                                    display_unit: definition.display_unit,
+                                    dimension: definition.dimension,
+                                    objective: definition.objective,
+                                })
+                            })
+                    })
+                    .transpose()?
+                    .flatten();
                 Ok(Some(NearestComparatorCandidate {
                     closed_at: outcome.closed_at,
                     verdict: outcome.verdict,
@@ -3109,10 +3146,11 @@ impl ProjectStore {
         let definition = self
             .metric_definition(&metric.key)?
             .ok_or_else(|| StoreError::UnknownMetricDefinition(metric.key.clone()))?;
+        let canonical_value = metric.unit.canonical_value(metric.value);
         Ok(MetricObservationSummary {
             key: metric.key.clone(),
-            value: metric.value,
-            unit: definition.unit,
+            value: definition.display_unit.display_value(canonical_value),
+            display_unit: definition.display_unit,
             dimension: definition.dimension,
             objective: definition.objective,
         })
@@ -3248,7 +3286,7 @@ impl ProjectStore {
         Ok(MetricKeySummary {
             reference_count: self.metric_reference_count(frontier_id, definition.id)?,
             key: definition.key,
-            unit: definition.unit,
+            display_unit: definition.display_unit,
             dimension: definition.dimension,
             aggregation: definition.aggregation,
             objective: definition.objective,
@@ -3488,6 +3526,21 @@ impl ProjectStore {
             .map_err(StoreError::from)
     }
 
+    fn experiment_metric_canonical_value(
+        &self,
+        experiment_id: ExperimentId,
+        metric_id: MetricId,
+    ) -> Result<Option<f64>, StoreError> {
+        self.connection
+            .query_row(
+                "SELECT value FROM experiment_metrics WHERE experiment_id = ?1 AND metric_id = ?2",
+                params![experiment_id.to_string(), metric_id.to_string()],
+                |row| row.get::<_, f64>(0),
+            )
+            .optional()
+            .map_err(StoreError::from)
+    }
+
     fn materialize_outcome(
         &self,
         patch: &ExperimentOutcomePatch,
@@ -3511,16 +3564,10 @@ impl ProjectStore {
                 return Err(StoreError::UnknownDimensionFilter(key.to_string()));
             }
         }
-        let _primary_definition = self
-            .metric_definition(&patch.primary_metric.key)?
-            .ok_or_else(|| StoreError::UnknownMetricDefinition(patch.primary_metric.key.clone()))?;
-        let primary_metric = patch.primary_metric.clone();
+        let primary_metric = self.resolve_reported_metric_value(&patch.primary_metric)?;
         let mut supporting_metrics = Vec::with_capacity(patch.supporting_metrics.len());
         for metric in &patch.supporting_metrics {
-            let _definition = self
-                .metric_definition(&metric.key)?
-                .ok_or_else(|| StoreError::UnknownMetricDefinition(metric.key.clone()))?;
-            supporting_metrics.push(metric.clone());
+            supporting_metrics.push(self.resolve_reported_metric_value(metric)?);
         }
         if origin.is_mcp() {
             self.assert_frontier_kpis_satisfied(frontier_id, &primary_metric, &supporting_metrics)?;
@@ -3544,6 +3591,40 @@ impl ProjectStore {
             analysis: patch.analysis.clone(),
             commit_hash,
             closed_at,
+        })
+    }
+
+    fn resolve_reported_metric_value(
+        &self,
+        metric: &ReportedMetricValue,
+    ) -> Result<MetricValue, StoreError> {
+        let definition = self
+            .metric_definition(&metric.key)?
+            .ok_or_else(|| StoreError::UnknownMetricDefinition(metric.key.clone()))?;
+        let unit = match metric.unit {
+            Some(unit) if definition.dimension.supports(unit) => unit,
+            Some(unit) => {
+                return Err(StoreError::InvalidInput(format!(
+                    "metric `{}` has dimension `{}`; unit `{}` belongs to `{}`",
+                    metric.key,
+                    definition.dimension.as_str(),
+                    unit.as_str(),
+                    unit.dimension().as_str()
+                )));
+            }
+            None => definition.dimension.implicit_unit().ok_or_else(|| {
+                StoreError::InvalidInput(format!(
+                    "metric `{}` has dimension `{}`; report a unit: {}",
+                    metric.key,
+                    definition.dimension.as_str(),
+                    definition.dimension.unit_catalog()
+                ))
+            })?,
+        };
+        Ok(MetricValue {
+            key: metric.key.clone(),
+            value: metric.value,
+            unit,
         })
     }
 
@@ -4128,13 +4209,19 @@ fn load_store_user_version(connection: &Connection) -> Result<u32, StoreError> {
 fn migrate_store_to_current(
     state_root: &Utf8Path,
     config: &mut ProjectConfig,
-    connection: &Connection,
+    connection: &mut Connection,
     observed_version: u32,
 ) -> Result<(), StoreError> {
-    if config.store_format_version == 9 || observed_version == 9 {
-        if observed_version == 9 {
-            migrate_store_v9_to_v10(connection)?;
-        }
+    let mut version = observed_version;
+    if version == 9 {
+        migrate_store_v9_to_v10(connection)?;
+        version = 10;
+    }
+    if version == 10 {
+        migrate_store_v10_to_v11(connection)?;
+        version = 11;
+    }
+    if version == CURRENT_STORE_FORMAT_VERSION {
         config.store_format_version = CURRENT_STORE_FORMAT_VERSION;
         write_json_file(&state_root.join(PROJECT_CONFIG_NAME), config)?;
         return Ok(());
@@ -4145,13 +4232,236 @@ fn migrate_store_to_current(
     })
 }
 
-fn migrate_store_v9_to_v10(connection: &Connection) -> Result<(), StoreError> {
+fn migrate_store_v9_to_v10(connection: &mut Connection) -> Result<(), StoreError> {
     purge_legacy_artifact_schema(connection)?;
+    connection.pragma_update(None, "user_version", 10_i64)?;
+    Ok(())
+}
+
+fn migrate_store_v10_to_v11(connection: &mut Connection) -> Result<(), StoreError> {
+    let transaction = connection.transaction()?;
+    let mut definitions = {
+        let mut statement = transaction.prepare(
+            "SELECT id, key, dimension, display_unit, aggregation, objective, description, revision, created_at, updated_at
+             FROM metric_definitions
+             ORDER BY key ASC",
+        )?;
+        statement
+            .query_map([], decode_metric_definition_row)?
+            .collect::<Result<Vec<_>, _>>()?
+    };
+    inject_metric_units_into_legacy_outcomes(&transaction, &definitions)?;
+    normalize_legacy_time_metric_keys(&transaction, &mut definitions)?;
+    refresh_experiment_metric_index(&transaction)?;
+    transaction.commit()?;
     connection.pragma_update(
         None,
         "user_version",
         i64::from(CURRENT_STORE_FORMAT_VERSION),
     )?;
+    Ok(())
+}
+
+fn inject_metric_units_into_legacy_outcomes(
+    transaction: &Transaction<'_>,
+    definitions: &[MetricDefinition],
+) -> Result<(), StoreError> {
+    let unit_by_key = definitions
+        .iter()
+        .map(|definition| (definition.key.to_string(), definition.display_unit))
+        .collect::<BTreeMap<_, _>>();
+    let rows = {
+        let mut statement = transaction
+            .prepare("SELECT id, outcome_json FROM experiments WHERE outcome_json IS NOT NULL")?;
+        statement
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?
+            .collect::<Result<Vec<_>, _>>()?
+    };
+    for (experiment_id, raw_outcome) in rows {
+        let mut outcome = decode_json::<Value>(&raw_outcome)?;
+        let mut changed = false;
+        inject_metric_unit_in_value(
+            outcome.get_mut("primary_metric"),
+            &unit_by_key,
+            &mut changed,
+        )?;
+        if let Some(metrics) = outcome
+            .get_mut("supporting_metrics")
+            .and_then(Value::as_array_mut)
+        {
+            for metric in metrics {
+                inject_metric_unit_in_value(Some(metric), &unit_by_key, &mut changed)?;
+            }
+        }
+        if changed {
+            let _ = transaction.execute(
+                "UPDATE experiments SET outcome_json = ?2 WHERE id = ?1",
+                params![experiment_id, encode_json(&outcome)?],
+            )?;
+        }
+    }
+    Ok(())
+}
+
+fn inject_metric_unit_in_value(
+    metric: Option<&mut Value>,
+    unit_by_key: &BTreeMap<String, MetricUnit>,
+    changed: &mut bool,
+) -> Result<(), StoreError> {
+    let Some(metric) = metric else {
+        return Ok(());
+    };
+    let Some(object) = metric.as_object_mut() else {
+        return Ok(());
+    };
+    if object.contains_key("unit") {
+        return Ok(());
+    }
+    let key = object.get("key").and_then(Value::as_str).ok_or_else(|| {
+        StoreError::InvalidInput("experiment outcome metric is missing its key".to_owned())
+    })?;
+    let key_text = NonEmptyText::new(key.to_owned())?;
+    let unit = unit_by_key
+        .get(key)
+        .ok_or_else(|| StoreError::UnknownMetricDefinition(key_text))?;
+    let _ = object.insert("unit".to_owned(), Value::String(unit.as_str().to_owned()));
+    *changed = true;
+    Ok(())
+}
+
+fn normalize_legacy_time_metric_keys(
+    transaction: &Transaction<'_>,
+    definitions: &mut Vec<MetricDefinition>,
+) -> Result<(), StoreError> {
+    let mut by_key = definitions
+        .iter()
+        .cloned()
+        .map(|definition| (definition.key.to_string(), definition))
+        .collect::<BTreeMap<_, _>>();
+    let originals = definitions.clone();
+    for definition in originals {
+        if definition.dimension != MetricDimension::Time {
+            continue;
+        }
+        let Some(normalized_key) = normalize_legacy_time_metric_key(definition.key.as_str()) else {
+            continue;
+        };
+        if normalized_key == definition.key.as_str() {
+            continue;
+        }
+        let normalized_key = NonEmptyText::new(normalized_key)?;
+        if let Some(target) = by_key.get(normalized_key.as_str()).cloned() {
+            if target.id == definition.id {
+                continue;
+            }
+            if target.dimension != definition.dimension
+                || target.aggregation != definition.aggregation
+                || target.objective != definition.objective
+            {
+                return Err(StoreError::InvalidInput(format!(
+                    "cannot normalize legacy metric `{}` into `{}` because their dimension/aggregation/objective differ",
+                    definition.key, normalized_key
+                )));
+            }
+            rewrite_outcome_metric_key(transaction, &definition.key, &normalized_key)?;
+            merge_experiment_metric_rows(transaction, definition.id, target.id)?;
+            merge_kpi_metric_edges(transaction, definition.id, target.id)?;
+            delete_metric_definition_row(transaction, definition.id)?;
+            insert_metric_name_history(
+                transaction,
+                definition.key.as_str(),
+                Some(target.id),
+                Some(normalized_key.as_str()),
+                TagNameDisposition::Merged,
+                &format!(
+                    "metric `{}` was merged into `{}` during the v11 unit normalization",
+                    definition.key, normalized_key
+                ),
+            )?;
+            record_event(
+                transaction,
+                "metric",
+                &definition.id.to_string(),
+                definition.revision.saturating_add(1),
+                "merged",
+                &serde_json::json!({
+                    "source": definition.key,
+                    "target": normalized_key,
+                    "reason": "legacy_millisecond_suffix_cleanup",
+                }),
+            )?;
+            let _ = by_key.remove(definition.key.as_str());
+            continue;
+        }
+        let mut renamed = definition.clone();
+        renamed.key = normalized_key.clone();
+        renamed.revision = renamed.revision.saturating_add(1);
+        renamed.updated_at = OffsetDateTime::now_utc();
+        rewrite_outcome_metric_key(transaction, &definition.key, &normalized_key)?;
+        update_metric_definition_key(transaction, &renamed)?;
+        insert_metric_name_history(
+            transaction,
+            definition.key.as_str(),
+            Some(renamed.id),
+            Some(normalized_key.as_str()),
+            TagNameDisposition::Renamed,
+            &format!(
+                "metric `{}` was renamed to `{}` during the v11 unit normalization",
+                definition.key, normalized_key
+            ),
+        )?;
+        record_event(
+            transaction,
+            "metric",
+            &definition.id.to_string(),
+            renamed.revision,
+            "renamed",
+            &renamed,
+        )?;
+        let _ = by_key.remove(definition.key.as_str());
+        let _ = by_key.insert(normalized_key.to_string(), renamed);
+    }
+    *definitions = by_key.into_values().collect();
+    Ok(())
+}
+
+fn normalize_legacy_time_metric_key(raw: &str) -> Option<String> {
+    let tokens = raw.split('_').collect::<Vec<_>>();
+    if !tokens.contains(&"ms") {
+        return None;
+    }
+    let filtered = tokens
+        .into_iter()
+        .filter(|token| *token != "ms")
+        .collect::<Vec<_>>();
+    if filtered.is_empty() {
+        return None;
+    }
+    Some(filtered.join("_"))
+}
+
+fn refresh_experiment_metric_index(transaction: &Transaction<'_>) -> Result<(), StoreError> {
+    let rows = {
+        let mut statement = transaction
+            .prepare("SELECT id, outcome_json FROM experiments ORDER BY created_at ASC")?;
+        statement
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
+            })?
+            .collect::<Result<Vec<_>, _>>()?
+    };
+    for (experiment_id, raw_outcome) in rows {
+        let outcome = raw_outcome
+            .map(|raw| decode_json::<ExperimentOutcome>(&raw))
+            .transpose()?;
+        replace_experiment_metrics(
+            transaction,
+            ExperimentId::from_uuid(parse_uuid_sql(&experiment_id)?),
+            outcome.as_ref(),
+        )?;
+    }
     Ok(())
 }
 
@@ -4591,17 +4901,12 @@ fn replace_experiment_metrics(
     )?;
     if let Some(outcome) = outcome {
         for (ordinal, metric) in all_metrics(outcome).into_iter().enumerate() {
-            let (metric_id, display_unit) = transaction.query_row(
-                "SELECT id, display_unit FROM metric_definitions WHERE key = ?1",
+            let metric_id = transaction.query_row(
+                "SELECT id FROM metric_definitions WHERE key = ?1",
                 params![metric.key.as_str()],
-                |row| {
-                    Ok((
-                        parse_metric_id_sql(&row.get::<_, String>(0)?)?,
-                        parse_metric_unit(&row.get::<_, String>(1)?)?,
-                    ))
-                },
+                |row| parse_metric_id_sql(&row.get::<_, String>(0)?),
             )?;
-            let value = display_unit.canonical_value(metric.value);
+            let value = metric.unit.canonical_value(metric.value);
             let _ = transaction.execute(
                 "INSERT INTO experiment_metrics (experiment_id, metric_id, ordinal, is_primary, value)
                  VALUES (?1, ?2, ?3, ?4, ?5)",
@@ -4942,7 +5247,7 @@ fn decode_metric_definition_row(
         id: parse_metric_id_sql(&row.get::<_, String>(0)?)?,
         key: parse_non_empty_text(&row.get::<_, String>(1)?)?,
         dimension: parse_metric_dimension(&row.get::<_, String>(2)?)?,
-        unit: parse_metric_unit(&row.get::<_, String>(3)?)?,
+        display_unit: parse_metric_unit(&row.get::<_, String>(3)?)?,
         aggregation: parse_metric_aggregation(&row.get::<_, String>(4)?)?,
         objective: parse_optimization_objective(&row.get::<_, String>(5)?)?,
         description: parse_optional_non_empty_text(row.get::<_, Option<String>>(6)?)?,
@@ -5337,12 +5642,6 @@ fn all_metrics(outcome: &ExperimentOutcome) -> Vec<MetricValue> {
     std::iter::once(outcome.primary_metric.clone())
         .chain(outcome.supporting_metrics.clone())
         .collect()
-}
-
-fn resolve_kpi_metric(kpi: &KpiSummary, outcome: &ExperimentOutcome) -> Option<MetricValue> {
-    all_metrics(outcome)
-        .into_iter()
-        .find(|metric| metric.key == kpi.metric.key)
 }
 
 #[derive(Clone)]

@@ -571,9 +571,16 @@ fn tool_input_schema(name: &str) -> Value {
             &[
                 ("key", string_schema("Metric key.")),
                 (
-                    "unit",
+                    "dimension",
+                    enum_string_schema(
+                        &["time", "count", "bytes", "ratio", "dimensionless"],
+                        "Metric dimension.",
+                    ),
+                ),
+                (
+                    "display_unit",
                     string_schema(
-                        "Metric unit token. Builtins include `scalar`, `count`, `ratio`, `percent`, `bytes`, `nanoseconds`, `microseconds`, `milliseconds`, and `seconds`; custom lowercase ascii tokens are also allowed.",
+                        "Optional display unit. Builtins include `scalar`, `count`, `ratio`, `percent`, `bytes`, `kibibytes`, `mebibytes`, `gibibytes`, `nanoseconds`, `microseconds`, `milliseconds`, and `seconds`.",
                     ),
                 ),
                 (
@@ -594,7 +601,7 @@ fn tool_input_schema(name: &str) -> Value {
                 ),
                 ("description", string_schema("Optional description.")),
             ],
-            &["key", "unit", "objective"],
+            &["key", "dimension", "objective"],
         ),
         "metric.keys" => object_schema(
             &[
@@ -798,7 +805,11 @@ fn metric_value_schema() -> Value {
         "type": "object",
         "properties": {
             "key": { "type": "string" },
-            "value": { "type": "number" }
+            "value": { "type": "number" },
+            "unit": {
+                "type": "string",
+                "description": "Optional reported unit. Required when the metric dimension admits more than one unit family member."
+            }
         },
         "required": ["key", "value"],
         "additionalProperties": false

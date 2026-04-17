@@ -302,7 +302,7 @@ pub(crate) struct HypothesisCurrentStateProjection {
 #[derive(Clone, Serialize)]
 pub(crate) struct MetricKeySummaryProjection {
     pub(crate) key: String,
-    pub(crate) unit: String,
+    pub(crate) display_unit: String,
     pub(crate) dimension: String,
     pub(crate) aggregation: String,
     pub(crate) objective: String,
@@ -358,7 +358,7 @@ pub(crate) struct MetricBestEntryProjection {
 pub(crate) struct MetricObservationSummaryProjection {
     pub(crate) key: String,
     pub(crate) value: f64,
-    pub(crate) unit: String,
+    pub(crate) display_unit: String,
     pub(crate) dimension: String,
     pub(crate) objective: String,
 }
@@ -389,6 +389,7 @@ pub(crate) struct ExperimentAnalysisProjection {
 pub(crate) struct MetricValueProjection {
     pub(crate) key: String,
     pub(crate) value: f64,
+    pub(crate) unit: String,
 }
 
 #[derive(Clone, Serialize)]
@@ -508,7 +509,7 @@ pub(crate) struct TagListOutput {
 pub(crate) struct MetricDefinitionProjection {
     pub(crate) id: String,
     pub(crate) key: String,
-    pub(crate) unit: String,
+    pub(crate) display_unit: String,
     pub(crate) dimension: String,
     pub(crate) aggregation: String,
     pub(crate) objective: String,
@@ -1014,7 +1015,7 @@ fn hypothesis_current_state(state: &HypothesisCurrentState) -> HypothesisCurrent
 fn metric_key_summary(metric: &MetricKeySummary) -> MetricKeySummaryProjection {
     MetricKeySummaryProjection {
         key: metric.key.to_string(),
-        unit: metric.unit.as_str().to_owned(),
+        display_unit: metric.display_unit.as_str().to_owned(),
         dimension: metric.dimension.as_str().to_owned(),
         aggregation: metric.aggregation.as_str().to_owned(),
         objective: metric.objective.as_str().to_owned(),
@@ -1076,7 +1077,7 @@ fn metric_definition_projection(metric: &MetricDefinition) -> MetricDefinitionPr
     MetricDefinitionProjection {
         id: metric.id.to_string(),
         key: metric.key.to_string(),
-        unit: metric.unit.as_str().to_owned(),
+        display_unit: metric.display_unit.as_str().to_owned(),
         dimension: metric.dimension.as_str().to_owned(),
         aggregation: metric.aggregation.as_str().to_owned(),
         objective: metric.objective.as_str().to_owned(),
@@ -1142,7 +1143,7 @@ fn metric_observation_summary(
     MetricObservationSummaryProjection {
         key: metric.key.to_string(),
         value: metric.value,
-        unit: metric.unit.as_str().to_owned(),
+        display_unit: metric.display_unit.as_str().to_owned(),
         dimension: metric.dimension.as_str().to_owned(),
         objective: metric.objective.as_str().to_owned(),
     }
@@ -1181,6 +1182,7 @@ fn metric_value(metric: &MetricValue) -> MetricValueProjection {
     MetricValueProjection {
         key: metric.key.to_string(),
         value: metric.value,
+        unit: metric.unit.as_str().to_owned(),
     }
 }
 

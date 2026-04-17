@@ -18,7 +18,8 @@ pub use crate::model::{
     FrontierRecord, FrontierRoadmapItem, FrontierStatus, FrontierVerdict, GitCommitHash,
     HiddenByDefaultReason, HypothesisRecord, KnownMetricUnit, MetricAggregation, MetricDefinition,
     MetricDimension, MetricUnit, MetricValue, NonEmptyText, OptimizationObjective,
-    RegistryLockMode, RegistryLockRecord, RegistryName, RunDimensionDefinition, RunDimensionValue,
-    Slug, TagFamilyName, TagFamilyRecord, TagName, TagNameDisposition, TagNameHistoryRecord,
-    TagRecord, TagRegistrySnapshot, TagStatus, VertexKind, VertexRef,
+    RegistryLockMode, RegistryLockRecord, RegistryName, ReportedMetricValue,
+    RunDimensionDefinition, RunDimensionValue, Slug, TagFamilyName, TagFamilyRecord, TagName,
+    TagNameDisposition, TagNameHistoryRecord, TagRecord, TagRegistrySnapshot, TagStatus,
+    VertexKind, VertexRef,
 };

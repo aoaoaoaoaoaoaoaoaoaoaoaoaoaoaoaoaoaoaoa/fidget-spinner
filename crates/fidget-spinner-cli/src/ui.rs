@@ -12,7 +12,7 @@ use axum::routing::{get, post};
 use camino::Utf8PathBuf;
 use fidget_spinner_core::{
     ExperimentAnalysis, ExperimentOutcome, ExperimentStatus, FrontierRecord, FrontierStatus,
-    FrontierVerdict, KnownMetricUnit, MetricAggregation, MetricUnit, NonEmptyText,
+    FrontierVerdict, KnownMetricUnit, MetricAggregation, MetricDimension, MetricUnit, NonEmptyText,
     OptimizationObjective, RegistryLockMode, RegistryName, RunDimensionValue, Slug, TagFamilyName,
     TagName, VertexRef,
 };
@@ -642,7 +642,8 @@ async fn assign_tag_family(
 #[derive(Deserialize)]
 struct CreateMetricForm {
     key: String,
-    unit: String,
+    dimension: String,
+    display_unit: String,
     aggregation: String,
     objective: String,
     description: String,
@@ -658,7 +659,12 @@ async fn create_metric(
             let mut store = open_store(context.project_root.as_std_path())?;
             let _ = store.define_metric(DefineMetricRequest {
                 key: NonEmptyText::new(form.key)?,
-                unit: MetricUnit::new(form.unit)?,
+                dimension: parse_metric_dimension_ui(&form.dimension)?,
+                display_unit: if form.display_unit.trim().is_empty() {
+                    None
+                } else {
+                    Some(MetricUnit::new(form.display_unit)?)
+                },
                 aggregation: parse_metric_aggregation_ui(&form.aggregation)?,
                 objective: parse_optimization_objective_ui(&form.objective)?,
                 description: optional_text_field(form.description)?,
@@ -1162,6 +1168,19 @@ fn parse_optimization_objective_ui(raw: &str) -> Result<OptimizationObjective, S
         "target" => Ok(OptimizationObjective::Target),
         _ => Err(StoreError::InvalidInput(format!(
             "invalid optimization objective `{raw}`"
+        ))),
+    }
+}
+
+fn parse_metric_dimension_ui(raw: &str) -> Result<MetricDimension, StoreError> {
+    match raw {
+        "time" => Ok(MetricDimension::Time),
+        "count" => Ok(MetricDimension::Count),
+        "bytes" => Ok(MetricDimension::Bytes),
+        "ratio" => Ok(MetricDimension::Ratio),
+        "dimensionless" => Ok(MetricDimension::Dimensionless),
+        _ => Err(StoreError::InvalidInput(format!(
+            "invalid metric dimension `{raw}`"
         ))),
     }
 }
@@ -1843,7 +1862,14 @@ fn render_create_metric_form() -> Markup {
     html! {
         form.tag-create-form method="post" action="metrics/create" data-preserve-viewport="true" {
             input.compact-input type="text" name="key" placeholder="metric_key" aria-label="Metric key" required;
-            input.compact-input type="text" name="unit" placeholder="milliseconds" aria-label="Display unit" required;
+            select.compact-select name="dimension" aria-label="Metric dimension" {
+                option value="time" { "time" }
+                option value="count" { "count" }
+                option value="bytes" { "bytes" }
+                option value="ratio" { "ratio" }
+                option value="dimensionless" { "dimensionless" }
+            }
+            input.compact-input type="text" name="display_unit" placeholder="milliseconds" aria-label="Display unit";
             select.compact-select name="aggregation" aria-label="Aggregation" {
                 @for aggregation in ["point", "mean", "geomean", "median", "p95", "min", "max", "sum"] {
                     option value=(aggregation) { (aggregation) }
@@ -1954,7 +1980,7 @@ fn render_create_kpi_form(
                 @if has_candidates {
                     @for metric in candidates {
                         option value=(metric.key.as_str()) {
-                            (metric.key) " · " (metric.objective.as_str()) " · " (metric.unit.as_str())
+                            (metric.key) " · " (metric.objective.as_str()) " · " (metric.display_unit.as_str())
                         }
                     }
                 } @else {
@@ -2002,7 +2028,7 @@ fn render_kpi_registry(frontier: &FrontierSummary, kpis: &[KpiSummary]) -> Marku
                                         div.muted { (description) }
                                     }
                                 }
-                                td.no-truncate { (kpi.metric.unit.as_str()) }
+                                td.no-truncate { (kpi.metric.display_unit.as_str()) }
                                 td.no-truncate { (kpi.metric.objective.as_str()) " · " (kpi.metric.aggregation.as_str()) }
                                 td.no-truncate { (kpi.metric.reference_count) }
                             }
@@ -2074,7 +2100,7 @@ fn render_metric_registry_table(
                                             div.muted { (description) }
                                         }
                                     }
-                                    td.no-truncate { (metric.unit.as_str()) " · " (metric.dimension.as_str()) }
+                                    td.no-truncate { (metric.display_unit.as_str()) " · " (metric.dimension.as_str()) }
                                     td.no-truncate { (metric.aggregation.as_str()) " · " (metric.objective.as_str()) }
                                     td.no-truncate { (metric.reference_count) }
                                     td.no-truncate {
@@ -2105,7 +2131,7 @@ fn render_metric_registry_table(
 fn metric_registry_filter_text(metric: &fidget_spinner_store_sqlite::MetricKeySummary) -> String {
     [
         metric.key.as_str(),
-        metric.unit.as_str(),
+        metric.display_unit.as_str(),
         metric.dimension.as_str(),
         metric.aggregation.as_str(),
         metric.objective.as_str(),
@@ -2298,7 +2324,7 @@ fn resolve_selected_metric_keys(
         if !seen.insert(metric.key.clone()) {
             continue;
         }
-        let metric_family = MetricUnitFamily::from_unit(&metric.unit);
+        let metric_family = MetricUnitFamily::from_unit(&metric.display_unit);
         if !families.admit(metric_family) {
             continue;
         }
@@ -2541,7 +2567,7 @@ fn render_metric_series_section(
                                             }
                                             td.metric-table-value-cell.nowrap {
                                                 span.metric-table-fixed-text {
-                                                    (format_metric_value(point.value, &table_series.metric.unit))
+                                                    (format_metric_value(point.value, &table_series.metric.display_unit))
                                                 }
                                             }
                                         }
@@ -2732,8 +2758,12 @@ fn render_metric_picker_option(
     let selected = selected_metrics
         .iter()
         .any(|selected_metric| selected_metric.key == metric.key);
-    let compatible = selected_families.supports(&metric.unit);
-    let detail = format!("{} · {}", metric.objective.as_str(), metric.unit.as_str());
+    let compatible = selected_families.supports(&metric.display_unit);
+    let detail = format!(
+        "{} · {}",
+        metric.objective.as_str(),
+        metric.display_unit.as_str()
+    );
     if compatible || selected {
         html! {
             label class={(if selected {
@@ -3233,7 +3263,7 @@ fn render_frontier_active_sets(projection: &FrontierOpenProjection) -> Markup {
                                 @for kpi in &projection.kpis {
                                     tr {
                                         td { (kpi.metric.key) }
-                                        td { (kpi.metric.unit.as_str()) }
+                                        td { (kpi.metric.display_unit.as_str()) }
                                         td { (kpi.metric.objective.as_str()) }
                                     }
                                 }
@@ -3271,7 +3301,7 @@ fn render_frontier_active_sets(projection: &FrontierOpenProjection) -> Markup {
                                                 (metric.key)
                                             }
                                         }
-                                        td { (metric.unit.as_str()) }
+                                        td { (metric.display_unit.as_str()) }
                                         td { (metric.objective.as_str()) }
                                         td { (metric.reference_count) }
                                     }
@@ -3590,7 +3620,7 @@ fn render_dimension_ledger(
 fn render_metric_panel(
     title: &str,
     metrics: &[fidget_spinner_core::MetricValue],
-    outcome: &ExperimentOutcome,
+    _outcome: &ExperimentOutcome,
 ) -> Markup {
     html! {
     section.subcard {
@@ -3607,7 +3637,7 @@ fn render_metric_panel(
                     @for metric in metrics {
                         tr {
                             td { (metric.key) }
-                            td { (format_metric_value(metric.value, &metric_unit_for(metric, outcome))) }
+                            td { (format_metric_value(metric.value, &metric.unit)) }
                         }
                     }
                 }
@@ -3615,16 +3645,6 @@ fn render_metric_panel(
         }
     }
     }
-}
-
-fn metric_unit_for(
-    metric: &fidget_spinner_core::MetricValue,
-    outcome: &ExperimentOutcome,
-) -> MetricUnit {
-    if metric.key == outcome.primary_metric.key {
-        return MetricUnit::scalar();
-    }
-    MetricUnit::scalar()
 }
 
 fn render_vertex_relation_sections(
@@ -3704,7 +3724,7 @@ fn render_experiment_card(experiment: &ExperimentSummary) -> Markup {
             div.meta-row {
                 span.metric-pill {
                     (metric.key) ": "
-                    (format_metric_value(metric.value, &metric.unit))
+                    (format_metric_value(metric.value, &metric.display_unit))
                 }
             }
         }
@@ -3729,7 +3749,7 @@ fn render_experiment_summary_line(experiment: &ExperimentSummary) -> Markup {
         @if let Some(metric) = experiment.primary_metric.as_ref() {
             span.metric-pill {
                 (metric.key) ": "
-                (format_metric_value(metric.value, &metric.unit))
+                (format_metric_value(metric.value, &metric.display_unit))
             }
         }
     }
@@ -4483,6 +4503,9 @@ fn render_dimension_value(value: &RunDimensionValue) -> String {
 fn format_metric_value(value: f64, unit: &MetricUnit) -> String {
     match unit.known_kind() {
         Some(KnownMetricUnit::Bytes) => format!("{} B", format_integerish(value)),
+        Some(KnownMetricUnit::Kibibytes) => format!("{value:.2} KiB"),
+        Some(KnownMetricUnit::Mebibytes) => format!("{value:.2} MiB"),
+        Some(KnownMetricUnit::Gibibytes) => format!("{value:.2} GiB"),
         Some(KnownMetricUnit::Seconds) => format!("{value:.3} s"),
         Some(KnownMetricUnit::Milliseconds) => format!("{value:.3} ms"),
         Some(KnownMetricUnit::Microseconds) => format!("{} us", format_integerish(value)),
@@ -4722,7 +4745,7 @@ impl MetricUnitFamily {
                 | KnownMetricUnit::Milliseconds
                 | KnownMetricUnit::Seconds,
             ) => Self::Time,
-            _ => Self::Exact(unit.clone()),
+            _ => Self::Exact(*unit),
         }
     }
 
@@ -4746,7 +4769,7 @@ impl MetricAxisFamilies {
     fn from_metrics(metrics: &[fidget_spinner_store_sqlite::MetricKeySummary]) -> Self {
         let mut families = Self::default();
         for metric in metrics {
-            let _ = families.admit(MetricUnitFamily::from_unit(&metric.unit));
+            let _ = families.admit(MetricUnitFamily::from_unit(&metric.display_unit));
         }
         families
     }
@@ -4776,8 +4799,8 @@ struct MetricChartAxis {
 impl MetricChartAxis {
     fn from_metric(metric: &fidget_spinner_store_sqlite::MetricKeySummary) -> Self {
         Self {
-            family: MetricUnitFamily::from_unit(&metric.unit),
-            unit: metric.unit.clone(),
+            family: MetricUnitFamily::from_unit(&metric.display_unit),
+            unit: metric.display_unit,
         }
     }
 
@@ -4804,7 +4827,7 @@ impl MetricAxisSet {
         &self,
         metric: &fidget_spinner_store_sqlite::MetricKeySummary,
     ) -> Option<(MetricAxisSide, &MetricChartAxis)> {
-        let family = MetricUnitFamily::from_unit(&metric.unit);
+        let family = MetricUnitFamily::from_unit(&metric.display_unit);
         if family == self.primary.family {
             return Some((MetricAxisSide::Primary, &self.primary));
         }
@@ -4956,7 +4979,7 @@ fn metric_chart_supports_log_y(axes: &MetricAxisSet, series: &[&FilteredMetricSe
             return false;
         };
         for point in &series.points {
-            let Some(value) = axis.normalize_value(point.value, &series.metric.unit) else {
+            let Some(value) = axis.normalize_value(point.value, &series.metric.display_unit) else {
                 return false;
             };
             saw_value = true;
@@ -5023,7 +5046,7 @@ fn build_metric_chart_series(
                 .iter()
                 .filter_map(|point| {
                     let x = *experiment_positions.get(point.experiment.slug.as_str())?;
-                    let value = axis.normalize_value(point.value, &series.metric.unit)?;
+                    let value = axis.normalize_value(point.value, &series.metric.display_unit)?;
                     Some((x, value, point.verdict))
                 })
                 .collect::<Vec<_>>();
@@ -6495,7 +6518,7 @@ mod tests {
         MetricKeySummary {
             key: must(NonEmptyText::new(key.to_owned()), "metric key"),
             dimension: unit.dimension(),
-            unit,
+            display_unit: unit,
             aggregation: MetricAggregation::Point,
             objective: OptimizationObjective::Minimize,
             default_visibility: DefaultVisibility::visible(),

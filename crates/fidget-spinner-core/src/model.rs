@@ -266,51 +266,6 @@ impl FrontierStatus {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
-pub enum KnownMetricUnit {
-    Scalar,
-    Count,
-    Ratio,
-    Percent,
-    Bytes,
-    Nanoseconds,
-    Microseconds,
-    Milliseconds,
-    Seconds,
-}
-
-impl KnownMetricUnit {
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Scalar => "scalar",
-            Self::Count => "count",
-            Self::Ratio => "ratio",
-            Self::Percent => "percent",
-            Self::Bytes => "bytes",
-            Self::Nanoseconds => "nanoseconds",
-            Self::Microseconds => "microseconds",
-            Self::Milliseconds => "milliseconds",
-            Self::Seconds => "seconds",
-        }
-    }
-
-    fn parse_alias(raw: &str) -> Option<Self> {
-        match raw {
-            "1" | "scalar" | "unitless" | "dimensionless" => Some(Self::Scalar),
-            "count" | "counts" => Some(Self::Count),
-            "ratio" | "fraction" => Some(Self::Ratio),
-            "%" | "percent" | "percentage" | "pct" => Some(Self::Percent),
-            "bytes" | "byte" | "b" | "by" => Some(Self::Bytes),
-            "nanoseconds" | "nanosecond" | "ns" => Some(Self::Nanoseconds),
-            "microseconds" | "microsecond" | "us" | "µs" | "micros" => Some(Self::Microseconds),
-            "milliseconds" | "millisecond" | "ms" | "millis" => Some(Self::Milliseconds),
-            "seconds" | "second" | "s" | "sec" | "secs" => Some(Self::Seconds),
-            _ => None,
-        }
-    }
-}
-
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MetricDimension {
@@ -331,6 +286,72 @@ impl MetricDimension {
             Self::Ratio => "ratio",
             Self::Dimensionless => "dimensionless",
         }
+    }
+
+    #[must_use]
+    pub const fn default_display_unit(self) -> MetricUnit {
+        match self {
+            Self::Time => MetricUnit::Milliseconds,
+            Self::Count => MetricUnit::Count,
+            Self::Bytes => MetricUnit::Kibibytes,
+            Self::Ratio => MetricUnit::Percent,
+            Self::Dimensionless => MetricUnit::Scalar,
+        }
+    }
+
+    #[must_use]
+    pub const fn canonical_unit(self) -> MetricUnit {
+        match self {
+            Self::Time => MetricUnit::Nanoseconds,
+            Self::Count => MetricUnit::Count,
+            Self::Bytes => MetricUnit::Bytes,
+            Self::Ratio => MetricUnit::Ratio,
+            Self::Dimensionless => MetricUnit::Scalar,
+        }
+    }
+
+    #[must_use]
+    pub fn implicit_unit(self) -> Option<MetricUnit> {
+        match self {
+            Self::Count => Some(MetricUnit::Count),
+            Self::Dimensionless => Some(MetricUnit::Scalar),
+            Self::Time | Self::Bytes | Self::Ratio => None,
+        }
+    }
+
+    #[must_use]
+    pub fn supports(self, unit: MetricUnit) -> bool {
+        unit.dimension() == self
+    }
+
+    #[must_use]
+    pub fn known_units(self) -> &'static [MetricUnit] {
+        match self {
+            Self::Time => &[
+                MetricUnit::Nanoseconds,
+                MetricUnit::Microseconds,
+                MetricUnit::Milliseconds,
+                MetricUnit::Seconds,
+            ],
+            Self::Count => &[MetricUnit::Count],
+            Self::Bytes => &[
+                MetricUnit::Bytes,
+                MetricUnit::Kibibytes,
+                MetricUnit::Mebibytes,
+                MetricUnit::Gibibytes,
+            ],
+            Self::Ratio => &[MetricUnit::Ratio, MetricUnit::Percent],
+            Self::Dimensionless => &[MetricUnit::Scalar],
+        }
+    }
+
+    #[must_use]
+    pub fn unit_catalog(self) -> String {
+        self.known_units()
+            .iter()
+            .map(|unit| unit.as_str())
+            .collect::<Vec<_>>()
+            .join(", ")
     }
 }
 
@@ -363,70 +384,104 @@ impl MetricAggregation {
     }
 }
 
-#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
-pub struct MetricUnit(String);
+pub enum MetricUnit {
+    Scalar,
+    Count,
+    Ratio,
+    Percent,
+    Bytes,
+    Kibibytes,
+    Mebibytes,
+    Gibibytes,
+    Nanoseconds,
+    Microseconds,
+    Milliseconds,
+    Seconds,
+}
+
+pub type KnownMetricUnit = MetricUnit;
 
 impl MetricUnit {
     pub fn new(value: impl Into<String>) -> Result<Self, CoreError> {
         let raw = value.into();
-        let normalized = normalize_metric_unit(&raw)?;
-        Ok(Self(normalized))
+        normalize_metric_unit(&raw)
     }
 
     #[must_use]
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-
-    #[must_use]
-    pub fn known_kind(&self) -> Option<KnownMetricUnit> {
-        KnownMetricUnit::parse_alias(&self.0)
-    }
-
-    #[must_use]
-    pub fn dimension(&self) -> MetricDimension {
-        match self.known_kind() {
-            Some(
-                KnownMetricUnit::Nanoseconds
-                | KnownMetricUnit::Microseconds
-                | KnownMetricUnit::Milliseconds
-                | KnownMetricUnit::Seconds,
-            ) => MetricDimension::Time,
-            Some(KnownMetricUnit::Count) => MetricDimension::Count,
-            Some(KnownMetricUnit::Bytes) => MetricDimension::Bytes,
-            Some(KnownMetricUnit::Ratio | KnownMetricUnit::Percent) => MetricDimension::Ratio,
-            Some(KnownMetricUnit::Scalar) | None => MetricDimension::Dimensionless,
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Scalar => "scalar",
+            Self::Count => "count",
+            Self::Ratio => "ratio",
+            Self::Percent => "percent",
+            Self::Bytes => "bytes",
+            Self::Kibibytes => "kibibytes",
+            Self::Mebibytes => "mebibytes",
+            Self::Gibibytes => "gibibytes",
+            Self::Nanoseconds => "nanoseconds",
+            Self::Microseconds => "microseconds",
+            Self::Milliseconds => "milliseconds",
+            Self::Seconds => "seconds",
         }
     }
 
     #[must_use]
-    pub fn canonical_value(&self, value: f64) -> f64 {
-        match self.known_kind() {
-            Some(KnownMetricUnit::Nanoseconds) => value,
-            Some(KnownMetricUnit::Microseconds) => value * 1_000.0,
-            Some(KnownMetricUnit::Milliseconds) => value * 1_000_000.0,
-            Some(KnownMetricUnit::Seconds) => value * 1_000_000_000.0,
-            Some(KnownMetricUnit::Percent) => value / 100.0,
-            _ => value,
+    pub const fn known_kind(self) -> Option<Self> {
+        Some(self)
+    }
+
+    #[must_use]
+    pub const fn dimension(self) -> MetricDimension {
+        match self {
+            Self::Nanoseconds | Self::Microseconds | Self::Milliseconds | Self::Seconds => {
+                MetricDimension::Time
+            }
+            Self::Count => MetricDimension::Count,
+            Self::Bytes | Self::Kibibytes | Self::Mebibytes | Self::Gibibytes => {
+                MetricDimension::Bytes
+            }
+            Self::Ratio | Self::Percent => MetricDimension::Ratio,
+            Self::Scalar => MetricDimension::Dimensionless,
         }
     }
 
     #[must_use]
-    pub fn display_value(&self, canonical_value: f64) -> f64 {
-        match self.known_kind() {
-            Some(KnownMetricUnit::Nanoseconds) => canonical_value,
-            Some(KnownMetricUnit::Microseconds) => canonical_value / 1_000.0,
-            Some(KnownMetricUnit::Milliseconds) => canonical_value / 1_000_000.0,
-            Some(KnownMetricUnit::Seconds) => canonical_value / 1_000_000_000.0,
-            Some(KnownMetricUnit::Percent) => canonical_value * 100.0,
-            _ => canonical_value,
+    pub fn canonical_value(self, value: f64) -> f64 {
+        match self {
+            Self::Nanoseconds => value,
+            Self::Microseconds => value * 1_000.0,
+            Self::Milliseconds => value * 1_000_000.0,
+            Self::Seconds => value * 1_000_000_000.0,
+            Self::Bytes => value,
+            Self::Kibibytes => value * 1_024.0,
+            Self::Mebibytes => value * 1_048_576.0,
+            Self::Gibibytes => value * 1_073_741_824.0,
+            Self::Percent => value / 100.0,
+            Self::Ratio | Self::Count | Self::Scalar => value,
+        }
+    }
+
+    #[must_use]
+    pub fn display_value(self, canonical_value: f64) -> f64 {
+        match self {
+            Self::Nanoseconds => canonical_value,
+            Self::Microseconds => canonical_value / 1_000.0,
+            Self::Milliseconds => canonical_value / 1_000_000.0,
+            Self::Seconds => canonical_value / 1_000_000_000.0,
+            Self::Bytes => canonical_value,
+            Self::Kibibytes => canonical_value / 1_024.0,
+            Self::Mebibytes => canonical_value / 1_048_576.0,
+            Self::Gibibytes => canonical_value / 1_073_741_824.0,
+            Self::Percent => canonical_value * 100.0,
+            Self::Ratio | Self::Count | Self::Scalar => canonical_value,
         }
     }
 
     #[must_use]
     pub fn scalar() -> Self {
-        Self(KnownMetricUnit::Scalar.as_str().to_owned())
+        Self::Scalar
     }
 }
 
@@ -440,45 +495,36 @@ impl TryFrom<String> for MetricUnit {
 
 impl From<MetricUnit> for String {
     fn from(value: MetricUnit) -> Self {
-        value.0
+        value.as_str().to_owned()
     }
 }
 
 impl Display for MetricUnit {
     fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
-        formatter.write_str(self.as_str())
+        formatter.write_str((*self).as_str())
     }
 }
 
-fn normalize_metric_unit(raw: &str) -> Result<String, CoreError> {
+fn normalize_metric_unit(raw: &str) -> Result<MetricUnit, CoreError> {
     let normalized = raw.trim().to_ascii_lowercase();
     if normalized.is_empty() {
         return Err(CoreError::EmptyMetricUnit);
     }
-    if let Some(unit) = KnownMetricUnit::parse_alias(&normalized) {
-        return Ok(unit.as_str().to_owned());
+    match normalized.as_str() {
+        "1" | "scalar" | "unitless" | "dimensionless" => Ok(MetricUnit::Scalar),
+        "count" | "counts" => Ok(MetricUnit::Count),
+        "ratio" | "fraction" => Ok(MetricUnit::Ratio),
+        "%" | "percent" | "percentage" | "pct" => Ok(MetricUnit::Percent),
+        "bytes" | "byte" | "b" | "by" => Ok(MetricUnit::Bytes),
+        "kibibytes" | "kibibyte" | "kib" | "kibs" => Ok(MetricUnit::Kibibytes),
+        "mebibytes" | "mebibyte" | "mib" | "mibs" => Ok(MetricUnit::Mebibytes),
+        "gibibytes" | "gibibyte" | "gib" | "gibs" => Ok(MetricUnit::Gibibytes),
+        "nanoseconds" | "nanosecond" | "ns" => Ok(MetricUnit::Nanoseconds),
+        "microseconds" | "microsecond" | "us" | "µs" | "micros" => Ok(MetricUnit::Microseconds),
+        "milliseconds" | "millisecond" | "ms" | "millis" => Ok(MetricUnit::Milliseconds),
+        "seconds" | "second" | "s" | "sec" | "secs" => Ok(MetricUnit::Seconds),
+        _ => Err(CoreError::InvalidMetricUnit(normalized)),
     }
-    if normalized == "custom" {
-        return Err(CoreError::InvalidMetricUnit(normalized));
-    }
-    let mut previous_was_separator = true;
-    let mut has_alphanumeric = false;
-    for character in normalized.chars() {
-        if character.is_ascii_lowercase() || character.is_ascii_digit() {
-            previous_was_separator = false;
-            has_alphanumeric = true;
-            continue;
-        }
-        if matches!(character, '-' | '_' | '/' | '.') && !previous_was_separator {
-            previous_was_separator = true;
-            continue;
-        }
-        return Err(CoreError::InvalidMetricUnit(normalized));
-    }
-    if !has_alphanumeric || previous_was_separator {
-        return Err(CoreError::InvalidMetricUnit(normalized));
-    }
-    Ok(normalized)
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
@@ -551,7 +597,7 @@ pub struct MetricDefinition {
     pub id: MetricId,
     pub key: NonEmptyText,
     pub dimension: MetricDimension,
-    pub unit: MetricUnit,
+    pub display_unit: MetricUnit,
     pub aggregation: MetricAggregation,
     pub objective: OptimizationObjective,
     pub description: Option<NonEmptyText>,
@@ -564,18 +610,18 @@ impl MetricDefinition {
     #[must_use]
     pub fn new(
         key: NonEmptyText,
-        unit: MetricUnit,
+        dimension: MetricDimension,
+        display_unit: MetricUnit,
         aggregation: MetricAggregation,
         objective: OptimizationObjective,
         description: Option<NonEmptyText>,
     ) -> Self {
         let now = OffsetDateTime::now_utc();
-        let dimension = unit.dimension();
         Self {
             id: MetricId::fresh(),
             key,
             dimension,
-            unit,
+            display_unit,
             aggregation,
             objective,
             description,
@@ -680,7 +726,7 @@ impl RunDimensionDefinition {
 
 #[cfg(test)]
 mod tests {
-    use super::{GitCommitHash, KnownMetricUnit, MetricUnit};
+    use super::{GitCommitHash, MetricDimension, MetricUnit};
 
     #[test]
     fn metric_unit_normalizes_known_aliases() {
@@ -691,10 +737,7 @@ mod tests {
             Err(_) => return,
         };
         assert_eq!(microseconds.as_str(), "microseconds");
-        assert_eq!(
-            microseconds.known_kind(),
-            Some(KnownMetricUnit::Microseconds)
-        );
+        assert_eq!(microseconds, MetricUnit::Microseconds);
 
         let percent = MetricUnit::new("%");
         assert!(percent.is_ok());
@@ -703,22 +746,28 @@ mod tests {
             Err(_) => return,
         };
         assert_eq!(percent.as_str(), "percent");
-        assert_eq!(percent.known_kind(), Some(KnownMetricUnit::Percent));
+        assert_eq!(percent, MetricUnit::Percent);
     }
 
     #[test]
-    fn metric_unit_accepts_real_custom_tokens_and_rejects_placeholder_custom() {
-        let objective = MetricUnit::new("objective");
-        assert!(objective.is_ok());
-        let objective = match objective {
-            Ok(value) => value,
-            Err(_) => return,
-        };
-        assert_eq!(objective.as_str(), "objective");
-        assert_eq!(objective.known_kind(), None);
-
-        let placeholder = MetricUnit::new("custom");
-        assert!(placeholder.is_err());
+    fn metric_dimension_tracks_default_and_implicit_units() {
+        assert_eq!(
+            MetricDimension::Time.default_display_unit(),
+            MetricUnit::Milliseconds
+        );
+        assert_eq!(
+            MetricDimension::Bytes.default_display_unit(),
+            MetricUnit::Kibibytes
+        );
+        assert_eq!(
+            MetricDimension::Count.implicit_unit(),
+            Some(MetricUnit::Count)
+        );
+        assert_eq!(
+            MetricDimension::Dimensionless.implicit_unit(),
+            Some(MetricUnit::Scalar)
+        );
+        assert_eq!(MetricDimension::Time.implicit_unit(), None);
     }
 
     #[test]
@@ -743,6 +792,14 @@ mod tests {
 pub struct MetricValue {
     pub key: NonEmptyText,
     pub value: f64,
+    pub unit: MetricUnit,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct ReportedMetricValue {
+    pub key: NonEmptyText,
+    pub value: f64,
+    pub unit: Option<MetricUnit>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]

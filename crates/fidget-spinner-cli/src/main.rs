@@ -12,8 +12,8 @@ use camino::{Utf8Path, Utf8PathBuf};
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use fidget_spinner_core::{
     CommandRecipe, ExecutionBackend, ExperimentAnalysis, ExperimentStatus, FieldValueType,
-    FrontierStatus, FrontierVerdict, MetricAggregation, MetricUnit, NonEmptyText,
-    OptimizationObjective, RunDimensionValue, Slug, TagName,
+    FrontierStatus, FrontierVerdict, MetricAggregation, MetricDimension, MetricUnit, NonEmptyText,
+    OptimizationObjective, ReportedMetricValue, RunDimensionValue, Slug, TagName,
 };
 use fidget_spinner_store_sqlite::{
     CloseExperimentRequest, CreateFrontierRequest, CreateHypothesisRequest, CreateKpiRequest,
@@ -489,7 +489,9 @@ struct MetricDefineArgs {
     #[arg(long)]
     key: String,
     #[arg(long)]
-    unit: String,
+    dimension: String,
+    #[arg(long)]
+    display_unit: Option<String>,
     #[arg(long, value_enum, default_value_t = CliMetricAggregation::Point)]
     aggregation: CliMetricAggregation,
     #[arg(long, value_enum)]
@@ -1035,7 +1037,8 @@ fn run_metric_define(args: MetricDefineArgs) -> Result<(), StoreError> {
     let mut store = open_store(&args.project.project)?;
     print_json(&store.define_metric(DefineMetricRequest {
         key: NonEmptyText::new(args.key)?,
-        unit: MetricUnit::new(args.unit)?,
+        dimension: parse_metric_dimension_cli(&args.dimension)?,
+        display_unit: args.display_unit.map(MetricUnit::new).transpose()?,
         aggregation: args.aggregation.into(),
         objective: args.objective.into(),
         description: args.description.map(NonEmptyText::new).transpose()?,
@@ -1335,19 +1338,33 @@ pub(crate) fn parse_env(values: Vec<String>) -> BTreeMap<String, String> {
         .collect()
 }
 
-fn parse_metric_value_assignment(
-    raw: &str,
-) -> Result<fidget_spinner_core::MetricValue, StoreError> {
-    let (key, value) = raw
+fn parse_metric_value_assignment(raw: &str) -> Result<ReportedMetricValue, StoreError> {
+    let (key, raw_value) = raw
         .split_once('=')
         .ok_or_else(|| invalid_input("expected metric assignment in the form `key=value`"))?;
+    let (value, unit) = match raw_value.rsplit_once('@') {
+        Some((value, unit)) => (value, Some(MetricUnit::new(unit)?)),
+        None => (raw_value, None),
+    };
     let value = value
         .parse::<f64>()
         .map_err(|error| invalid_input(format!("invalid metric value `{value}`: {error}")))?;
-    Ok(fidget_spinner_core::MetricValue {
+    Ok(ReportedMetricValue {
         key: NonEmptyText::new(key.to_owned())?,
         value,
+        unit,
     })
+}
+
+fn parse_metric_dimension_cli(raw: &str) -> Result<MetricDimension, StoreError> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "time" => Ok(MetricDimension::Time),
+        "count" => Ok(MetricDimension::Count),
+        "bytes" => Ok(MetricDimension::Bytes),
+        "ratio" => Ok(MetricDimension::Ratio),
+        "dimensionless" | "scalar" => Ok(MetricDimension::Dimensionless),
+        other => Err(invalid_input(format!("invalid metric dimension `{other}`"))),
+    }
 }
 
 pub(crate) fn parse_dimension_assignments(
