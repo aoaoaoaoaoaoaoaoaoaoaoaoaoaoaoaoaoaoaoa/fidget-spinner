@@ -17,6 +17,8 @@ DEFAULT_SOURCE_FILE_INCLUDE = ("*.rs", "**/*.rs")
 IGNORED_SOURCE_DIRS = frozenset(
     {".direnv", ".git", ".hg", ".jj", ".svn", "__pycache__", "node_modules", "target", "vendor"}
 )
+Command = tuple[str, ...]
+CommandSequence = tuple[Command, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -31,19 +33,56 @@ def load_workspace_metadata() -> dict[str, object]:
     return workspace["workspace"]["metadata"]["rust-starter"]
 
 
-def load_commands(metadata: dict[str, object]) -> dict[str, list[str]]:
-    commands: dict[str, list[str]] = {}
-    for key in (
-        "format_command",
-        "clippy_command",
-        "test_command",
-        "doc_command",
-        "fix_command",
-        "install_command",
-    ):
-        value = metadata.get(key)
-        if isinstance(value, list) and value and all(isinstance(part, str) for part in value):
-            commands[key] = value
+def load_command(value: object, *, key_path: str) -> Command:
+    if not isinstance(value, list) or not value or not all(isinstance(part, str) and part for part in value):
+        raise SystemExit(f"[check] invalid {key_path}: expected a non-empty string list")
+    return tuple(value)
+
+
+def load_command_sequence(value: object, *, key_path: str) -> CommandSequence:
+    if not isinstance(value, list) or not value:
+        raise SystemExit(f"[check] invalid {key_path}: expected a non-empty list of commands")
+
+    commands: list[Command] = []
+    for index, command in enumerate(value, start=1):
+        commands.append(load_command(command, key_path=f"{key_path}[{index}]"))
+    return tuple(commands)
+
+
+def load_commands(metadata: dict[str, object]) -> dict[str, Command | CommandSequence]:
+    commands: dict[str, Command | CommandSequence] = {
+        "format_command": load_command(
+            metadata.get("format_command"),
+            key_path="workspace.metadata.rust-starter.format_command",
+        ),
+        "clippy_command": load_command(
+            metadata.get("clippy_command"),
+            key_path="workspace.metadata.rust-starter.clippy_command",
+        ),
+        "test_command": load_command(
+            metadata.get("test_command"),
+            key_path="workspace.metadata.rust-starter.test_command",
+        ),
+        "canonicalize_commands": load_command_sequence(
+            metadata.get("canonicalize_commands"),
+            key_path="workspace.metadata.rust-starter.canonicalize_commands",
+        ),
+    }
+
+    raw_doc_command = metadata.get("doc_command")
+    if raw_doc_command is not None:
+        commands["doc_command"] = load_command(
+            raw_doc_command,
+            key_path="workspace.metadata.rust-starter.doc_command",
+        )
+
+    raw_install_command = metadata.get("install_command")
+    if raw_install_command is not None:
+        commands["install_command"] = load_command(
+            raw_install_command,
+            key_path="workspace.metadata.rust-starter.install_command",
+        )
+
     return commands
 
 
@@ -91,7 +130,7 @@ def load_source_file_policy(metadata: dict[str, object]) -> SourceFilePolicy:
     return SourceFilePolicy(max_lines, include, exclude)
 
 
-def run(name: str, argv: list[str]) -> None:
+def run(name: str, argv: Command) -> None:
     print(f"[check] {name}: {' '.join(argv)}", flush=True)
     proc = subprocess.run(argv, cwd=ROOT, check=False)
     if proc.returncode != 0:
@@ -103,11 +142,19 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "mode",
         nargs="?",
-        choices=("check", "deep", "fix"),
+        choices=("check", "verify", "deep", "fix", "canon"),
         default="check",
-        help="Run the fast gate, include docs for the deep gate, or run the fix command.",
+        help=(
+            "Run canonicalization plus the fast gate, run a non-mutating verification gate, "
+            "include docs for the deep gate, or run only canonicalization."
+        ),
     )
     return parser.parse_args()
+
+
+def run_command_sequence(name: str, commands: CommandSequence) -> None:
+    for index, command in enumerate(commands, start=1):
+        run(f"{name}.{index}", command)
 
 
 def matches_pattern(path: PurePosixPath, pattern: str) -> bool:
@@ -163,11 +210,14 @@ def main() -> None:
     source_file_policy = load_source_file_policy(metadata)
     args = parse_args()
 
-    if args.mode == "fix":
-        run("fix", commands["fix_command"])
+    if args.mode in {"fix", "canon"}:
+        run_command_sequence("canonicalize", commands["canonicalize_commands"])
         return
 
     enforce_source_file_policy(source_file_policy)
+    if args.mode != "verify":
+        run_command_sequence("canonicalize", commands["canonicalize_commands"])
+
     run("fmt", commands["format_command"])
     run("clippy", commands["clippy_command"])
     run("test", commands["test_command"])
@@ -175,7 +225,7 @@ def main() -> None:
     if args.mode == "deep" and "doc_command" in commands:
         run("doc", commands["doc_command"])
 
-    if "install_command" in commands:
+    if args.mode in {"check", "deep"} and "install_command" in commands:
         run("install", commands["install_command"])
 
 
