@@ -298,6 +298,10 @@ pub(crate) fn serve(
             )
             .route("/project/{project}/metrics/create", post(create_metric))
             .route("/project/{project}/metrics/rename", post(rename_metric))
+            .route(
+                "/project/{project}/metrics/description",
+                post(update_metric_description),
+            )
             .route("/project/{project}/metrics/merge", post(merge_metric))
             .route("/project/{project}/metrics/delete", post(delete_metric))
             .route("/project/{project}/metrics/kpi", post(create_kpi))
@@ -680,6 +684,12 @@ struct RenameMetricForm {
     new_key: String,
 }
 
+#[derive(Deserialize)]
+struct UpdateMetricDescriptionForm {
+    metric: String,
+    description: String,
+}
+
 async fn rename_metric(
     State(state): State<NavigatorState>,
     Path(project): Path<String>,
@@ -691,6 +701,23 @@ async fn rename_metric(
             let _ = store.rename_metric(RenameMetricRequest {
                 metric: NonEmptyText::new(form.metric)?,
                 new_key: NonEmptyText::new(form.new_key)?,
+            })?;
+            Ok(format!("{}metrics", context.base_href))
+        }),
+    )
+}
+
+async fn update_metric_description(
+    State(state): State<NavigatorState>,
+    Path(project): Path<String>,
+    Form(form): Form<UpdateMetricDescriptionForm>,
+) -> Response {
+    metric_mutation_response(
+        resolve_project_context(&state, &project).and_then(|context| {
+            let mut store = open_store(context.project_root.as_std_path())?;
+            let _ = store.update_metric(fidget_spinner_store_sqlite::UpdateMetricRequest {
+                metric: NonEmptyText::new(form.metric)?,
+                description: text_patch_field(form.description)?,
             })?;
             Ok(format!("{}metrics", context.base_href))
         }),
@@ -1150,6 +1177,16 @@ fn optional_text_field(value: String) -> Result<Option<NonEmptyText>, StoreError
         Ok(None)
     } else {
         NonEmptyText::new(value).map(Some).map_err(StoreError::from)
+    }
+}
+
+fn text_patch_field(value: String) -> Result<TextPatch<NonEmptyText>, StoreError> {
+    if value.trim().is_empty() {
+        Ok(TextPatch::Clear)
+    } else {
+        NonEmptyText::new(value)
+            .map(TextPatch::Set)
+            .map_err(StoreError::from)
     }
 }
 
@@ -1782,14 +1819,14 @@ fn render_tag_table(
                                                     (trash_icon())
                                                 }
                                             }
-                                            form.tag-inline-rename-form method="post" action="tags/rename" data-preserve-viewport="true" data-inline-rename-form="true" data-original-name=(tag.name.as_str()) {
+                                            form.tag-inline-rename-form method="post" action="tags/rename" data-preserve-viewport="true" data-inline-edit-form="true" data-original-value=(tag.name.as_str()) {
                                                 input type="hidden" name="tag" value=(tag.name.as_str());
                                                 input type="hidden" name="expected_revision" value=(tag.revision);
-                                                span.tag-chip data-inline-rename-label="true" { (tag.name) }
-                                                button.inline-icon-button type="button" data-inline-rename-trigger="true" aria-label=(format!("Rename {}", tag.name)) title="Rename tag" {
+                                                span.tag-chip data-inline-edit-label="true" { (tag.name) }
+                                                button.inline-icon-button type="button" data-inline-edit-trigger="true" aria-label=(format!("Rename {}", tag.name)) title="Rename tag" {
                                                     (pencil_icon())
                                                 }
-                                                input.inline-rename-input type="text" name="new_name" value=(tag.name.as_str()) aria-label=(format!("New name for {}", tag.name)) data-inline-rename-input="true";
+                                                input.inline-rename-input type="text" name="new_name" value=(tag.name.as_str()) aria-label=(format!("New name for {}", tag.name)) data-inline-edit-input="true";
                                             }
                                         }
                                     }
@@ -2070,7 +2107,7 @@ fn render_metric_registry_table(
                                             data-table-filter-input="metric-registry";
                                     }
                                 }
-                                th { "Unit" }
+                                th { "Dimension" }
                                 th { "Shape" }
                                 th { "Refs" }
                                 th { "Merge" }
@@ -2088,19 +2125,30 @@ fn render_metric_registry_table(
                                         }
                                     }
                                     td.no-truncate {
-                                        form.tag-inline-rename-form method="post" action="metrics/rename" data-preserve-viewport="true" data-inline-rename-form="true" data-original-name=(metric.key.as_str()) {
+                                        form.tag-inline-rename-form method="post" action="metrics/rename" data-preserve-viewport="true" data-inline-edit-form="true" data-original-value=(metric.key.as_str()) {
                                             input type="hidden" name="metric" value=(metric.key.as_str());
-                                            span.tag-chip data-inline-rename-label="true" { (metric.key) }
-                                            button.inline-icon-button type="button" data-inline-rename-trigger="true" aria-label=(format!("Rename {}", metric.key)) title="Rename metric" {
+                                            span.tag-chip data-inline-edit-label="true" { (metric.key) }
+                                            button.inline-icon-button type="button" data-inline-edit-trigger="true" aria-label=(format!("Rename {}", metric.key)) title="Rename metric" {
                                                 (pencil_icon())
                                             }
-                                            input.inline-rename-input type="text" name="new_key" value=(metric.key.as_str()) aria-label=(format!("New key for {}", metric.key)) data-inline-rename-input="true";
+                                            input.inline-rename-input type="text" name="new_key" value=(metric.key.as_str()) aria-label=(format!("New key for {}", metric.key)) data-inline-edit-input="true";
                                         }
-                                        @if let Some(description) = metric.description.as_ref() {
-                                            div.muted { (description) }
+                                        form.tag-inline-rename-form method="post" action="metrics/description" data-preserve-viewport="true" data-inline-edit-form="true" data-inline-edit-allow-clear="true" data-original-value=(metric.description.as_ref().map_or("", NonEmptyText::as_str)) {
+                                            input type="hidden" name="metric" value=(metric.key.as_str());
+                                            span.muted data-inline-edit-label="true" {
+                                                @if let Some(description) = metric.description.as_ref() {
+                                                    (description)
+                                                } @else {
+                                                    "No description"
+                                                }
+                                            }
+                                            button.inline-icon-button type="button" data-inline-edit-trigger="true" aria-label=(format!("Edit description for {}", metric.key)) title="Edit description" {
+                                                (pencil_icon())
+                                            }
+                                            input.inline-rename-input.wide-compact-input type="text" name="description" value=(metric.description.as_ref().map_or("", NonEmptyText::as_str)) placeholder="description" aria-label=(format!("Description for {}", metric.key)) data-inline-edit-input="true";
                                         }
                                     }
-                                    td.no-truncate { (metric.display_unit.as_str()) " · " (metric.dimension.as_str()) }
+                                    td.no-truncate { (metric.dimension.as_str()) }
                                     td.no-truncate { (metric.aggregation.as_str()) " · " (metric.objective.as_str()) }
                                     td.no-truncate { (metric.reference_count) }
                                     td.no-truncate {
@@ -2131,7 +2179,6 @@ fn render_metric_registry_table(
 fn metric_registry_filter_text(metric: &fidget_spinner_store_sqlite::MetricKeySummary) -> String {
     [
         metric.key.as_str(),
-        metric.display_unit.as_str(),
         metric.dimension.as_str(),
         metric.aggregation.as_str(),
         metric.objective.as_str(),
@@ -3970,7 +4017,7 @@ function autoRefreshDeferred() {{
     return Boolean(
         document.hidden
         || document.querySelector("details.control-popout[open]")
-        || document.querySelector("form[data-inline-rename-form=\"true\"].editing")
+        || document.querySelector("form[data-inline-edit-form=\"true\"].editing")
         || activeElement instanceof HTMLInputElement
         || activeElement instanceof HTMLSelectElement
         || activeElement instanceof HTMLTextAreaElement
@@ -4078,18 +4125,53 @@ async function copyPlotPng(button) {{
     ]);
 }}
 
-function inlineRenameInput(form) {{
-    const input = form.querySelector("[data-inline-rename-input=\"true\"]");
+function inlineEditInput(form) {{
+    const input = form.querySelector("[data-inline-edit-input=\"true\"]");
     return input instanceof HTMLInputElement ? input : null;
 }}
 
-function openInlineRename(form) {{
-    const input = inlineRenameInput(form);
+function tableFilterStorageKey(filterName) {{
+    return `spinner:table-filter:${{window.location.pathname}}${{window.location.search}}:${{filterName}}`;
+}}
+
+function restoreTableFilter(input) {{
+    const filterName = input.dataset.tableFilterInput;
+    if (!filterName) {{
+        return;
+    }}
+    try {{
+        const stored = window.sessionStorage.getItem(tableFilterStorageKey(filterName));
+        if (stored !== null) {{
+            input.value = stored;
+        }}
+    }} catch (_error) {{
+        // Filter persistence is best-effort only.
+    }}
+}}
+
+function storeTableFilter(input) {{
+    const filterName = input.dataset.tableFilterInput;
+    if (!filterName) {{
+        return;
+    }}
+    try {{
+        if (input.value) {{
+            window.sessionStorage.setItem(tableFilterStorageKey(filterName), input.value);
+        }} else {{
+            window.sessionStorage.removeItem(tableFilterStorageKey(filterName));
+        }}
+    }} catch (_error) {{
+        // Filter persistence is best-effort only.
+    }}
+}}
+
+function openInlineEdit(form) {{
+    const input = inlineEditInput(form);
     if (!input) {{
         return;
     }}
-    const original = form.dataset.originalName || input.defaultValue || input.value;
-    form.dataset.originalName = original;
+    const original = form.dataset.originalValue || input.defaultValue || input.value;
+    form.dataset.originalValue = original;
     input.value = original;
     form.classList.add("editing");
     window.requestAnimationFrame(() => {{
@@ -4098,24 +4180,25 @@ function openInlineRename(form) {{
     }});
 }}
 
-function closeInlineRename(form) {{
-    const input = inlineRenameInput(form);
+function closeInlineEdit(form) {{
+    const input = inlineEditInput(form);
     if (input) {{
-        input.value = form.dataset.originalName || input.defaultValue || "";
+        input.value = form.dataset.originalValue || input.defaultValue || "";
     }}
     form.classList.remove("editing");
 }}
 
-function prepareInlineRenameSubmit(form, event) {{
-    const input = inlineRenameInput(form);
+function prepareInlineEditSubmit(form, event) {{
+    const input = inlineEditInput(form);
     if (!input) {{
         return;
     }}
-    const original = form.dataset.originalName || input.defaultValue || "";
+    const original = form.dataset.originalValue || input.defaultValue || "";
     const next = input.value.trim();
-    if (!next || next === original) {{
+    const allowClear = form.dataset.inlineEditAllowClear === "true";
+    if ((!allowClear && !next) || next === original) {{
         event.preventDefault();
-        closeInlineRename(form);
+        closeInlineEdit(form);
         return;
     }}
     input.value = next;
@@ -4154,6 +4237,7 @@ function applyTableFilter(input) {{
 function applyAllTableFilters() {{
     for (const input of document.querySelectorAll("[data-table-filter-input]")) {{
         if (input instanceof HTMLInputElement) {{
+            restoreTableFilter(input);
             applyTableFilter(input);
         }}
     }}
@@ -4196,17 +4280,17 @@ document.addEventListener("click", (event) => {{
         }});
         return;
     }}
-    const renameButton = target.closest("button[data-inline-rename-trigger=\"true\"]");
-    if (renameButton instanceof HTMLButtonElement) {{
-        const form = renameButton.closest("form[data-inline-rename-form=\"true\"]");
+    const editButton = target.closest("button[data-inline-edit-trigger=\"true\"]");
+    if (editButton instanceof HTMLButtonElement) {{
+        const form = editButton.closest("form[data-inline-edit-form=\"true\"]");
         if (form instanceof HTMLFormElement) {{
-            openInlineRename(form);
+            openInlineEdit(form);
         }}
         return;
     }}
-    for (const renameForm of document.querySelectorAll("form[data-inline-rename-form=\"true\"].editing")) {{
-        if (!renameForm.contains(target) && renameForm instanceof HTMLFormElement) {{
-            closeInlineRename(renameForm);
+    for (const editForm of document.querySelectorAll("form[data-inline-edit-form=\"true\"].editing")) {{
+        if (!editForm.contains(target) && editForm instanceof HTMLFormElement) {{
+            closeInlineEdit(editForm);
         }}
     }}
     const navigationLink = target.closest("a[data-preserve-viewport=\"true\"]");
@@ -4234,8 +4318,8 @@ document.addEventListener("submit", (event) => {{
     if (!(target instanceof HTMLFormElement)) {{
         return;
     }}
-    if (target.hasAttribute("data-inline-rename-form")) {{
-        prepareInlineRenameSubmit(target, event);
+    if (target.hasAttribute("data-inline-edit-form")) {{
+        prepareInlineEditSubmit(target, event);
         if (event.defaultPrevented) {{
             return;
         }}
@@ -4250,16 +4334,16 @@ document.addEventListener("keydown", (event) => {{
     const target = event.target;
     if (
         target instanceof HTMLInputElement
-        && target.hasAttribute("data-inline-rename-input")
+        && target.hasAttribute("data-inline-edit-input")
     ) {{
-        const form = target.closest("form[data-inline-rename-form=\"true\"]");
+        const form = target.closest("form[data-inline-edit-form=\"true\"]");
         if (form instanceof HTMLFormElement && event.key === "Escape") {{
             event.preventDefault();
-            closeInlineRename(form);
+            closeInlineEdit(form);
             return;
         }}
         if (form instanceof HTMLFormElement && event.key === "Enter") {{
-            prepareInlineRenameSubmit(form, event);
+            prepareInlineEditSubmit(form, event);
         }}
     }}
     if (event.key !== "Escape") {{
@@ -4289,6 +4373,7 @@ document.addEventListener("input", (event) => {{
     const target = event.target;
     if (target instanceof HTMLInputElement && target.hasAttribute("data-table-filter-input")) {{
         applyTableFilter(target);
+        storeTableFilter(target);
     }}
 }});
 "#
@@ -5519,7 +5604,7 @@ fn styles() -> &'static str {
         display: none;
         width: min(240px, 42vw);
     }
-    .tag-inline-rename-form.editing .tag-chip,
+    .tag-inline-rename-form.editing [data-inline-edit-label="true"],
     .tag-inline-rename-form.editing .inline-icon-button {
         display: none;
     }
@@ -6488,8 +6573,9 @@ fn styles() -> &'static str {
 mod tests {
     use super::{
         FrontierPageQuery, METRIC_TABLE_TITLE_MIN_BUDGET_CH, MetricChartAxis,
-        best_metric_table_title_split, harden_autofill_controls, render_metric_registry_table,
-        render_metric_series_section, resolve_selected_metric_keys, truncated_entry_count,
+        best_metric_table_title_split, harden_autofill_controls, metric_registry_filter_text,
+        render_metric_registry_table, render_metric_series_section, resolve_selected_metric_keys,
+        truncated_entry_count,
     };
     use std::collections::BTreeMap;
 
@@ -6561,11 +6647,15 @@ mod tests {
     fn metric_registry_table_exposes_reactive_filter_hooks() {
         let metrics = vec![test_metric("presolve_wallclock", "milliseconds")];
         let markup = render_metric_registry_table(&metrics).into_string();
+        let filter_text = metric_registry_filter_text(&metrics[0]);
 
         assert!(markup.contains(r#"data-table-filter-input="metric-registry""#));
         assert!(markup.contains(r#"data-table-filter-row="metric-registry""#));
         assert!(markup.contains(r#"data-table-filter-empty="metric-registry" hidden"#));
-        assert!(markup.contains("presolve_wallclock milliseconds time point minimize"));
+        assert_eq!(filter_text, "presolve_wallclock time point minimize ");
+        assert!(markup.contains(r#"<td class="no-truncate">time</td>"#));
+        assert!(markup.contains(r#"action="metrics/description""#));
+        assert!(markup.contains(r#"data-inline-edit-allow-clear="true""#));
     }
 
     fn test_frontier() -> FrontierRecord {

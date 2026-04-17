@@ -521,6 +521,12 @@ pub struct RenameMetricRequest {
 }
 
 #[derive(Clone, Debug)]
+pub struct UpdateMetricRequest {
+    pub metric: NonEmptyText,
+    pub description: TextPatch<NonEmptyText>,
+}
+
+#[derive(Clone, Debug)]
 pub struct MergeMetricRequest {
     pub source: NonEmptyText,
     pub target: NonEmptyText,
@@ -1322,7 +1328,7 @@ impl ProjectStore {
         renamed.updated_at = OffsetDateTime::now_utc();
         let transaction = self.connection.transaction()?;
         rewrite_outcome_metric_key(&transaction, &metric.key, &request.new_key)?;
-        update_metric_definition_key(&transaction, &renamed)?;
+        update_metric_definition_row(&transaction, &renamed)?;
         insert_metric_name_history(
             &transaction,
             metric.key.as_str(),
@@ -1344,6 +1350,36 @@ impl ProjectStore {
         )?;
         transaction.commit()?;
         Ok(renamed)
+    }
+
+    pub fn update_metric(
+        &mut self,
+        request: UpdateMetricRequest,
+    ) -> Result<MetricDefinition, StoreError> {
+        let metric = self
+            .metric_definition(&request.metric)?
+            .ok_or_else(|| StoreError::UnknownMetricDefinition(request.metric.clone()))?;
+        let description =
+            apply_optional_text_patch(Some(request.description), metric.description.clone());
+        if description == metric.description {
+            return Ok(metric);
+        }
+        let mut updated = metric.clone();
+        updated.description = description;
+        updated.revision = updated.revision.saturating_add(1);
+        updated.updated_at = OffsetDateTime::now_utc();
+        let transaction = self.connection.transaction()?;
+        update_metric_definition_row(&transaction, &updated)?;
+        record_event(
+            &transaction,
+            "metric",
+            &metric.id.to_string(),
+            updated.revision,
+            "updated",
+            &updated,
+        )?;
+        transaction.commit()?;
+        Ok(updated)
     }
 
     pub fn merge_metric(&mut self, request: MergeMetricRequest) -> Result<(), StoreError> {
@@ -4400,7 +4436,7 @@ fn normalize_legacy_time_metric_keys(
         renamed.revision = renamed.revision.saturating_add(1);
         renamed.updated_at = OffsetDateTime::now_utc();
         rewrite_outcome_metric_key(transaction, &definition.key, &normalized_key)?;
-        update_metric_definition_key(transaction, &renamed)?;
+        update_metric_definition_row(transaction, &renamed)?;
         insert_metric_name_history(
             transaction,
             definition.key.as_str(),
@@ -4923,15 +4959,29 @@ fn replace_experiment_metrics(
     Ok(())
 }
 
-fn update_metric_definition_key(
+fn update_metric_definition_row(
     transaction: &Transaction<'_>,
     metric: &MetricDefinition,
 ) -> Result<(), StoreError> {
     let _ = transaction.execute(
-        "UPDATE metric_definitions SET key = ?2, revision = ?3, updated_at = ?4 WHERE id = ?1",
+        "UPDATE metric_definitions
+         SET key = ?2,
+             dimension = ?3,
+             display_unit = ?4,
+             aggregation = ?5,
+             objective = ?6,
+             description = ?7,
+             revision = ?8,
+             updated_at = ?9
+         WHERE id = ?1",
         params![
             metric.id.to_string(),
             metric.key.as_str(),
+            metric.dimension.as_str(),
+            metric.display_unit.as_str(),
+            metric.aggregation.as_str(),
+            metric.objective.as_str(),
+            metric.description.as_ref().map(NonEmptyText::as_str),
             metric.revision,
             encode_timestamp(metric.updated_at)?,
         ],
