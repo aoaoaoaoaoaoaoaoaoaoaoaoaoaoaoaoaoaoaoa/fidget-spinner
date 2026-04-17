@@ -3077,14 +3077,14 @@ fn render_frontier_grid(frontiers: &[FrontierSummary], limit: Option<u32>) -> Ma
         } @else {
             div.card-grid {
                 @for frontier in limit_items(frontiers, limit) {
-                    article.mini-card {
-                        div.card-header {
-                            a.title-link href=(frontier_href(&frontier.slug)) { (frontier.label) }
-                            span class=(status_chip_classes(frontier_status_class(frontier.status.as_str()))) {
+                    article.mini-card.frontier-card {
+                        div.frontier-card-header {
+                            a.frontier-card-title href=(frontier_href(&frontier.slug)) title=(frontier.label.as_str()) { (frontier.label) }
+                            span class=(format!("frontier-card-status {}", status_chip_classes(frontier_status_class(frontier.status.as_str())))) {
                                 (frontier.status.as_str())
                             }
                         }
-                        p.prose { (frontier.objective) }
+                        p.frontier-card-objective title=(frontier.objective.as_str()) { (frontier.objective) }
                         div.meta-row {
                             span { (format!("{} active hypotheses", frontier.active_hypothesis_count)) }
                             span { (format!("{} open experiments", frontier.open_experiment_count)) }
@@ -5791,6 +5791,53 @@ fn styles() -> &'static str {
         gap: 9px;
         min-width: 0;
         align-content: start;
+        overflow: hidden;
+    }
+    .frontier-card-header {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        gap: 8px;
+        align-items: start;
+        min-width: 0;
+    }
+    .frontier-card-title {
+        color: var(--text);
+        display: -webkit-box;
+        font-size: 16px;
+        font-weight: 700;
+        line-height: 1.25;
+        min-width: 0;
+        overflow: hidden;
+        overflow-wrap: anywhere;
+        text-overflow: ellipsis;
+        -webkit-box-orient: vertical;
+        -webkit-line-clamp: 2;
+    }
+    .frontier-card-title:hover {
+        text-decoration: underline;
+    }
+    .frontier-card-status {
+        justify-self: end;
+        max-width: 100%;
+    }
+    .frontier-card-objective {
+        display: -webkit-box;
+        margin: 0;
+        max-width: 100%;
+        overflow: hidden;
+        overflow-wrap: anywhere;
+        white-space: normal;
+        -webkit-box-orient: vertical;
+        -webkit-line-clamp: 4;
+    }
+    .frontier-card .meta-row {
+        min-width: 0;
+    }
+    .frontier-card .meta-row span {
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
     }
     .card-header {
         display: flex;
