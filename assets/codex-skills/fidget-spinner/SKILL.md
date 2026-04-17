@@ -61,7 +61,7 @@ If you need more context, pull it from:
 - `experiment.nearest` when you need the nearest accepted, kept, rejected, or champion comparator for one structural slice
 - `artifact.record` when preserving an external file, link, log, table, plot, dump, or bibliography by reference
 - `artifact.read` only to inspect metadata and attachments, never to read the body
-- `metric.define` when a project-level metric key needs a canonical unit, objective, visibility tier, or description
+- `metric.define` when a project-level metric key needs a canonical unit, objective, visibility tier, or description; name the measured concept, not the unit
 - `kpi.list` or `metric.keys --scope kpi` before guessing which mandatory frontier metrics define the real hill
 - `kpi.best` when you need the frontier ranking under KPI supersession rules
 - `metric.keys --scope live` before guessing which numeric signals matter now
@@ -93,8 +93,10 @@ hypothesis, or experiment outcome.
    and `system.telemetry` before pushing further.
 6. Keep fetches narrow by default; slow is better than burning tokens.
 7. Treat metric keys as project-level registry entries and run dimensions as the
-   first-class slice surface for experiment comparison; do not encode scenario
-   context into the metric key itself.
+   first-class slice surface for experiment comparison. Do not encode scenario
+   context or Hungarian unit notation into the metric key: prefer
+   `presolve_wallclock` with unit `milliseconds` over `presolve_ms`, and
+   `report_size` with unit `bytes` over `report_bytes`.
 8. A hypothesis is not an experiment. Open the experiment explicitly; do not
    smuggle planned work into the frontier brief.
 9. Experiments are the scientific record. If a fact matters later, it should

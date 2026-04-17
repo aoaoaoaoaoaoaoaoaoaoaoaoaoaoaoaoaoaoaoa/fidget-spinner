@@ -54,6 +54,12 @@ Metric keys are human handles. They are not durable foreign keys. As with tags,
 rename/merge/delete must preserve stale-name guidance so a running model gets a
 porcelain correction instead of an opaque unknown-metric failure.
 
+Metric keys name the measured concept, not the rendering unit. Avoid Hungarian
+unit notation such as `_ms`, `_s`, `_bytes`, `_pct`, or `_count` in newly defined
+metric keys. Use `presolve_wallclock` with display unit `milliseconds`, not
+`presolve_ms`; use `report_size` with display unit `bytes`, not
+`report_bytes`. Units, dimensions, and aggregation shape are registry fields.
+
 ### Measurement Dimension
 
 A measurement dimension defines the physical or semantic quantity being stored.
