@@ -2125,27 +2125,29 @@ fn render_metric_registry_table(
                                         }
                                     }
                                     td.no-truncate {
-                                        form.tag-inline-rename-form method="post" action="metrics/rename" data-preserve-viewport="true" data-inline-edit-form="true" data-original-value=(metric.key.as_str()) {
-                                            input type="hidden" name="metric" value=(metric.key.as_str());
-                                            span.tag-chip data-inline-edit-label="true" { (metric.key) }
-                                            button.inline-icon-button type="button" data-inline-edit-trigger="true" aria-label=(format!("Rename {}", metric.key)) title="Rename metric" {
-                                                (pencil_icon())
-                                            }
-                                            input.inline-rename-input type="text" name="new_key" value=(metric.key.as_str()) aria-label=(format!("New key for {}", metric.key)) data-inline-edit-input="true";
-                                        }
-                                        form.tag-inline-rename-form method="post" action="metrics/description" data-preserve-viewport="true" data-inline-edit-form="true" data-inline-edit-allow-clear="true" data-original-value=(metric.description.as_ref().map_or("", NonEmptyText::as_str)) {
-                                            input type="hidden" name="metric" value=(metric.key.as_str());
-                                            span.muted data-inline-edit-label="true" {
-                                                @if let Some(description) = metric.description.as_ref() {
-                                                    (description)
-                                                } @else {
-                                                    "No description"
+                                        div.metric-identity-stack {
+                                            form.tag-inline-rename-form.metric-name-form method="post" action="metrics/rename" data-preserve-viewport="true" data-inline-edit-form="true" data-original-value=(metric.key.as_str()) {
+                                                input type="hidden" name="metric" value=(metric.key.as_str());
+                                                span.tag-chip data-inline-edit-label="true" { (metric.key) }
+                                                button.inline-icon-button type="button" data-inline-edit-trigger="true" aria-label=(format!("Rename {}", metric.key)) title="Rename metric" {
+                                                    (pencil_icon())
                                                 }
+                                                input.inline-rename-input type="text" name="new_key" value=(metric.key.as_str()) aria-label=(format!("New key for {}", metric.key)) data-inline-edit-input="true";
                                             }
-                                            button.inline-icon-button type="button" data-inline-edit-trigger="true" aria-label=(format!("Edit description for {}", metric.key)) title="Edit description" {
-                                                (pencil_icon())
+                                            form.tag-inline-rename-form.metric-description-form method="post" action="metrics/description" data-preserve-viewport="true" data-inline-edit-form="true" data-inline-edit-allow-clear="true" data-original-value=(metric.description.as_ref().map_or("", NonEmptyText::as_str)) {
+                                                input type="hidden" name="metric" value=(metric.key.as_str());
+                                                span.muted data-inline-edit-label="true" {
+                                                    @if let Some(description) = metric.description.as_ref() {
+                                                        (description)
+                                                    } @else {
+                                                        "No description"
+                                                    }
+                                                }
+                                                button.inline-icon-button type="button" data-inline-edit-trigger="true" aria-label=(format!("Edit description for {}", metric.key)) title="Edit description" {
+                                                    (pencil_icon())
+                                                }
+                                                input.inline-rename-input.wide-compact-input type="text" name="description" value=(metric.description.as_ref().map_or("", NonEmptyText::as_str)) placeholder="description" aria-label=(format!("Description for {}", metric.key)) data-inline-edit-input="true";
                                             }
-                                            input.inline-rename-input.wide-compact-input type="text" name="description" value=(metric.description.as_ref().map_or("", NonEmptyText::as_str)) placeholder="description" aria-label=(format!("Description for {}", metric.key)) data-inline-edit-input="true";
                                         }
                                     }
                                     td.no-truncate { (metric.dimension.as_str()) }
@@ -5573,6 +5575,35 @@ fn styles() -> &'static str {
     .tag-inline-rename-form {
         gap: 4px;
     }
+    .metric-identity-stack {
+        display: grid;
+        gap: 4px;
+        min-width: 0;
+        white-space: normal;
+    }
+    .metric-name-form {
+        white-space: nowrap;
+    }
+    .metric-description-form {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        align-items: start;
+        width: 100%;
+        min-width: 0;
+    }
+    .metric-description-form [data-inline-edit-label="true"] {
+        min-width: 0;
+        white-space: normal;
+        overflow-wrap: anywhere;
+    }
+    .metric-description-form .inline-icon-button {
+        align-self: start;
+    }
+    .metric-description-form.editing .inline-rename-input {
+        display: block;
+        width: 100%;
+        max-width: none;
+    }
     .inline-icon-button {
         display: grid;
         place-items: center;
@@ -6656,6 +6687,8 @@ mod tests {
         assert!(markup.contains(r#"<td class="no-truncate">time</td>"#));
         assert!(markup.contains(r#"action="metrics/description""#));
         assert!(markup.contains(r#"data-inline-edit-allow-clear="true""#));
+        assert!(markup.contains(r#"class="metric-identity-stack""#));
+        assert!(markup.contains(r#"class="tag-inline-rename-form metric-description-form""#));
     }
 
     fn test_frontier() -> FrontierRecord {
