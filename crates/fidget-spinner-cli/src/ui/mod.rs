@@ -978,8 +978,8 @@ mod tests {
     use super::assets::harden_autofill_controls;
     use super::registry::{metric_registry_filter_text, render_metric_registry_table};
     use super::results::{
-        MetricChartAxis, best_metric_table_title_split, render_metric_series_section,
-        resolve_selected_metric_keys, truncated_entry_count,
+        MetricChartAxis, best_metric_table_title_split, metric_chart_secondary_grid_values,
+        render_metric_series_section, resolve_selected_metric_keys, truncated_entry_count,
     };
     use super::{FrontierPageQuery, FrontierTab, METRIC_TABLE_TITLE_MIN_BUDGET_CH};
     use std::collections::BTreeMap;
@@ -1209,6 +1209,20 @@ mod tests {
         let axis = MetricChartAxis::from_metric(&test_metric("presolve_ms", "ms"));
         let seconds = must(MetricUnit::new("seconds"), "seconds unit");
         assert_eq!(axis.normalize_value(1.5, &seconds), Some(1500.0));
+    }
+
+    #[test]
+    fn secondary_metric_grid_uses_coarse_interior_gradations() {
+        let linear_values = metric_chart_secondary_grid_values(0.0, 100.0, false);
+        assert_eq!(linear_values, vec![20.0, 40.0, 60.0, 80.0]);
+
+        let log_values = metric_chart_secondary_grid_values(10.0, 1000.0, true);
+        assert_eq!(log_values.len(), 4);
+        assert!(
+            log_values
+                .iter()
+                .all(|value| *value > 10.0 && *value < 1000.0)
+        );
     }
 
     #[test]

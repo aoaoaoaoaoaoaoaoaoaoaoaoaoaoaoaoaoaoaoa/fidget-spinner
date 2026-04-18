@@ -15,6 +15,13 @@ use super::{
     limit_items, project_metrics_frontier_href, render_dimension_value, status_chip_classes,
     verdict_class,
 };
+use plotters::coord::ranged1d::{BoldPoints, Ranged};
+use plotters::coord::types::RangedCoordf64;
+
+const METRIC_CHART_ACCEPTED_MARKER_RADIUS: i32 = 2;
+const METRIC_CHART_REJECTED_MARKER_SIZE: i32 = 3;
+const METRIC_CHART_LIGHT_LINE_LIMIT: usize = 5;
+const METRIC_CHART_Y_LABEL_COUNT: usize = 6;
 
 pub(super) fn render_frontier_tab_content(
     store: &fidget_spinner_store_sqlite::ProjectStore,
@@ -741,7 +748,11 @@ fn render_metric_chart_svg(
                         .iter()
                         .filter(|(_, _, verdict)| *verdict != FrontierVerdict::Rejected)
                         .map(|(x, value, _)| {
-                            Circle::new((*x, *value), 4, ShapeStyle::from(&series.color).filled())
+                            Circle::new(
+                                (*x, *value),
+                                METRIC_CHART_ACCEPTED_MARKER_RADIUS,
+                                ShapeStyle::from(&series.color).filled(),
+                            )
                         });
                     if $chart.$method(accepted_points).is_err() {
                         return chart_error_markup("accepted marker draw failed");
@@ -754,7 +765,7 @@ fn render_metric_chart_svg(
                         .map(|(x, value, _)| {
                             Cross::new(
                                 (*x, *value),
-                                6,
+                                METRIC_CHART_REJECTED_MARKER_SIZE,
                                 ShapeStyle::from(&series.color).stroke_width(2),
                             )
                         });
@@ -774,6 +785,8 @@ fn render_metric_chart_svg(
                     .bold_line_style(RGBColor(207, 190, 168).mix(0.8))
                     .axis_style(RGBColor(103, 86, 63))
                     .label_style(("Iosevka Web", 12).into_font().color(&RGBColor(79, 71, 58)))
+                    .y_labels(METRIC_CHART_Y_LABEL_COUNT)
+                    .max_light_lines(METRIC_CHART_LIGHT_LINE_LIMIT)
                     .x_desc("close order")
                     .y_desc(axes.primary.unit.as_str())
                     .x_label_formatter(&|value| format!("{}", value + 1))
@@ -800,7 +813,7 @@ fn render_metric_chart_svg(
         }
 
         macro_rules! draw_dual_chart {
-            ($chart:expr) => {{
+            ($chart:expr, $secondary_min:expr, $secondary_max:expr) => {{
                 let chart = &mut $chart;
                 if chart
                     .configure_mesh()
@@ -808,6 +821,8 @@ fn render_metric_chart_svg(
                     .bold_line_style(RGBColor(207, 190, 168).mix(0.8))
                     .axis_style(RGBColor(103, 86, 63))
                     .label_style(("Iosevka Web", 12).into_font().color(&RGBColor(79, 71, 58)))
+                    .y_labels(METRIC_CHART_Y_LABEL_COUNT)
+                    .max_light_lines(METRIC_CHART_LIGHT_LINE_LIMIT)
                     .x_desc("close order")
                     .y_desc(axes.primary.unit.as_str())
                     .x_label_formatter(&|value| format!("{}", value + 1))
@@ -818,10 +833,26 @@ fn render_metric_chart_svg(
                 }
 
                 if let Some(secondary_axis) = axes.secondary.as_ref() {
+                    let secondary_grid_style =
+                        ShapeStyle::from(&RGBColor(89, 119, 138).mix(0.28)).stroke_width(1);
+                    let secondary_grid =
+                        metric_chart_secondary_grid_values($secondary_min, $secondary_max, log_y)
+                            .into_iter()
+                            .map(|value| {
+                                PathElement::new(
+                                    vec![(0_i32, value), (x_end, value)],
+                                    secondary_grid_style,
+                                )
+                            });
+                    if chart.draw_secondary_series(secondary_grid).is_err() {
+                        return chart_error_markup("secondary grid draw failed");
+                    }
+
                     if chart
                         .configure_secondary_axes()
                         .axis_style(RGBColor(103, 86, 63))
                         .label_style(("Iosevka Web", 12).into_font().color(&RGBColor(79, 71, 58)))
+                        .y_labels(METRIC_CHART_Y_LABEL_COUNT)
                         .y_desc(secondary_axis.unit.as_str())
                         .draw()
                         .is_err()
@@ -864,7 +895,7 @@ fn render_metric_chart_svg(
                         return chart_error_markup(&format!("chart build failed: {error:?}"));
                     }
                 };
-                draw_dual_chart!(chart);
+                draw_dual_chart!(chart, secondary_min, secondary_max);
             } else {
                 let mut chart = match ChartBuilder::on(&root)
                     .margin(18)
@@ -880,7 +911,7 @@ fn render_metric_chart_svg(
                         return chart_error_markup(&format!("chart build failed: {error:?}"));
                     }
                 };
-                draw_dual_chart!(chart);
+                draw_dual_chart!(chart, secondary_min, secondary_max);
             }
         } else if log_y {
             let mut chart = match ChartBuilder::on(&root)
@@ -911,6 +942,45 @@ fn render_metric_chart_svg(
         }
     }
     svg
+}
+
+pub(super) fn metric_chart_secondary_grid_values(
+    min_value: f64,
+    max_value: f64,
+    log_y: bool,
+) -> Vec<f64> {
+    if !(min_value.is_finite() && max_value.is_finite()) || min_value >= max_value {
+        return Vec::new();
+    }
+    if log_y {
+        return metric_chart_log_grid_values(min_value, max_value);
+    }
+    metric_chart_linear_grid_values(min_value, max_value)
+}
+
+fn metric_chart_linear_grid_values(min_value: f64, max_value: f64) -> Vec<f64> {
+    let coord = RangedCoordf64::from(min_value..max_value);
+    coord
+        .key_points(BoldPoints(METRIC_CHART_Y_LABEL_COUNT))
+        .into_iter()
+        .filter(|value| *value > min_value && *value < max_value)
+        .collect()
+}
+
+fn metric_chart_log_grid_values(min_value: f64, max_value: f64) -> Vec<f64> {
+    if min_value <= 0.0 {
+        return Vec::new();
+    }
+    let log_min = min_value.log10();
+    let log_max = max_value.log10();
+    let step_count = METRIC_CHART_Y_LABEL_COUNT.saturating_sub(1);
+    if step_count == 0 {
+        return Vec::new();
+    }
+    (0..=step_count)
+        .map(|index| 10_f64.powf(log_min + (log_max - log_min) * index as f64 / step_count as f64))
+        .filter(|value| value.is_finite() && *value > min_value && *value < max_value)
+        .collect()
 }
 
 fn chart_error_markup(message: &str) -> String {
