@@ -47,7 +47,7 @@ pub(super) fn render_frontier_detail(
                 ),
             ),
             query.log_y_requested(),
-            &query.dimension_filters(),
+            &query.condition_filters(),
             query.table_metric.as_deref(),
         )),
         content,
@@ -438,7 +438,7 @@ fn render_experiment_provenance(outcome: &ExperimentOutcome) -> Markup {
             }
             (render_command_recipe(&outcome.command))
             @if !outcome.dimensions.is_empty() {
-                (render_dimension_ledger("Dimensions", &outcome.dimensions))
+                (render_dimension_ledger("Conditions", &outcome.dimensions))
             }
         }
     }

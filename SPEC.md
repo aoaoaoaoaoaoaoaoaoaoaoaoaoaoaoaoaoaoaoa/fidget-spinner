@@ -16,7 +16,7 @@ proven necessary.
 The information hierarchy is narrative first, evidence second, provenance last.
 Outcome pages should surface the decision and its rationale before numerical
 ledgers, command recipes, timestamps, backend names, or graph context. Metrics
-are evidence for a claim; they are not the claim. Commit hashes, dimensions,
+are evidence for a claim; they are not the claim. Commit hashes, conditions,
 argv, env, and backend are provenance; they should remain available, but they
 should not seize the first screen.
 
@@ -35,7 +35,7 @@ Use these component primitives consistently:
 - Narrative blocks for rationale, analysis summary/body, frontier situation, and
   hypothesis body.
 - Metric ledgers for primary and supporting metrics.
-- Provenance disclosures for command recipe, dimensions, backend, commit, and
+- Provenance disclosures for command recipe, conditions, backend, commit, and
   other recoverability details.
 - Chip rows for tags, status, verdicts, and compact categorical labels.
 - Link chips for traversing to hypotheses and experiments.
@@ -113,7 +113,7 @@ The core pattern:
   errors
 - mandatory families constrain future writes without invalidating history
 
-This pattern should generalize to metrics, run dimensions, frontier freezing,
+This pattern should generalize to metrics, conditions, frontier freezing,
 and other mature-frontier cleanup controls. Metrics should not grow generic
 families or retain backend scoreboard pinning; the durable metric contract is a
 frontier-local set of KPI metrics, documented in

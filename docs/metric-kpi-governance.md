@@ -63,9 +63,9 @@ defined metric keys. Use `presolve_wallclock` with display unit `milliseconds`,
 not `presolve_ms`; use `report_size` with display unit `bytes`, not
 `report_bytes`. Units, dimensions, and aggregation shape are registry fields.
 
-### Measurement Dimension
+### Metric Dimension
 
-A measurement dimension defines the physical or semantic quantity being stored.
+A metric dimension defines the physical or semantic quantity being stored.
 It is stricter than a display unit.
 
 Initial dimensions:
@@ -76,8 +76,8 @@ Initial dimensions:
 - `ratio`: normalized fractional magnitude.
 - `dimensionless`: arbitrary scalar with no conversion law.
 
-The term "dimension" collides with run dimensions. In code, prefer exact names
-such as `MetricDimension`, `MeasurementDimension`, or `QuantityDimension`.
+Use "dimension" only for this metric concept in public surfaces. Experimental
+setup fields are conditions.
 
 ### Display Unit
 

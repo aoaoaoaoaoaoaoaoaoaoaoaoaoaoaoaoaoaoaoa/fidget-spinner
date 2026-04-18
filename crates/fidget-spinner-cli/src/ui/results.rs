@@ -76,7 +76,7 @@ pub(super) fn render_frontier_tab_content(
                     )
                 })
                 .collect::<Result<Vec<_>, StoreError>>()?;
-            let dimension_filters = query.dimension_filters();
+            let dimension_filters = query.condition_filters();
             Ok(html! {
                 (render_frontier_header(&projection.frontier))
                 (render_metric_series_section(
@@ -484,9 +484,9 @@ fn render_metric_filter_popout(
     details.control-popout id="metric-filter-popout" data-preserve-open="true" {
         summary.control-popout-toggle { (label) }
         div.control-popout-panel {
-            h3 id="slice-filters" { "Slice Filters" }
+            h3 id="condition-filters" { "Condition Filters" }
             @if facets.is_empty() {
-                p.muted { "No dimension filters for the current selection." }
+                p.muted { "No conditions for the current selection." }
             } @else {
                 form.filter-form.auto-submit-form method="get" action=(frontier_href(frontier_slug)) data-preserve-viewport="true" {
                     input type="hidden" name="tab" value="results";
@@ -497,7 +497,7 @@ fn render_metric_filter_popout(
                         @for facet in facets {
                             label.filter-control id=(metric_filter_anchor_id(&facet.key)) {
                                 span.filter-label { (&facet.key) }
-                                select.filter-select data-auto-submit="true" name=(format!("dim.{}", facet.key)) {
+                                select.filter-select data-auto-submit="true" name=(format!("condition.{}", facet.key)) {
                                     option
                                         value=""
                                         selected[active_filters.get(&facet.key).is_none()]
@@ -518,7 +518,7 @@ fn render_metric_filter_popout(
                 }
             }
             @if active_filters.is_empty() {
-                p.muted { "No slice filters active." }
+                p.muted { "No condition filters active." }
             } @else {
                 div.chip-row {
                     @for (key, value) in active_filters {
@@ -1226,7 +1226,7 @@ fn render_metric_selection_hidden_inputs(
 fn render_dimension_filter_hidden_inputs(filters: &BTreeMap<String, String>) -> Markup {
     html! {
         @for (key, value) in filters {
-            input type="hidden" name=(format!("dim.{key}")) value=(value);
+            input type="hidden" name=(format!("condition.{key}")) value=(value);
         }
     }
 }

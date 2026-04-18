@@ -34,8 +34,8 @@ is a decisive store-format bump rather than migration-chaining theater.
 | Surface | Current role | Assessment |
 | --- | --- | --- |
 | `frontiers.brief_json` | Stores `FrontierBrief { situation, roadmap, unknowns, revision, updated_at }` | Normalize |
-| `experiments.outcome_json` | Stores the closed experiment outcome envelope, including command, dimensions, metrics, verdict, rationale, analysis, commit hash, closed_at | Normalize |
-| `experiment_dimensions.value_json` | Stores `RunDimensionValue` as tagged JSON, despite already having a relation for dimensions | Normalize aggressively |
+| `experiments.outcome_json` | Stores the closed experiment outcome envelope, including command, conditions, metrics, verdict, rationale, analysis, commit hash, closed_at | Normalize |
+| `experiment_dimensions.value_json` | Stores `RunDimensionValue` as tagged JSON, despite already having a relation for conditions | Normalize aggressively |
 | `events.snapshot_json` | Immutable per-revision history snapshot for heterogeneous entity kinds | Keep for now as an explicit archival exception |
 
 ### Out-of-DB JSON Files
@@ -79,15 +79,15 @@ This is the highest-value normalization target.
 
 ### 2. `experiment_dimensions.value_json` is the worst of both worlds
 
-Dimensions already have a dedicated table, but each row stores a JSON-encoded
+Conditions already have a dedicated table, but each row stores a JSON-encoded
 sum type.
 
 That means:
 
-- the schema still cannot express dimension values in typed columns,
-- SQL cannot inspect dimension values without JSON decoding,
+- the schema still cannot express condition values in typed columns,
+- SQL cannot inspect condition values without JSON decoding,
 - the table exists but does not deliver true relational leverage,
-- the read path often bypasses it anyway and pulls dimensions from
+- the read path often bypasses it anyway and pulls conditions from
   `outcome_json`.
 
 This should become a truly typed relational surface.
@@ -159,7 +159,7 @@ the source of truth for:
 
 - frontier brief state,
 - experiment closure state,
-- run dimension values,
+- condition values,
 - project metadata.
 
 ### Frontier Brief Shape
@@ -249,7 +249,7 @@ Why this over one table with many nullable columns:
 - no value-column option wall,
 - the type split is explicit in the schema,
 - illegal states are harder to represent,
-- queries remain straightforward because dimension filtering already knows the
+- queries remain straightforward because condition filtering already knows the
   target type from `run_dimension_definitions`.
 
 ### Project Metadata Shape
@@ -302,8 +302,8 @@ Before dropping any blob columns:
 
 - add Rust loaders that reconstruct `FrontierBrief` from normalized brief tables,
 - add Rust loaders that reconstruct `ExperimentOutcome` from normalized outcome,
-  metric, dimension, and command tables,
-- add Rust loaders that reconstruct typed run dimension maps from typed tables.
+  metric, condition, and command tables,
+- add Rust loaders that reconstruct typed condition maps from typed tables.
 
 Do not keep the new tables as shadows forever.
 
@@ -377,7 +377,7 @@ The product posture already tolerates decisive cutovers. Use that.
 
 One reasonable implementation is:
 
-- `v12`: frontier brief + experiment outcome + typed dimensions + project metadata
+- `v12`: frontier brief + experiment outcome + typed conditions + project metadata
 - drop `brief_json`, `outcome_json`, `value_json`, and `project.json`
 - keep `events.snapshot_json`
 
@@ -391,7 +391,7 @@ Before and after the cut, add tests that assert:
 - reconstructed frontier brief matches legacy decode on fixture stores,
 - reconstructed experiment outcome matches legacy decode on fixture stores,
 - metric rename/merge updates no longer need to patch any outcome blob,
-- manual store edits cannot leave dimensions present in two inconsistent forms.
+- manual store edits cannot leave conditions present in two inconsistent forms.
 
 ## Bottom Line
 

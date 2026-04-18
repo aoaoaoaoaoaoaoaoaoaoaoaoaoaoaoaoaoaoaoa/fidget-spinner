@@ -398,7 +398,7 @@ impl WorkerService {
                             expected_revision: args.expected_revision,
                             backend: args.backend,
                             command: args.command,
-                            dimensions: dimension_map_from_wire(args.dimensions)?,
+                            dimensions: condition_map_from_wire(args.conditions)?,
                             primary_metric: metric_value_from_wire(
                                 args.primary_metric,
                                 &operation
@@ -433,7 +433,7 @@ impl WorkerService {
                                 .map(NonEmptyText::new)
                                 .transpose()
                                 .map_err(store_fault(&operation))?,
-                            dimensions: dimension_map_from_wire(args.dimensions)?,
+                            dimensions: condition_map_from_wire(args.conditions)?,
                             tags: args
                                 .tags
                                 .map(tags_to_set)
@@ -516,7 +516,7 @@ impl WorkerService {
                         frontier: args.frontier,
                         hypothesis: args.hypothesis,
                         key,
-                        dimensions: dimension_map_from_wire(args.dimensions)?,
+                        dimensions: condition_map_from_wire(args.conditions)?,
                         include_rejected: args.include_rejected.unwrap_or(false),
                         limit: args.limit,
                         order: args.order,
@@ -550,16 +550,16 @@ impl WorkerService {
                     &lift!(self.store.kpi_best(KpiBestQuery {
                         frontier: args.frontier,
                         kpi: args.kpi,
-                        dimensions: dimension_map_from_wire(args.dimensions)?,
+                        dimensions: condition_map_from_wire(args.conditions)?,
                         include_rejected: args.include_rejected.unwrap_or(false),
                         limit: args.limit,
                     })),
                     &operation,
                 )?
             }
-            "run.dimension.define" => {
-                let args = deserialize::<DimensionDefineArgs>(arguments)?;
-                let dimension = lift!(
+            "condition.define" => {
+                let args = deserialize::<ConditionDefineArgs>(arguments)?;
+                let condition = lift!(
                     self.store.define_run_dimension(DefineRunDimensionRequest {
                         key: NonEmptyText::new(args.key).map_err(store_fault(&operation))?,
                         value_type: args.value_type,
@@ -570,11 +570,11 @@ impl WorkerService {
                             .map_err(store_fault(&operation))?,
                     })
                 );
-                run_dimension_definition_output(&dimension, &operation)?
+                condition_definition_output(&condition, &operation)?
             }
-            "run.dimension.list" => {
-                let dimensions = lift!(self.store.list_run_dimensions());
-                run_dimension_list_output(&dimensions, &operation)?
+            "condition.list" => {
+                let conditions = lift!(self.store.list_run_dimensions());
+                condition_list_output(&conditions, &operation)?
             }
             other => {
                 return Err(FaultRecord::new(
@@ -752,7 +752,7 @@ struct ExperimentCloseArgs {
     expected_revision: Option<u64>,
     backend: ExecutionBackend,
     command: CommandRecipe,
-    dimensions: Option<Map<String, Value>>,
+    conditions: Option<Map<String, Value>>,
     primary_metric: MetricValueWire,
     supporting_metrics: Option<Vec<MetricValueWire>>,
     verdict: FrontierVerdict,
@@ -766,7 +766,7 @@ struct ExperimentNearestArgs {
     hypothesis: Option<String>,
     experiment: Option<String>,
     metric: Option<String>,
-    dimensions: Option<Map<String, Value>>,
+    conditions: Option<Map<String, Value>>,
     tags: Option<Vec<String>>,
     order: Option<MetricRankOrder>,
 }
@@ -775,7 +775,7 @@ struct ExperimentNearestArgs {
 struct ExperimentOutcomeWire {
     backend: ExecutionBackend,
     command: CommandRecipe,
-    dimensions: Option<Map<String, Value>>,
+    conditions: Option<Map<String, Value>>,
     primary_metric: MetricValueWire,
     supporting_metrics: Option<Vec<MetricValueWire>>,
     verdict: FrontierVerdict,
@@ -824,7 +824,7 @@ struct MetricBestArgs {
     frontier: Option<String>,
     hypothesis: Option<String>,
     key: String,
-    dimensions: Option<Map<String, Value>>,
+    conditions: Option<Map<String, Value>>,
     include_rejected: Option<bool>,
     limit: Option<u32>,
     order: Option<MetricRankOrder>,
@@ -845,13 +845,13 @@ struct KpiListArgs {
 struct KpiBestArgs {
     frontier: String,
     kpi: Option<String>,
-    dimensions: Option<Map<String, Value>>,
+    conditions: Option<Map<String, Value>>,
     include_rejected: Option<bool>,
     limit: Option<u32>,
 }
 
 #[derive(Debug, Deserialize)]
-struct DimensionDefineArgs {
+struct ConditionDefineArgs {
     key: String,
     value_type: FieldValueType,
     description: Option<String>,
@@ -1112,7 +1112,7 @@ fn experiment_outcome_patch_from_wire(
     Ok(ExperimentOutcomePatch {
         backend: wire.backend,
         command: wire.command,
-        dimensions: dimension_map_from_wire(wire.dimensions)?,
+        dimensions: condition_map_from_wire(wire.conditions)?,
         primary_metric: metric_value_from_wire(wire.primary_metric, operation)?,
         supporting_metrics: wire
             .supporting_metrics
@@ -1142,22 +1142,22 @@ fn nullable_text_patch_from_wire(
     }
 }
 
-fn dimension_map_from_wire(
-    dimensions: Option<Map<String, Value>>,
+fn condition_map_from_wire(
+    conditions: Option<Map<String, Value>>,
 ) -> Result<BTreeMap<NonEmptyText, RunDimensionValue>, FaultRecord> {
-    dimensions
+    conditions
         .unwrap_or_default()
         .into_iter()
         .map(|(key, value)| {
             Ok((
-                NonEmptyText::new(key).map_err(store_fault("dimension-map"))?,
-                json_value_to_dimension(value)?,
+                NonEmptyText::new(key).map_err(store_fault("condition-map"))?,
+                json_value_to_condition(value)?,
             ))
         })
         .collect()
 }
 
-fn json_value_to_dimension(value: Value) -> Result<RunDimensionValue, FaultRecord> {
+fn json_value_to_condition(value: Value) -> Result<RunDimensionValue, FaultRecord> {
     match value {
         Value::String(raw) => {
             if time::OffsetDateTime::parse(&raw, &time::format_description::well_known::Rfc3339)
@@ -1165,11 +1165,11 @@ fn json_value_to_dimension(value: Value) -> Result<RunDimensionValue, FaultRecor
             {
                 NonEmptyText::new(raw)
                     .map(RunDimensionValue::Timestamp)
-                    .map_err(store_fault("dimension-map"))
+                    .map_err(store_fault("condition-map"))
             } else {
                 NonEmptyText::new(raw)
                     .map(RunDimensionValue::String)
-                    .map_err(store_fault("dimension-map"))
+                    .map_err(store_fault("condition-map"))
             }
         }
         Value::Number(number) => number
@@ -1179,21 +1179,21 @@ fn json_value_to_dimension(value: Value) -> Result<RunDimensionValue, FaultRecor
                 FaultRecord::new(
                     FaultKind::InvalidInput,
                     FaultStage::Protocol,
-                    "dimension-map",
-                    "numeric dimension values must fit into f64",
+                    "condition-map",
+                    "numeric condition values must fit into f64",
                 )
             }),
         Value::Bool(value) => Ok(RunDimensionValue::Boolean(value)),
         _ => Err(FaultRecord::new(
             FaultKind::InvalidInput,
             FaultStage::Protocol,
-            "dimension-map",
-            "dimension values must be string, number, boolean, or RFC3339 timestamp",
+            "condition-map",
+            "condition values must be string, number, boolean, or RFC3339 timestamp",
         )),
     }
 }
 
-fn run_dimension_value_text(value: &RunDimensionValue) -> String {
+fn condition_value_text(value: &RunDimensionValue) -> String {
     match value {
         RunDimensionValue::String(value) | RunDimensionValue::Timestamp(value) => value.to_string(),
         RunDimensionValue::Numeric(value) => value.to_string(),
@@ -1806,11 +1806,11 @@ fn experiment_nearest_output(
     let mut lines = Vec::new();
     if !result.target_dimensions.is_empty() {
         lines.push(format!(
-            "target slice: {}",
+            "target conditions: {}",
             result
                 .target_dimensions
                 .iter()
-                .map(|(key, value)| format!("{key}={}", run_dimension_value_text(value)))
+                .map(|(key, value)| format!("{key}={}", condition_value_text(value)))
                 .collect::<Vec<_>>()
                 .join(", ")
         ));
@@ -1864,17 +1864,17 @@ fn experiment_nearest_output(
     )
 }
 
-fn run_dimension_definition_output(
-    dimension: &fidget_spinner_core::RunDimensionDefinition,
+fn condition_definition_output(
+    condition: &fidget_spinner_core::RunDimensionDefinition,
     operation: &str,
 ) -> Result<ToolOutput, FaultRecord> {
-    let projection = projection::run_dimension_definition(dimension);
+    let projection = projection::condition_definition(condition);
     projected_tool_output(
         &projection,
         format!(
-            "dimension {} [{}]",
-            dimension.key,
-            dimension.value_type.as_str()
+            "condition {} [{}]",
+            condition.key,
+            condition.value_type.as_str()
         ),
         None,
         FaultStage::Worker,
@@ -1882,24 +1882,24 @@ fn run_dimension_definition_output(
     )
 }
 
-fn run_dimension_list_output(
-    dimensions: &[fidget_spinner_core::RunDimensionDefinition],
+fn condition_list_output(
+    conditions: &[fidget_spinner_core::RunDimensionDefinition],
     operation: &str,
 ) -> Result<ToolOutput, FaultRecord> {
-    let projection = projection::run_dimension_list(dimensions);
+    let projection = projection::condition_list(conditions);
     projected_tool_output(
         &projection,
-        if dimensions.is_empty() {
-            "no run dimensions".to_owned()
+        if conditions.is_empty() {
+            "no conditions".to_owned()
         } else {
-            dimensions
+            conditions
                 .iter()
-                .map(|dimension| {
+                .map(|condition| {
                     format!(
                         "{} [{}]{}",
-                        dimension.key,
-                        dimension.value_type.as_str(),
-                        dimension
+                        condition.key,
+                        condition.value_type.as_str(),
+                        condition
                             .description
                             .as_ref()
                             .map_or_else(String::new, |description| format!(" — {description}"))
@@ -2289,7 +2289,7 @@ mod legacy_projection_values {
             "experiment": experiment_summary_value(&entry.experiment),
             "hypothesis": hypothesis_summary_value(&entry.hypothesis),
             "value": entry.value,
-            "dimensions": dimension_map_value(&entry.dimensions),
+            "conditions": condition_map_value(&entry.dimensions),
         })
     }
 
@@ -2309,7 +2309,7 @@ mod legacy_projection_values {
         json!({
             "backend": outcome.backend,
             "command": command_recipe_value(&outcome.command),
-            "dimensions": dimension_map_value(&outcome.dimensions),
+            "conditions": condition_map_value(&outcome.dimensions),
             "primary_metric": metric_value_value(&outcome.primary_metric),
             "supporting_metrics": outcome
                 .supporting_metrics
@@ -2347,15 +2347,15 @@ mod legacy_projection_values {
         })
     }
 
-    fn dimension_map_value(dimensions: &BTreeMap<NonEmptyText, RunDimensionValue>) -> Value {
+    fn condition_map_value(conditions: &BTreeMap<NonEmptyText, RunDimensionValue>) -> Value {
         let mut object = Map::new();
-        for (key, value) in dimensions {
-            let _ = object.insert(key.to_string(), run_dimension_value(value));
+        for (key, value) in conditions {
+            let _ = object.insert(key.to_string(), condition_value(value));
         }
         Value::Object(object)
     }
 
-    fn run_dimension_value(value: &RunDimensionValue) -> Value {
+    fn condition_value(value: &RunDimensionValue) -> Value {
         match value {
             RunDimensionValue::String(value) => Value::String(value.to_string()),
             RunDimensionValue::Numeric(value) => json!(value),

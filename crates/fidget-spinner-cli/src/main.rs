@@ -78,10 +78,10 @@ enum Command {
         #[command(subcommand)]
         command: KpiCommand,
     },
-    /// Define the typed dimension vocabulary used to slice experiments.
-    Dimension {
+    /// Define typed experimental conditions used for like-for-like comparisons.
+    Condition {
         #[command(subcommand)]
-        command: DimensionCommand,
+        command: ConditionCommand,
     },
     /// Serve the hardened stdio MCP endpoint.
     Mcp {
@@ -167,8 +167,8 @@ enum KpiCommand {
 }
 
 #[derive(Subcommand)]
-enum DimensionCommand {
-    Define(DimensionDefineArgs),
+enum ConditionCommand {
+    Define(ConditionDefineArgs),
     List(ProjectArg),
 }
 
@@ -438,8 +438,8 @@ struct ExperimentCloseArgs {
     working_directory: Option<PathBuf>,
     #[arg(long = "env")]
     env: Vec<String>,
-    #[arg(long = "dimension")]
-    dimensions: Vec<String>,
+    #[arg(long = "condition")]
+    conditions: Vec<String>,
     #[arg(long = "primary-metric")]
     primary_metric: String,
     #[arg(long = "metric")]
@@ -466,8 +466,8 @@ struct ExperimentNearestArgs {
     experiment: Option<String>,
     #[arg(long)]
     metric: Option<String>,
-    #[arg(long = "dimension")]
-    dimensions: Vec<String>,
+    #[arg(long = "condition")]
+    conditions: Vec<String>,
     #[arg(long = "tag")]
     tags: Vec<String>,
     #[arg(long, value_enum)]
@@ -512,8 +512,8 @@ struct MetricBestArgs {
     hypothesis: Option<String>,
     #[arg(long)]
     key: String,
-    #[arg(long = "dimension")]
-    dimensions: Vec<String>,
+    #[arg(long = "condition")]
+    conditions: Vec<String>,
     #[arg(long)]
     include_rejected: bool,
     #[arg(long)]
@@ -576,8 +576,8 @@ struct KpiBestArgs {
     frontier: String,
     #[arg(long)]
     kpi: Option<String>,
-    #[arg(long = "dimension")]
-    dimensions: Vec<String>,
+    #[arg(long = "condition")]
+    conditions: Vec<String>,
     #[arg(long)]
     include_rejected: bool,
     #[arg(long)]
@@ -585,7 +585,7 @@ struct KpiBestArgs {
 }
 
 #[derive(Args)]
-struct DimensionDefineArgs {
+struct ConditionDefineArgs {
     #[command(flatten)]
     project: ProjectArg,
     #[arg(long)]
@@ -784,9 +784,9 @@ fn main() -> Result<(), StoreError> {
             KpiCommand::List(args) => run_kpi_list(args),
             KpiCommand::Best(args) => run_kpi_best(args),
         },
-        Command::Dimension { command } => match command {
-            DimensionCommand::Define(args) => run_dimension_define(args),
-            DimensionCommand::List(args) => {
+        Command::Condition { command } => match command {
+            ConditionCommand::Define(args) => run_condition_define(args),
+            ConditionCommand::List(args) => {
                 print_json(&open_store(&args.project)?.list_run_dimensions()?)
             }
         },
@@ -986,7 +986,7 @@ fn run_experiment_close(args: ExperimentCloseArgs) -> Result<(), StoreError> {
                 to_non_empty_texts(args.argv)?,
                 parse_env(args.env),
             )?,
-            dimensions: parse_dimension_assignments(args.dimensions)?,
+            dimensions: parse_condition_assignments(args.conditions)?,
             primary_metric: parse_metric_value_assignment(&args.primary_metric)?,
             supporting_metrics: args
                 .supporting_metrics
@@ -1008,7 +1008,7 @@ fn run_experiment_nearest(args: ExperimentNearestArgs) -> Result<(), StoreError>
             hypothesis: args.hypothesis,
             experiment: args.experiment,
             metric: args.metric.map(NonEmptyText::new).transpose()?,
-            dimensions: parse_dimension_assignments(args.dimensions)?,
+            dimensions: parse_condition_assignments(args.conditions)?,
             tags: parse_tag_set(args.tags)?,
             order: args.order.map(Into::into),
         })?,
@@ -1041,7 +1041,7 @@ fn run_metric_best(args: MetricBestArgs) -> Result<(), StoreError> {
         frontier: args.frontier,
         hypothesis: args.hypothesis,
         key: NonEmptyText::new(args.key)?,
-        dimensions: parse_dimension_assignments(args.dimensions)?,
+        dimensions: parse_condition_assignments(args.conditions)?,
         include_rejected: args.include_rejected,
         limit: args.limit,
         order: args.order.map(Into::into),
@@ -1093,13 +1093,13 @@ fn run_kpi_best(args: KpiBestArgs) -> Result<(), StoreError> {
     print_json(&store.kpi_best(KpiBestQuery {
         frontier: args.frontier,
         kpi: args.kpi,
-        dimensions: parse_dimension_assignments(args.dimensions)?,
+        dimensions: parse_condition_assignments(args.conditions)?,
         include_rejected: args.include_rejected,
         limit: args.limit,
     })?)
 }
 
-fn run_dimension_define(args: DimensionDefineArgs) -> Result<(), StoreError> {
+fn run_condition_define(args: ConditionDefineArgs) -> Result<(), StoreError> {
     let mut store = open_store(&args.project.project)?;
     print_json(&store.define_run_dimension(DefineRunDimensionRequest {
         key: NonEmptyText::new(args.key)?,
@@ -1349,26 +1349,26 @@ fn parse_metric_dimension_cli(raw: &str) -> Result<MetricDimension, StoreError> 
     }
 }
 
-pub(crate) fn parse_dimension_assignments(
+pub(crate) fn parse_condition_assignments(
     values: Vec<String>,
 ) -> Result<BTreeMap<NonEmptyText, RunDimensionValue>, StoreError> {
     values
         .into_iter()
         .map(|entry| {
             let (key, raw_value) = entry.split_once('=').ok_or_else(|| {
-                invalid_input("expected dimension assignment in the form `key=value`")
+                invalid_input("expected condition assignment in the form `key=value`")
             })?;
             let json_value = serde_json::from_str::<Value>(raw_value)
                 .unwrap_or_else(|_| Value::String(raw_value.to_owned()));
             Ok((
                 NonEmptyText::new(key.to_owned())?,
-                json_to_dimension_value(json_value)?,
+                json_to_condition_value(json_value)?,
             ))
         })
         .collect()
 }
 
-fn json_to_dimension_value(value: Value) -> Result<RunDimensionValue, StoreError> {
+fn json_to_condition_value(value: Value) -> Result<RunDimensionValue, StoreError> {
     match value {
         Value::String(raw) => {
             if time::OffsetDateTime::parse(&raw, &time::format_description::well_known::Rfc3339)
@@ -1382,10 +1382,10 @@ fn json_to_dimension_value(value: Value) -> Result<RunDimensionValue, StoreError
         Value::Number(number) => number
             .as_f64()
             .map(RunDimensionValue::Numeric)
-            .ok_or_else(|| invalid_input("numeric dimension values must fit into f64")),
+            .ok_or_else(|| invalid_input("numeric condition values must fit into f64")),
         Value::Bool(value) => Ok(RunDimensionValue::Boolean(value)),
         _ => Err(invalid_input(
-            "dimension values must be string, number, boolean, or RFC3339 timestamp",
+            "condition values must be string, number, boolean, or RFC3339 timestamp",
         )),
     }
 }

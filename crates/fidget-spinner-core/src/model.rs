@@ -1088,6 +1088,7 @@ pub struct ExperimentAnalysis {
 pub struct ExperimentOutcome {
     pub backend: ExecutionBackend,
     pub command: CommandRecipe,
+    #[serde(rename = "conditions")]
     pub dimensions: BTreeMap<NonEmptyText, RunDimensionValue>,
     pub primary_metric: MetricValue,
     pub supporting_metrics: Vec<MetricValue>,

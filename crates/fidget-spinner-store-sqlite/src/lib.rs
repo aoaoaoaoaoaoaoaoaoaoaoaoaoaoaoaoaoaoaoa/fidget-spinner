@@ -88,9 +88,9 @@ pub enum StoreError {
         "frontier `{frontier}` has no KPI metrics; promote at least one metric before MCP frontier work such as hypothesis.record, experiment.open, or experiment.close"
     )]
     MissingFrontierKpiContract { frontier: String },
-    #[error("run dimension `{0}` is not registered")]
+    #[error("condition `{0}` is not registered")]
     UnknownRunDimension(NonEmptyText),
-    #[error("run dimension `{0}` already exists")]
+    #[error("condition `{0}` already exists")]
     DuplicateRunDimension(NonEmptyText),
     #[error("frontier selector `{0}` did not resolve")]
     UnknownFrontierSelector(String),
@@ -155,7 +155,7 @@ pub enum StoreError {
     ManualExperimentRequiresCommand,
     #[error("metric key `{key}` requires an explicit ranking order")]
     MetricOrderRequired { key: String },
-    #[error("dimension filter references unknown run dimension `{0}`")]
+    #[error("condition filter references unknown condition `{0}`")]
     UnknownDimensionFilter(String),
     #[error("metric scope `{scope}` requires a frontier selector")]
     MetricScopeRequiresFrontier { scope: &'static str },
@@ -425,6 +425,7 @@ pub struct UpdateExperimentRequest {
 pub struct ExperimentOutcomePatch {
     pub backend: ExecutionBackend,
     pub command: CommandRecipe,
+    #[serde(rename = "conditions")]
     pub dimensions: BTreeMap<NonEmptyText, RunDimensionValue>,
     pub primary_metric: ReportedMetricValue,
     pub supporting_metrics: Vec<ReportedMetricValue>,
@@ -620,6 +621,7 @@ pub struct ExperimentNearestQuery {
 pub struct ExperimentNearestHit {
     pub experiment: ExperimentSummary,
     pub hypothesis: HypothesisSummary,
+    #[serde(rename = "conditions")]
     pub dimensions: BTreeMap<NonEmptyText, RunDimensionValue>,
     pub reasons: Vec<NonEmptyText>,
     pub metric_value: Option<MetricObservationSummary>,
@@ -628,6 +630,7 @@ pub struct ExperimentNearestHit {
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct ExperimentNearestResult {
     pub metric: Option<MetricKeySummary>,
+    #[serde(rename = "target_conditions")]
     pub target_dimensions: BTreeMap<NonEmptyText, RunDimensionValue>,
     pub accepted: Option<ExperimentNearestHit>,
     pub kept: Option<ExperimentNearestHit>,
@@ -640,6 +643,7 @@ pub struct MetricBestEntry {
     pub experiment: ExperimentSummary,
     pub hypothesis: HypothesisSummary,
     pub value: f64,
+    #[serde(rename = "conditions")]
     pub dimensions: BTreeMap<NonEmptyText, RunDimensionValue>,
 }
 
@@ -676,6 +680,7 @@ pub struct FrontierMetricPoint {
     pub metric_key: NonEmptyText,
     pub verdict: FrontierVerdict,
     pub closed_at: OffsetDateTime,
+    #[serde(rename = "conditions")]
     pub dimensions: BTreeMap<NonEmptyText, RunDimensionValue>,
 }
 
@@ -693,6 +698,7 @@ pub struct KpiBestEntry {
     pub hypothesis: HypothesisSummary,
     pub value: f64,
     pub metric_key: NonEmptyText,
+    #[serde(rename = "conditions")]
     pub dimensions: BTreeMap<NonEmptyText, RunDimensionValue>,
 }
 
@@ -6805,7 +6811,7 @@ fn nearest_hit(
         )));
     } else if candidate.structural_rank.matched_dimension_count > 0 {
         reasons.push(must_non_empty_reason(format!(
-            "matched {} requested dimensions",
+            "matched {} requested conditions",
             candidate.structural_rank.matched_dimension_count
         )));
     }

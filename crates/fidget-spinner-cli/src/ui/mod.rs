@@ -246,15 +246,15 @@ impl FrontierPageQuery {
             .is_some_and(|value| matches!(value.as_str(), "1" | "true" | "on" | "yes"))
     }
 
-    fn dimension_filters(&self) -> BTreeMap<String, String> {
+    fn condition_filters(&self) -> BTreeMap<String, String> {
         self.extra
             .iter()
             .filter_map(|(key, value)| {
                 let value = value.trim();
                 (!value.is_empty())
                     .then(|| {
-                        key.strip_prefix("dim.")
-                            .map(|dimension| (dimension.to_owned(), value.to_owned()))
+                        key.strip_prefix("condition.")
+                            .map(|condition| (condition.to_owned(), value.to_owned()))
                     })
                     .flatten()
             })
@@ -876,7 +876,7 @@ fn frontier_tab_href_with_query(
     tab: FrontierTab,
     selected_metrics: &[fidget_spinner_store_sqlite::MetricKeySummary],
     log_y: bool,
-    dimension_filters: &BTreeMap<String, String>,
+    condition_filters: &BTreeMap<String, String>,
     table_metric: Option<&str>,
 ) -> String {
     let mut href = format!(
@@ -896,8 +896,8 @@ fn frontier_tab_href_with_query(
         href.push_str("&table_metric=");
         href.push_str(&encode_path_segment(table_metric));
     }
-    for (key, value) in dimension_filters {
-        href.push_str("&dim.");
+    for (key, value) in condition_filters {
+        href.push_str("&condition.");
         href.push_str(&encode_path_segment(key));
         href.push('=');
         href.push_str(&encode_path_segment(value));

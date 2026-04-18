@@ -8,7 +8,7 @@ a supervisor layer: the human cleans, merges, sharpens, and eventually locks
 parts of the experimental surface while models keep running.
 
 Tags are the first registry to receive this treatment. The same pattern should
-later apply to metrics, run dimensions, verdict overrides, and frontier
+later apply to metrics, conditions, verdict overrides, and frontier
 freezing.
 
 The product stance is strict:
@@ -220,7 +220,7 @@ model to call `tag.list`.
 ## Locks
 
 Locks are general registry policy, not a tag-only hack. The first implementation
-should wire tags, then leave the type surface ready for metrics and dimensions.
+should wire tags, then leave the type surface ready for metrics and conditions.
 
 Project-wide tag locks:
 
@@ -229,7 +229,7 @@ Project-wide tag locks:
   merge, delete, family creation, mandatory-family changes, and assigning tags
   to families if those tools are ever exposed.
 - `metrics/definition`: future metric registry lock.
-- `dimensions/definition`: future run-dimension registry lock.
+- `conditions/definition`: future condition registry lock.
 
 Lock reads should appear in relevant MCP list surfaces. A model should be able
 to discover the policy before hitting it.
@@ -401,7 +401,7 @@ The same governance layer should eventually cover:
 - metric rename and merge
 - metric registry lock
 - metric unit-family correction
-- run-dimension allowed-value enumerations
+- condition allowed-value enumerations
 - frontier freeze distinct from archive
 - supervisor verdict override with audit
 - stale hypothesis sweep

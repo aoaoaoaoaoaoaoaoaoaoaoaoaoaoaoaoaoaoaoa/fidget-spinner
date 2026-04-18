@@ -1258,7 +1258,7 @@ fn frontier_open_is_the_grounding_surface_for_live_state() -> TestResult {
     )?);
     assert_tool_ok(&harness.call_tool(
         12,
-        "run.dimension.define",
+        "condition.define",
         json!({"key": "instance", "value_type": "string"}),
     )?);
     assert_tool_ok(&harness.call_tool(
@@ -1301,7 +1301,7 @@ fn frontier_open_is_the_grounding_surface_for_live_state() -> TestResult {
             "experiment": "baseline-20s",
             "backend": "manual",
             "command": {"argv": ["baseline-20s"]},
-            "dimensions": {"instance": "4x5-braid"},
+            "conditions": {"instance": "4x5-braid"},
             "primary_metric": {"key": "nodes_solved", "value": 220.0},
             "verdict": "kept",
             "rationale": "Baseline retained as the current comparison line for the slice."
@@ -1500,17 +1500,17 @@ fn experiment_nearest_finds_structural_buckets_and_champion() -> TestResult {
     )?);
     assert_tool_ok(&harness.call_tool(
         81,
-        "run.dimension.define",
+        "condition.define",
         json!({"key": "instance", "value_type": "string"}),
     )?);
     assert_tool_ok(&harness.call_tool(
         82,
-        "run.dimension.define",
+        "condition.define",
         json!({"key": "profile", "value_type": "string"}),
     )?);
     assert_tool_ok(&harness.call_tool(
         83,
-        "run.dimension.define",
+        "condition.define",
         json!({"key": "duration_s", "value_type": "numeric"}),
     )?);
     assert_tool_ok(&harness.call_tool(
@@ -1565,7 +1565,7 @@ fn experiment_nearest_finds_structural_buckets_and_champion() -> TestResult {
                 "experiment": slug,
                 "backend": "manual",
                 "command": {"argv": [slug]},
-                "dimensions": {
+                "conditions": {
                     "instance": "4x5",
                     "profile": "parity",
                     "duration_s": duration_s,
@@ -1582,7 +1582,7 @@ fn experiment_nearest_finds_structural_buckets_and_champion() -> TestResult {
         "experiment.nearest",
         json!({
             "frontier": "comparators",
-            "dimensions": {
+            "conditions": {
                 "instance": "4x5",
                 "profile": "parity",
                 "duration_s": 60,
@@ -1631,7 +1631,7 @@ fn registry_and_history_surfaces_render_timestamps_as_strings() -> TestResult {
 
     let dimension = harness.call_tool_full(
         19,
-        "run.dimension.define",
+        "condition.define",
         json!({
             "key": "duration_s",
             "value_type": "numeric",
@@ -1642,13 +1642,13 @@ fn registry_and_history_surfaces_render_timestamps_as_strings() -> TestResult {
     assert!(tool_content(&dimension)["record"]["created_at"].is_string());
     assert!(tool_content(&dimension)["record"]["updated_at"].is_null());
 
-    let dimensions = harness.call_tool_full(20, "run.dimension.list", json!({}))?;
-    assert_tool_ok(&dimensions);
+    let conditions = harness.call_tool_full(20, "condition.list", json!({}))?;
+    assert_tool_ok(&conditions);
     let listed = must_some(
-        tool_content(&dimensions)["dimensions"]
+        tool_content(&conditions)["conditions"]
             .as_array()
             .and_then(|items| items.first()),
-        "defined run dimension in list",
+        "defined condition in list",
     )?;
     assert!(listed["created_at"].is_string());
     assert!(listed["updated_at"].is_null());
@@ -1796,7 +1796,7 @@ fn experiment_close_drives_metric_best_and_analysis() -> TestResult {
     )?);
     assert_tool_ok(&harness.call_tool(
         41,
-        "run.dimension.define",
+        "condition.define",
         json!({"key": "instance", "value_type": "string"}),
     )?);
     assert_tool_ok(&harness.call_tool(
@@ -1837,7 +1837,7 @@ fn experiment_close_drives_metric_best_and_analysis() -> TestResult {
             "experiment": "trace-baseline",
             "backend": "manual",
             "command": {"argv": ["trace-baseline"]},
-            "dimensions": {"instance": "4x5-braid"},
+            "conditions": {"instance": "4x5-braid"},
             "primary_metric": {"key": "nodes_solved", "value": 217.0},
             "verdict": "kept",
             "rationale": "Baseline trace is real but not dominant.",
@@ -1861,7 +1861,7 @@ fn experiment_close_drives_metric_best_and_analysis() -> TestResult {
             "experiment": "trace-node-reopt",
             "backend": "manual",
             "command": {"argv": ["matched-lp-site-traces"]},
-            "dimensions": {"instance": "4x5-braid"},
+            "conditions": {"instance": "4x5-braid"},
             "primary_metric": {"key": "nodes_solved", "value": 273.0},
             "verdict": "accepted",
             "rationale": "Matched LP site traces show node reoptimization as the dominant sink.",
@@ -1945,7 +1945,7 @@ fn experiment_close_rejects_dirty_worktree() -> TestResult {
     )?);
     assert_tool_ok(&harness.call_tool(
         51,
-        "run.dimension.define",
+        "condition.define",
         json!({"key": "instance", "value_type": "string"}),
     )?);
     assert_tool_ok(&harness.call_tool(
@@ -1992,7 +1992,7 @@ fn experiment_close_rejects_dirty_worktree() -> TestResult {
             "experiment": "dirty-run",
             "backend": "manual",
             "command": {"argv": ["dirty-run"]},
-            "dimensions": {"instance": "4x5-braid"},
+            "conditions": {"instance": "4x5-braid"},
             "primary_metric": {"key": "nodes_solved", "value": 13.0},
             "verdict": "rejected",
             "rationale": "Dirty worktree should abort the close.",
@@ -2068,7 +2068,7 @@ fn experiment_close_uses_command_worktree_when_present() -> TestResult {
     )?);
     assert_tool_ok(&harness.call_tool(
         57,
-        "run.dimension.define",
+        "condition.define",
         json!({"key": "instance", "value_type": "string"}),
     )?);
     assert_tool_ok(&harness.call_tool(
@@ -2113,7 +2113,7 @@ fn experiment_close_uses_command_worktree_when_present() -> TestResult {
                 "working_directory": worktree_root.as_str(),
                 "argv": ["worktree-run"]
             },
-            "dimensions": {"instance": "4x5-braid"},
+            "conditions": {"instance": "4x5-braid"},
             "primary_metric": {"key": "nodes_solved", "value": 34.0},
             "verdict": "kept",
             "rationale": "The linked worktree is clean and should be the recorded implementation anchor.",

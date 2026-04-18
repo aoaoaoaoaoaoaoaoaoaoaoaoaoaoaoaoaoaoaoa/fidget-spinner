@@ -69,9 +69,9 @@ If you need more context, pull it from:
 - `kpi.list` or `metric.keys --scope kpi` before guessing which mandatory frontier metrics define the real hill
 - `kpi.best` when you need the frontier ranking for one KPI metric
 - `metric.keys --scope live` before guessing which numeric signals matter now
-- `metric.best` when you need the best closed experiments by one numeric key; pass exact run-dimension filters when comparing one slice
-- `run.dimension.define` when a new experiment slicer such as `instance` or `duration_s` becomes query-worthy
-- `run.dimension.list` before guessing which run dimensions actually exist in the store
+- `metric.best` when you need the best closed experiments by one numeric key; pass exact condition filters when comparing one like-for-like slice
+- `condition.define` when a new experimental condition such as `instance`, `profile`, `seed`, or `hardware` becomes query-worthy
+- `condition.list` before guessing which conditions actually exist in the store
 
 ## Workflow
 
@@ -82,7 +82,7 @@ If you need more context, pull it from:
    a live experiment with `experiment.open`.
 4. Do the work.
 5. Make a fast commit for the recoverable implementation state before closing the experiment. Bypass heavyweight hooks when necessary; the bar here is recoverability, not release readiness.
-6. Close the experiment with `experiment.close`, including dimensions, metrics, verdict, rationale, and optional analysis. Spinner will reject a dirty worktree and store the closing commit hash automatically.
+6. Close the experiment with `experiment.close`, including conditions, metrics, verdict, rationale, and optional analysis. Spinner will reject a dirty worktree and store the closing commit hash automatically.
 
 ## Discipline
 
@@ -92,9 +92,11 @@ If you need more context, pull it from:
 4. If the MCP behaves oddly or resumes after interruption, inspect `system.health`
    and `system.telemetry` before pushing further.
 5. Keep fetches narrow by default; slow is better than burning tokens.
-6. Treat metric keys as project-level registry entries and run dimensions as the
-   first-class slice surface for experiment comparison. Do not encode scenario
-   context or Hungarian unit notation into the metric key: prefer
+6. Treat metric keys as project-level registry entries and conditions as the
+   first-class setup surface for experiment comparison. Conditions describe
+   like-for-like context such as instance, profile, implementation, seed,
+   timeout, hardware, or dataset; measured outcomes belong in metrics. Do not
+   encode scenario context or Hungarian unit notation into the metric key: prefer
    `presolve_wallclock` with `dimension=time` over `presolve_ms`, and
    `report_size` with `dimension=bytes` over `report_bytes`. Report-time units
    belong on observations, not in the key.

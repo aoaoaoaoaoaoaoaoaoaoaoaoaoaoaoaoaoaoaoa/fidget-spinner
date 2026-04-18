@@ -30,7 +30,7 @@ The ledger has three first-class object families:
   - open or closed
   - belongs to exactly one hypothesis
   - may cite other hypotheses or experiments as influences
-  - when closed, stores dimensions, metrics, verdict, rationale, and optional analysis
+  - when closed, stores conditions, metrics, verdict, rationale, and optional analysis
 
 There are no canonical freeform `note` or `source` nodes anymore. If a piece of
 text does not belong in a frontier brief, hypothesis, or experiment analysis, it
@@ -80,7 +80,7 @@ Initialize a project:
 cargo run -p fidget-spinner-cli -- init --project . --name libgrid
 ```
 
-Register the tag, metric, and run-dimension vocabulary before heavy ingest:
+Register the tag, metric, and condition vocabulary before heavy ingest:
 
 ```bash
 cargo run -p fidget-spinner-cli -- tag add \
@@ -99,7 +99,7 @@ cargo run -p fidget-spinner-cli -- metric define \
 ```
 
 ```bash
-cargo run -p fidget-spinner-cli -- dimension define \
+cargo run -p fidget-spinner-cli -- condition define \
   --project . \
   --key instance \
   --value-type string \
@@ -261,8 +261,8 @@ The main model-facing tools are:
 - `kpi.create`
 - `kpi.list`
 - `kpi.best`
-- `run.dimension.define`
-- `run.dimension.list`
+- `condition.define`
+- `condition.list`
 
 `frontier.open` is the grounding call. It returns:
 

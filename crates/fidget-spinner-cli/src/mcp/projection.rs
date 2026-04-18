@@ -333,7 +333,7 @@ pub(crate) struct KpiBestEntryProjection {
     pub(crate) hypothesis: HypothesisSummaryProjection,
     pub(crate) metric_key: String,
     pub(crate) value: f64,
-    pub(crate) dimensions: BTreeMap<String, Value>,
+    pub(crate) conditions: BTreeMap<String, Value>,
 }
 
 #[derive(Clone, Serialize, libmcp::ToolProjection)]
@@ -348,7 +348,7 @@ pub(crate) struct MetricBestEntryProjection {
     pub(crate) experiment: ExperimentSummaryProjection,
     pub(crate) hypothesis: HypothesisSummaryProjection,
     pub(crate) value: f64,
-    pub(crate) dimensions: BTreeMap<String, Value>,
+    pub(crate) conditions: BTreeMap<String, Value>,
 }
 
 #[derive(Clone, Serialize)]
@@ -364,7 +364,7 @@ pub(crate) struct MetricObservationSummaryProjection {
 pub(crate) struct ExperimentOutcomeProjection {
     pub(crate) backend: String,
     pub(crate) command: CommandRecipeProjection,
-    pub(crate) dimensions: BTreeMap<String, Value>,
+    pub(crate) conditions: BTreeMap<String, Value>,
     pub(crate) primary_metric: MetricValueProjection,
     pub(crate) supporting_metrics: Vec<MetricValueProjection>,
     pub(crate) verdict: String,
@@ -426,7 +426,7 @@ pub(crate) struct MetricBestOutput {
 pub(crate) struct ExperimentNearestHitProjection {
     pub(crate) experiment: ExperimentSummaryProjection,
     pub(crate) hypothesis: HypothesisSummaryProjection,
-    pub(crate) dimensions: BTreeMap<String, Value>,
+    pub(crate) conditions: BTreeMap<String, Value>,
     pub(crate) reasons: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) metric_value: Option<MetricObservationSummaryProjection>,
@@ -437,7 +437,7 @@ pub(crate) struct ExperimentNearestHitProjection {
 pub(crate) struct ExperimentNearestOutput {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) metric: Option<MetricKeySummaryProjection>,
-    pub(crate) target_dimensions: BTreeMap<String, Value>,
+    pub(crate) target_conditions: BTreeMap<String, Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) accepted: Option<ExperimentNearestHitProjection>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -521,7 +521,7 @@ pub(crate) struct MetricDefinitionOutput {
 }
 
 #[derive(Clone, Serialize)]
-pub(crate) struct RunDimensionDefinitionProjection {
+pub(crate) struct ConditionDefinitionProjection {
     pub(crate) key: String,
     pub(crate) value_type: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -531,15 +531,15 @@ pub(crate) struct RunDimensionDefinitionProjection {
 
 #[derive(Clone, Serialize, libmcp::ToolProjection)]
 #[libmcp(kind = "mutation")]
-pub(crate) struct RunDimensionDefinitionOutput {
-    pub(crate) record: RunDimensionDefinitionProjection,
+pub(crate) struct ConditionDefinitionOutput {
+    pub(crate) record: ConditionDefinitionProjection,
 }
 
 #[derive(Clone, Serialize, libmcp::ToolProjection)]
 #[libmcp(kind = "list")]
-pub(crate) struct RunDimensionListOutput {
+pub(crate) struct ConditionListOutput {
     pub(crate) count: usize,
-    pub(crate) dimensions: Vec<RunDimensionDefinitionProjection>,
+    pub(crate) conditions: Vec<ConditionDefinitionProjection>,
 }
 
 #[derive(Clone, Serialize)]
@@ -797,7 +797,7 @@ pub(crate) fn kpi_best(entries: &[KpiBestEntry]) -> KpiBestOutput {
 pub(crate) fn experiment_nearest(result: &ExperimentNearestResult) -> ExperimentNearestOutput {
     ExperimentNearestOutput {
         metric: result.metric.as_ref().map(metric_key_summary),
-        target_dimensions: dimension_map(&result.target_dimensions),
+        target_conditions: condition_map(&result.target_dimensions),
         accepted: result.accepted.as_ref().map(experiment_nearest_hit),
         kept: result.kept.as_ref().map(experiment_nearest_hit),
         rejected: result.rejected.as_ref().map(experiment_nearest_hit),
@@ -839,20 +839,20 @@ pub(crate) fn metric_definition(metric: &MetricDefinition) -> MetricDefinitionOu
     }
 }
 
-pub(crate) fn run_dimension_definition(
-    dimension: &RunDimensionDefinition,
-) -> RunDimensionDefinitionOutput {
-    RunDimensionDefinitionOutput {
-        record: run_dimension_definition_projection(dimension),
+pub(crate) fn condition_definition(
+    condition: &RunDimensionDefinition,
+) -> ConditionDefinitionOutput {
+    ConditionDefinitionOutput {
+        record: condition_definition_projection(condition),
     }
 }
 
-pub(crate) fn run_dimension_list(dimensions: &[RunDimensionDefinition]) -> RunDimensionListOutput {
-    RunDimensionListOutput {
-        count: dimensions.len(),
-        dimensions: dimensions
+pub(crate) fn condition_list(conditions: &[RunDimensionDefinition]) -> ConditionListOutput {
+    ConditionListOutput {
+        count: conditions.len(),
+        conditions: conditions
             .iter()
-            .map(run_dimension_definition_projection)
+            .map(condition_definition_projection)
             .collect(),
     }
 }
@@ -1077,14 +1077,14 @@ fn metric_definition_projection(metric: &MetricDefinition) -> MetricDefinitionPr
     }
 }
 
-fn run_dimension_definition_projection(
-    dimension: &RunDimensionDefinition,
-) -> RunDimensionDefinitionProjection {
-    RunDimensionDefinitionProjection {
-        key: dimension.key.to_string(),
-        value_type: dimension.value_type.as_str().to_owned(),
-        description: dimension.description.as_ref().map(ToString::to_string),
-        created_at: timestamp_value(dimension.created_at),
+fn condition_definition_projection(
+    condition: &RunDimensionDefinition,
+) -> ConditionDefinitionProjection {
+    ConditionDefinitionProjection {
+        key: condition.key.to_string(),
+        value_type: condition.value_type.as_str().to_owned(),
+        description: condition.description.as_ref().map(ToString::to_string),
+        created_at: timestamp_value(condition.created_at),
     }
 }
 
@@ -1102,7 +1102,7 @@ fn metric_best_entry(entry: &MetricBestEntry) -> MetricBestEntryProjection {
         experiment: experiment_summary(&entry.experiment),
         hypothesis: hypothesis_summary(&entry.hypothesis),
         value: entry.value,
-        dimensions: dimension_map(&entry.dimensions),
+        conditions: condition_map(&entry.dimensions),
     }
 }
 
@@ -1112,7 +1112,7 @@ fn kpi_best_entry(entry: &KpiBestEntry) -> KpiBestEntryProjection {
         hypothesis: hypothesis_summary(&entry.hypothesis),
         metric_key: entry.metric_key.to_string(),
         value: entry.value,
-        dimensions: dimension_map(&entry.dimensions),
+        conditions: condition_map(&entry.dimensions),
     }
 }
 
@@ -1120,7 +1120,7 @@ fn experiment_nearest_hit(hit: &ExperimentNearestHit) -> ExperimentNearestHitPro
     ExperimentNearestHitProjection {
         experiment: experiment_summary(&hit.experiment),
         hypothesis: hypothesis_summary(&hit.hypothesis),
-        dimensions: dimension_map(&hit.dimensions),
+        conditions: condition_map(&hit.dimensions),
         reasons: hit.reasons.iter().map(ToString::to_string).collect(),
         metric_value: hit.metric_value.as_ref().map(metric_observation_summary),
     }
@@ -1142,7 +1142,7 @@ fn experiment_outcome(outcome: &ExperimentOutcome) -> ExperimentOutcomeProjectio
     ExperimentOutcomeProjection {
         backend: outcome.backend.as_str().to_owned(),
         command: command_recipe(&outcome.command),
-        dimensions: dimension_map(&outcome.dimensions),
+        conditions: condition_map(&outcome.dimensions),
         primary_metric: metric_value(&outcome.primary_metric),
         supporting_metrics: outcome
             .supporting_metrics
@@ -1189,16 +1189,16 @@ fn command_recipe(command: &CommandRecipe) -> CommandRecipeProjection {
     }
 }
 
-fn dimension_map(
-    dimensions: &BTreeMap<NonEmptyText, RunDimensionValue>,
+fn condition_map(
+    conditions: &BTreeMap<NonEmptyText, RunDimensionValue>,
 ) -> BTreeMap<String, Value> {
-    dimensions
+    conditions
         .iter()
-        .map(|(key, value)| (key.to_string(), run_dimension_value(value)))
+        .map(|(key, value)| (key.to_string(), condition_value(value)))
         .collect()
 }
 
-fn run_dimension_value(value: &RunDimensionValue) -> Value {
+fn condition_value(value: &RunDimensionValue) -> Value {
     match value {
         RunDimensionValue::String(value) => Value::String(value.to_string()),
         RunDimensionValue::Numeric(value) => serde_json::json!(value),

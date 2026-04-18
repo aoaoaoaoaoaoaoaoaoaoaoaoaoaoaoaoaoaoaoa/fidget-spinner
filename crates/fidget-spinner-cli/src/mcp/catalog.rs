@@ -163,7 +163,7 @@ const TOOL_SPECS: &[ToolSpec] = &[
     },
     ToolSpec {
         name: "experiment.close",
-        description: "Close one open experiment with typed dimensions, structured metrics, verdict, rationale, and optional analysis. Requires a clean git worktree and records HEAD automatically from command.working_directory when provided, else from the bound project root.",
+        description: "Close one open experiment with typed conditions, structured metrics, verdict, rationale, and optional analysis. Requires a clean git worktree and records HEAD automatically from command.working_directory when provided, else from the bound project root.",
         dispatch: DispatchTarget::Worker,
         replay: ReplayContract::NeverReplay,
     },
@@ -193,7 +193,7 @@ const TOOL_SPECS: &[ToolSpec] = &[
     },
     ToolSpec {
         name: "metric.best",
-        description: "Rank closed experiments by one metric key with optional frontier, hypothesis, or dimension narrowing.",
+        description: "Rank closed experiments by one metric key with optional frontier, hypothesis, or condition narrowing.",
         dispatch: DispatchTarget::Worker,
         replay: ReplayContract::Convergent,
     },
@@ -216,14 +216,14 @@ const TOOL_SPECS: &[ToolSpec] = &[
         replay: ReplayContract::Convergent,
     },
     ToolSpec {
-        name: "run.dimension.define",
-        description: "Register one typed run-dimension key.",
+        name: "condition.define",
+        description: "Register one typed experimental condition key.",
         dispatch: DispatchTarget::Worker,
         replay: ReplayContract::NeverReplay,
     },
     ToolSpec {
-        name: "run.dimension.list",
-        description: "List registered run dimensions.",
+        name: "condition.list",
+        description: "List registered experimental condition keys.",
         dispatch: DispatchTarget::Worker,
         replay: ReplayContract::Convergent,
     },
@@ -323,7 +323,7 @@ fn tool_input_schema(name: &str) -> Value {
             )],
             &["path"],
         ),
-        "project.status" | "tag.list" | "run.dimension.list" | "skill.list" | "system.health"
+        "project.status" | "tag.list" | "condition.list" | "skill.list" | "system.health"
         | "system.telemetry" => empty_object_schema(),
         "tag.add" => object_schema(
             &[
@@ -507,7 +507,7 @@ fn tool_input_schema(name: &str) -> Value {
                     ),
                 ),
                 ("command", command_schema()),
-                ("dimensions", run_dimensions_schema()),
+                ("conditions", conditions_schema()),
                 ("primary_metric", metric_value_schema()),
                 ("supporting_metrics", metric_value_array_schema()),
                 (
@@ -524,7 +524,7 @@ fn tool_input_schema(name: &str) -> Value {
                 "experiment",
                 "backend",
                 "command",
-                "dimensions",
+                "conditions",
                 "primary_metric",
                 "verdict",
                 "rationale",
@@ -548,7 +548,7 @@ fn tool_input_schema(name: &str) -> Value {
                     "metric",
                     string_schema("Optional metric key used to choose the champion."),
                 ),
-                ("dimensions", run_dimensions_schema()),
+                ("conditions", conditions_schema()),
                 ("tags", string_array_schema("Require all listed tags.")),
                 (
                     "order",
@@ -623,7 +623,7 @@ fn tool_input_schema(name: &str) -> Value {
                     selector_schema("Optional hypothesis UUID or slug."),
                 ),
                 ("key", string_schema("Metric key.")),
-                ("dimensions", run_dimensions_schema()),
+                ("conditions", conditions_schema()),
                 (
                     "include_rejected",
                     boolean_schema("Include rejected experiments."),
@@ -657,7 +657,7 @@ fn tool_input_schema(name: &str) -> Value {
                     "kpi",
                     string_schema("Optional KPI metric key. Defaults to the first KPI metric."),
                 ),
-                ("dimensions", run_dimensions_schema()),
+                ("conditions", conditions_schema()),
                 (
                     "include_rejected",
                     boolean_schema("Include rejected experiments."),
@@ -666,14 +666,14 @@ fn tool_input_schema(name: &str) -> Value {
             ],
             &["frontier"],
         ),
-        "run.dimension.define" => object_schema(
+        "condition.define" => object_schema(
             &[
-                ("key", string_schema("Dimension key.")),
+                ("key", string_schema("Condition key.")),
                 (
                     "value_type",
                     enum_string_schema(
                         &["string", "numeric", "boolean", "timestamp"],
-                        "Dimension value type.",
+                        "Condition value type.",
                     ),
                 ),
                 ("description", string_schema("Optional description.")),
@@ -813,11 +813,11 @@ fn metric_value_array_schema() -> Value {
     json!({ "type": "array", "items": metric_value_schema() })
 }
 
-fn run_dimensions_schema() -> Value {
+fn conditions_schema() -> Value {
     json!({
         "type": "object",
         "additionalProperties": true,
-        "description": "Exact run-dimension filter or outcome dimension map. Values may be strings, numbers, booleans, or RFC3339 timestamps."
+        "description": "Exact experimental condition filter or outcome condition map. Conditions describe setup needed for like-for-like comparison, such as instance, profile, implementation, seed, timeout, hardware, or dataset. Measured outcomes belong in metrics, not conditions."
     })
 }
 
@@ -839,14 +839,14 @@ fn experiment_outcome_schema() -> Value {
         "properties": {
             "backend": { "type": "string", "enum": ["manual", "local_process", "worktree_process", "ssh_process"] },
             "command": command_schema(),
-            "dimensions": run_dimensions_schema(),
+            "conditions": conditions_schema(),
             "primary_metric": metric_value_schema(),
             "supporting_metrics": metric_value_array_schema(),
             "verdict": { "type": "string", "enum": ["accepted", "kept", "parked", "rejected"] },
             "rationale": { "type": "string" },
             "analysis": experiment_analysis_schema()
         },
-        "required": ["backend", "command", "dimensions", "primary_metric", "verdict", "rationale"],
+        "required": ["backend", "command", "conditions", "primary_metric", "verdict", "rationale"],
         "additionalProperties": false
     })
 }

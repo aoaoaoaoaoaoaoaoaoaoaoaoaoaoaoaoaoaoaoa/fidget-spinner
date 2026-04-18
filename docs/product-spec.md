@@ -90,7 +90,7 @@ This gives the product a canonical tree spine plus a sparse influence network.
 
 A closed experiment exists only when all of these exist together:
 
-- dimensions
+- conditions
 - primary metric
 - verdict
 - rationale
@@ -141,7 +141,7 @@ An experiment is a stateful object:
 
 A closed experiment stores:
 
-- dimensions
+- conditions
 - primary metric
 - supporting metrics
 - verdict: `accepted | kept | parked | rejected`
@@ -210,8 +210,8 @@ The current model-facing surface is:
 - `metric.define`
 - `metric.keys`
 - `metric.best`
-- `run.dimension.define`
-- `run.dimension.list`
+- `condition.define`
+- `condition.list`
 
 ## Explicitly Deferred
 

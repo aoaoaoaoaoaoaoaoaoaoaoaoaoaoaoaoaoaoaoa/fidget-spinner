@@ -51,7 +51,7 @@ Each measured slice becomes one experiment under exactly one hypothesis.
 
 The experiment closes with:
 
-- dimensions such as `instance`, `profile`, `duration_s`
+- conditions such as `instance`, `profile`, `duration_s`
 - primary metric
 - supporting metrics
 - verdict: `accepted | kept | parked | rejected`
@@ -91,7 +91,7 @@ experiments, not one prose blob.
 
 For `libgrid`, the minimum trustworthy record is:
 
-- run dimensions
+- conditions
 - primary metric
 - supporting metrics that materially explain the verdict
 - rationale

@@ -103,7 +103,7 @@ The outcome contains:
 
 - backend
 - command envelope
-- run dimensions
+- conditions
 - primary metric
 - supporting metrics
 - verdict
