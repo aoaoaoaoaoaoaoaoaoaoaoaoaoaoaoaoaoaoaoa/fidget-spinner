@@ -57,6 +57,8 @@ If you need more context, pull it from:
 - `tag.add` when a new campaign or subsystem token is genuinely needed; every tag must carry a description, and supervisor locks may reject model-created tags
 - `tag.list` before inventing tags by memory; it also reports supervisor-defined families, mandatory-family rules, locks, and stale-name guidance
 - `frontier.update` when the objective, situation, roadmap, or unknowns need to change
+- `frontier.query.schema` when you need the stable SQL view contract for advanced frontier-local mining; it lists the public `q_*` views and columns
+- `frontier.query.sql` when the normal read tools are too narrow and you need a compact read-only SQL table over one frontier; query only `q_*` views, prefer small projections, and rely on the frontier envelope rather than adding frontier filters
 - `hypothesis.record` whenever you get a plausible KPI-moving idea, mechanism, suspicion, or branch; hypotheses are cheap idea-capture nodes, not a ritual preamble to one experiment
 - `hypothesis.update` when the title, summary, body, tags, or influence parents need tightening; hypotheses are not archived, so clean stale wording/tags/parents in place and leave non-frontier visibility policy to the supervisor UI
 - `experiment.open` once a hypothesis has a concrete KPI-relevant slice and is ready to be tested
@@ -117,5 +119,9 @@ If you need more context, pull it from:
     healthy and does not invalidate the experiments it once organized.
 13. Porcelain is the terse triage surface. Use `detail=full` only when concise
     output stops being decision-sufficient.
-14. When the task becomes a true indefinite optimization push, pair this skill
+14. Raw SQL is an escape hatch for trusted, advanced frontier-local inspection,
+    not a second write API. Start with `frontier.query.schema`, query only the
+    stable `q_*` views, keep result sets narrow, and never expect physical table
+    names or cross-frontier data to exist.
+15. When the task becomes a true indefinite optimization push, pair this skill
     with `frontier-loop`.
