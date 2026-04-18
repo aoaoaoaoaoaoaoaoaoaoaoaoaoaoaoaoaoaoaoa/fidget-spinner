@@ -260,6 +260,10 @@ fn tool_content(response: &Value) -> &Value {
     &response["result"]["structuredContent"]
 }
 
+fn tool_text(response: &Value) -> Option<&str> {
+    response["result"]["content"][0]["text"].as_str()
+}
+
 fn tool_error_message(response: &Value) -> Option<&str> {
     response["result"]["structuredContent"]["message"].as_str()
 }
@@ -289,6 +293,74 @@ fn create_nodes_kpi(harness: &mut McpHarness, id: u64, frontier: &str) -> TestRe
             "metric": "nodes_solved",
         }),
     )?);
+    Ok(())
+}
+
+fn seed_frontier_query_fixture(harness: &mut McpHarness) -> TestResult {
+    assert_tool_ok(&harness.call_tool(
+        3000,
+        "metric.define",
+        json!({
+            "key": "nodes_solved",
+            "dimension": "count",
+            "display_unit": "count",
+            "objective": "maximize",
+            "description": "Node count for query fixture.",
+        }),
+    )?);
+    assert_tool_ok(&harness.call_tool(
+        3001,
+        "condition.define",
+        json!({"key": "instance", "value_type": "string"}),
+    )?);
+    for (offset, frontier, label, value) in [
+        (0, "query-alpha", "Query alpha", 111.0),
+        (10, "query-beta", "Query beta", 999.0),
+    ] {
+        assert_tool_ok(&harness.call_tool(
+            3010 + offset,
+            "frontier.create",
+            json!({
+                "label": label,
+                "objective": "Fixture frontier for scoped SQL queries",
+                "slug": frontier,
+            }),
+        )?);
+        create_nodes_kpi(harness, 3011 + offset, frontier)?;
+        assert_tool_ok(&harness.call_tool(
+            3012 + offset,
+            "hypothesis.record",
+            json!({
+                "frontier": frontier,
+                "slug": format!("{frontier}-hypothesis"),
+                "title": format!("{label} hypothesis"),
+                "summary": "Scoped SQL should only see this frontier when selected.",
+                "body": "The query fixture records one closed experiment so scoped SQL can prove isolation.",
+            }),
+        )?);
+        assert_tool_ok(&harness.call_tool(
+            3013 + offset,
+            "experiment.open",
+            json!({
+                "hypothesis": format!("{frontier}-hypothesis"),
+                "slug": format!("{frontier}-run"),
+                "title": format!("{label} run"),
+            }),
+        )?);
+        assert_tool_ok(&harness.call_tool(
+            3014 + offset,
+            "experiment.close",
+            json!({
+                "experiment": format!("{frontier}-run"),
+                "backend": "manual",
+                "command": {"argv": [format!("{frontier}-command")]},
+                "conditions": {"instance": frontier},
+                "primary_metric": {"key": "nodes_solved", "value": value},
+                "verdict": "accepted",
+                "rationale": format!("{label} result belongs only to {frontier}."),
+            }),
+        )?);
+    }
     Ok(())
 }
 
@@ -327,6 +399,8 @@ fn cold_start_exposes_bound_surface_and_new_toolset() -> TestResult {
     let tool_names = tool_names(&tools);
     assert!(tool_names.contains(&"frontier.open"));
     assert!(tool_names.contains(&"frontier.update"));
+    assert!(tool_names.contains(&"frontier.query.schema"));
+    assert!(tool_names.contains(&"frontier.query.sql"));
     assert!(tool_names.contains(&"hypothesis.record"));
     assert!(tool_names.contains(&"experiment.close"));
     assert!(tool_names.contains(&"experiment.nearest"));
@@ -1920,6 +1994,129 @@ fn experiment_close_drives_metric_best_and_analysis() -> TestResult {
         Some("reopt-dominance")
     );
     assert!(content["owning_hypothesis"].get("id").is_none());
+    Ok(())
+}
+
+#[test]
+fn frontier_query_sql_is_scoped_and_tabular() -> TestResult {
+    let project_root = temp_project_root("frontier_query")?;
+    init_project(&project_root)?;
+    let _closing_commit = seed_clean_git_repository(&project_root)?;
+
+    let mut harness = McpHarness::spawn(Some(&project_root))?;
+    let _ = harness.initialize()?;
+    harness.notify_initialized()?;
+    seed_frontier_query_fixture(&mut harness)?;
+
+    let schema = harness.call_tool(
+        3060,
+        "frontier.query.schema",
+        json!({"frontier": "query-alpha"}),
+    )?;
+    assert_tool_ok(&schema);
+    let schema_text = must_some(tool_text(&schema), "frontier query schema text")?;
+    assert!(schema_text.starts_with("view|column|type|description"));
+    assert!(schema_text.contains("q_experiment_metric|metric_key|text|Metric key."));
+    assert!(!schema_text.contains("frontier_id"));
+
+    let query = harness.call_tool(
+        3061,
+        "frontier.query.sql",
+        json!({
+            "frontier": "query-alpha",
+            "sql": "select experiment_slug, hypothesis_slug, metric_key, display_value from q_experiment_metric where metric_key = ? order by experiment_slug",
+            "params": ["nodes_solved"],
+        }),
+    )?;
+    assert_tool_ok(&query);
+    let text = must_some(tool_text(&query), "frontier query table text")?;
+    assert!(text.starts_with("experiment_slug|hypothesis_slug|metric_key|display_value"));
+    assert!(text.contains("query-alpha-run|query-alpha-hypothesis|nodes_solved|111"));
+    assert!(!text.contains("query-beta"));
+
+    let command = harness.call_tool(
+        3062,
+        "frontier.query.sql",
+        json!({
+            "frontier": "query-alpha",
+            "sql": "select arg from q_experiment_command_arg where experiment_slug = ? order by ordinal",
+            "params": ["query-alpha-run"],
+        }),
+    )?;
+    assert_tool_ok(&command);
+    let command_text = must_some(tool_text(&command), "frontier query command text")?;
+    assert_eq!(command_text, "arg\nquery-alpha-command");
+
+    let rows = must_some(tool_content(&query)["rows"].as_array(), "query rows")?;
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0][0].as_str(), Some("query-alpha-run"));
+    assert_eq!(rows[0][3].as_f64(), Some(111.0));
+    Ok(())
+}
+
+#[test]
+fn frontier_query_sql_rejects_mutation_and_escape_hatches() -> TestResult {
+    let project_root = temp_project_root("frontier_query_hostile")?;
+    init_project(&project_root)?;
+    let _closing_commit = seed_clean_git_repository(&project_root)?;
+
+    let mut harness = McpHarness::spawn(Some(&project_root))?;
+    let _ = harness.initialize()?;
+    harness.notify_initialized()?;
+    seed_frontier_query_fixture(&mut harness)?;
+
+    for (offset, sql, expected) in [
+        (
+            0,
+            "select slug from experiments",
+            "read-only and frontier-scoped",
+        ),
+        (
+            1,
+            "select frontier_id from __spinner_query_scope",
+            "read-only and frontier-scoped",
+        ),
+        (
+            2,
+            "update metric_definitions set key = key",
+            "read-only and frontier-scoped",
+        ),
+        (
+            3,
+            "attach database ':memory:' as aux",
+            "read-only and frontier-scoped",
+        ),
+        (
+            4,
+            "pragma table_info(experiments)",
+            "read-only and frontier-scoped",
+        ),
+        (
+            5,
+            "select name from pragma_table_info('experiments')",
+            "read-only and frontier-scoped",
+        ),
+        (
+            6,
+            "select random() from q_experiment",
+            "read-only and frontier-scoped",
+        ),
+        (7, "select 1; select 2", "multiple statements are rejected"),
+    ] {
+        let response = harness.call_tool(
+            3070 + offset,
+            "frontier.query.sql",
+            json!({
+                "frontier": "query-alpha",
+                "sql": sql,
+            }),
+        )?;
+        assert_tool_error(&response);
+        assert!(
+            must_some(tool_error_message(&response), "query policy error")?.contains(expected),
+            "expected error fragment `{expected}` for `{sql}` but saw {response:#}"
+        );
+    }
     Ok(())
 }
 

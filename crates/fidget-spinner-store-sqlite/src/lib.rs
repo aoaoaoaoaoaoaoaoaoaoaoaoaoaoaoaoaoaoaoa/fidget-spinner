@@ -25,6 +25,12 @@ use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
 use uuid::Uuid;
 
+mod query;
+
+pub use query::{
+    FrontierSqlColumn, FrontierSqlQuery, FrontierSqlQueryResult, FrontierSqlSchema, FrontierSqlView,
+};
+
 pub const STORE_DIR_NAME: &str = ".fidget_spinner";
 pub const GIT_DIR_NAME: &str = ".git";
 pub const STATE_DB_NAME: &str = "state.sqlite";

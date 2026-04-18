@@ -108,6 +108,18 @@ const TOOL_SPECS: &[ToolSpec] = &[
         replay: ReplayContract::Convergent,
     },
     ToolSpec {
+        name: "frontier.query.schema",
+        description: "Read the stable monofrontier SQL query view schema. Query views are q_* surfaces and do not expose frontier columns.",
+        dispatch: DispatchTarget::Worker,
+        replay: ReplayContract::Convergent,
+    },
+    ToolSpec {
+        name: "frontier.query.sql",
+        description: "Run one read-only SQL statement against stable q_* views scoped to one frontier.",
+        dispatch: DispatchTarget::Worker,
+        replay: ReplayContract::Convergent,
+    },
+    ToolSpec {
         name: "hypothesis.record",
         description: "Record an idea eagerly as a cheap hypothesis node. The body must stay a single paragraph.",
         dispatch: DispatchTarget::Worker,
@@ -344,9 +356,30 @@ fn tool_input_schema(name: &str) -> Value {
             &["label", "objective"],
         ),
         "frontier.list" => object_schema(&[], &[]),
-        "frontier.read" | "frontier.open" | "frontier.history" => object_schema(
-            &[("frontier", selector_schema("Frontier UUID or slug."))],
-            &["frontier"],
+        "frontier.read" | "frontier.open" | "frontier.history" | "frontier.query.schema" => {
+            object_schema(
+                &[("frontier", selector_schema("Frontier UUID or slug."))],
+                &["frontier"],
+            )
+        }
+        "frontier.query.sql" => object_schema(
+            &[
+                ("frontier", selector_schema("Frontier UUID or slug.")),
+                (
+                    "sql",
+                    string_schema("One read-only SQL statement against q_* query views."),
+                ),
+                ("params", sql_params_schema()),
+                (
+                    "max_rows",
+                    integer_schema("Optional row cap, clamped to 1000."),
+                ),
+                (
+                    "timeout_ms",
+                    integer_schema("Optional query time budget in milliseconds, clamped to 2000."),
+                ),
+            ],
+            &["frontier", "sql"],
         ),
         "frontier.update" => object_schema(
             &[
@@ -738,6 +771,22 @@ fn string_array_schema(description: &str) -> Value {
         "type": "array",
         "items": { "type": "string" },
         "description": description
+    })
+}
+
+fn sql_params_schema() -> Value {
+    json!({
+        "type": "array",
+        "items": {
+            "oneOf": [
+                { "type": "string" },
+                { "type": "number" },
+                { "type": "integer" },
+                { "type": "boolean" },
+                { "type": "null" }
+            ]
+        },
+        "description": "Positional SQL scalar parameters for ? placeholders."
     })
 }
 

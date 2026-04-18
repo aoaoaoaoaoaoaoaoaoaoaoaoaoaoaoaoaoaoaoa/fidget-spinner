@@ -16,12 +16,12 @@ use fidget_spinner_store_sqlite::{
     CloseExperimentRequest, CreateFrontierRequest, CreateHypothesisRequest, CreateKpiRequest,
     DefineMetricRequest, DefineRunDimensionRequest, EntityHistoryEntry, ExperimentDetail,
     ExperimentNearestQuery, ExperimentOutcomePatch, ExperimentSummary, FrontierOpenProjection,
-    FrontierRoadmapItemDraft, FrontierSummary, HypothesisDetail, HypothesisSummary, KpiBestEntry,
-    KpiBestQuery, KpiListQuery, KpiSummary, ListExperimentsQuery, ListFrontiersQuery,
-    ListHypothesesQuery, MetricBestEntry, MetricBestQuery, MetricKeySummary, MetricKeysQuery,
-    MetricRankOrder, MetricScope, OpenExperimentRequest, ProjectStatus, ProjectStore, StoreError,
-    TagRegistryQuery, TextPatch, UpdateExperimentRequest, UpdateFrontierRequest,
-    UpdateHypothesisRequest, VertexSelector, VertexSummary,
+    FrontierRoadmapItemDraft, FrontierSqlQuery, FrontierSummary, HypothesisDetail,
+    HypothesisSummary, KpiBestEntry, KpiBestQuery, KpiListQuery, KpiSummary, ListExperimentsQuery,
+    ListFrontiersQuery, ListHypothesesQuery, MetricBestEntry, MetricBestQuery, MetricKeySummary,
+    MetricKeysQuery, MetricRankOrder, MetricScope, OpenExperimentRequest, ProjectStatus,
+    ProjectStore, StoreError, TagRegistryQuery, TextPatch, UpdateExperimentRequest,
+    UpdateFrontierRequest, UpdateHypothesisRequest, VertexSelector, VertexSummary,
 };
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
@@ -214,6 +214,24 @@ impl WorkerService {
                 reject_archived_frontier_for_mcp(&frontier, &operation)?;
                 history_output(
                     &lift!(self.store.frontier_history(&args.frontier)),
+                    &operation,
+                )?
+            }
+            "frontier.query.schema" => {
+                let args = deserialize::<FrontierSelectorArgs>(arguments)?;
+                let frontier = lift!(self.store.read_frontier(&args.frontier));
+                reject_archived_frontier_for_mcp(&frontier, &operation)?;
+                crate::mcp::query_output::schema_output(
+                    &lift!(self.store.frontier_query_schema(&args.frontier)),
+                    &operation,
+                )?
+            }
+            "frontier.query.sql" => {
+                let args = deserialize::<FrontierSqlQuery>(arguments)?;
+                let frontier = lift!(self.store.read_frontier(&args.frontier));
+                reject_archived_frontier_for_mcp(&frontier, &operation)?;
+                crate::mcp::query_output::sql_output(
+                    &lift!(self.store.frontier_query_sql(args)),
                     &operation,
                 )?
             }
