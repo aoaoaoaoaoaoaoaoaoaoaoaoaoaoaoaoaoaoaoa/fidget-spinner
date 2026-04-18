@@ -29,8 +29,8 @@ use fidget_spinner_store_sqlite::{
 use maud::{DOCTYPE, Markup, PreEscaped, html};
 use percent_encoding::{NON_ALPHANUMERIC, percent_decode_str, utf8_percent_encode};
 use plotters::prelude::{
-    BLACK, ChartBuilder, Circle, Cross, IntoDrawingArea, IntoLogRange, LineSeries, PathElement,
-    SVGBackend, SeriesLabelPosition, ShapeStyle,
+    BLACK, ChartBuilder, Circle, Cross, DashedLineSeries, IntoDrawingArea, IntoLogRange,
+    LineSeries, PathElement, SVGBackend, SeriesLabelPosition, ShapeStyle,
 };
 use plotters::style::{Color, IntoFont, RGBColor};
 use time::OffsetDateTime;
@@ -1214,10 +1214,15 @@ mod tests {
     #[test]
     fn secondary_metric_grid_uses_coarse_interior_gradations() {
         let linear_values = metric_chart_secondary_grid_values(0.0, 100.0, false);
-        assert_eq!(linear_values, vec![20.0, 40.0, 60.0, 80.0]);
+        assert!(linear_values.len() > 4);
+        assert!(
+            linear_values
+                .iter()
+                .all(|value| *value > 0.0 && *value < 100.0)
+        );
 
         let log_values = metric_chart_secondary_grid_values(10.0, 1000.0, true);
-        assert_eq!(log_values.len(), 4);
+        assert!(log_values.len() > 4);
         assert!(
             log_values
                 .iter()

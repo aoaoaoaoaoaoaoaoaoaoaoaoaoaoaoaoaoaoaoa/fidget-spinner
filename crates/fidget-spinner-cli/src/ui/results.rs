@@ -4,24 +4,26 @@ use super::detail::{
     render_frontier_header,
 };
 use super::{
-    BLACK, BTreeMap, BTreeSet, ChartBuilder, Circle, Color, Cross, DimensionFacet,
-    ExperimentStatus, ExperimentSummary, FrontierMetricSeries, FrontierOpenProjection,
-    FrontierPageQuery, FrontierTab, FrontierVerdict, HypothesisCurrentState, IntoDrawingArea,
-    IntoFont, IntoLogRange, KnownMetricUnit, LineSeries, ListExperimentsQuery, ListHypothesesQuery,
-    METRIC_TABLE_TITLE_MIN_BUDGET_CH, METRIC_TABLE_TITLE_PERCENT_BUDGET, Markup, MetricKeysQuery,
-    MetricScope, MetricUnit, NonEmptyText, PathElement, PreEscaped, RGBColor, SVGBackend,
-    SeriesLabelPosition, ShapeStyle, Slug, StoreError, experiment_href, format_metric_value,
-    format_timestamp, frontier_href, frontier_tab_href_with_query, html, hypothesis_href,
-    limit_items, project_metrics_frontier_href, render_dimension_value, status_chip_classes,
-    verdict_class,
+    BLACK, BTreeMap, BTreeSet, ChartBuilder, Circle, Color, Cross, DashedLineSeries,
+    DimensionFacet, ExperimentStatus, ExperimentSummary, FrontierMetricSeries,
+    FrontierOpenProjection, FrontierPageQuery, FrontierTab, FrontierVerdict,
+    HypothesisCurrentState, IntoDrawingArea, IntoFont, IntoLogRange, KnownMetricUnit, LineSeries,
+    ListExperimentsQuery, ListHypothesesQuery, METRIC_TABLE_TITLE_MIN_BUDGET_CH,
+    METRIC_TABLE_TITLE_PERCENT_BUDGET, Markup, MetricKeysQuery, MetricScope, MetricUnit,
+    NonEmptyText, PathElement, PreEscaped, RGBColor, SVGBackend, SeriesLabelPosition, ShapeStyle,
+    Slug, StoreError, experiment_href, format_metric_value, format_timestamp, frontier_href,
+    frontier_tab_href_with_query, html, hypothesis_href, limit_items,
+    project_metrics_frontier_href, render_dimension_value, status_chip_classes, verdict_class,
 };
-use plotters::coord::ranged1d::{BoldPoints, Ranged};
+use plotters::coord::ranged1d::{LightPoints, Ranged};
 use plotters::coord::types::RangedCoordf64;
 
 const METRIC_CHART_ACCEPTED_MARKER_RADIUS: i32 = 2;
 const METRIC_CHART_REJECTED_MARKER_SIZE: i32 = 3;
 const METRIC_CHART_LIGHT_LINE_LIMIT: usize = 5;
 const METRIC_CHART_Y_LABEL_COUNT: usize = 6;
+const METRIC_CHART_DOTTED_GRID_DASH: i32 = 1;
+const METRIC_CHART_DOTTED_GRID_GAP: i32 = 5;
 
 pub(super) fn render_frontier_tab_content(
     store: &fidget_spinner_store_sqlite::ProjectStore,
@@ -835,17 +837,20 @@ fn render_metric_chart_svg(
                 if let Some(secondary_axis) = axes.secondary.as_ref() {
                     let secondary_grid_style =
                         ShapeStyle::from(&RGBColor(89, 119, 138).mix(0.28)).stroke_width(1);
-                    let secondary_grid =
+                    for value in
                         metric_chart_secondary_grid_values($secondary_min, $secondary_max, log_y)
-                            .into_iter()
-                            .map(|value| {
-                                PathElement::new(
-                                    vec![(0_i32, value), (x_end, value)],
-                                    secondary_grid_style,
-                                )
-                            });
-                    if chart.draw_secondary_series(secondary_grid).is_err() {
-                        return chart_error_markup("secondary grid draw failed");
+                    {
+                        if chart
+                            .draw_secondary_series(DashedLineSeries::new(
+                                [(0_i32, value), (x_end, value)],
+                                METRIC_CHART_DOTTED_GRID_DASH,
+                                METRIC_CHART_DOTTED_GRID_GAP,
+                                secondary_grid_style,
+                            ))
+                            .is_err()
+                        {
+                            return chart_error_markup("secondary grid draw failed");
+                        }
                     }
 
                     if chart
@@ -961,7 +966,10 @@ pub(super) fn metric_chart_secondary_grid_values(
 fn metric_chart_linear_grid_values(min_value: f64, max_value: f64) -> Vec<f64> {
     let coord = RangedCoordf64::from(min_value..max_value);
     coord
-        .key_points(BoldPoints(METRIC_CHART_Y_LABEL_COUNT))
+        .key_points(LightPoints::new(
+            METRIC_CHART_Y_LABEL_COUNT,
+            METRIC_CHART_Y_LABEL_COUNT * METRIC_CHART_LIGHT_LINE_LIMIT,
+        ))
         .into_iter()
         .filter(|value| *value > min_value && *value < max_value)
         .collect()
@@ -973,7 +981,8 @@ fn metric_chart_log_grid_values(min_value: f64, max_value: f64) -> Vec<f64> {
     }
     let log_min = min_value.log10();
     let log_max = max_value.log10();
-    let step_count = METRIC_CHART_Y_LABEL_COUNT.saturating_sub(1);
+    let point_count = METRIC_CHART_Y_LABEL_COUNT * METRIC_CHART_LIGHT_LINE_LIMIT;
+    let step_count = point_count.saturating_sub(1);
     if step_count == 0 {
         return Vec::new();
     }
