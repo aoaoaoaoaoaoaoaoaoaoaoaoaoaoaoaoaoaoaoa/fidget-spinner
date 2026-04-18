@@ -154,10 +154,10 @@ struct DimensionFacet {
 impl FrontierTab {
     fn from_query(raw: Option<&str>) -> Self {
         match raw {
+            Some("brief") => Self::Brief,
             Some("open") => Self::Open,
             Some("closed") => Self::Closed,
-            Some("results") => Self::Results,
-            _ => Self::Brief,
+            _ => Self::Results,
         }
     }
 
@@ -981,7 +981,7 @@ mod tests {
         MetricChartAxis, best_metric_table_title_split, render_metric_series_section,
         resolve_selected_metric_keys, truncated_entry_count,
     };
-    use super::{FrontierPageQuery, METRIC_TABLE_TITLE_MIN_BUDGET_CH};
+    use super::{FrontierPageQuery, FrontierTab, METRIC_TABLE_TITLE_MIN_BUDGET_CH};
     use std::collections::BTreeMap;
 
     use fidget_spinner_core::{
@@ -1219,6 +1219,16 @@ mod tests {
         );
         assert_eq!(query.tab.as_deref(), Some("results"));
         assert_eq!(query.metric, vec!["presolve_ms_gmean".to_owned()]);
+    }
+
+    #[test]
+    fn frontier_tab_defaults_to_results() {
+        assert_eq!(FrontierTab::from_query(None), FrontierTab::Results);
+        assert_eq!(
+            FrontierTab::from_query(Some("unknown")),
+            FrontierTab::Results
+        );
+        assert_eq!(FrontierTab::from_query(Some("brief")), FrontierTab::Brief);
     }
 
     #[test]

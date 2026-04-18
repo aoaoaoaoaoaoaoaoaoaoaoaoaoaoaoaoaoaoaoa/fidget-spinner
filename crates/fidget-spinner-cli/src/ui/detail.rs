@@ -137,7 +137,6 @@ pub(super) fn render_frontier_header(frontier: &FrontierRecord) -> Markup {
                 }
             }
         }
-        p.prose { (frontier.objective) }
         div.meta-row {
             span { "slug " code { (frontier.slug) } }
             span class=(status_chip_classes(frontier_status_class(frontier.status.as_str()))) {
@@ -153,7 +152,11 @@ pub(super) fn render_frontier_brief(projection: &FrontierOpenProjection) -> Mark
     let frontier = &projection.frontier;
     html! {
     section.card {
-        h2 { "Frontier Brief" }
+        h2 { "Brief" }
+        div.block {
+            h3 { "Description" }
+            p.prose { (frontier.objective) }
+        }
         @if let Some(situation) = frontier.brief.situation.as_ref() {
             div.block {
                 h3 { "Situation" }

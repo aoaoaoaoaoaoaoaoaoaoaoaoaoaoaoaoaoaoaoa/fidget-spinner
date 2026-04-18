@@ -104,10 +104,10 @@ pub(super) fn render_frontier_tab_bar(
     table_metric: Option<&str>,
 ) -> Markup {
     const TABS: [FrontierTab; 4] = [
+        FrontierTab::Results,
         FrontierTab::Brief,
         FrontierTab::Open,
         FrontierTab::Closed,
-        FrontierTab::Results,
     ];
     html! {
         nav.tab-row aria-label="Frontier tabs" {
