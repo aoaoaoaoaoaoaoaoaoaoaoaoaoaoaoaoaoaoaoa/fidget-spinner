@@ -12,19 +12,21 @@ use axum::routing::{get, post};
 use camino::Utf8PathBuf;
 use fidget_spinner_core::{
     ExperimentAnalysis, ExperimentOutcome, ExperimentStatus, FrontierRecord, FrontierStatus,
-    FrontierVerdict, KnownMetricUnit, MetricAggregation, MetricDimension, MetricUnit, NonEmptyText,
-    OptimizationObjective, RegistryLockMode, RegistryName, RunDimensionValue, Slug, TagFamilyName,
-    TagName, VertexRef,
+    FrontierVerdict, KnownMetricUnit, MetricAggregation, MetricDimension, MetricDisplayUnit,
+    MetricQuantity, MetricUnit, NonEmptyText, OptimizationObjective, RegistryLockMode,
+    RegistryName, RunDimensionValue, Slug, SyntheticMetricExpression, TagFamilyName, TagName,
+    VertexRef,
 };
 use fidget_spinner_store_sqlite::{
     AssignTagFamilyRequest, CreateKpiRequest, CreateTagFamilyRequest, DefineMetricRequest,
-    DeleteKpiRequest, DeleteMetricRequest, DeleteTagRequest, ExperimentDetail, ExperimentSummary,
-    FrontierMetricSeries, FrontierOpenProjection, FrontierSummary, HypothesisCurrentState,
-    HypothesisDetail, KpiSummary, ListExperimentsQuery, ListFrontiersQuery, ListHypothesesQuery,
-    MergeMetricRequest, MergeTagRequest, MetricKeysQuery, MetricScope, MoveKpiDirection,
-    MoveKpiRequest, ProjectStatus, RenameMetricRequest, RenameTagRequest, STATE_DB_NAME,
-    SetFrontierRegistryLockRequest, SetRegistryLockRequest, SetTagFamilyMandatoryRequest,
-    StoreError, TextPatch, UpdateFrontierRequest, UpdateProjectRequest, VertexSummary,
+    DefineSyntheticMetricRequest, DeleteKpiRequest, DeleteMetricRequest, DeleteTagRequest,
+    ExperimentDetail, ExperimentSummary, FrontierMetricSeries, FrontierOpenProjection,
+    FrontierSummary, HypothesisCurrentState, HypothesisDetail, KpiSummary, ListExperimentsQuery,
+    ListFrontiersQuery, ListHypothesesQuery, MergeMetricRequest, MergeTagRequest, MetricKeysQuery,
+    MetricScope, MoveKpiDirection, MoveKpiRequest, ProjectStatus, RenameMetricRequest,
+    RenameTagRequest, STATE_DB_NAME, SetFrontierRegistryLockRequest, SetRegistryLockRequest,
+    SetTagFamilyMandatoryRequest, StoreError, TextPatch, UpdateFrontierRequest,
+    UpdateProjectRequest, VertexSummary,
 };
 use maud::{DOCTYPE, Markup, PreEscaped, html};
 use percent_encoding::{NON_ALPHANUMERIC, percent_decode_str, utf8_percent_encode};
@@ -419,8 +421,7 @@ fn parse_metric_dimension_ui(raw: &str) -> Result<MetricDimension, StoreError> {
         "time" => Ok(MetricDimension::Time),
         "count" => Ok(MetricDimension::Count),
         "bytes" => Ok(MetricDimension::Bytes),
-        "ratio" => Ok(MetricDimension::Ratio),
-        "dimensionless" => Ok(MetricDimension::Dimensionless),
+        "ratio" | "dimensionless" | "scalar" => Ok(MetricDimension::Dimensionless),
         _ => Err(StoreError::InvalidInput(format!(
             "invalid metric dimension `{raw}`"
         ))),
@@ -760,8 +761,36 @@ fn render_dimension_value(value: &RunDimensionValue) -> String {
     }
 }
 
-fn format_metric_value(value: f64, unit: &MetricUnit) -> String {
-    match unit.known_kind() {
+trait MetricValueUnit {
+    fn known_unit(&self) -> Option<MetricUnit>;
+    fn label(&self) -> String;
+}
+
+impl MetricValueUnit for MetricUnit {
+    fn known_unit(&self) -> Option<MetricUnit> {
+        self.known_kind()
+    }
+
+    fn label(&self) -> String {
+        self.as_str().to_owned()
+    }
+}
+
+impl MetricValueUnit for MetricDisplayUnit {
+    fn known_unit(&self) -> Option<MetricUnit> {
+        match self {
+            Self::Known(unit) => unit.known_kind(),
+            Self::Canonical(_) => None,
+        }
+    }
+
+    fn label(&self) -> String {
+        MetricDisplayUnit::label(self)
+    }
+}
+
+fn format_metric_value(value: f64, unit: &impl MetricValueUnit) -> String {
+    match unit.known_unit() {
         Some(KnownMetricUnit::Bytes) => format!("{} B", format_integerish(value)),
         Some(KnownMetricUnit::Kibibytes) => format!("{value:.2} KiB"),
         Some(KnownMetricUnit::Mebibytes) => format!("{value:.2} MiB"),
@@ -771,13 +800,13 @@ fn format_metric_value(value: f64, unit: &MetricUnit) -> String {
         Some(KnownMetricUnit::Microseconds) => format!("{} us", format_integerish(value)),
         Some(KnownMetricUnit::Nanoseconds) => format!("{} ns", format_integerish(value)),
         Some(KnownMetricUnit::Count) => format_integerish(value),
-        Some(KnownMetricUnit::Ratio) => format!("{value:.4}"),
         Some(KnownMetricUnit::Percent) => format!("{value:.2}%"),
-        Some(KnownMetricUnit::Scalar) | None => {
-            if unit.as_str() == "scalar" {
+        Some(KnownMetricUnit::Dimensionless) | None => {
+            let label = unit.label();
+            if label == "dimensionless" {
                 format_float(value)
             } else {
-                format!("{} {}", format_float(value), unit.as_str())
+                format!("{} {label}", format_float(value))
             }
         }
     }
@@ -986,8 +1015,8 @@ mod tests {
 
     use fidget_spinner_core::{
         DefaultVisibility, ExperimentStatus, FrontierBrief, FrontierId, FrontierRecord,
-        FrontierStatus, FrontierVerdict, HypothesisId, MetricAggregation, MetricUnit, NonEmptyText,
-        OptimizationObjective, Slug,
+        FrontierStatus, FrontierVerdict, HypothesisId, MetricAggregation, MetricDefinitionKind,
+        MetricDisplayUnit, MetricUnit, NonEmptyText, OptimizationObjective, Slug,
     };
     use fidget_spinner_store_sqlite::{
         ExperimentSummary, FrontierMetricPoint, FrontierMetricSeries, HypothesisSummary,
@@ -1008,10 +1037,11 @@ mod tests {
         let unit = must(MetricUnit::new(unit), "metric unit");
         MetricKeySummary {
             key: must(NonEmptyText::new(key.to_owned()), "metric key"),
-            dimension: unit.dimension(),
-            display_unit: unit,
+            dimension: unit.quantity(),
+            display_unit: MetricDisplayUnit::Known(unit),
             aggregation: MetricAggregation::Point,
             objective: OptimizationObjective::Minimize,
+            kind: MetricDefinitionKind::Observed,
             default_visibility: DefaultVisibility::visible(),
             description: None,
             reference_count: 0,
@@ -1057,7 +1087,10 @@ mod tests {
         assert!(markup.contains(r#"data-table-filter-input="metric-registry""#));
         assert!(markup.contains(r#"data-table-filter-row="metric-registry""#));
         assert!(markup.contains(r#"data-table-filter-empty="metric-registry" hidden"#));
-        assert_eq!(filter_text, "presolve_wallclock time point minimize ");
+        assert_eq!(
+            filter_text,
+            "presolve_wallclock observed time point minimize "
+        );
         assert!(markup.contains(r#"<td class="no-truncate">time</td>"#));
         assert!(markup.contains(r#"action="metrics/description""#));
         assert!(markup.contains(r#"data-inline-edit-allow-clear="true""#));
@@ -1208,7 +1241,10 @@ mod tests {
     fn metric_chart_axis_normalizes_time_units_into_primary_unit() {
         let axis = MetricChartAxis::from_metric(&test_metric("presolve_ms", "ms"));
         let seconds = must(MetricUnit::new("seconds"), "seconds unit");
-        assert_eq!(axis.normalize_value(1.5, &seconds), Some(1500.0));
+        assert_eq!(
+            axis.normalize_value(1.5, &MetricDisplayUnit::Known(seconds)),
+            Some(1500.0)
+        );
     }
 
     #[test]

@@ -24,6 +24,7 @@ clap = { version = "4.5", features = ["derive"] }
 dirs = "6"
 linkify = "0.10"
 maud = { version = "0.27", features = ["axum"] }
+num-rational = { version = "0.4", features = ["serde"] }
 percent-encoding = "2"
 plotters = "0.3.7"
 rusqlite = { version = "0.37", features = ["bundled", "hooks", "limits", "time"] }

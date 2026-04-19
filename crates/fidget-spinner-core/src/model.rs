@@ -1,7 +1,9 @@
 use std::collections::BTreeMap;
 use std::fmt::{self, Display, Formatter};
+use std::ops::{Div, Mul};
 
 use camino::Utf8PathBuf;
+use num_rational::Ratio;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use time::OffsetDateTime;
@@ -268,11 +270,35 @@ impl FrontierStatus {
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(rename_all = "snake_case")]
+pub enum MetricBaseDimension {
+    Time,
+    Count,
+    Byte,
+}
+
+impl MetricBaseDimension {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Time => "time",
+            Self::Count => "count",
+            Self::Byte => "byte",
+        }
+    }
+}
+
+impl Display for MetricBaseDimension {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
+        formatter.write_str((*self).as_str())
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum MetricDimension {
     Time,
     Count,
     Bytes,
-    Ratio,
     Dimensionless,
 }
 
@@ -283,7 +309,6 @@ impl MetricDimension {
             Self::Time => "time",
             Self::Count => "count",
             Self::Bytes => "bytes",
-            Self::Ratio => "ratio",
             Self::Dimensionless => "dimensionless",
         }
     }
@@ -294,8 +319,7 @@ impl MetricDimension {
             Self::Time => MetricUnit::Milliseconds,
             Self::Count => MetricUnit::Count,
             Self::Bytes => MetricUnit::Kibibytes,
-            Self::Ratio => MetricUnit::Percent,
-            Self::Dimensionless => MetricUnit::Scalar,
+            Self::Dimensionless => MetricUnit::Dimensionless,
         }
     }
 
@@ -305,8 +329,17 @@ impl MetricDimension {
             Self::Time => MetricUnit::Nanoseconds,
             Self::Count => MetricUnit::Count,
             Self::Bytes => MetricUnit::Bytes,
-            Self::Ratio => MetricUnit::Ratio,
-            Self::Dimensionless => MetricUnit::Scalar,
+            Self::Dimensionless => MetricUnit::Dimensionless,
+        }
+    }
+
+    #[must_use]
+    pub fn quantity(self) -> MetricQuantity {
+        match self {
+            Self::Time => MetricQuantity::time(),
+            Self::Count => MetricQuantity::count(),
+            Self::Bytes => MetricQuantity::byte(),
+            Self::Dimensionless => MetricQuantity::dimensionless(),
         }
     }
 
@@ -314,14 +347,14 @@ impl MetricDimension {
     pub fn implicit_unit(self) -> Option<MetricUnit> {
         match self {
             Self::Count => Some(MetricUnit::Count),
-            Self::Dimensionless => Some(MetricUnit::Scalar),
-            Self::Time | Self::Bytes | Self::Ratio => None,
+            Self::Dimensionless => Some(MetricUnit::Dimensionless),
+            Self::Time | Self::Bytes => None,
         }
     }
 
     #[must_use]
     pub fn supports(self, unit: MetricUnit) -> bool {
-        unit.dimension() == self
+        unit.quantity() == self.quantity()
     }
 
     #[must_use]
@@ -340,8 +373,7 @@ impl MetricDimension {
                 MetricUnit::Mebibytes,
                 MetricUnit::Gibibytes,
             ],
-            Self::Ratio => &[MetricUnit::Ratio, MetricUnit::Percent],
-            Self::Dimensionless => &[MetricUnit::Scalar],
+            Self::Dimensionless => &[MetricUnit::Dimensionless, MetricUnit::Percent],
         }
     }
 
@@ -352,6 +384,178 @@ impl MetricDimension {
             .map(|unit| unit.as_str())
             .collect::<Vec<_>>()
             .join(", ")
+    }
+}
+
+pub type RationalExponent = Ratio<i32>;
+
+#[derive(Clone, Debug, Default, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(transparent)]
+pub struct MetricQuantity {
+    exponents: BTreeMap<MetricBaseDimension, RationalExponent>,
+}
+
+impl MetricQuantity {
+    #[must_use]
+    pub fn dimensionless() -> Self {
+        Self::default()
+    }
+
+    #[must_use]
+    pub fn base(base: MetricBaseDimension) -> Self {
+        Self {
+            exponents: BTreeMap::from([(base, Ratio::from_integer(1))]),
+        }
+    }
+
+    #[must_use]
+    pub fn time() -> Self {
+        Self::base(MetricBaseDimension::Time)
+    }
+
+    #[must_use]
+    pub fn count() -> Self {
+        Self::base(MetricBaseDimension::Count)
+    }
+
+    #[must_use]
+    pub fn byte() -> Self {
+        Self::base(MetricBaseDimension::Byte)
+    }
+
+    #[must_use]
+    pub fn checked_root(&self, degree: u32) -> Option<Self> {
+        if degree == 0 {
+            return None;
+        }
+        self.exponents
+            .iter()
+            .map(|(dimension, exponent)| {
+                let divisor = i32::try_from(degree).ok()?;
+                Some((*dimension, exponent / divisor))
+            })
+            .collect::<Option<BTreeMap<_, _>>>()
+            .map(Self::from_exponents)
+    }
+
+    #[must_use]
+    pub fn is_dimensionless(&self) -> bool {
+        self.exponents.is_empty()
+    }
+
+    #[must_use]
+    pub fn simple_display_unit(&self) -> Option<MetricUnit> {
+        if self == &Self::time() {
+            return Some(MetricUnit::Milliseconds);
+        }
+        if self == &Self::count() {
+            return Some(MetricUnit::Count);
+        }
+        if self == &Self::byte() {
+            return Some(MetricUnit::Kibibytes);
+        }
+        if self.is_dimensionless() {
+            return Some(MetricUnit::Dimensionless);
+        }
+        None
+    }
+
+    #[must_use]
+    pub fn implicit_report_unit(&self) -> Option<MetricUnit> {
+        if self == &Self::count() {
+            return Some(MetricUnit::Count);
+        }
+        if self.is_dimensionless() {
+            return Some(MetricUnit::Dimensionless);
+        }
+        None
+    }
+
+    #[must_use]
+    pub fn supports_unit(&self, unit: MetricUnit) -> bool {
+        unit.quantity() == *self
+    }
+
+    #[must_use]
+    pub fn unit_catalog(&self) -> String {
+        if self == &Self::time() {
+            return MetricDimension::Time.unit_catalog();
+        }
+        if self == &Self::count() {
+            return MetricDimension::Count.unit_catalog();
+        }
+        if self == &Self::byte() {
+            return MetricDimension::Bytes.unit_catalog();
+        }
+        if self.is_dimensionless() {
+            return MetricDimension::Dimensionless.unit_catalog();
+        }
+        self.canonical_unit_label()
+    }
+
+    #[must_use]
+    pub fn canonical_unit_label(&self) -> String {
+        if self.is_dimensionless() {
+            return "dimensionless".to_owned();
+        }
+        let (numerator, denominator) = self.exponents.iter().fold(
+            (Vec::<String>::new(), Vec::<String>::new()),
+            |(mut numerator, mut denominator), (dimension, exponent)| {
+                let target = if exponent.numer().is_negative() {
+                    &mut denominator
+                } else {
+                    &mut numerator
+                };
+                target.push(format_dimension_factor(*dimension, *exponent));
+                (numerator, denominator)
+            },
+        );
+        let numerator = if numerator.is_empty() {
+            "dimensionless".to_owned()
+        } else {
+            numerator.join("*")
+        };
+        if denominator.is_empty() {
+            numerator
+        } else {
+            format!("{numerator}/{}", denominator.join("*"))
+        }
+    }
+
+    pub fn parse(raw: &str) -> Result<Self, CoreError> {
+        parse_metric_quantity(raw)
+    }
+
+    #[must_use]
+    fn from_exponents(exponents: BTreeMap<MetricBaseDimension, RationalExponent>) -> Self {
+        Self {
+            exponents: exponents
+                .into_iter()
+                .filter(|(_, exponent)| *exponent != Ratio::from_integer(0))
+                .collect(),
+        }
+    }
+}
+
+impl Display for MetricQuantity {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
+        formatter.write_str(&self.canonical_unit_label())
+    }
+}
+
+impl Mul for MetricQuantity {
+    type Output = Self;
+
+    fn mul(self, rhs: Self) -> Self::Output {
+        combine_quantities(self, rhs, |left, right| left + right)
+    }
+}
+
+impl Div for MetricQuantity {
+    type Output = Self;
+
+    fn div(self, rhs: Self) -> Self::Output {
+        combine_quantities(self, rhs, |left, right| left - right)
     }
 }
 
@@ -387,9 +591,8 @@ impl MetricAggregation {
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
 pub enum MetricUnit {
-    Scalar,
+    Dimensionless,
     Count,
-    Ratio,
     Percent,
     Bytes,
     Kibibytes,
@@ -412,9 +615,8 @@ impl MetricUnit {
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
-            Self::Scalar => "scalar",
+            Self::Dimensionless => "dimensionless",
             Self::Count => "count",
-            Self::Ratio => "ratio",
             Self::Percent => "percent",
             Self::Bytes => "bytes",
             Self::Kibibytes => "kibibytes",
@@ -433,17 +635,16 @@ impl MetricUnit {
     }
 
     #[must_use]
-    pub const fn dimension(self) -> MetricDimension {
+    pub fn quantity(self) -> MetricQuantity {
         match self {
             Self::Nanoseconds | Self::Microseconds | Self::Milliseconds | Self::Seconds => {
-                MetricDimension::Time
+                MetricQuantity::time()
             }
-            Self::Count => MetricDimension::Count,
+            Self::Count => MetricQuantity::count(),
             Self::Bytes | Self::Kibibytes | Self::Mebibytes | Self::Gibibytes => {
-                MetricDimension::Bytes
+                MetricQuantity::byte()
             }
-            Self::Ratio | Self::Percent => MetricDimension::Ratio,
-            Self::Scalar => MetricDimension::Dimensionless,
+            Self::Percent | Self::Dimensionless => MetricQuantity::dimensionless(),
         }
     }
 
@@ -459,7 +660,7 @@ impl MetricUnit {
             Self::Mebibytes => value * 1_048_576.0,
             Self::Gibibytes => value * 1_073_741_824.0,
             Self::Percent => value / 100.0,
-            Self::Ratio | Self::Count | Self::Scalar => value,
+            Self::Count | Self::Dimensionless => value,
         }
     }
 
@@ -475,13 +676,13 @@ impl MetricUnit {
             Self::Mebibytes => canonical_value / 1_048_576.0,
             Self::Gibibytes => canonical_value / 1_073_741_824.0,
             Self::Percent => canonical_value * 100.0,
-            Self::Ratio | Self::Count | Self::Scalar => canonical_value,
+            Self::Count | Self::Dimensionless => canonical_value,
         }
     }
 
     #[must_use]
     pub fn scalar() -> Self {
-        Self::Scalar
+        Self::Dimensionless
     }
 }
 
@@ -511,9 +712,9 @@ fn normalize_metric_unit(raw: &str) -> Result<MetricUnit, CoreError> {
         return Err(CoreError::EmptyMetricUnit);
     }
     match normalized.as_str() {
-        "1" | "scalar" | "unitless" | "dimensionless" => Ok(MetricUnit::Scalar),
+        "1" | "scalar" | "unitless" | "dimensionless" => Ok(MetricUnit::Dimensionless),
         "count" | "counts" => Ok(MetricUnit::Count),
-        "ratio" | "fraction" => Ok(MetricUnit::Ratio),
+        "ratio" | "fraction" => Ok(MetricUnit::Dimensionless),
         "%" | "percent" | "percentage" | "pct" => Ok(MetricUnit::Percent),
         "bytes" | "byte" | "b" | "by" => Ok(MetricUnit::Bytes),
         "kibibytes" | "kibibyte" | "kib" | "kibs" => Ok(MetricUnit::Kibibytes),
@@ -593,14 +794,93 @@ impl DefaultVisibility {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case", tag = "kind", content = "value")]
+pub enum MetricDisplayUnit {
+    Known(MetricUnit),
+    Canonical(MetricQuantity),
+}
+
+impl MetricDisplayUnit {
+    #[must_use]
+    pub fn for_quantity(quantity: &MetricQuantity) -> Self {
+        quantity
+            .simple_display_unit()
+            .map_or_else(|| Self::Canonical(quantity.clone()), Self::Known)
+    }
+
+    pub fn parse(raw: &str) -> Result<Self, CoreError> {
+        match MetricUnit::new(raw) {
+            Ok(unit) => Ok(Self::Known(unit)),
+            Err(_) => MetricQuantity::parse(raw).map(Self::Canonical),
+        }
+    }
+
+    #[must_use]
+    pub fn quantity(&self) -> MetricQuantity {
+        match self {
+            Self::Known(unit) => unit.quantity(),
+            Self::Canonical(quantity) => quantity.clone(),
+        }
+    }
+
+    #[must_use]
+    pub fn label(&self) -> String {
+        match self {
+            Self::Known(unit) => unit.as_str().to_owned(),
+            Self::Canonical(quantity) => quantity.canonical_unit_label(),
+        }
+    }
+
+    #[must_use]
+    pub fn canonical_value(&self, value: f64) -> f64 {
+        match self {
+            Self::Known(unit) => unit.canonical_value(value),
+            Self::Canonical(_) => value,
+        }
+    }
+
+    #[must_use]
+    pub fn display_value(&self, canonical_value: f64) -> f64 {
+        match self {
+            Self::Known(unit) => unit.display_value(canonical_value),
+            Self::Canonical(_) => canonical_value,
+        }
+    }
+}
+
+impl Display for MetricDisplayUnit {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
+        formatter.write_str(&self.label())
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MetricDefinitionKind {
+    Observed,
+    Synthetic,
+}
+
+impl MetricDefinitionKind {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Observed => "observed",
+            Self::Synthetic => "synthetic",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct MetricDefinition {
     pub id: MetricId,
     pub key: NonEmptyText,
-    pub dimension: MetricDimension,
-    pub display_unit: MetricUnit,
+    pub dimension: MetricQuantity,
+    pub display_unit: MetricDisplayUnit,
     pub aggregation: MetricAggregation,
     pub objective: OptimizationObjective,
     pub description: Option<NonEmptyText>,
+    pub kind: MetricDefinitionKind,
     pub revision: u64,
     pub created_at: OffsetDateTime,
     pub updated_at: OffsetDateTime,
@@ -610,8 +890,8 @@ impl MetricDefinition {
     #[must_use]
     pub fn new(
         key: NonEmptyText,
-        dimension: MetricDimension,
-        display_unit: MetricUnit,
+        dimension: MetricQuantity,
+        display_unit: MetricDisplayUnit,
         aggregation: MetricAggregation,
         objective: OptimizationObjective,
         description: Option<NonEmptyText>,
@@ -625,10 +905,156 @@ impl MetricDefinition {
             aggregation,
             objective,
             description,
+            kind: MetricDefinitionKind::Observed,
             revision: 1,
             created_at: now,
             updated_at: now,
         }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case", tag = "op")]
+pub enum SyntheticMetricExpression {
+    Metric {
+        metric: NonEmptyText,
+    },
+    Constant {
+        value: f64,
+        quantity: MetricQuantity,
+    },
+    Add {
+        left: Box<SyntheticMetricExpression>,
+        right: Box<SyntheticMetricExpression>,
+    },
+    Sub {
+        left: Box<SyntheticMetricExpression>,
+        right: Box<SyntheticMetricExpression>,
+    },
+    Mul {
+        left: Box<SyntheticMetricExpression>,
+        right: Box<SyntheticMetricExpression>,
+    },
+    Div {
+        left: Box<SyntheticMetricExpression>,
+        right: Box<SyntheticMetricExpression>,
+    },
+    Gmean {
+        terms: Vec<SyntheticMetricExpression>,
+    },
+}
+
+impl SyntheticMetricExpression {
+    #[must_use]
+    pub fn metric(metric: NonEmptyText) -> Self {
+        Self::Metric { metric }
+    }
+
+    #[must_use]
+    pub fn constant(value: f64, quantity: MetricQuantity) -> Self {
+        Self::Constant { value, quantity }
+    }
+}
+
+fn combine_quantities(
+    left: MetricQuantity,
+    right: MetricQuantity,
+    combine: impl Fn(RationalExponent, RationalExponent) -> RationalExponent,
+) -> MetricQuantity {
+    let mut exponents = left.exponents;
+    for (dimension, right_exponent) in right.exponents {
+        let next = exponents.remove(&dimension).map_or_else(
+            || combine(Ratio::from_integer(0), right_exponent),
+            |left_exponent| combine(left_exponent, right_exponent),
+        );
+        if next != Ratio::from_integer(0) {
+            let _ = exponents.insert(dimension, next);
+        }
+    }
+    MetricQuantity::from_exponents(exponents)
+}
+
+fn format_dimension_factor(dimension: MetricBaseDimension, exponent: RationalExponent) -> String {
+    let magnitude = Ratio::new(exponent.numer().abs(), *exponent.denom());
+    if magnitude == Ratio::from_integer(1) {
+        dimension.to_string()
+    } else {
+        format!("{dimension}^{}", format_rational_exponent(&magnitude))
+    }
+}
+
+fn parse_metric_quantity(raw: &str) -> Result<MetricQuantity, CoreError> {
+    let normalized = raw.trim().to_ascii_lowercase();
+    if normalized.is_empty() {
+        return Err(CoreError::InvalidMetricUnit(normalized));
+    }
+    if matches!(
+        normalized.as_str(),
+        "1" | "scalar" | "unitless" | "dimensionless" | "ratio" | "fraction"
+    ) {
+        return Ok(MetricQuantity::dimensionless());
+    }
+    let (numerator, denominator) = normalized
+        .split_once('/')
+        .map_or((normalized.as_str(), ""), |(numerator, denominator)| {
+            (numerator, denominator)
+        });
+    let numerator_quantity = parse_metric_quantity_product(numerator, 1)?;
+    let denominator_quantity = if denominator.trim().is_empty() {
+        MetricQuantity::dimensionless()
+    } else {
+        parse_metric_quantity_product(denominator, -1)?
+    };
+    Ok(numerator_quantity * denominator_quantity)
+}
+
+fn parse_metric_quantity_product(raw: &str, sign: i32) -> Result<MetricQuantity, CoreError> {
+    raw.split('*')
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+        .try_fold(MetricQuantity::dimensionless(), |quantity, factor| {
+            let (dimension, exponent) = parse_dimension_factor(factor, sign)?;
+            Ok(quantity * MetricQuantity::from_exponents(BTreeMap::from([(dimension, exponent)])))
+        })
+}
+
+fn parse_dimension_factor(
+    raw: &str,
+    sign: i32,
+) -> Result<(MetricBaseDimension, RationalExponent), CoreError> {
+    let (dimension, exponent) = raw.split_once('^').unwrap_or((raw, "1"));
+    let dimension = match dimension.trim() {
+        "time" => MetricBaseDimension::Time,
+        "count" | "counts" => MetricBaseDimension::Count,
+        "byte" | "bytes" | "b" => MetricBaseDimension::Byte,
+        _ => return Err(CoreError::InvalidMetricUnit(raw.to_owned())),
+    };
+    let (numerator, denominator) = exponent
+        .split_once('/')
+        .map_or((exponent, "1"), |(numerator, denominator)| {
+            (numerator, denominator)
+        });
+    let numerator = numerator
+        .parse::<i32>()
+        .map_err(|_| CoreError::InvalidMetricUnit(raw.to_owned()))?
+        .saturating_mul(sign);
+    let denominator = denominator
+        .parse::<u32>()
+        .map_err(|_| CoreError::InvalidMetricUnit(raw.to_owned()))?;
+    let denominator =
+        i32::try_from(denominator).map_err(|_| CoreError::InvalidMetricUnit(raw.to_owned()))?;
+    if denominator == 0 {
+        return Err(CoreError::InvalidMetricUnit(raw.to_owned()));
+    }
+    let exponent = Ratio::new(numerator, denominator);
+    Ok((dimension, exponent))
+}
+
+fn format_rational_exponent(exponent: &RationalExponent) -> String {
+    if *exponent.denom() == 1 {
+        exponent.numer().to_string()
+    } else {
+        format!("{}/{}", exponent.numer(), exponent.denom())
     }
 }
 
@@ -724,7 +1150,7 @@ impl RunDimensionDefinition {
 
 #[cfg(test)]
 mod tests {
-    use super::{GitCommitHash, MetricDimension, MetricUnit};
+    use super::{GitCommitHash, MetricQuantity, MetricUnit};
 
     #[test]
     fn metric_unit_normalizes_known_aliases() {
@@ -748,24 +1174,25 @@ mod tests {
     }
 
     #[test]
-    fn metric_dimension_tracks_default_and_implicit_units() {
+    fn metric_quantity_algebra_tracks_default_units_and_rational_roots() {
         assert_eq!(
-            MetricDimension::Time.default_display_unit(),
-            MetricUnit::Milliseconds
+            MetricQuantity::time().simple_display_unit(),
+            Some(MetricUnit::Milliseconds)
         );
         assert_eq!(
-            MetricDimension::Bytes.default_display_unit(),
-            MetricUnit::Kibibytes
+            MetricQuantity::byte().simple_display_unit(),
+            Some(MetricUnit::Kibibytes)
         );
         assert_eq!(
-            MetricDimension::Count.implicit_unit(),
-            Some(MetricUnit::Count)
+            (MetricQuantity::count() / MetricQuantity::time()).to_string(),
+            "count/time"
         );
         assert_eq!(
-            MetricDimension::Dimensionless.implicit_unit(),
-            Some(MetricUnit::Scalar)
+            (MetricQuantity::time() * MetricQuantity::count())
+                .checked_root(2)
+                .map(|quantity| quantity.to_string()),
+            Some("time^1/2*count^1/2".to_owned())
         );
-        assert_eq!(MetricDimension::Time.implicit_unit(), None);
     }
 
     #[test]

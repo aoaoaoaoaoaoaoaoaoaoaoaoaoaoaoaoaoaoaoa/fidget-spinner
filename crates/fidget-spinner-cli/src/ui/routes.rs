@@ -4,18 +4,19 @@ use super::registry::{
 };
 use super::{
     AssignTagFamilyRequest, CONTENT_TYPE, CreateKpiRequest, CreateTagFamilyRequest,
-    DefineMetricRequest, DeleteKpiRequest, DeleteMetricRequest, DeleteTagRequest, FAVICON_SVG,
-    Form, FrontierPageQuery, FrontierStatus, IntoResponse, MergeMetricRequest, MergeTagRequest,
-    MetricUnit, MoveKpiDirection, MoveKpiRequest, NavigatorScope, NavigatorState, NonEmptyText,
-    Path, ProjectMetricsQuery, ProjectRenderContext, RegistryLockMode, RegistryName,
-    RenameMetricRequest, RenameTagRequest, Response, Router, SetFrontierRegistryLockRequest,
-    SetRegistryLockRequest, SetTagFamilyMandatoryRequest, SocketAddr, State, StatusCode,
-    StoreError, TagFamilyName, TagName, UpdateFrontierRequest, Uri, frontier_href,
-    frontier_status_mutation_response, get, io, metric_mutation_response, metrics_frontier_href,
-    open_store, optional_text_field, parse_metric_aggregation_ui, parse_metric_dimension_ui,
-    parse_optimization_objective_ui, parse_ui_lock_mode, post, project_mutation_response,
-    project_refresh_token_for, refresh_token_response, render_response, resolve_project_context,
-    tag_mutation_response, text_patch_field, update_frontier_status, update_project_description,
+    DefineMetricRequest, DefineSyntheticMetricRequest, DeleteKpiRequest, DeleteMetricRequest,
+    DeleteTagRequest, FAVICON_SVG, Form, FrontierPageQuery, FrontierStatus, IntoResponse,
+    MergeMetricRequest, MergeTagRequest, MetricUnit, MoveKpiDirection, MoveKpiRequest,
+    NavigatorScope, NavigatorState, NonEmptyText, Path, ProjectMetricsQuery, ProjectRenderContext,
+    RegistryLockMode, RegistryName, RenameMetricRequest, RenameTagRequest, Response, Router,
+    SetFrontierRegistryLockRequest, SetRegistryLockRequest, SetTagFamilyMandatoryRequest,
+    SocketAddr, State, StatusCode, StoreError, SyntheticMetricExpression, TagFamilyName, TagName,
+    UpdateFrontierRequest, Uri, frontier_href, frontier_status_mutation_response, get, io,
+    metric_mutation_response, metrics_frontier_href, open_store, optional_text_field,
+    parse_metric_aggregation_ui, parse_metric_dimension_ui, parse_optimization_objective_ui,
+    parse_ui_lock_mode, post, project_mutation_response, project_refresh_token_for,
+    refresh_token_response, render_response, resolve_project_context, tag_mutation_response,
+    text_patch_field, update_frontier_status, update_project_description,
 };
 use serde::Deserialize;
 
@@ -63,6 +64,10 @@ pub(crate) fn serve(
                 post(assign_tag_family),
             )
             .route("/project/{project}/metrics/create", post(create_metric))
+            .route(
+                "/project/{project}/metrics/synthetic/create",
+                post(create_synthetic_metric),
+            )
             .route("/project/{project}/metrics/rename", post(rename_metric))
             .route(
                 "/project/{project}/metrics/description",
@@ -443,6 +448,82 @@ async fn create_metric(
             Ok(format!("{}metrics", context.base_href))
         }),
     )
+}
+
+#[derive(Deserialize)]
+struct CreateSyntheticMetricForm {
+    key: String,
+    operation: String,
+    left: String,
+    right: String,
+    term_3: String,
+    term_4: String,
+    aggregation: String,
+    objective: String,
+    description: String,
+}
+
+async fn create_synthetic_metric(
+    State(state): State<NavigatorState>,
+    Path(project): Path<String>,
+    Form(form): Form<CreateSyntheticMetricForm>,
+) -> Response {
+    metric_mutation_response(
+        resolve_project_context(&state, &project).and_then(|context| {
+            let mut store = open_store(context.project_root.as_std_path())?;
+            let expression = synthetic_expression_from_form(&form)?;
+            let _ = store.define_synthetic_metric(DefineSyntheticMetricRequest {
+                key: NonEmptyText::new(form.key)?,
+                expression,
+                aggregation: parse_metric_aggregation_ui(&form.aggregation)?,
+                objective: parse_optimization_objective_ui(&form.objective)?,
+                description: optional_text_field(form.description)?,
+            })?;
+            Ok(format!("{}metrics", context.base_href))
+        }),
+    )
+}
+
+fn synthetic_expression_from_form(
+    form: &CreateSyntheticMetricForm,
+) -> Result<SyntheticMetricExpression, StoreError> {
+    let left = synthetic_metric_operand(&form.left)?;
+    match form.operation.trim() {
+        "add" => Ok(SyntheticMetricExpression::Add {
+            left: Box::new(left),
+            right: Box::new(synthetic_metric_operand(&form.right)?),
+        }),
+        "sub" => Ok(SyntheticMetricExpression::Sub {
+            left: Box::new(left),
+            right: Box::new(synthetic_metric_operand(&form.right)?),
+        }),
+        "mul" => Ok(SyntheticMetricExpression::Mul {
+            left: Box::new(left),
+            right: Box::new(synthetic_metric_operand(&form.right)?),
+        }),
+        "div" => Ok(SyntheticMetricExpression::Div {
+            left: Box::new(left),
+            right: Box::new(synthetic_metric_operand(&form.right)?),
+        }),
+        "gmean" => {
+            let mut terms = vec![left];
+            for raw in [&form.right, &form.term_3, &form.term_4] {
+                if !raw.trim().is_empty() {
+                    terms.push(synthetic_metric_operand(raw)?);
+                }
+            }
+            Ok(SyntheticMetricExpression::Gmean { terms })
+        }
+        other => Err(StoreError::InvalidInput(format!(
+            "unknown synthetic metric operation `{other}`"
+        ))),
+    }
+}
+
+fn synthetic_metric_operand(raw: &str) -> Result<SyntheticMetricExpression, StoreError> {
+    Ok(SyntheticMetricExpression::metric(NonEmptyText::new(
+        raw.trim().to_owned(),
+    )?))
 }
 
 #[derive(Deserialize)]

@@ -24,8 +24,10 @@ The product stance:
   or stale-name guidance rather than hiding it inside a KPI bucket.
 - The results page opens on KPI plots by default.
 - Metric registry cleanup is supervisor-owned; MCP writes obey policy locks.
-- Units are not backend identities. Values are normalized by measurement
-  dimension at write time.
+- Units are not backend identities. Values are normalized by metric quantity at
+  write time.
+- Synthetic metrics are supervisor-defined formulas over other metrics. Models
+  can query them, but cannot define them or report them directly.
 
 ## Vocabulary
 
@@ -45,11 +47,12 @@ Fields:
 
 - stable metric id
 - human key
-- measurement dimension
+- metric quantity
 - display unit
 - aggregation kind
 - objective
 - description
+- kind: observed or synthetic
 - revision
 - created/updated timestamps
 
@@ -63,32 +66,40 @@ defined metric keys. Use `presolve_wallclock` with display unit `milliseconds`,
 not `presolve_ms`; use `report_size` with display unit `bytes`, not
 `report_bytes`. Units, dimensions, and aggregation shape are registry fields.
 
-### Metric Dimension
+### Metric Quantity
 
-A metric dimension defines the physical or semantic quantity being stored.
-It is stricter than a display unit.
+A metric quantity defines the physical or semantic quantity being stored.
+It is stricter than a display unit and supports algebraic composition.
 
-Initial dimensions:
+Base quantities:
 
 - `time`: canonical duration-like magnitude.
-- `count`: unitless cardinal magnitude.
-- `bytes`: storage magnitude.
-- `ratio`: normalized fractional magnitude.
-- `dimensionless`: arbitrary scalar with no conversion law.
+- `count`: cardinal magnitude.
+- `byte`: storage magnitude.
+- `dimensionless`: empty quantity.
 
-Use "dimension" only for this metric concept in public surfaces. Experimental
-setup fields are conditions.
+Composite quantities are products of base quantities with exact rational
+exponents, such as `count/time` or `time^1/2*count^1/2`. Addition and
+subtraction require identical quantities. Multiplication and division add and
+subtract exponents. Geometric mean is an exact rational root of the product
+quantity.
+
+Public MCP/UI wording still says "metric dimension" where a scalar observed
+metric chooses one of the simple base quantities, because that is the
+least-surprise scientific word. Experimental setup fields are conditions and
+must never be called dimensions.
 
 ### Display Unit
 
-A display unit is presentation and input sugar within a dimension.
+A display unit is presentation and input sugar within a quantity.
 
 For time, accept `ns`, `us`, `ms`, and `s`, but normalize immediately. The
 backend must not treat seconds and milliseconds as distinct metric species. They
 are renderings of the same quantity.
 
-For ratio, accept fraction and percent spellings, but store the canonical value
-as a ratio. Percent is a display unit, not a backend dimension.
+For dimensionless values, accept fraction-like and percent spellings, but store
+the canonical value as a dimensionless scalar. Percent is a display unit, not a
+backend dimension.
 
 ### Aggregation Kind
 
@@ -139,6 +150,36 @@ The supervisor UI may need a temporary draft affordance later. If introduced,
 draft frontiers are invisible to model enumeration and exempt from the KPI
 invariant. Do not weaken the active-frontier invariant to accommodate drafts.
 
+## Synthetic Metrics
+
+Synthetic metrics are formulas, not observations.
+
+Allowed expression nodes:
+
+- metric reference
+- finite canonical constant
+- `+`
+- `-`
+- `*`
+- `/`
+- `gmean` over one or more terms
+
+Synthetics may depend on other synthetics. The dependency graph must be acyclic,
+and quantity inference is recursive. The evaluator returns no point for an
+experiment if any required leaf observation is missing, a division denominator
+is zero, or a geometric-mean term is non-positive.
+
+Supervisor UI may define synthetic metrics. MCP may not. MCP can still see
+synthetic metrics in `metric.keys`, rank them with `metric.best` and `kpi.best`,
+plot them in Results, and query synthetic points through frontier SQL views.
+MCP-origin experiment closes must report observed leaf metrics, not synthetic
+keys.
+
+Synthetic KPI promotion is deliberately stricter than ordinary KPI promotion:
+a synthetic metric can become a frontier KPI only when every transitive observed
+leaf is already a KPI on that frontier. This preserves the existing close-time
+contract without adding a second mandatory-leaf policy surface.
+
 ## Experiment Close Policy
 
 When an MCP-origin close supplies metric observations, the store checks them
@@ -147,10 +188,13 @@ against the active KPI metrics for the experiment frontier.
 Algorithm:
 
 1. Load active KPI metrics for the frontier.
-2. For each KPI metric, find the reported observation with that metric key.
-3. If the observation is missing, reject the close with a porcelain policy error
-   naming the missing KPI metric.
-4. Persist all reported observations when every mandatory KPI is present.
+2. For each observed KPI metric, find the reported observation with that metric
+   key.
+3. For each synthetic KPI metric, require every transitive observed leaf metric
+   instead.
+4. If an observation is missing, reject the close with a porcelain policy error
+   naming the KPI and the reportable metric keys.
+5. Persist all reported observations when every mandatory KPI is present.
 
 Supervisor-origin outcome edits remain authoritative and may repair historical
 records during cleanup. Policy locks constrain MCP writes only.
@@ -179,13 +223,13 @@ carry the overlap, and the table can show the metric actually reported.
 
 ## Units And Canonical Values
 
-The backend should normalize convertible units inside a measurement dimension.
+The backend should normalize convertible units inside a metric quantity.
 Unit strings are not identity.
 
 Target model:
 
-- Metric definitions declare `MetricDimension`.
-- Observations may carry an input display unit when the dimension is
+- Metric definitions declare a metric quantity.
+- Observations may carry an input display unit when the quantity is
   convertible.
 - The store normalizes to canonical representation before persistence.
 - Projections carry both canonical value and display metadata.
@@ -194,10 +238,9 @@ Recommended canonical forms:
 
 - `time`: nonnegative integer nanoseconds for raw duration-like values.
 - `count`: integer when exact, decimal only when aggregation requires it.
-- `bytes`: integer bytes.
-- `ratio`: decimal fraction, normally bounded to `[0, 1]` unless explicitly
-  marked unbounded.
+- `byte`: integer bytes.
 - `dimensionless`: decimal scalar.
+- composite quantities: canonical product/division of canonical leaf units.
 
 Aggregated time can be fractional at sub-nanosecond precision. If exactness
 later matters, add a decimal canonical numeric type rather than reintroducing
@@ -290,10 +333,13 @@ Tools:
 - `kpi.best`: ranks experiments by one KPI metric.
 - `metric.best`: remains for ad hoc metric inspection, but frontier loops
   should prefer KPIs.
+- `frontier.query.sql`: exposes synthetic definitions and synthetic experiment
+  metric points through stable frontier-scoped views.
 
-There is intentionally no MCP demote tool and no bulk KPI interface. Promotion
-exists because a model may discover that an existing instrument has become the
-real hill. Demotion is supervisor cleanup.
+There is intentionally no MCP synthetic-metric definition tool, no MCP demote
+tool, and no bulk KPI interface. Promotion exists because a model may discover
+that an existing instrument has become the real hill. Demotion and formula
+definition are supervisor cleanup.
 
 `frontier.open` exposes KPIs prominently because they define the hill the model
 is climbing. `metric.keys --scope live` remains useful, but it is not the
@@ -319,6 +365,10 @@ Metric definitions remain project-global. Experiment metric observations remain
 ordinary observations. KPI status is derived only by joining the frontier edge to
 the metric definition.
 
+Synthetic metric definitions add a formula table plus direct dependency edges.
+The expression JSON is typed and stable enough for supervisor editing, while the
+edge table keeps dependency inspection and delete safety relational.
+
 ## Migration Program
 
 1. Drop backend scoreboard semantics.
@@ -341,3 +391,4 @@ scoreboard/KPI path.
 - Backend supersession buckets.
 - Backward-compatible dual scoreboard/KPI paths.
 - Treating unit compatibility as KPI equivalence.
+- MCP-defined synthetic formulas.

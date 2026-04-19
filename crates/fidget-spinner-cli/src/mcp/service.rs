@@ -1682,10 +1682,11 @@ fn metric_keys_output(
             keys.iter()
                 .map(|metric| {
                     format!(
-                        "{} [{} {} {}] refs={}",
+                        "{} [{} {} {} {}] refs={}",
                         metric.key,
-                        metric.dimension.as_str(),
-                        metric.display_unit.as_str(),
+                        metric.kind.as_str(),
+                        metric.dimension,
+                        metric.display_unit.label(),
                         metric.objective.as_str(),
                         metric.reference_count
                     )
@@ -1707,10 +1708,11 @@ fn metric_definition_output(
     projected_tool_output(
         &projection,
         format!(
-            "metric {} [{} {} {}]",
+            "metric {} [{} {} {} {}]",
             metric.key,
-            metric.dimension.as_str(),
-            metric.display_unit.as_str(),
+            metric.kind.as_str(),
+            metric.dimension,
+            metric.display_unit.label(),
             metric.objective.as_str()
         ),
         None,
@@ -1837,8 +1839,8 @@ fn experiment_nearest_output(
         lines.push(format!(
             "champion metric: {} [{} {} {}]",
             metric.key,
-            metric.dimension.as_str(),
-            metric.display_unit.as_str(),
+            metric.dimension,
+            metric.display_unit.label(),
             metric.objective.as_str()
         ));
     }
@@ -2278,6 +2280,7 @@ mod legacy_projection_values {
     fn metric_key_summary_value(metric: &MetricKeySummary) -> Value {
         json!({
             "key": metric.key,
+            "kind": metric.kind,
             "display_unit": metric.display_unit,
             "dimension": metric.dimension,
             "aggregation": metric.aggregation,
@@ -2292,6 +2295,7 @@ mod legacy_projection_values {
             "ordinal": kpi.ordinal.value(),
             "metric": {
                 "key": kpi.metric.key,
+                "kind": kpi.metric.kind,
                 "display_unit": kpi.metric.display_unit,
                 "dimension": kpi.metric.dimension,
                 "aggregation": kpi.metric.aggregation,

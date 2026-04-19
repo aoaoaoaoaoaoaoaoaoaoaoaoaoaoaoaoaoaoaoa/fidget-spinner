@@ -1343,8 +1343,7 @@ fn parse_metric_dimension_cli(raw: &str) -> Result<MetricDimension, StoreError> 
         "time" => Ok(MetricDimension::Time),
         "count" => Ok(MetricDimension::Count),
         "bytes" => Ok(MetricDimension::Bytes),
-        "ratio" => Ok(MetricDimension::Ratio),
-        "dimensionless" | "scalar" => Ok(MetricDimension::Dimensionless),
+        "ratio" | "dimensionless" | "scalar" => Ok(MetricDimension::Dimensionless),
         other => Err(invalid_input(format!("invalid metric dimension `{other}`"))),
     }
 }

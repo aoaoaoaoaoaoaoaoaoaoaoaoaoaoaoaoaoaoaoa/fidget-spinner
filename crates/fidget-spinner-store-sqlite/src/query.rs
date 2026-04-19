@@ -7,6 +7,8 @@ use rusqlite::{Connection, OpenFlags, params, params_from_iter};
 use serde::{Deserialize, Serialize};
 use serde_json::{Number, Value};
 
+use fidget_spinner_core::{ExperimentStatus, FrontierId, MetricDefinitionKind};
+
 use super::{ProjectStore, STATE_DB_NAME, StoreError};
 
 const DEFAULT_MAX_ROWS: usize = 200;
@@ -54,6 +56,13 @@ pub struct FrontierSqlColumn {
     pub description: &'static str,
 }
 
+#[derive(Clone, Debug)]
+struct SyntheticMetricQueryValue {
+    experiment_id: String,
+    metric_id: String,
+    value: f64,
+}
+
 impl ProjectStore {
     pub fn frontier_query_schema(&self, frontier: &str) -> Result<FrontierSqlSchema, StoreError> {
         let _ = self.resolve_frontier(frontier)?;
@@ -67,7 +76,12 @@ impl ProjectStore {
         request: FrontierSqlQuery,
     ) -> Result<FrontierSqlQueryResult, StoreError> {
         let frontier = self.resolve_frontier(&request.frontier)?;
-        let connection = self.open_frontier_query_connection(&frontier.id.to_string(), &request)?;
+        let synthetic_values = self.frontier_synthetic_metric_values(frontier.id)?;
+        let connection = self.open_frontier_query_connection(
+            &frontier.id.to_string(),
+            &request,
+            &synthetic_values,
+        )?;
         execute_frontier_query(&connection, request)
     }
 
@@ -75,6 +89,7 @@ impl ProjectStore {
         &self,
         frontier_id: &str,
         request: &FrontierSqlQuery,
+        synthetic_values: &[SyntheticMetricQueryValue],
     ) -> Result<Connection, StoreError> {
         let connection = Connection::open_with_flags(
             self.state_root.join(STATE_DB_NAME).as_std_path(),
@@ -85,11 +100,45 @@ impl ProjectStore {
         connection.pragma_update(None, "foreign_keys", 1_i64)?;
         connection.pragma_update(None, "temp_store", 2_i64)?;
         tighten_query_limits(&connection)?;
-        install_frontier_query_views(&connection, frontier_id)?;
+        install_frontier_query_views(&connection, frontier_id, synthetic_values)?;
         connection.pragma_update(None, "query_only", 1_i64)?;
         connection.authorizer(Some(authorize_frontier_query));
         install_progress_deadline(&connection, request.timeout_ms);
         Ok(connection)
+    }
+
+    fn frontier_synthetic_metric_values(
+        &self,
+        frontier_id: FrontierId,
+    ) -> Result<Vec<SyntheticMetricQueryValue>, StoreError> {
+        let synthetic_metrics = self
+            .list_metric_definitions()?
+            .into_iter()
+            .filter(|metric| metric.kind == MetricDefinitionKind::Synthetic)
+            .collect::<Vec<_>>();
+        if synthetic_metrics.is_empty() {
+            return Ok(Vec::new());
+        }
+        let experiments = self
+            .load_experiment_records(Some(frontier_id), None)?
+            .into_iter()
+            .filter(|record| record.status == ExperimentStatus::Closed)
+            .collect::<Vec<_>>();
+        let mut values = Vec::new();
+        for experiment in experiments {
+            for metric in &synthetic_metrics {
+                if let Some(value) =
+                    self.experiment_metric_canonical_value(experiment.id, metric.id)?
+                {
+                    values.push(SyntheticMetricQueryValue {
+                        experiment_id: experiment.id.to_string(),
+                        metric_id: metric.id.to_string(),
+                        value,
+                    });
+                }
+            }
+        }
+        Ok(values)
     }
 }
 
@@ -316,11 +365,19 @@ fn read_function_allowed(function_name: &str) -> bool {
 fn install_frontier_query_views(
     connection: &Connection,
     frontier_id: &str,
+    synthetic_values: &[SyntheticMetricQueryValue],
 ) -> Result<(), StoreError> {
     connection.execute_batch(
         "
         CREATE TEMP TABLE __spinner_query_scope (
             frontier_id TEXT PRIMARY KEY NOT NULL
+        );
+
+        CREATE TEMP TABLE __spinner_synthetic_metric_values (
+            experiment_id TEXT NOT NULL,
+            metric_id TEXT NOT NULL,
+            value REAL NOT NULL,
+            PRIMARY KEY (experiment_id, metric_id)
         );
         ",
     )?;
@@ -328,6 +385,13 @@ fn install_frontier_query_views(
         "INSERT INTO temp.__spinner_query_scope (frontier_id) VALUES (?1)",
         params![frontier_id],
     )?;
+    for value in synthetic_values {
+        let _ = connection.execute(
+            "INSERT INTO temp.__spinner_synthetic_metric_values (experiment_id, metric_id, value)
+             VALUES (?1, ?2, ?3)",
+            params![value.experiment_id, value.metric_id, value.value],
+        )?;
+    }
     connection.execute_batch(CREATE_QUERY_VIEWS_SQL)?;
     Ok(())
 }
@@ -420,15 +484,19 @@ const CREATE_QUERY_VIEWS_SQL: &str = concat!(
     CREATE TEMP VIEW q_metric AS
     SELECT
         metric_definitions.key AS metric_key,
+        CASE
+            WHEN synthetic_metric_definitions.metric_id IS NULL THEN 'observed'
+            ELSE 'synthetic'
+        END AS metric_kind,
         metric_definitions.dimension AS metric_dimension,
         ",
     "
         CASE metric_definitions.dimension
             WHEN 'time' THEN 'nanoseconds'
             WHEN 'bytes' THEN 'bytes'
-            WHEN 'ratio' THEN 'ratio'
+            WHEN 'dimensionless' THEN 'dimensionless'
             WHEN 'count' THEN 'count'
-            ELSE 'scalar'
+            ELSE metric_definitions.dimension
         END",
     " AS canonical_unit,
         metric_definitions.display_unit AS display_unit,
@@ -437,6 +505,8 @@ const CREATE_QUERY_VIEWS_SQL: &str = concat!(
         metric_definitions.description AS description,
         frontier_kpis.ordinal AS kpi_ordinal
     FROM metric_definitions
+    LEFT JOIN synthetic_metric_definitions
+        ON synthetic_metric_definitions.metric_id = metric_definitions.id
     LEFT JOIN frontier_kpis
         ON frontier_kpis.metric_id = metric_definitions.id
        AND frontier_kpis.frontier_id = (SELECT frontier_id FROM temp.__spinner_query_scope)
@@ -448,12 +518,21 @@ const CREATE_QUERY_VIEWS_SQL: &str = concat!(
            JOIN hypotheses ON hypotheses.id = experiments.hypothesis_id
            WHERE hypotheses.frontier_id = (SELECT frontier_id FROM temp.__spinner_query_scope)
              AND experiment_metrics.metric_id = metric_definitions.id
+       )
+       OR EXISTS (
+           SELECT 1
+           FROM temp.__spinner_synthetic_metric_values synthetic_values
+           JOIN experiments ON experiments.id = synthetic_values.experiment_id
+           JOIN hypotheses ON hypotheses.id = experiments.hypothesis_id
+           WHERE hypotheses.frontier_id = (SELECT frontier_id FROM temp.__spinner_query_scope)
+             AND synthetic_values.metric_id = metric_definitions.id
        );
 
     CREATE TEMP VIEW q_kpi AS
     SELECT
         q_metric.kpi_ordinal AS kpi_ordinal,
         q_metric.metric_key AS metric_key,
+        q_metric.metric_kind AS metric_kind,
         q_metric.metric_dimension AS metric_dimension,
         q_metric.canonical_unit AS canonical_unit,
         q_metric.display_unit AS display_unit,
@@ -468,15 +547,16 @@ const CREATE_QUERY_VIEWS_SQL: &str = concat!(
         experiments.slug AS experiment_slug,
         hypotheses.slug AS hypothesis_slug,
         metric_definitions.key AS metric_key,
+        'observed' AS metric_kind,
         metric_definitions.dimension AS metric_dimension,
         ",
     "
         CASE metric_definitions.dimension
             WHEN 'time' THEN 'nanoseconds'
             WHEN 'bytes' THEN 'bytes'
-            WHEN 'ratio' THEN 'ratio'
+            WHEN 'dimensionless' THEN 'dimensionless'
             WHEN 'count' THEN 'count'
-            ELSE 'scalar'
+            ELSE metric_definitions.dimension
         END",
     " AS canonical_unit,
         metric_definitions.display_unit AS display_unit,
@@ -505,7 +585,70 @@ const CREATE_QUERY_VIEWS_SQL: &str = concat!(
     JOIN experiments ON experiments.id = experiment_metrics.experiment_id
     JOIN hypotheses ON hypotheses.id = experiments.hypothesis_id
     LEFT JOIN experiment_outcomes ON experiment_outcomes.experiment_id = experiments.id
+    WHERE hypotheses.frontier_id = (SELECT frontier_id FROM temp.__spinner_query_scope)
+    UNION ALL
+    SELECT
+        experiments.slug AS experiment_slug,
+        hypotheses.slug AS hypothesis_slug,
+        metric_definitions.key AS metric_key,
+        'synthetic' AS metric_kind,
+        metric_definitions.dimension AS metric_dimension,
+        ",
+    "
+        CASE metric_definitions.dimension
+            WHEN 'time' THEN 'nanoseconds'
+            WHEN 'bytes' THEN 'bytes'
+            WHEN 'dimensionless' THEN 'dimensionless'
+            WHEN 'count' THEN 'count'
+            ELSE metric_definitions.dimension
+        END",
+    " AS canonical_unit,
+        metric_definitions.display_unit AS display_unit,
+        synthetic_values.value AS canonical_value,
+        ",
+    "
+        CASE metric_definitions.display_unit
+            WHEN 'nanoseconds' THEN synthetic_values.value
+            WHEN 'microseconds' THEN synthetic_values.value / 1000.0
+            WHEN 'milliseconds' THEN synthetic_values.value / 1000000.0
+            WHEN 'seconds' THEN synthetic_values.value / 1000000000.0
+            WHEN 'bytes' THEN synthetic_values.value
+            WHEN 'kibibytes' THEN synthetic_values.value / 1024.0
+            WHEN 'mebibytes' THEN synthetic_values.value / 1048576.0
+            WHEN 'gibibytes' THEN synthetic_values.value / 1073741824.0
+            WHEN 'percent' THEN synthetic_values.value * 100.0
+            ELSE synthetic_values.value
+        END",
+    " AS display_value,
+        0 AS is_primary,
+        NULL AS metric_ordinal,
+        experiment_outcomes.verdict AS verdict,
+        experiment_outcomes.closed_at AS closed_at
+    FROM temp.__spinner_synthetic_metric_values synthetic_values
+    JOIN metric_definitions ON metric_definitions.id = synthetic_values.metric_id
+    JOIN experiments ON experiments.id = synthetic_values.experiment_id
+    JOIN hypotheses ON hypotheses.id = experiments.hypothesis_id
+    LEFT JOIN experiment_outcomes ON experiment_outcomes.experiment_id = experiments.id
     WHERE hypotheses.frontier_id = (SELECT frontier_id FROM temp.__spinner_query_scope);
+
+    CREATE TEMP VIEW q_synthetic_metric_dependency AS
+    SELECT
+        synthetic_metrics.key AS synthetic_metric_key,
+        synthetic_metric_definitions.expression_json AS expression_json,
+        dependency_metrics.key AS dependency_metric_key,
+        synthetic_metric_dependencies.ordinal AS dependency_ordinal
+    FROM synthetic_metric_definitions
+    JOIN metric_definitions AS synthetic_metrics
+        ON synthetic_metrics.id = synthetic_metric_definitions.metric_id
+    LEFT JOIN synthetic_metric_dependencies
+        ON synthetic_metric_dependencies.synthetic_metric_id = synthetic_metric_definitions.metric_id
+    LEFT JOIN metric_definitions AS dependency_metrics
+        ON dependency_metrics.id = synthetic_metric_dependencies.dependency_metric_id
+    WHERE EXISTS (
+        SELECT 1
+        FROM q_metric
+        WHERE q_metric.metric_key = synthetic_metrics.key
+    );
 
     CREATE TEMP VIEW q_experiment_condition AS
     SELECT
@@ -744,11 +887,12 @@ const QUERY_VIEWS: &[FrontierSqlView] = &[
     },
     FrontierSqlView {
         name: "q_experiment_metric",
-        description: "Every metric observation recorded by frontier experiments.",
+        description: "Every observed metric recorded by frontier experiments.",
         columns: &[
             col("experiment_slug", "text", "Stable experiment slug."),
             col("hypothesis_slug", "text", "Owning hypothesis slug."),
             col("metric_key", "text", "Metric key."),
+            col("metric_kind", "text", "observed."),
             col("metric_dimension", "text", "Scientific metric dimension."),
             col("canonical_unit", "text", "Canonical backing unit."),
             col("display_unit", "text", "Default display unit."),
@@ -774,6 +918,28 @@ const QUERY_VIEWS: &[FrontierSqlView] = &[
             ),
             col("verdict", "text", "Experiment verdict when closed."),
             col("closed_at", "text", "RFC3339 close timestamp."),
+        ],
+    },
+    FrontierSqlView {
+        name: "q_synthetic_metric_dependency",
+        description: "Synthetic metric formulas visible in this frontier and their direct dependencies.",
+        columns: &[
+            col("synthetic_metric_key", "text", "Synthetic metric key."),
+            col(
+                "expression_json",
+                "text",
+                "Typed synthetic expression JSON.",
+            ),
+            col(
+                "dependency_metric_key",
+                "text",
+                "Direct dependency metric key.",
+            ),
+            col(
+                "dependency_ordinal",
+                "integer",
+                "Dependency order in the formula.",
+            ),
         ],
     },
     FrontierSqlView {
@@ -862,6 +1028,7 @@ const QUERY_VIEWS: &[FrontierSqlView] = &[
 
 const METRIC_COLUMNS: &[FrontierSqlColumn] = &[
     col("metric_key", "text", "Metric key."),
+    col("metric_kind", "text", "observed or synthetic."),
     col("metric_dimension", "text", "Scientific metric dimension."),
     col("canonical_unit", "text", "Canonical backing unit."),
     col("display_unit", "text", "Default display unit."),
@@ -878,6 +1045,7 @@ const METRIC_COLUMNS: &[FrontierSqlColumn] = &[
 const KPI_COLUMNS: &[FrontierSqlColumn] = &[
     col("kpi_ordinal", "integer", "Supervisor-defined KPI order."),
     col("metric_key", "text", "Metric key."),
+    col("metric_kind", "text", "observed or synthetic."),
     col("metric_dimension", "text", "Scientific metric dimension."),
     col("canonical_unit", "text", "Canonical backing unit."),
     col("display_unit", "text", "Default display unit."),

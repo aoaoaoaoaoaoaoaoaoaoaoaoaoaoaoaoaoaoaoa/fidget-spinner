@@ -238,7 +238,7 @@ pub(super) fn render_frontier_active_sets(projection: &FrontierOpenProjection) -
                                 @for kpi in &projection.kpis {
                                     tr {
                                         td { (kpi.metric.key) }
-                                        td { (kpi.metric.display_unit.as_str()) }
+                                        td { (kpi.metric.display_unit.label()) }
                                         td { (kpi.metric.objective.as_str()) }
                                     }
                                 }
@@ -276,7 +276,7 @@ pub(super) fn render_frontier_active_sets(projection: &FrontierOpenProjection) -
                                                 (metric.key)
                                             }
                                         }
-                                        td { (metric.display_unit.as_str()) }
+                                        td { (metric.display_unit.label()) }
                                         td { (metric.objective.as_str()) }
                                         td { (metric.reference_count) }
                                     }

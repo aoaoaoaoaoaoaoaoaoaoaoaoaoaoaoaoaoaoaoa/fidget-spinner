@@ -10,12 +10,12 @@ use fidget_spinner_core::{
     ExperimentId, ExperimentOutcome, ExperimentRecord, ExperimentStatus, FieldValueType,
     FrontierBrief, FrontierId, FrontierKpiRecord, FrontierRecord, FrontierRoadmapItem,
     FrontierStatus, FrontierVerdict, GitCommitHash, HiddenByDefaultReason, HypothesisId,
-    HypothesisRecord, KpiId, KpiOrdinal, MetricAggregation, MetricDefinition, MetricDimension,
-    MetricId, MetricUnit, MetricValue, NonEmptyText, OptimizationObjective, RegistryLockId,
-    RegistryLockMode, RegistryLockRecord, RegistryName, ReportedMetricValue,
-    RunDimensionDefinition, RunDimensionValue, Slug, TagFamilyId, TagFamilyName, TagFamilyRecord,
-    TagId, TagName, TagNameDisposition, TagNameHistoryRecord, TagRecord, TagRegistrySnapshot,
-    VertexRef,
+    HypothesisRecord, KpiId, KpiOrdinal, MetricAggregation, MetricDefinition, MetricDefinitionKind,
+    MetricDimension, MetricDisplayUnit, MetricId, MetricQuantity, MetricUnit, MetricValue,
+    NonEmptyText, OptimizationObjective, RegistryLockId, RegistryLockMode, RegistryLockRecord,
+    RegistryName, ReportedMetricValue, RunDimensionDefinition, RunDimensionValue, Slug,
+    SyntheticMetricExpression, TagFamilyId, TagFamilyName, TagFamilyRecord, TagId, TagName,
+    TagNameDisposition, TagNameHistoryRecord, TagRecord, TagRegistrySnapshot, VertexRef,
 };
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde::{Deserialize, Serialize};
@@ -34,7 +34,7 @@ pub use query::{
 pub const STORE_DIR_NAME: &str = ".fidget_spinner";
 pub const GIT_DIR_NAME: &str = ".git";
 pub const STATE_DB_NAME: &str = "state.sqlite";
-pub const CURRENT_STORE_FORMAT_VERSION: u32 = 13;
+pub const CURRENT_STORE_FORMAT_VERSION: u32 = 14;
 pub const STATE_HOME_DIR_NAME: &str = "fidget-spinner";
 pub const PROJECT_STATE_DIR_NAME: &str = "projects";
 const LEGACY_PROJECT_CONFIG_NAME: &str = "project.json";
@@ -467,8 +467,8 @@ pub struct ListExperimentsQuery {
 pub struct MetricObservationSummary {
     pub key: NonEmptyText,
     pub value: f64,
-    pub display_unit: MetricUnit,
-    pub dimension: MetricDimension,
+    pub display_unit: MetricDisplayUnit,
+    pub dimension: MetricQuantity,
     pub objective: OptimizationObjective,
 }
 
@@ -511,6 +511,29 @@ pub struct DefineMetricRequest {
     pub aggregation: MetricAggregation,
     pub objective: OptimizationObjective,
     pub description: Option<NonEmptyText>,
+}
+
+#[derive(Clone, Debug)]
+pub struct DefineSyntheticMetricRequest {
+    pub key: NonEmptyText,
+    pub expression: SyntheticMetricExpression,
+    pub aggregation: MetricAggregation,
+    pub objective: OptimizationObjective,
+    pub description: Option<NonEmptyText>,
+}
+
+#[derive(Clone, Debug)]
+struct SyntheticMetricPlan {
+    metric: MetricDefinition,
+    expression: SyntheticMetricExpression,
+    direct_dependencies: Vec<MetricId>,
+}
+
+#[derive(Clone, Debug)]
+struct SyntheticMetricAnalysis {
+    quantity: MetricQuantity,
+    direct_dependencies: Vec<MetricId>,
+    observed_leaves: BTreeSet<MetricId>,
 }
 
 #[derive(Clone, Debug)]
@@ -592,10 +615,11 @@ pub struct MetricKeysQuery {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct MetricKeySummary {
     pub key: NonEmptyText,
-    pub display_unit: MetricUnit,
-    pub dimension: MetricDimension,
+    pub display_unit: MetricDisplayUnit,
+    pub dimension: MetricQuantity,
     pub aggregation: MetricAggregation,
     pub objective: OptimizationObjective,
+    pub kind: MetricDefinitionKind,
     pub default_visibility: DefaultVisibility,
     pub description: Option<NonEmptyText>,
     pub reference_count: u64,
@@ -1283,36 +1307,46 @@ impl ProjectStore {
             return Err(StoreError::InvalidInput(format!(
                 "metric `{}` has dimension `{}`; display unit `{}` belongs to `{}`",
                 request.key,
-                request.dimension.as_str(),
-                display_unit.as_str(),
-                display_unit.dimension().as_str()
+                request.dimension.quantity(),
+                display_unit,
+                display_unit.quantity()
             )));
         }
         let record = MetricDefinition::new(
             request.key,
-            request.dimension,
-            display_unit,
+            request.dimension.quantity(),
+            MetricDisplayUnit::Known(display_unit),
             request.aggregation,
             request.objective,
             request.description,
         );
-        let _ = self.connection.execute(
-            "INSERT INTO metric_definitions (id, key, dimension, display_unit, aggregation, objective, description, revision, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
-            params![
-                record.id.to_string(),
-                record.key.as_str(),
-                record.dimension.as_str(),
-                record.display_unit.as_str(),
-                record.aggregation.as_str(),
-                record.objective.as_str(),
-                record.description.as_ref().map(NonEmptyText::as_str),
-                record.revision,
-                encode_timestamp(record.created_at)?,
-                encode_timestamp(record.updated_at)?,
-            ],
-        )?;
+        insert_metric_definition(&self.connection, &record)?;
         Ok(record)
+    }
+
+    pub fn define_synthetic_metric(
+        &mut self,
+        request: DefineSyntheticMetricRequest,
+    ) -> Result<MetricDefinition, StoreError> {
+        let plan = self.plan_synthetic_metric(request)?;
+        let transaction = self.connection.transaction()?;
+        insert_metric_definition(&transaction, &plan.metric)?;
+        insert_synthetic_metric_definition(
+            &transaction,
+            plan.metric.id,
+            &plan.expression,
+            &plan.direct_dependencies,
+        )?;
+        record_event(
+            &transaction,
+            "metric",
+            &plan.metric.id.to_string(),
+            plan.metric.revision,
+            "synthetic_created",
+            &plan.metric,
+        )?;
+        transaction.commit()?;
+        Ok(plan.metric)
     }
 
     pub fn list_metric_definitions(&self) -> Result<Vec<MetricDefinition>, StoreError> {
@@ -1323,7 +1357,10 @@ impl ProjectStore {
         )?;
         let rows = statement.query_map([], decode_metric_definition_row)?;
         rows.collect::<Result<Vec<_>, _>>()
-            .map_err(StoreError::from)
+            .map_err(StoreError::from)?
+            .into_iter()
+            .map(|metric| self.with_metric_kind(metric))
+            .collect()
     }
 
     pub fn rename_metric(
@@ -1414,6 +1451,13 @@ impl ProjectStore {
                 source.key, target.key
             )));
         }
+        let synthetic_count = self.synthetic_dependency_reference_count(source.id)?;
+        if synthetic_count != 0 {
+            return Err(StoreError::PolicyViolation(format!(
+                "metric `{}` is used by {} synthetic metrics; update those synthetic definitions before merging",
+                source.key, synthetic_count
+            )));
+        }
         let transaction = self.connection.transaction()?;
         rewrite_outcome_metric_key(&transaction, &source.key, &target.key)?;
         merge_experiment_metric_rows(&transaction, source.id, target.id)?;
@@ -1448,10 +1492,11 @@ impl ProjectStore {
             .ok_or_else(|| StoreError::UnknownMetricDefinition(request.metric.clone()))?;
         let reference_count = self.metric_reference_count(None, metric.id)?;
         let kpi_count = self.kpi_reference_count(metric.id)?;
-        if reference_count != 0 || kpi_count != 0 {
+        let synthetic_count = self.synthetic_dependency_reference_count(metric.id)?;
+        if reference_count != 0 || kpi_count != 0 || synthetic_count != 0 {
             return Err(StoreError::PolicyViolation(format!(
-                "metric `{}` is still referenced by {} observations and {} KPI edges; merge or remove those references before deletion",
-                metric.key, reference_count, kpi_count
+                "metric `{}` is still referenced by {} observations, {} KPI edges, and {} synthetic metrics; merge or remove those references before deletion",
+                metric.key, reference_count, kpi_count, synthetic_count
             )));
         }
         let transaction = self.connection.transaction()?;
@@ -1483,6 +1528,9 @@ impl ProjectStore {
             .ok_or_else(|| StoreError::UnknownMetricDefinition(request.metric.clone()))?;
         if self.kpi_by_metric(frontier.id, metric.id)?.is_some() {
             return Err(StoreError::DuplicateKpi(metric.key));
+        }
+        if metric.kind == MetricDefinitionKind::Synthetic {
+            self.assert_synthetic_kpi_leaves_are_kpis(frontier.id, &metric)?;
         }
         let now = OffsetDateTime::now_utc();
         let record = FrontierKpiRecord {
@@ -2695,8 +2743,8 @@ impl ProjectStore {
                                 maybe_value.map(|canonical_value| MetricObservationSummary {
                                     key: definition.key.clone(),
                                     value: definition.display_unit.display_value(canonical_value),
-                                    display_unit: definition.display_unit,
-                                    dimension: definition.dimension,
+                                    display_unit: definition.display_unit.clone(),
+                                    dimension: definition.dimension.clone(),
                                     objective: definition.objective,
                                 })
                             })
@@ -2791,11 +2839,14 @@ impl ProjectStore {
                 decode_metric_definition_row,
             )
             .optional()
-            .map_err(StoreError::from)
+            .map_err(StoreError::from)?
+            .map(|metric| self.with_metric_kind(metric))
+            .transpose()
     }
 
     fn metric_definition_by_id(&self, id: MetricId) -> Result<MetricDefinition, StoreError> {
-        self.connection
+        let metric = self
+            .connection
             .query_row(
                 "SELECT id, key, dimension, display_unit, aggregation, objective, description, revision, created_at, updated_at
                  FROM metric_definitions
@@ -2803,7 +2854,211 @@ impl ProjectStore {
                 params![id.to_string()],
                 decode_metric_definition_row,
             )
+            .map_err(StoreError::from)?;
+        self.with_metric_kind(metric)
+    }
+
+    fn with_metric_kind(
+        &self,
+        mut metric: MetricDefinition,
+    ) -> Result<MetricDefinition, StoreError> {
+        metric.kind = self.metric_definition_kind(metric.id)?;
+        Ok(metric)
+    }
+
+    fn metric_definition_kind(
+        &self,
+        metric_id: MetricId,
+    ) -> Result<MetricDefinitionKind, StoreError> {
+        let exists = self
+            .connection
+            .query_row(
+                "SELECT EXISTS (
+                    SELECT 1 FROM synthetic_metric_definitions WHERE metric_id = ?1
+                )",
+                params![metric_id.to_string()],
+                |row| row.get::<_, bool>(0),
+            )
+            .map_err(StoreError::from)?;
+        Ok(if exists {
+            MetricDefinitionKind::Synthetic
+        } else {
+            MetricDefinitionKind::Observed
+        })
+    }
+
+    fn plan_synthetic_metric(
+        &self,
+        request: DefineSyntheticMetricRequest,
+    ) -> Result<SyntheticMetricPlan, StoreError> {
+        if self.metric_definition(&request.key)?.is_some() {
+            return Err(StoreError::DuplicateMetricDefinition(request.key));
+        }
+        let analysis = self.analyze_synthetic_expression(&request.expression)?;
+        let quantity = analysis.quantity;
+        let display_unit = MetricDisplayUnit::for_quantity(&quantity);
+        let mut metric = MetricDefinition::new(
+            request.key,
+            quantity,
+            display_unit,
+            request.aggregation,
+            request.objective,
+            request.description,
+        );
+        metric.kind = MetricDefinitionKind::Synthetic;
+        Ok(SyntheticMetricPlan {
+            metric,
+            expression: request.expression,
+            direct_dependencies: analysis.direct_dependencies,
+        })
+    }
+
+    fn analyze_synthetic_expression(
+        &self,
+        expression: &SyntheticMetricExpression,
+    ) -> Result<SyntheticMetricAnalysis, StoreError> {
+        match expression {
+            SyntheticMetricExpression::Metric { metric } => {
+                let definition = self
+                    .metric_definition(metric)?
+                    .ok_or_else(|| StoreError::UnknownMetricDefinition(metric.clone()))?;
+                let observed_leaves = if definition.kind == MetricDefinitionKind::Synthetic {
+                    self.synthetic_observed_leaf_ids(definition.id)?
+                } else {
+                    BTreeSet::from([definition.id])
+                };
+                Ok(SyntheticMetricAnalysis {
+                    quantity: definition.dimension,
+                    direct_dependencies: vec![definition.id],
+                    observed_leaves,
+                })
+            }
+            SyntheticMetricExpression::Constant { value, quantity } => {
+                if !value.is_finite() {
+                    return Err(StoreError::InvalidInput(
+                        "synthetic metric constants must be finite".to_owned(),
+                    ));
+                }
+                Ok(SyntheticMetricAnalysis {
+                    quantity: quantity.clone(),
+                    direct_dependencies: Vec::new(),
+                    observed_leaves: BTreeSet::new(),
+                })
+            }
+            SyntheticMetricExpression::Add { left, right }
+            | SyntheticMetricExpression::Sub { left, right } => {
+                let left = self.analyze_synthetic_expression(left)?;
+                let right = self.analyze_synthetic_expression(right)?;
+                if left.quantity != right.quantity {
+                    return Err(StoreError::PolicyViolation(format!(
+                        "synthetic metric addition/subtraction requires matching metric dimensions, got `{}` and `{}`",
+                        left.quantity, right.quantity
+                    )));
+                }
+                Ok(merge_synthetic_analyses(left.quantity.clone(), left, right))
+            }
+            SyntheticMetricExpression::Mul { left, right } => {
+                let left = self.analyze_synthetic_expression(left)?;
+                let right = self.analyze_synthetic_expression(right)?;
+                let quantity = left.quantity.clone() * right.quantity.clone();
+                Ok(merge_synthetic_analyses(quantity, left, right))
+            }
+            SyntheticMetricExpression::Div { left, right } => {
+                let left = self.analyze_synthetic_expression(left)?;
+                let right = self.analyze_synthetic_expression(right)?;
+                let quantity = left.quantity.clone() / right.quantity.clone();
+                Ok(merge_synthetic_analyses(quantity, left, right))
+            }
+            SyntheticMetricExpression::Gmean { terms } => {
+                if terms.is_empty() {
+                    return Err(StoreError::InvalidInput(
+                        "synthetic metric gmean requires at least one term".to_owned(),
+                    ));
+                }
+                let analyses = terms
+                    .iter()
+                    .map(|term| self.analyze_synthetic_expression(term))
+                    .collect::<Result<Vec<_>, _>>()?;
+                let product = analyses
+                    .iter()
+                    .fold(MetricQuantity::dimensionless(), |quantity, analysis| {
+                        quantity * analysis.quantity.clone()
+                    });
+                let quantity = product
+                    .checked_root(u32::try_from(analyses.len()).unwrap_or(u32::MAX))
+                    .ok_or_else(|| {
+                        StoreError::InvalidInput(
+                            "synthetic metric gmean arity is too large".to_owned(),
+                        )
+                    })?;
+                Ok(merge_many_synthetic_analyses(quantity, analyses))
+            }
+        }
+    }
+
+    fn synthetic_metric_expression(
+        &self,
+        metric_id: MetricId,
+    ) -> Result<Option<SyntheticMetricExpression>, StoreError> {
+        self.connection
+            .query_row(
+                "SELECT expression_json
+                 FROM synthetic_metric_definitions
+                 WHERE metric_id = ?1",
+                params![metric_id.to_string()],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?
+            .map(|raw| serde_json::from_str(&raw).map_err(StoreError::from))
+            .transpose()
+    }
+
+    fn synthetic_direct_dependency_ids(
+        &self,
+        metric_id: MetricId,
+    ) -> Result<Vec<MetricId>, StoreError> {
+        let mut statement = self.connection.prepare(
+            "SELECT dependency_metric_id
+             FROM synthetic_metric_dependencies
+             WHERE synthetic_metric_id = ?1
+             ORDER BY ordinal ASC",
+        )?;
+        let rows = statement.query_map(params![metric_id.to_string()], |row| {
+            parse_metric_id_sql(&row.get::<_, String>(0)?)
+        })?;
+        rows.collect::<Result<Vec<_>, _>>()
             .map_err(StoreError::from)
+    }
+
+    fn synthetic_observed_leaf_ids(
+        &self,
+        metric_id: MetricId,
+    ) -> Result<BTreeSet<MetricId>, StoreError> {
+        self.synthetic_observed_leaf_ids_inner(metric_id, &mut Vec::new())
+    }
+
+    fn synthetic_observed_leaf_ids_inner(
+        &self,
+        metric_id: MetricId,
+        stack: &mut Vec<MetricId>,
+    ) -> Result<BTreeSet<MetricId>, StoreError> {
+        if stack.contains(&metric_id) {
+            return Err(StoreError::PolicyViolation(
+                "synthetic metric dependency graph contains a cycle".to_owned(),
+            ));
+        }
+        stack.push(metric_id);
+        let mut leaves = BTreeSet::new();
+        for dependency_id in self.synthetic_direct_dependency_ids(metric_id)? {
+            let dependency = self.metric_definition_by_id(dependency_id)?;
+            if dependency.kind == MetricDefinitionKind::Synthetic {
+                leaves.extend(self.synthetic_observed_leaf_ids_inner(dependency.id, stack)?);
+            } else {
+                let _ = leaves.insert(dependency.id);
+            }
+        }
+        let _ = stack.pop();
+        Ok(leaves)
     }
 
     fn kpi_by_metric(
@@ -3684,6 +3939,7 @@ impl ProjectStore {
             dimension: definition.dimension,
             aggregation: definition.aggregation,
             objective: definition.objective,
+            kind: definition.kind,
             default_visibility: self.default_visibility_for_metric(definition.id)?,
             description: definition.description,
         })
@@ -3921,7 +4177,34 @@ impl ProjectStore {
             .map_err(StoreError::from)
     }
 
+    fn synthetic_dependency_reference_count(&self, metric_id: MetricId) -> Result<u64, StoreError> {
+        self.connection
+            .query_row(
+                "SELECT COUNT(*) FROM synthetic_metric_dependencies WHERE dependency_metric_id = ?1",
+                params![metric_id.to_string()],
+                |row| row.get::<_, u64>(0),
+            )
+            .map_err(StoreError::from)
+    }
+
     fn experiment_metric_canonical_value(
+        &self,
+        experiment_id: ExperimentId,
+        metric_id: MetricId,
+    ) -> Result<Option<f64>, StoreError> {
+        if let Some(value) =
+            self.observed_experiment_metric_canonical_value(experiment_id, metric_id)?
+        {
+            return Ok(Some(value));
+        }
+        let definition = self.metric_definition_by_id(metric_id)?;
+        if definition.kind != MetricDefinitionKind::Synthetic {
+            return Ok(None);
+        }
+        self.evaluate_synthetic_metric(experiment_id, metric_id, &mut Vec::new())
+    }
+
+    fn observed_experiment_metric_canonical_value(
         &self,
         experiment_id: ExperimentId,
         metric_id: MetricId,
@@ -3934,6 +4217,86 @@ impl ProjectStore {
             )
             .optional()
             .map_err(StoreError::from)
+    }
+
+    fn evaluate_synthetic_metric(
+        &self,
+        experiment_id: ExperimentId,
+        metric_id: MetricId,
+        stack: &mut Vec<MetricId>,
+    ) -> Result<Option<f64>, StoreError> {
+        if stack.contains(&metric_id) {
+            return Err(StoreError::PolicyViolation(
+                "synthetic metric dependency graph contains a cycle".to_owned(),
+            ));
+        }
+        let Some(expression) = self.synthetic_metric_expression(metric_id)? else {
+            return Ok(None);
+        };
+        stack.push(metric_id);
+        let value = self.evaluate_synthetic_expression(experiment_id, &expression, stack)?;
+        let _ = stack.pop();
+        Ok(value)
+    }
+
+    fn evaluate_synthetic_expression(
+        &self,
+        experiment_id: ExperimentId,
+        expression: &SyntheticMetricExpression,
+        stack: &mut Vec<MetricId>,
+    ) -> Result<Option<f64>, StoreError> {
+        match expression {
+            SyntheticMetricExpression::Metric { metric } => {
+                let definition = self
+                    .metric_definition(metric)?
+                    .ok_or_else(|| StoreError::UnknownMetricDefinition(metric.clone()))?;
+                if let Some(value) =
+                    self.observed_experiment_metric_canonical_value(experiment_id, definition.id)?
+                {
+                    return Ok(Some(value));
+                }
+                if definition.kind == MetricDefinitionKind::Synthetic {
+                    return self.evaluate_synthetic_metric(experiment_id, definition.id, stack);
+                }
+                Ok(None)
+            }
+            SyntheticMetricExpression::Constant { value, .. } => Ok(Some(*value)),
+            SyntheticMetricExpression::Add { left, right } => Ok(evaluate_binary_synthetic(
+                self.evaluate_synthetic_expression(experiment_id, left, stack)?,
+                self.evaluate_synthetic_expression(experiment_id, right, stack)?,
+                |left, right| Some(left + right),
+            )),
+            SyntheticMetricExpression::Sub { left, right } => Ok(evaluate_binary_synthetic(
+                self.evaluate_synthetic_expression(experiment_id, left, stack)?,
+                self.evaluate_synthetic_expression(experiment_id, right, stack)?,
+                |left, right| Some(left - right),
+            )),
+            SyntheticMetricExpression::Mul { left, right } => Ok(evaluate_binary_synthetic(
+                self.evaluate_synthetic_expression(experiment_id, left, stack)?,
+                self.evaluate_synthetic_expression(experiment_id, right, stack)?,
+                |left, right| Some(left * right),
+            )),
+            SyntheticMetricExpression::Div { left, right } => Ok(evaluate_binary_synthetic(
+                self.evaluate_synthetic_expression(experiment_id, left, stack)?,
+                self.evaluate_synthetic_expression(experiment_id, right, stack)?,
+                |left, right| (right != 0.0).then_some(left / right),
+            )),
+            SyntheticMetricExpression::Gmean { terms } => {
+                let mut log_sum = 0.0;
+                for term in terms {
+                    let Some(value) =
+                        self.evaluate_synthetic_expression(experiment_id, term, stack)?
+                    else {
+                        return Ok(None);
+                    };
+                    if value <= 0.0 || !value.is_finite() {
+                        return Ok(None);
+                    }
+                    log_sum += value.ln();
+                }
+                Ok(Some((log_sum / terms.len() as f64).exp()))
+            }
+        }
     }
 
     fn materialize_outcome(
@@ -3996,22 +4359,28 @@ impl ProjectStore {
         let definition = self
             .metric_definition(&metric.key)?
             .ok_or_else(|| StoreError::UnknownMetricDefinition(metric.key.clone()))?;
+        if definition.kind == MetricDefinitionKind::Synthetic {
+            return Err(StoreError::PolicyViolation(format!(
+                "metric `{}` is synthetic; report its observed leaf metrics instead",
+                metric.key
+            )));
+        }
         let unit = match metric.unit {
-            Some(unit) if definition.dimension.supports(unit) => unit,
+            Some(unit) if definition.dimension.supports_unit(unit) => unit,
             Some(unit) => {
                 return Err(StoreError::InvalidInput(format!(
                     "metric `{}` has dimension `{}`; unit `{}` belongs to `{}`",
                     metric.key,
-                    definition.dimension.as_str(),
+                    definition.dimension,
                     unit.as_str(),
-                    unit.dimension().as_str()
+                    unit.quantity()
                 )));
             }
-            None => definition.dimension.implicit_unit().ok_or_else(|| {
+            None => definition.dimension.implicit_report_unit().ok_or_else(|| {
                 StoreError::InvalidInput(format!(
                     "metric `{}` has dimension `{}`; report a unit: {}",
                     metric.key,
-                    definition.dimension.as_str(),
+                    definition.dimension,
                     definition.dimension.unit_catalog()
                 ))
             })?,
@@ -4134,12 +4503,31 @@ impl ProjectStore {
             .collect::<BTreeSet<_>>();
         let kpis = self.require_frontier_kpis(frontier_id)?;
         for kpi in kpis {
-            if reported.contains(&kpi.metric.key) {
+            let required = if kpi.metric.kind == MetricDefinitionKind::Synthetic {
+                self.synthetic_observed_leaf_ids(
+                    self.metric_definition(&kpi.metric.key)?
+                        .ok_or_else(|| StoreError::UnknownMetricDefinition(kpi.metric.key.clone()))?
+                        .id,
+                )?
+                .into_iter()
+                .map(|metric_id| {
+                    self.metric_definition_by_id(metric_id)
+                        .map(|metric| metric.key)
+                })
+                .collect::<Result<BTreeSet<_>, _>>()?
+            } else {
+                BTreeSet::from([kpi.metric.key.clone()])
+            };
+            if required.iter().all(|metric| reported.contains(metric)) {
                 continue;
             }
             return Err(StoreError::MissingMandatoryKpi {
                 kpi: kpi.metric.key.clone(),
-                metrics: kpi.metric.key.to_string(),
+                metrics: required
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join(", "),
             });
         }
         Ok(())
@@ -4147,6 +4535,34 @@ impl ProjectStore {
 
     fn assert_frontier_has_kpis(&self, frontier_id: FrontierId) -> Result<(), StoreError> {
         self.require_frontier_kpis(frontier_id).map(|_| ())
+    }
+
+    fn assert_synthetic_kpi_leaves_are_kpis(
+        &self,
+        frontier_id: FrontierId,
+        metric: &MetricDefinition,
+    ) -> Result<(), StoreError> {
+        let leaves = self.synthetic_observed_leaf_ids(metric.id)?;
+        if leaves.is_empty() {
+            return Err(StoreError::PolicyViolation(format!(
+                "synthetic metric `{}` cannot be a KPI because it has no observed metric leaves",
+                metric.key
+            )));
+        }
+        let mut missing = Vec::new();
+        for metric_id in leaves {
+            if self.kpi_by_metric(frontier_id, metric_id)?.is_none() {
+                missing.push(self.metric_definition_by_id(metric_id)?.key.to_string());
+            }
+        }
+        if missing.is_empty() {
+            return Ok(());
+        }
+        Err(StoreError::PolicyViolation(format!(
+            "synthetic metric `{}` can become a KPI only after its observed leaves are KPIs on this frontier; missing: {}",
+            metric.key,
+            missing.join(", ")
+        )))
     }
 
     fn require_frontier_kpis(
@@ -4584,6 +5000,18 @@ fn install_schema(connection: &Connection) -> Result<(), StoreError> {
             updated_at TEXT NOT NULL
         );
 
+        CREATE TABLE IF NOT EXISTS synthetic_metric_definitions (
+            metric_id TEXT PRIMARY KEY NOT NULL REFERENCES metric_definitions(id) ON DELETE CASCADE,
+            expression_json TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS synthetic_metric_dependencies (
+            synthetic_metric_id TEXT NOT NULL REFERENCES metric_definitions(id) ON DELETE CASCADE,
+            dependency_metric_id TEXT NOT NULL REFERENCES metric_definitions(id) ON DELETE RESTRICT,
+            ordinal INTEGER NOT NULL,
+            PRIMARY KEY (synthetic_metric_id, dependency_metric_id)
+        );
+
         CREATE TABLE IF NOT EXISTS metric_name_history (
             name TEXT PRIMARY KEY NOT NULL,
             target_metric_id TEXT REFERENCES metric_definitions(id) ON DELETE SET NULL,
@@ -4719,6 +5147,10 @@ fn migrate_store_to_current(
     if version == 12 {
         migrate_store_v12_to_v13(connection)?;
         version = 13;
+    }
+    if version == 13 {
+        migrate_store_v13_to_v14(connection)?;
+        version = 14;
     }
     if version == CURRENT_STORE_FORMAT_VERSION {
         return Ok(());
@@ -4981,6 +5413,36 @@ fn migrate_store_v12_to_v13(connection: &mut Connection) -> Result<(), StoreErro
     Ok(())
 }
 
+fn migrate_store_v13_to_v14(connection: &mut Connection) -> Result<(), StoreError> {
+    let transaction = connection.transaction()?;
+    transaction.execute_batch(
+        "
+        UPDATE metric_definitions
+        SET dimension = 'dimensionless'
+        WHERE dimension IN ('ratio', 'scalar');
+
+        UPDATE metric_definitions
+        SET display_unit = 'dimensionless'
+        WHERE display_unit IN ('ratio', 'scalar');
+
+        CREATE TABLE IF NOT EXISTS synthetic_metric_definitions (
+            metric_id TEXT PRIMARY KEY NOT NULL REFERENCES metric_definitions(id) ON DELETE CASCADE,
+            expression_json TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS synthetic_metric_dependencies (
+            synthetic_metric_id TEXT NOT NULL REFERENCES metric_definitions(id) ON DELETE CASCADE,
+            dependency_metric_id TEXT NOT NULL REFERENCES metric_definitions(id) ON DELETE RESTRICT,
+            ordinal INTEGER NOT NULL,
+            PRIMARY KEY (synthetic_metric_id, dependency_metric_id)
+        );
+        ",
+    )?;
+    transaction.commit()?;
+    connection.pragma_update(None, "user_version", 14_i64)?;
+    Ok(())
+}
+
 fn read_legacy_project_metadata(state_root: &Utf8Path) -> Result<ProjectConfig, StoreError> {
     let path = state_root.join(LEGACY_PROJECT_CONFIG_NAME);
     match read_json_file(&path) {
@@ -5016,13 +5478,60 @@ fn table_has_column(
     Ok(columns.iter().any(|candidate| candidate == column))
 }
 
+fn merge_synthetic_analyses(
+    quantity: MetricQuantity,
+    left: SyntheticMetricAnalysis,
+    right: SyntheticMetricAnalysis,
+) -> SyntheticMetricAnalysis {
+    merge_many_synthetic_analyses(quantity, vec![left, right])
+}
+
+fn merge_many_synthetic_analyses(
+    quantity: MetricQuantity,
+    analyses: Vec<SyntheticMetricAnalysis>,
+) -> SyntheticMetricAnalysis {
+    let mut direct_dependencies = Vec::new();
+    let mut observed_leaves = BTreeSet::new();
+    for analysis in analyses {
+        absorb_metric_ids(&mut direct_dependencies, analysis.direct_dependencies);
+        observed_leaves.extend(analysis.observed_leaves);
+    }
+    SyntheticMetricAnalysis {
+        quantity,
+        direct_dependencies,
+        observed_leaves,
+    }
+}
+
+fn absorb_metric_ids(target: &mut Vec<MetricId>, source: impl IntoIterator<Item = MetricId>) {
+    for metric_id in source {
+        if !target.contains(&metric_id) {
+            target.push(metric_id);
+        }
+    }
+}
+
+fn evaluate_binary_synthetic(
+    left: Option<f64>,
+    right: Option<f64>,
+    combine: impl FnOnce(f64, f64) -> Option<f64>,
+) -> Option<f64> {
+    let (Some(left), Some(right)) = (left, right) else {
+        return None;
+    };
+    combine(left, right).filter(|value| value.is_finite())
+}
+
 fn inject_metric_units_into_legacy_outcomes(
     transaction: &Transaction<'_>,
     definitions: &[MetricDefinition],
 ) -> Result<(), StoreError> {
     let unit_by_key = definitions
         .iter()
-        .map(|definition| (definition.key.to_string(), definition.display_unit))
+        .filter_map(|definition| match definition.display_unit {
+            MetricDisplayUnit::Known(unit) => Some((definition.key.to_string(), unit)),
+            MetricDisplayUnit::Canonical(_) => None,
+        })
         .collect::<BTreeMap<_, _>>();
     let rows = {
         let mut statement = transaction
@@ -5096,7 +5605,7 @@ fn normalize_legacy_time_metric_keys(
         .collect::<BTreeMap<_, _>>();
     let originals = definitions.clone();
     for definition in originals {
-        if definition.dimension != MetricDimension::Time {
+        if definition.dimension != MetricQuantity::time() {
             continue;
         }
         let Some(normalized_key) = normalize_legacy_time_metric_key(definition.key.as_str()) else {
@@ -5836,6 +6345,58 @@ fn replace_experiment_metrics(
     Ok(())
 }
 
+fn insert_metric_definition(
+    connection: &Connection,
+    metric: &MetricDefinition,
+) -> Result<(), StoreError> {
+    let _ = connection.execute(
+        "INSERT INTO metric_definitions (id, key, dimension, display_unit, aggregation, objective, description, revision, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+        params![
+            metric.id.to_string(),
+            metric.key.as_str(),
+            metric.dimension.to_string(),
+            metric.display_unit.label(),
+            metric.aggregation.as_str(),
+            metric.objective.as_str(),
+            metric.description.as_ref().map(NonEmptyText::as_str),
+            metric.revision,
+            encode_timestamp(metric.created_at)?,
+            encode_timestamp(metric.updated_at)?,
+        ],
+    )?;
+    Ok(())
+}
+
+fn insert_synthetic_metric_definition(
+    connection: &Connection,
+    synthetic_metric_id: MetricId,
+    expression: &SyntheticMetricExpression,
+    dependencies: &[MetricId],
+) -> Result<(), StoreError> {
+    let expression_json = serde_json::to_string(expression)?;
+    let _ = connection.execute(
+        "INSERT INTO synthetic_metric_definitions (metric_id, expression_json)
+         VALUES (?1, ?2)",
+        params![synthetic_metric_id.to_string(), expression_json],
+    )?;
+    for (ordinal, dependency) in dependencies.iter().enumerate() {
+        let ordinal = i64::try_from(ordinal).map_err(|error| {
+            StoreError::InvalidInput(format!("too many synthetic metric dependencies: {error}"))
+        })?;
+        let _ = connection.execute(
+            "INSERT INTO synthetic_metric_dependencies (synthetic_metric_id, dependency_metric_id, ordinal)
+             VALUES (?1, ?2, ?3)",
+            params![
+                synthetic_metric_id.to_string(),
+                dependency.to_string(),
+                ordinal,
+            ],
+        )?;
+    }
+    Ok(())
+}
+
 fn update_metric_definition_row(
     transaction: &Transaction<'_>,
     metric: &MetricDefinition,
@@ -5854,8 +6415,8 @@ fn update_metric_definition_row(
         params![
             metric.id.to_string(),
             metric.key.as_str(),
-            metric.dimension.as_str(),
-            metric.display_unit.as_str(),
+            metric.dimension.to_string(),
+            metric.display_unit.label(),
             metric.aggregation.as_str(),
             metric.objective.as_str(),
             metric.description.as_ref().map(NonEmptyText::as_str),
@@ -6261,11 +6822,12 @@ fn decode_metric_definition_row(
     Ok(MetricDefinition {
         id: parse_metric_id_sql(&row.get::<_, String>(0)?)?,
         key: parse_non_empty_text(&row.get::<_, String>(1)?)?,
-        dimension: parse_metric_dimension(&row.get::<_, String>(2)?)?,
-        display_unit: parse_metric_unit(&row.get::<_, String>(3)?)?,
+        dimension: parse_metric_quantity_sql(&row.get::<_, String>(2)?)?,
+        display_unit: parse_metric_display_unit(&row.get::<_, String>(3)?)?,
         aggregation: parse_metric_aggregation(&row.get::<_, String>(4)?)?,
         objective: parse_optimization_objective(&row.get::<_, String>(5)?)?,
         description: parse_optional_non_empty_text(row.get::<_, Option<String>>(6)?)?,
+        kind: MetricDefinitionKind::Observed,
         revision: row.get::<_, u64>(7)?,
         created_at: parse_timestamp_sql(&row.get::<_, String>(8)?)?,
         updated_at: parse_timestamp_sql(&row.get::<_, String>(9)?)?,
@@ -6497,20 +7059,22 @@ fn parse_metric_unit(raw: &str) -> Result<MetricUnit, rusqlite::Error> {
     })
 }
 
-fn parse_metric_dimension(raw: &str) -> Result<MetricDimension, rusqlite::Error> {
-    match raw {
-        "time" => Ok(MetricDimension::Time),
-        "count" => Ok(MetricDimension::Count),
-        "bytes" => Ok(MetricDimension::Bytes),
-        "ratio" => Ok(MetricDimension::Ratio),
-        "dimensionless" => Ok(MetricDimension::Dimensionless),
-        _ => Err(to_sql_conversion_error(StoreError::Json(
-            serde_json::Error::io(io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("invalid metric dimension `{raw}`"),
-            )),
-        ))),
-    }
+fn parse_metric_display_unit(raw: &str) -> Result<MetricDisplayUnit, rusqlite::Error> {
+    MetricDisplayUnit::parse(raw).map_err(|error| {
+        to_sql_conversion_error(StoreError::Json(serde_json::Error::io(io::Error::new(
+            io::ErrorKind::InvalidData,
+            error.to_string(),
+        ))))
+    })
+}
+
+fn parse_metric_quantity_sql(raw: &str) -> Result<MetricQuantity, rusqlite::Error> {
+    MetricQuantity::parse(raw).map_err(|error| {
+        to_sql_conversion_error(StoreError::Json(serde_json::Error::io(io::Error::new(
+            io::ErrorKind::InvalidData,
+            error.to_string(),
+        ))))
+    })
 }
 
 fn parse_metric_aggregation(raw: &str) -> Result<MetricAggregation, rusqlite::Error> {

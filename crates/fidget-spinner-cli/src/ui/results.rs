@@ -7,12 +7,12 @@ use super::{
     BLACK, BTreeMap, BTreeSet, ChartBuilder, Circle, Color, Cross, DashedLineSeries,
     DimensionFacet, ExperimentStatus, ExperimentSummary, FrontierMetricSeries,
     FrontierOpenProjection, FrontierPageQuery, FrontierTab, FrontierVerdict,
-    HypothesisCurrentState, IntoDrawingArea, IntoFont, IntoLogRange, KnownMetricUnit, LineSeries,
+    HypothesisCurrentState, IntoDrawingArea, IntoFont, IntoLogRange, LineSeries,
     ListExperimentsQuery, ListHypothesesQuery, METRIC_TABLE_TITLE_MIN_BUDGET_CH,
-    METRIC_TABLE_TITLE_PERCENT_BUDGET, Markup, MetricKeysQuery, MetricScope, MetricUnit,
-    NonEmptyText, PathElement, PreEscaped, RGBColor, SVGBackend, SeriesLabelPosition, ShapeStyle,
-    Slug, StoreError, experiment_href, format_metric_value, format_timestamp, frontier_href,
-    frontier_tab_href_with_query, html, hypothesis_href, limit_items,
+    METRIC_TABLE_TITLE_PERCENT_BUDGET, Markup, MetricDisplayUnit, MetricKeysQuery, MetricQuantity,
+    MetricScope, NonEmptyText, PathElement, PreEscaped, RGBColor, SVGBackend, SeriesLabelPosition,
+    ShapeStyle, Slug, StoreError, experiment_href, format_metric_value, format_timestamp,
+    frontier_href, frontier_tab_href_with_query, html, hypothesis_href, limit_items,
     project_metrics_frontier_href, render_dimension_value, status_chip_classes, verdict_class,
 };
 use plotters::coord::ranged1d::{LightPoints, Ranged};
@@ -209,8 +209,7 @@ pub(super) fn resolve_selected_metric_keys(
         if !seen.insert(metric.key.clone()) {
             continue;
         }
-        let metric_family = MetricUnitFamily::from_unit(&metric.display_unit);
-        if !families.admit(metric_family) {
+        if !families.admit(metric.dimension.clone()) {
             continue;
         }
         selected.push(metric.clone());
@@ -643,11 +642,11 @@ fn render_metric_picker_option(
     let selected = selected_metrics
         .iter()
         .any(|selected_metric| selected_metric.key == metric.key);
-    let compatible = selected_families.supports(&metric.display_unit);
+    let compatible = selected_families.supports(&metric.dimension);
     let detail = format!(
         "{} · {}",
         metric.objective.as_str(),
-        metric.display_unit.as_str()
+        metric.display_unit.label()
     );
     if compatible || selected {
         html! {
@@ -790,7 +789,7 @@ fn render_metric_chart_svg(
                     .y_labels(METRIC_CHART_Y_LABEL_COUNT)
                     .max_light_lines(METRIC_CHART_LIGHT_LINE_LIMIT)
                     .x_desc("close order")
-                    .y_desc(axes.primary.unit.as_str())
+                    .y_desc(axes.primary.display_unit.label())
                     .x_label_formatter(&|value| format!("{}", value + 1))
                     .draw()
                     .is_err()
@@ -826,7 +825,7 @@ fn render_metric_chart_svg(
                     .y_labels(METRIC_CHART_Y_LABEL_COUNT)
                     .max_light_lines(METRIC_CHART_LIGHT_LINE_LIMIT)
                     .x_desc("close order")
-                    .y_desc(axes.primary.unit.as_str())
+                    .y_desc(axes.primary.display_unit.label())
                     .x_label_formatter(&|value| format!("{}", value + 1))
                     .draw()
                     .is_err()
@@ -858,7 +857,7 @@ fn render_metric_chart_svg(
                         .axis_style(RGBColor(103, 86, 63))
                         .label_style(("Iosevka Web", 12).into_font().color(&RGBColor(79, 71, 58)))
                         .y_labels(METRIC_CHART_Y_LABEL_COUNT)
-                        .y_desc(secondary_axis.unit.as_str())
+                        .y_desc(secondary_axis.display_unit.label())
                         .draw()
                         .is_err()
                     {
@@ -1095,15 +1094,9 @@ fn render_metric_table_title_link(title: &NonEmptyText, href: &str) -> Markup {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-enum MetricUnitFamily {
-    Time,
-    Exact(MetricUnit),
-}
-
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 struct MetricAxisFamilies {
-    families: Vec<MetricUnitFamily>,
+    families: Vec<MetricQuantity>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1118,45 +1111,16 @@ struct MetricAxisSet {
     secondary: Option<MetricChartAxis>,
 }
 
-impl MetricUnitFamily {
-    fn from_unit(unit: &MetricUnit) -> Self {
-        match unit.known_kind() {
-            Some(
-                KnownMetricUnit::Nanoseconds
-                | KnownMetricUnit::Microseconds
-                | KnownMetricUnit::Milliseconds
-                | KnownMetricUnit::Seconds,
-            ) => Self::Time,
-            _ => Self::Exact(*unit),
-        }
-    }
-
-    fn supports(&self, unit: &MetricUnit) -> bool {
-        match self {
-            Self::Time => matches!(
-                unit.known_kind(),
-                Some(
-                    KnownMetricUnit::Nanoseconds
-                        | KnownMetricUnit::Microseconds
-                        | KnownMetricUnit::Milliseconds
-                        | KnownMetricUnit::Seconds
-                )
-            ),
-            Self::Exact(expected) => expected == unit,
-        }
-    }
-}
-
 impl MetricAxisFamilies {
     fn from_metrics(metrics: &[fidget_spinner_store_sqlite::MetricKeySummary]) -> Self {
         let mut families = Self::default();
         for metric in metrics {
-            let _ = families.admit(MetricUnitFamily::from_unit(&metric.display_unit));
+            let _ = families.admit(metric.dimension.clone());
         }
         families
     }
 
-    fn admit(&mut self, family: MetricUnitFamily) -> bool {
+    fn admit(&mut self, family: MetricQuantity) -> bool {
         if self.families.iter().any(|active| active == &family) {
             return true;
         }
@@ -1167,31 +1131,30 @@ impl MetricAxisFamilies {
         true
     }
 
-    fn supports(&self, unit: &MetricUnit) -> bool {
-        self.families.len() < 2 || self.families.iter().any(|family| family.supports(unit))
+    fn supports(&self, quantity: &MetricQuantity) -> bool {
+        self.families.len() < 2 || self.families.iter().any(|family| family == quantity)
     }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct MetricChartAxis {
-    unit: MetricUnit,
-    family: MetricUnitFamily,
+    display_unit: MetricDisplayUnit,
+    quantity: MetricQuantity,
 }
 
 impl MetricChartAxis {
     pub(super) fn from_metric(metric: &fidget_spinner_store_sqlite::MetricKeySummary) -> Self {
         Self {
-            family: MetricUnitFamily::from_unit(&metric.display_unit),
-            unit: metric.display_unit,
+            display_unit: metric.display_unit.clone(),
+            quantity: metric.dimension.clone(),
         }
     }
 
-    pub(super) fn normalize_value(&self, value: f64, unit: &MetricUnit) -> Option<f64> {
-        match &self.family {
-            MetricUnitFamily::Time => convert_time_metric_value(value, unit, &self.unit),
-            MetricUnitFamily::Exact(expected) if expected == unit => Some(value),
-            MetricUnitFamily::Exact(_) => None,
+    pub(super) fn normalize_value(&self, value: f64, unit: &MetricDisplayUnit) -> Option<f64> {
+        if unit.quantity() != self.quantity {
+            return None;
         }
+        Some(self.display_unit.display_value(unit.canonical_value(value)))
     }
 }
 
@@ -1201,7 +1164,7 @@ impl MetricAxisSet {
         let secondary = series
             .iter()
             .map(|series| MetricChartAxis::from_metric(series.metric))
-            .find(|axis| axis.family != primary.family);
+            .find(|axis| axis.quantity != primary.quantity);
         Some(Self { primary, secondary })
     }
 
@@ -1209,32 +1172,14 @@ impl MetricAxisSet {
         &self,
         metric: &fidget_spinner_store_sqlite::MetricKeySummary,
     ) -> Option<(MetricAxisSide, &MetricChartAxis)> {
-        let family = MetricUnitFamily::from_unit(&metric.display_unit);
-        if family == self.primary.family {
+        if metric.dimension == self.primary.quantity {
             return Some((MetricAxisSide::Primary, &self.primary));
         }
         self.secondary
             .as_ref()
-            .filter(|axis| axis.family == family)
+            .filter(|axis| axis.quantity == metric.dimension)
             .map(|axis| (MetricAxisSide::Secondary, axis))
     }
-}
-
-fn convert_time_metric_value(value: f64, from: &MetricUnit, to: &MetricUnit) -> Option<f64> {
-    let nanoseconds = match from.known_kind()? {
-        KnownMetricUnit::Nanoseconds => value,
-        KnownMetricUnit::Microseconds => value * 1_000.0,
-        KnownMetricUnit::Milliseconds => value * 1_000_000.0,
-        KnownMetricUnit::Seconds => value * 1_000_000_000.0,
-        _ => return None,
-    };
-    Some(match to.known_kind()? {
-        KnownMetricUnit::Nanoseconds => nanoseconds,
-        KnownMetricUnit::Microseconds => nanoseconds / 1_000.0,
-        KnownMetricUnit::Milliseconds => nanoseconds / 1_000_000.0,
-        KnownMetricUnit::Seconds => nanoseconds / 1_000_000_000.0,
-        _ => return None,
-    })
 }
 
 fn collect_dimension_facets_from_series(series: &[FrontierMetricSeries]) -> Vec<DimensionFacet> {

@@ -1,7 +1,7 @@
 use axum as _;
 use clap as _;
 use dirs as _;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::{self, BufRead, BufReader, Write};
 use std::path::PathBuf;
@@ -10,15 +10,19 @@ use std::sync::OnceLock;
 
 use camino::Utf8PathBuf;
 use fidget_spinner_core::{
-    FrontierStatus, MetricUnit, NonEmptyText, OptimizationObjective, RegistryLockMode,
-    RegistryName, Slug, TagFamilyName, TagName,
+    CommandRecipe, ExecutionBackend, FieldValueType, FrontierStatus, FrontierVerdict,
+    MetricAggregation, MetricDimension, MetricUnit, NonEmptyText, OptimizationObjective,
+    RegistryLockMode, RegistryName, ReportedMetricValue, RunDimensionValue, Slug,
+    SyntheticMetricExpression, TagFamilyName, TagName,
 };
 use fidget_spinner_store_sqlite::{
-    AssignTagFamilyRequest, CreateFrontierRequest, CreateHypothesisRequest, CreateKpiRequest,
-    CreateTagFamilyRequest, DefineMetricRequest, DeleteKpiRequest, DeleteTagRequest, KpiListQuery,
-    ListExperimentsQuery, ListFrontiersQuery, MergeTagRequest, MetricKeysQuery, MetricScope,
-    MoveKpiDirection, MoveKpiRequest, OpenExperimentRequest, ProjectStore, RenameTagRequest,
-    SetFrontierRegistryLockRequest, SetRegistryLockRequest, UpdateFrontierRequest,
+    AssignTagFamilyRequest, CloseExperimentRequest, CreateFrontierRequest, CreateHypothesisRequest,
+    CreateKpiRequest, CreateTagFamilyRequest, DefineMetricRequest, DefineRunDimensionRequest,
+    DefineSyntheticMetricRequest, DeleteKpiRequest, DeleteTagRequest, FrontierSqlQuery,
+    KpiListQuery, ListExperimentsQuery, ListFrontiersQuery, MergeTagRequest, MetricBestQuery,
+    MetricKeysQuery, MetricScope, MoveKpiDirection, MoveKpiRequest, OpenExperimentRequest,
+    ProjectStore, RenameTagRequest, SetFrontierRegistryLockRequest, SetRegistryLockRequest,
+    UpdateFrontierRequest,
 };
 use libmcp as _;
 use libmcp_testkit::assert_no_opaque_ids;
@@ -651,9 +655,9 @@ fn kpi_creation_lock_rejects_mcp_only() -> TestResult {
             let _ = must(
                 store.define_metric(DefineMetricRequest {
                     key: must(NonEmptyText::new(key), "metric key")?,
-                    dimension: fidget_spinner_core::MetricDimension::Count,
+                    dimension: MetricDimension::Count,
                     display_unit: Some(must(MetricUnit::new("count"), "metric unit")?),
-                    aggregation: fidget_spinner_core::MetricAggregation::Point,
+                    aggregation: MetricAggregation::Point,
                     objective: OptimizationObjective::Maximize,
                     description: None,
                 }),
@@ -714,9 +718,9 @@ fn kpi_order_is_canonical_metric_scope_order() -> TestResult {
         let _ = must(
             store.define_metric(DefineMetricRequest {
                 key: must(NonEmptyText::new(key), "metric key")?,
-                dimension: fidget_spinner_core::MetricDimension::Count,
+                dimension: MetricDimension::Count,
                 display_unit: Some(must(MetricUnit::new("count"), "metric unit")?),
-                aggregation: fidget_spinner_core::MetricAggregation::Point,
+                aggregation: MetricAggregation::Point,
                 objective: OptimizationObjective::Maximize,
                 description: None,
             }),
@@ -1998,6 +2002,218 @@ fn experiment_close_drives_metric_best_and_analysis() -> TestResult {
 }
 
 #[test]
+fn synthetic_kpi_ranks_from_reported_observed_leaves() -> TestResult {
+    let project_root = temp_project_root("synthetic_kpi")?;
+    init_project(&project_root)?;
+    let _closing_commit = seed_clean_git_repository(&project_root)?;
+    let mut store = must(ProjectStore::open(&project_root), "open project store")?;
+
+    let _ = must(
+        store.define_metric(DefineMetricRequest {
+            key: must(NonEmptyText::new("work_done"), "metric key")?,
+            dimension: MetricDimension::Count,
+            display_unit: Some(MetricUnit::Count),
+            aggregation: MetricAggregation::Point,
+            objective: OptimizationObjective::Maximize,
+            description: None,
+        }),
+        "define work metric",
+    )?;
+    let _ = must(
+        store.define_metric(DefineMetricRequest {
+            key: must(NonEmptyText::new("elapsed_time"), "metric key")?,
+            dimension: MetricDimension::Time,
+            display_unit: Some(MetricUnit::Milliseconds),
+            aggregation: MetricAggregation::Point,
+            objective: OptimizationObjective::Minimize,
+            description: None,
+        }),
+        "define elapsed metric",
+    )?;
+    let _ = must(
+        store.define_synthetic_metric(DefineSyntheticMetricRequest {
+            key: must(NonEmptyText::new("work_rate"), "synthetic key")?,
+            expression: SyntheticMetricExpression::Div {
+                left: Box::new(SyntheticMetricExpression::metric(must(
+                    NonEmptyText::new("work_done"),
+                    "left operand",
+                )?)),
+                right: Box::new(SyntheticMetricExpression::metric(must(
+                    NonEmptyText::new("elapsed_time"),
+                    "right operand",
+                )?)),
+            },
+            aggregation: MetricAggregation::Point,
+            objective: OptimizationObjective::Maximize,
+            description: None,
+        }),
+        "define synthetic metric",
+    )?;
+    let _ = must(
+        store.define_run_dimension(DefineRunDimensionRequest {
+            key: must(NonEmptyText::new("instance"), "condition key")?,
+            value_type: FieldValueType::String,
+            description: None,
+        }),
+        "define condition",
+    )?;
+    let _ = must(
+        store.create_frontier(CreateFrontierRequest {
+            label: must(
+                NonEmptyText::new("Synthetic KPI Frontier"),
+                "frontier label",
+            )?,
+            objective: must(
+                NonEmptyText::new("Verify synthetic KPI leaf enforcement"),
+                "frontier objective",
+            )?,
+            slug: Some(must(Slug::new("synthetic-kpi-frontier"), "frontier slug")?),
+        }),
+        "create frontier",
+    )?;
+
+    let premature = store.create_kpi(CreateKpiRequest {
+        frontier: "synthetic-kpi-frontier".to_owned(),
+        metric: must(NonEmptyText::new("work_rate"), "synthetic kpi metric")?,
+    });
+    let premature_message = match premature {
+        Ok(_) => {
+            return Err(io::Error::other("synthetic KPI without KPI leaves should fail").into());
+        }
+        Err(error) => error.to_string(),
+    };
+    assert!(
+        premature_message.contains("missing: work_done, elapsed_time"),
+        "{premature_message}"
+    );
+
+    for metric in ["work_done", "elapsed_time", "work_rate"] {
+        let _ = must(
+            store.create_kpi(CreateKpiRequest {
+                frontier: "synthetic-kpi-frontier".to_owned(),
+                metric: must(NonEmptyText::new(metric), "kpi metric")?,
+            }),
+            format!("create KPI {metric}"),
+        )?;
+    }
+    let hypothesis = must(
+        store.create_hypothesis_from_mcp(CreateHypothesisRequest {
+            frontier: "synthetic-kpi-frontier".to_owned(),
+            slug: Some(must(Slug::new("synthetic-rate"), "hypothesis slug")?),
+            title: must(NonEmptyText::new("Synthetic rate moves"), "hypothesis title")?,
+            summary: must(
+                NonEmptyText::new("A derived rate should rank from observed leaves."),
+                "hypothesis summary",
+            )?,
+            body: must(
+                NonEmptyText::new(
+                    "Derived work rate is the KPI of interest, but individual work and elapsed-time leaves are the only reportable experiment measurements.",
+                ),
+                "hypothesis body",
+            )?,
+            tags: BTreeSet::new(),
+            parents: Vec::new(),
+        }),
+        "create hypothesis",
+    )?;
+    let _ = must(
+        store.open_experiment_from_mcp(OpenExperimentRequest {
+            hypothesis: hypothesis.slug.to_string(),
+            slug: Some(must(Slug::new("rate-baseline"), "experiment slug")?),
+            title: must(NonEmptyText::new("Rate baseline"), "experiment title")?,
+            summary: None,
+            tags: BTreeSet::new(),
+            parents: Vec::new(),
+        }),
+        "open experiment",
+    )?;
+    let _ = must(
+        store.close_experiment_from_mcp(CloseExperimentRequest {
+            experiment: "rate-baseline".to_owned(),
+            expected_revision: None,
+            backend: ExecutionBackend::Manual,
+            command: must(
+                CommandRecipe::new(
+                    None,
+                    vec![must(NonEmptyText::new("rate-baseline"), "command")?],
+                    BTreeMap::new(),
+                ),
+                "command recipe",
+            )?,
+            dimensions: BTreeMap::from([(
+                must(NonEmptyText::new("instance"), "condition key")?,
+                RunDimensionValue::String(must(NonEmptyText::new("toy"), "condition value")?),
+            )]),
+            primary_metric: ReportedMetricValue {
+                key: must(NonEmptyText::new("work_done"), "primary metric")?,
+                value: 240.0,
+                unit: None,
+            },
+            supporting_metrics: vec![ReportedMetricValue {
+                key: must(NonEmptyText::new("elapsed_time"), "supporting metric")?,
+                value: 120.0,
+                unit: Some(MetricUnit::Milliseconds),
+            }],
+            verdict: FrontierVerdict::Accepted,
+            rationale: must(
+                NonEmptyText::new("Observed leaves imply a derived rate in canonical units."),
+                "rationale",
+            )?,
+            analysis: None,
+        }),
+        "close experiment",
+    )?;
+
+    let best = must(
+        store.metric_best(MetricBestQuery {
+            frontier: Some("synthetic-kpi-frontier".to_owned()),
+            hypothesis: None,
+            key: must(NonEmptyText::new("work_rate"), "metric best key")?,
+            dimensions: BTreeMap::new(),
+            include_rejected: true,
+            limit: None,
+            order: None,
+        }),
+        "rank synthetic metric",
+    )?;
+    assert_eq!(best.len(), 1);
+    assert_eq!(best[0].experiment.slug.as_str(), "rate-baseline");
+    assert_eq!(best[0].value, 240.0 / 120_000_000.0);
+
+    let sql = must(
+        store.frontier_query_sql(FrontierSqlQuery {
+            frontier: "synthetic-kpi-frontier".to_owned(),
+            sql: "SELECT metric_key, metric_kind, display_value FROM q_experiment_metric ORDER BY metric_key".to_owned(),
+            params: Vec::new(),
+            max_rows: None,
+            timeout_ms: None,
+        }),
+        "query synthetic metric SQL view",
+    )?;
+    assert!(sql.rows.iter().any(|row| {
+        row[0].as_str() == Some("work_rate")
+            && row[1].as_str() == Some("synthetic")
+            && row[2].as_f64() == Some(240.0 / 120_000_000.0)
+    }));
+
+    let kpi_metrics = must(
+        store.metric_keys(MetricKeysQuery {
+            frontier: Some("synthetic-kpi-frontier".to_owned()),
+            scope: MetricScope::Kpi,
+        }),
+        "list KPI metrics",
+    )?;
+    let synthetic = must_some(
+        kpi_metrics
+            .iter()
+            .find(|metric| metric.key.as_str() == "work_rate"),
+        "synthetic KPI summary",
+    )?;
+    assert_eq!(synthetic.kind.as_str(), "synthetic");
+    Ok(())
+}
+
+#[test]
 fn frontier_query_sql_is_scoped_and_tabular() -> TestResult {
     let project_root = temp_project_root("frontier_query")?;
     init_project(&project_root)?;
@@ -2370,9 +2586,9 @@ fn already_bound_worker_refreshes_after_destructive_reseed() -> TestResult {
     let _metric = must(
         reopened.define_metric(DefineMetricRequest {
             key: must(NonEmptyText::new("nodes_solved"), "metric key")?,
-            dimension: fidget_spinner_core::MetricDimension::Count,
+            dimension: MetricDimension::Count,
             display_unit: Some(must(MetricUnit::new("count"), "metric unit")?),
-            aggregation: fidget_spinner_core::MetricAggregation::Point,
+            aggregation: MetricAggregation::Point,
             objective: OptimizationObjective::Maximize,
             description: None,
         }),

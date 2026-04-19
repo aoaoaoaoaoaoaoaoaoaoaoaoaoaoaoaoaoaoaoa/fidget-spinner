@@ -472,31 +472,86 @@ fn render_create_tag_form(families: &[fidget_spinner_core::TagFamilyRecord]) -> 
     }
 }
 
-fn render_create_metric_form() -> Markup {
+fn render_create_metric_form(metrics: &[fidget_spinner_store_sqlite::MetricKeySummary]) -> Markup {
     html! {
-        form.tag-create-form method="post" action="metrics/create" data-preserve-viewport="true" {
-            input.compact-input type="text" name="key" placeholder="metric_key" aria-label="Metric key" required;
-            select.compact-select name="dimension" aria-label="Metric dimension" {
-                option value="time" { "time" }
-                option value="count" { "count" }
-                option value="bytes" { "bytes" }
-                option value="ratio" { "ratio" }
-                option value="dimensionless" { "dimensionless" }
-            }
-            input.compact-input type="text" name="display_unit" placeholder="milliseconds" aria-label="Display unit";
-            select.compact-select name="aggregation" aria-label="Aggregation" {
-                @for aggregation in ["point", "mean", "geomean", "median", "p95", "min", "max", "sum"] {
-                    option value=(aggregation) { (aggregation) }
+        div.metric-create-stack {
+            form.tag-create-form method="post" action="metrics/create" data-preserve-viewport="true" {
+                input.compact-input type="text" name="key" placeholder="metric_key" aria-label="Metric key" required;
+                select.compact-select name="dimension" aria-label="Metric dimension" {
+                    option value="time" { "time" }
+                    option value="count" { "count" }
+                    option value="bytes" { "bytes" }
+                    option value="dimensionless" { "dimensionless" }
+                }
+                input.compact-input type="text" name="display_unit" placeholder="milliseconds" aria-label="Display unit";
+                (render_metric_aggregation_select())
+                (render_metric_objective_select())
+                input.compact-input.wide-compact-input type="text" name="description" placeholder="description" aria-label="Metric description";
+                button.inline-icon-button type="submit" aria-label="Add observed metric" title="Add observed metric" {
+                    (plus_icon())
                 }
             }
-            select.compact-select name="objective" aria-label="Objective" {
-                option value="minimize" { "minimize" }
-                option value="maximize" { "maximize" }
-                option value="target" { "target" }
+            @if !metrics.is_empty() {
+                form.tag-create-form method="post" action="metrics/synthetic/create" data-preserve-viewport="true" {
+                    input.compact-input type="text" name="key" placeholder="synthetic_key" aria-label="Synthetic metric key" required;
+                    select.compact-select name="operation" aria-label="Synthetic operation" {
+                        option value="add" { "+" }
+                        option value="sub" { "-" }
+                        option value="mul" { "*" }
+                        option value="div" { "/" }
+                        option value="gmean" { "gmean" }
+                    }
+                    (render_metric_operand_select("left", "Left operand", metrics, true))
+                    (render_metric_operand_select("right", "Right operand", metrics, true))
+                    (render_metric_operand_select("term_3", "Gmean term 3", metrics, false))
+                    (render_metric_operand_select("term_4", "Gmean term 4", metrics, false))
+                    (render_metric_aggregation_select())
+                    (render_metric_objective_select())
+                    input.compact-input.wide-compact-input type="text" name="description" placeholder="synthetic description" aria-label="Synthetic metric description";
+                    button.inline-icon-button type="submit" aria-label="Add synthetic metric" title="Add synthetic metric" {
+                        (plus_icon())
+                    }
+                }
             }
-            input.compact-input.wide-compact-input type="text" name="description" placeholder="description" aria-label="Metric description";
-            button.inline-icon-button type="submit" aria-label="Add metric" title="Add metric" {
-                (plus_icon())
+        }
+    }
+}
+
+fn render_metric_aggregation_select() -> Markup {
+    html! {
+        select.compact-select name="aggregation" aria-label="Aggregation" {
+            @for aggregation in ["point", "mean", "geomean", "median", "p95", "min", "max", "sum"] {
+                option value=(aggregation) { (aggregation) }
+            }
+        }
+    }
+}
+
+fn render_metric_objective_select() -> Markup {
+    html! {
+        select.compact-select name="objective" aria-label="Objective" {
+            option value="minimize" { "minimize" }
+            option value="maximize" { "maximize" }
+            option value="target" { "target" }
+        }
+    }
+}
+
+fn render_metric_operand_select(
+    name: &str,
+    label: &str,
+    metrics: &[fidget_spinner_store_sqlite::MetricKeySummary],
+    required: bool,
+) -> Markup {
+    html! {
+        select.compact-select.wide-compact-select name=(name) aria-label=(label) required[required] {
+            @if !required {
+                option value="" { "optional" }
+            }
+            @for metric in metrics {
+                option value=(metric.key.as_str()) {
+                    (metric.key) " · " (metric.dimension.to_string())
+                }
             }
         }
     }
@@ -594,7 +649,7 @@ fn render_create_kpi_form(
                 @if has_candidates {
                     @for metric in candidates {
                         option value=(metric.key.as_str()) {
-                            (metric.key) " · " (metric.objective.as_str()) " · " (metric.display_unit.as_str())
+                            (metric.key) " · " (metric.objective.as_str()) " · " (metric.display_unit.label())
                         }
                     }
                 } @else {
@@ -647,7 +702,7 @@ fn render_kpi_registry(frontier: &FrontierSummary, kpis: &[KpiSummary]) -> Marku
                                         div.muted { (description) }
                                     }
                                 }
-                                td.no-truncate { (kpi.metric.display_unit.as_str()) }
+                                td.no-truncate { (kpi.metric.display_unit.label()) }
                                 td.no-truncate { (kpi.metric.objective.as_str()) " · " (kpi.metric.aggregation.as_str()) }
                                 td.no-truncate { (kpi.metric.reference_count) }
                             }
@@ -694,7 +749,7 @@ pub(super) fn render_metric_registry_table(
     html! {
         section.card {
             div.card-header { h2 { "Metric Registry" } }
-            (render_create_metric_form())
+            (render_create_metric_form(metrics))
             @if metrics.is_empty() {
                 p.muted { "No metrics yet." }
             } @else {
@@ -761,8 +816,8 @@ pub(super) fn render_metric_registry_table(
                                             }
                                         }
                                     }
-                                    td.no-truncate { (metric.dimension.as_str()) }
-                                    td.no-truncate { (metric.aggregation.as_str()) " · " (metric.objective.as_str()) }
+                                    td.no-truncate { (metric.dimension.to_string()) }
+                                    td.no-truncate { (metric.kind.as_str()) " · " (metric.aggregation.as_str()) " · " (metric.objective.as_str()) }
                                     td.no-truncate { (metric.reference_count) }
                                     td.no-truncate {
                                         form.tag-inline-form method="post" action="metrics/merge" data-preserve-viewport="true" {
@@ -792,9 +847,11 @@ pub(super) fn render_metric_registry_table(
 pub(super) fn metric_registry_filter_text(
     metric: &fidget_spinner_store_sqlite::MetricKeySummary,
 ) -> String {
+    let dimension = metric.dimension.to_string();
     [
         metric.key.as_str(),
-        metric.dimension.as_str(),
+        metric.kind.as_str(),
+        dimension.as_str(),
         metric.aggregation.as_str(),
         metric.objective.as_str(),
         metric.description.as_ref().map_or("", NonEmptyText::as_str),

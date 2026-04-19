@@ -299,6 +299,7 @@ pub(crate) struct HypothesisCurrentStateProjection {
 #[derive(Clone, Serialize)]
 pub(crate) struct MetricKeySummaryProjection {
     pub(crate) key: String,
+    pub(crate) kind: String,
     pub(crate) display_unit: String,
     pub(crate) dimension: String,
     pub(crate) aggregation: String,
@@ -504,6 +505,7 @@ pub(crate) struct TagListOutput {
 pub(crate) struct MetricDefinitionProjection {
     pub(crate) id: String,
     pub(crate) key: String,
+    pub(crate) kind: String,
     pub(crate) display_unit: String,
     pub(crate) dimension: String,
     pub(crate) aggregation: String,
@@ -1007,8 +1009,9 @@ fn hypothesis_current_state(state: &HypothesisCurrentState) -> HypothesisCurrent
 fn metric_key_summary(metric: &MetricKeySummary) -> MetricKeySummaryProjection {
     MetricKeySummaryProjection {
         key: metric.key.to_string(),
-        display_unit: metric.display_unit.as_str().to_owned(),
-        dimension: metric.dimension.as_str().to_owned(),
+        kind: metric.kind.as_str().to_owned(),
+        display_unit: metric.display_unit.label(),
+        dimension: metric.dimension.to_string(),
         aggregation: metric.aggregation.as_str().to_owned(),
         objective: metric.objective.as_str().to_owned(),
         description: metric.description.as_ref().map(ToString::to_string),
@@ -1067,8 +1070,9 @@ fn metric_definition_projection(metric: &MetricDefinition) -> MetricDefinitionPr
     MetricDefinitionProjection {
         id: metric.id.to_string(),
         key: metric.key.to_string(),
-        display_unit: metric.display_unit.as_str().to_owned(),
-        dimension: metric.dimension.as_str().to_owned(),
+        kind: metric.kind.as_str().to_owned(),
+        display_unit: metric.display_unit.label(),
+        dimension: metric.dimension.to_string(),
         aggregation: metric.aggregation.as_str().to_owned(),
         objective: metric.objective.as_str().to_owned(),
         description: metric.description.as_ref().map(ToString::to_string),
@@ -1132,8 +1136,8 @@ fn metric_observation_summary(
     MetricObservationSummaryProjection {
         key: metric.key.to_string(),
         value: metric.value,
-        display_unit: metric.display_unit.as_str().to_owned(),
-        dimension: metric.dimension.as_str().to_owned(),
+        display_unit: metric.display_unit.label(),
+        dimension: metric.dimension.to_string(),
         objective: metric.objective.as_str().to_owned(),
     }
 }
