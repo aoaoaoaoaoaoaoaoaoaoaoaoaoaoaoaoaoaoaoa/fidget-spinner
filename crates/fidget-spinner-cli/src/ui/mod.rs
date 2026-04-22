@@ -12,10 +12,10 @@ use axum::routing::{get, post};
 use camino::Utf8PathBuf;
 use fidget_spinner_core::{
     ExperimentAnalysis, ExperimentOutcome, ExperimentStatus, FrontierRecord, FrontierStatus,
-    FrontierVerdict, KnownMetricUnit, MetricAggregation, MetricDimension, MetricDisplayUnit,
-    MetricQuantity, MetricUnit, NonEmptyText, OptimizationObjective, RegistryLockMode,
-    RegistryName, RunDimensionValue, Slug, SyntheticMetricExpression, TagFamilyName, TagName,
-    VertexRef,
+    FrontierVerdict, HypothesisAssessmentLevel, KnownMetricUnit, MetricAggregation,
+    MetricDimension, MetricDisplayUnit, MetricQuantity, MetricUnit, NonEmptyText,
+    OptimizationObjective, RegistryLockMode, RegistryName, RunDimensionValue, Slug,
+    SyntheticMetricExpression, TagFamilyName, TagName, VertexRef,
 };
 use fidget_spinner_store_sqlite::{
     AssignTagFamilyRequest, CreateKpiRequest, CreateTagFamilyRequest, DefineMetricRequest,
@@ -1013,6 +1013,26 @@ fn verdict_class(verdict: FrontierVerdict) -> &'static str {
     }
 }
 
+fn render_hypothesis_meta_chips(
+    expected_yield: HypothesisAssessmentLevel,
+    confidence: HypothesisAssessmentLevel,
+    tags: &[TagName],
+) -> Markup {
+    html! {
+        div.chip-row {
+            span.kind-chip title="Expected KPI-moving yield vibe check" {
+                "yield " (expected_yield.as_str())
+            }
+            span.kind-chip title="Confidence vibe check for the hypothesis" {
+                "confidence " (confidence.as_str())
+            }
+            @for tag in tags {
+                span.tag-chip { (tag) }
+            }
+        }
+    }
+}
+
 fn limit_items<T>(items: &[T], limit: Option<u32>) -> &[T] {
     let Some(limit) = limit else {
         return items;
@@ -1039,8 +1059,9 @@ mod tests {
 
     use fidget_spinner_core::{
         DefaultVisibility, ExperimentStatus, FrontierBrief, FrontierId, FrontierRecord,
-        FrontierStatus, FrontierVerdict, HypothesisId, MetricAggregation, MetricDefinitionKind,
-        MetricDisplayUnit, MetricUnit, NonEmptyText, OptimizationObjective, Slug,
+        FrontierStatus, FrontierVerdict, HypothesisAssessmentLevel, HypothesisId,
+        MetricAggregation, MetricDefinitionKind, MetricDisplayUnit, MetricUnit, NonEmptyText,
+        OptimizationObjective, Slug,
     };
     use fidget_spinner_store_sqlite::{
         ExperimentSummary, FrontierMetricPoint, FrontierMetricSeries, HypothesisSummary,
@@ -1147,6 +1168,8 @@ mod tests {
                 NonEmptyText::new(format!("{title} summary")),
                 "hypothesis summary",
             ),
+            expected_yield: HypothesisAssessmentLevel::Medium,
+            confidence: HypothesisAssessmentLevel::Medium,
             tags: Vec::new(),
             open_experiment_count: 0,
             latest_verdict: None,

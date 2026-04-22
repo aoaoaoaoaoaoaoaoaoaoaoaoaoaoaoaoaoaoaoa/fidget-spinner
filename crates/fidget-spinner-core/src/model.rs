@@ -1298,6 +1298,25 @@ impl FrontierVerdict {
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
+pub enum HypothesisAssessmentLevel {
+    Low,
+    Medium,
+    High,
+}
+
+impl HypothesisAssessmentLevel {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Low => "low",
+            Self::Medium => "medium",
+            Self::High => "high",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum TagNameDisposition {
     Renamed,
     Merged,
@@ -1482,6 +1501,8 @@ pub struct HypothesisRecord {
     pub title: NonEmptyText,
     pub summary: NonEmptyText,
     pub body: NonEmptyText,
+    pub expected_yield: HypothesisAssessmentLevel,
+    pub confidence: HypothesisAssessmentLevel,
     pub tags: Vec<TagName>,
     pub revision: u64,
     pub created_at: OffsetDateTime,

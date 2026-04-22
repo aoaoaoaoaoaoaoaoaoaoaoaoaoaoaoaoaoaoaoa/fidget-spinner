@@ -121,7 +121,7 @@ const TOOL_SPECS: &[ToolSpec] = &[
     },
     ToolSpec {
         name: "hypothesis.record",
-        description: "Record an idea eagerly as a cheap hypothesis node. The body must stay a single paragraph.",
+        description: "Record an idea eagerly as a cheap hypothesis node, including expected yield and confidence. The body must stay a single paragraph.",
         dispatch: DispatchTarget::Worker,
         replay: ReplayContract::NeverReplay,
     },
@@ -139,7 +139,7 @@ const TOOL_SPECS: &[ToolSpec] = &[
     },
     ToolSpec {
         name: "hypothesis.update",
-        description: "Patch hypothesis title, summary, body, tags, or influence parents.",
+        description: "Patch hypothesis title, summary, body, expected yield, confidence, tags, or influence parents.",
         dispatch: DispatchTarget::Worker,
         replay: ReplayContract::NeverReplay,
     },
@@ -434,11 +434,32 @@ fn tool_input_schema(name: &str) -> Value {
                         "Single-paragraph hypothesis body. Capture the thought now; refine later.",
                     ),
                 ),
+                (
+                    "expected_yield",
+                    enum_string_schema(
+                        &["low", "medium", "high"],
+                        "Crude expected KPI-moving yield vibe check.",
+                    ),
+                ),
+                (
+                    "confidence",
+                    enum_string_schema(
+                        &["low", "medium", "high"],
+                        "Crude confidence vibe check for the hypothesis.",
+                    ),
+                ),
                 ("slug", string_schema("Optional stable hypothesis slug.")),
                 ("tags", string_array_schema("Tag names.")),
                 ("parents", vertex_selector_array_schema()),
             ],
-            &["frontier", "title", "summary", "body"],
+            &[
+                "frontier",
+                "title",
+                "summary",
+                "body",
+                "expected_yield",
+                "confidence",
+            ],
         ),
         "hypothesis.list" => object_schema(
             &[
@@ -465,6 +486,20 @@ fn tool_input_schema(name: &str) -> Value {
                 ("title", string_schema("Replacement title.")),
                 ("summary", string_schema("Replacement summary.")),
                 ("body", string_schema("Replacement single-paragraph body.")),
+                (
+                    "expected_yield",
+                    enum_string_schema(
+                        &["low", "medium", "high"],
+                        "Replacement expected KPI-moving yield vibe check.",
+                    ),
+                ),
+                (
+                    "confidence",
+                    enum_string_schema(
+                        &["low", "medium", "high"],
+                        "Replacement confidence vibe check.",
+                    ),
+                ),
                 ("tags", string_array_schema("Replacement tag set.")),
                 ("parents", vertex_selector_array_schema()),
             ],

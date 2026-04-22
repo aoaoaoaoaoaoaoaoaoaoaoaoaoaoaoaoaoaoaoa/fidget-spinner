@@ -9,13 +9,14 @@ use fidget_spinner_core::{
     CommandRecipe, CoreError, DefaultVisibility, ExecutionBackend, ExperimentAnalysis,
     ExperimentId, ExperimentOutcome, ExperimentRecord, ExperimentStatus, FieldValueType,
     FrontierBrief, FrontierId, FrontierKpiRecord, FrontierRecord, FrontierRoadmapItem,
-    FrontierStatus, FrontierVerdict, GitCommitHash, HiddenByDefaultReason, HypothesisId,
-    HypothesisRecord, KpiId, KpiOrdinal, MetricAggregation, MetricDefinition, MetricDefinitionKind,
-    MetricDimension, MetricDisplayUnit, MetricId, MetricQuantity, MetricUnit, MetricValue,
-    NonEmptyText, OptimizationObjective, RegistryLockId, RegistryLockMode, RegistryLockRecord,
-    RegistryName, ReportedMetricValue, RunDimensionDefinition, RunDimensionValue, Slug,
-    SyntheticMetricExpression, TagFamilyId, TagFamilyName, TagFamilyRecord, TagId, TagName,
-    TagNameDisposition, TagNameHistoryRecord, TagRecord, TagRegistrySnapshot, VertexRef,
+    FrontierStatus, FrontierVerdict, GitCommitHash, HiddenByDefaultReason,
+    HypothesisAssessmentLevel, HypothesisId, HypothesisRecord, KpiId, KpiOrdinal,
+    MetricAggregation, MetricDefinition, MetricDefinitionKind, MetricDimension, MetricDisplayUnit,
+    MetricId, MetricQuantity, MetricUnit, MetricValue, NonEmptyText, OptimizationObjective,
+    RegistryLockId, RegistryLockMode, RegistryLockRecord, RegistryName, ReportedMetricValue,
+    RunDimensionDefinition, RunDimensionValue, Slug, SyntheticMetricExpression, TagFamilyId,
+    TagFamilyName, TagFamilyRecord, TagId, TagName, TagNameDisposition, TagNameHistoryRecord,
+    TagRecord, TagRegistrySnapshot, VertexRef,
 };
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde::{Deserialize, Serialize};
@@ -34,7 +35,7 @@ pub use query::{
 pub const STORE_DIR_NAME: &str = ".fidget_spinner";
 pub const GIT_DIR_NAME: &str = ".git";
 pub const STATE_DB_NAME: &str = "state.sqlite";
-pub const CURRENT_STORE_FORMAT_VERSION: u32 = 14;
+pub const CURRENT_STORE_FORMAT_VERSION: u32 = 15;
 pub const STATE_HOME_DIR_NAME: &str = "fidget-spinner";
 pub const PROJECT_STATE_DIR_NAME: &str = "projects";
 const LEGACY_PROJECT_CONFIG_NAME: &str = "project.json";
@@ -352,6 +353,8 @@ pub struct CreateHypothesisRequest {
     pub title: NonEmptyText,
     pub summary: NonEmptyText,
     pub body: NonEmptyText,
+    pub expected_yield: HypothesisAssessmentLevel,
+    pub confidence: HypothesisAssessmentLevel,
     pub tags: BTreeSet<TagName>,
     pub parents: Vec<VertexSelector>,
 }
@@ -363,6 +366,8 @@ pub struct UpdateHypothesisRequest {
     pub title: Option<NonEmptyText>,
     pub summary: Option<NonEmptyText>,
     pub body: Option<NonEmptyText>,
+    pub expected_yield: Option<HypothesisAssessmentLevel>,
+    pub confidence: Option<HypothesisAssessmentLevel>,
     pub tags: Option<BTreeSet<TagName>>,
     pub parents: Option<Vec<VertexSelector>>,
 }
@@ -391,6 +396,8 @@ pub struct HypothesisSummary {
     pub frontier_id: FrontierId,
     pub title: NonEmptyText,
     pub summary: NonEmptyText,
+    pub expected_yield: HypothesisAssessmentLevel,
+    pub confidence: HypothesisAssessmentLevel,
     pub tags: Vec<TagName>,
     pub open_experiment_count: u64,
     pub latest_verdict: Option<FrontierVerdict>,
@@ -1990,6 +1997,8 @@ impl ProjectStore {
             title: request.title,
             summary: request.summary,
             body: request.body,
+            expected_yield: request.expected_yield,
+            confidence: request.confidence,
             tags: request.tags.iter().cloned().collect(),
             revision: 1,
             created_at: now,
@@ -2098,6 +2107,8 @@ impl ProjectStore {
             title: request.title.unwrap_or(record.title.clone()),
             summary: request.summary.unwrap_or(record.summary.clone()),
             body: request.body.unwrap_or(record.body.clone()),
+            expected_yield: request.expected_yield.unwrap_or(record.expected_yield),
+            confidence: request.confidence.unwrap_or(record.confidence),
             tags: request
                 .tags
                 .clone()
@@ -3183,7 +3194,8 @@ impl ProjectStore {
     fn hypothesis_by_id(&self, id: HypothesisId) -> Result<HypothesisRecord, StoreError> {
         self.connection
             .query_row(
-                "SELECT id, slug, frontier_id, title, summary, body, revision, created_at, updated_at
+                "SELECT id, slug, frontier_id, title, summary, body, expected_yield, confidence,
+                        revision, created_at, updated_at
                  FROM hypotheses WHERE id = ?1",
                 params![id.to_string()],
                 |row| self.decode_hypothesis_row(row),
@@ -3223,7 +3235,8 @@ impl ProjectStore {
             Selector::Id(uuid) => self
                 .connection
                 .query_row(
-                    "SELECT id, slug, frontier_id, title, summary, body, revision, created_at, updated_at
+                    "SELECT id, slug, frontier_id, title, summary, body, expected_yield, confidence,
+                            revision, created_at, updated_at
                      FROM hypotheses WHERE id = ?1",
                     params![uuid.to_string()],
                     |row| self.decode_hypothesis_row(row),
@@ -3232,7 +3245,8 @@ impl ProjectStore {
             Selector::Slug(slug) => self
                 .connection
                 .query_row(
-                    "SELECT id, slug, frontier_id, title, summary, body, revision, created_at, updated_at
+                    "SELECT id, slug, frontier_id, title, summary, body, expected_yield, confidence,
+                            revision, created_at, updated_at
                      FROM hypotheses WHERE slug = ?1",
                     params![slug.as_str()],
                     |row| self.decode_hypothesis_row(row),
@@ -3351,7 +3365,8 @@ impl ProjectStore {
     ) -> Result<Vec<HypothesisRecord>, StoreError> {
         let records = if let Some(frontier_id) = frontier_id {
             let mut statement = self.connection.prepare(
-                "SELECT id, slug, frontier_id, title, summary, body, revision, created_at, updated_at
+                "SELECT id, slug, frontier_id, title, summary, body, expected_yield, confidence,
+                        revision, created_at, updated_at
                  FROM hypotheses
                  WHERE frontier_id = ?1
                  ORDER BY updated_at DESC, created_at DESC",
@@ -3362,7 +3377,8 @@ impl ProjectStore {
             rows.collect::<Result<Vec<_>, _>>()?
         } else {
             let mut statement = self.connection.prepare(
-                "SELECT id, slug, frontier_id, title, summary, body, revision, created_at, updated_at
+                "SELECT id, slug, frontier_id, title, summary, body, expected_yield, confidence,
+                        revision, created_at, updated_at
                  FROM hypotheses
                  ORDER BY updated_at DESC, created_at DESC",
             )?;
@@ -3436,10 +3452,12 @@ impl ProjectStore {
             title: parse_non_empty_text(&row.get::<_, String>(3)?)?,
             summary: parse_non_empty_text(&row.get::<_, String>(4)?)?,
             body: parse_non_empty_text(&row.get::<_, String>(5)?)?,
+            expected_yield: parse_hypothesis_assessment_level(&row.get::<_, String>(6)?)?,
+            confidence: parse_hypothesis_assessment_level(&row.get::<_, String>(7)?)?,
             tags: self.hypothesis_tags(id)?,
-            revision: row.get::<_, u64>(6)?,
-            created_at: parse_timestamp_sql(&row.get::<_, String>(7)?)?,
-            updated_at: parse_timestamp_sql(&row.get::<_, String>(8)?)?,
+            revision: row.get::<_, u64>(8)?,
+            created_at: parse_timestamp_sql(&row.get::<_, String>(9)?)?,
+            updated_at: parse_timestamp_sql(&row.get::<_, String>(10)?)?,
         })
     }
 
@@ -3752,6 +3770,8 @@ impl ProjectStore {
             frontier_id: record.frontier_id,
             title: record.title,
             summary: record.summary,
+            expected_yield: record.expected_yield,
+            confidence: record.confidence,
             tags: record.tags,
             open_experiment_count: self
                 .list_experiments(ListExperimentsQuery {
@@ -4924,6 +4944,8 @@ fn install_schema(connection: &Connection) -> Result<(), StoreError> {
             title TEXT NOT NULL,
             summary TEXT NOT NULL,
             body TEXT NOT NULL,
+            expected_yield TEXT NOT NULL,
+            confidence TEXT NOT NULL,
             revision INTEGER NOT NULL,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL
@@ -5151,6 +5173,10 @@ fn migrate_store_to_current(
     if version == 13 {
         migrate_store_v13_to_v14(connection)?;
         version = 14;
+    }
+    if version == 14 {
+        migrate_store_v14_to_v15(connection)?;
+        version = 15;
     }
     if version == CURRENT_STORE_FORMAT_VERSION {
         return Ok(());
@@ -5440,6 +5466,28 @@ fn migrate_store_v13_to_v14(connection: &mut Connection) -> Result<(), StoreErro
     )?;
     transaction.commit()?;
     connection.pragma_update(None, "user_version", 14_i64)?;
+    Ok(())
+}
+
+fn migrate_store_v14_to_v15(connection: &mut Connection) -> Result<(), StoreError> {
+    let transaction = connection.transaction()?;
+    transaction.execute_batch(
+        "
+        ALTER TABLE hypotheses
+        ADD COLUMN expected_yield TEXT NOT NULL DEFAULT 'medium';
+
+        ALTER TABLE hypotheses
+        ADD COLUMN confidence TEXT NOT NULL DEFAULT 'medium';
+
+        UPDATE hypotheses
+        SET expected_yield = 'medium',
+            confidence = 'medium'
+        WHERE expected_yield IS NULL
+           OR confidence IS NULL;
+        ",
+    )?;
+    transaction.commit()?;
+    connection.pragma_update(None, "user_version", 15_i64)?;
     Ok(())
 }
 
@@ -6029,8 +6077,11 @@ fn insert_hypothesis(
     hypothesis: &HypothesisRecord,
 ) -> Result<(), StoreError> {
     let _ = transaction.execute(
-        "INSERT INTO hypotheses (id, slug, frontier_id, title, summary, body, revision, created_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+        "INSERT INTO hypotheses (
+            id, slug, frontier_id, title, summary, body, expected_yield, confidence,
+            revision, created_at, updated_at
+         )
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
         params![
             hypothesis.id.to_string(),
             hypothesis.slug.as_str(),
@@ -6038,6 +6089,8 @@ fn insert_hypothesis(
             hypothesis.title.as_str(),
             hypothesis.summary.as_str(),
             hypothesis.body.as_str(),
+            hypothesis.expected_yield.as_str(),
+            hypothesis.confidence.as_str(),
             hypothesis.revision,
             encode_timestamp(hypothesis.created_at)?,
             encode_timestamp(hypothesis.updated_at)?,
@@ -6052,7 +6105,14 @@ fn update_hypothesis_row(
 ) -> Result<(), StoreError> {
     let _ = transaction.execute(
         "UPDATE hypotheses
-         SET slug = ?2, title = ?3, summary = ?4, body = ?5, revision = ?6, updated_at = ?7
+         SET slug = ?2,
+             title = ?3,
+             summary = ?4,
+             body = ?5,
+             expected_yield = ?6,
+             confidence = ?7,
+             revision = ?8,
+             updated_at = ?9
          WHERE id = ?1",
         params![
             hypothesis.id.to_string(),
@@ -6060,6 +6120,8 @@ fn update_hypothesis_row(
             hypothesis.title.as_str(),
             hypothesis.summary.as_str(),
             hypothesis.body.as_str(),
+            hypothesis.expected_yield.as_str(),
+            hypothesis.confidence.as_str(),
             hypothesis.revision,
             encode_timestamp(hypothesis.updated_at)?,
         ],
@@ -7017,6 +7079,22 @@ fn parse_frontier_verdict(raw: &str) -> Result<FrontierVerdict, rusqlite::Error>
             serde_json::Error::io(io::Error::new(
                 io::ErrorKind::InvalidData,
                 format!("invalid frontier verdict `{raw}`"),
+            )),
+        ))),
+    }
+}
+
+fn parse_hypothesis_assessment_level(
+    raw: &str,
+) -> Result<HypothesisAssessmentLevel, rusqlite::Error> {
+    match raw {
+        "low" => Ok(HypothesisAssessmentLevel::Low),
+        "medium" => Ok(HypothesisAssessmentLevel::Medium),
+        "high" => Ok(HypothesisAssessmentLevel::High),
+        _ => Err(to_sql_conversion_error(StoreError::Json(
+            serde_json::Error::io(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("invalid hypothesis assessment level `{raw}`"),
             )),
         ))),
     }

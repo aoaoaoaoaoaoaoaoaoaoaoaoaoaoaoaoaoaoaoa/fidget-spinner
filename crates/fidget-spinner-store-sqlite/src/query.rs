@@ -404,6 +404,8 @@ const CREATE_QUERY_VIEWS_SQL: &str = concat!(
         hypotheses.title AS title,
         hypotheses.summary AS summary,
         hypotheses.body AS body,
+        hypotheses.expected_yield AS expected_yield,
+        hypotheses.confidence AS confidence,
         hypotheses.revision AS revision,
         hypotheses.created_at AS created_at,
         hypotheses.updated_at AS updated_at
@@ -804,6 +806,16 @@ const QUERY_VIEWS: &[FrontierSqlView] = &[
             col("title", "text", "Human title."),
             col("summary", "text", "One-line summary."),
             col("body", "text", "Single-paragraph hypothesis body."),
+            col(
+                "expected_yield",
+                "text",
+                "Qualitative expected KPI-moving yield: low, medium, or high.",
+            ),
+            col(
+                "confidence",
+                "text",
+                "Qualitative confidence in the hypothesis: low, medium, or high.",
+            ),
             col("revision", "integer", "Optimistic concurrency revision."),
             col("created_at", "text", "RFC3339 creation timestamp."),
             col("updated_at", "text", "RFC3339 update timestamp."),

@@ -11,9 +11,9 @@ use std::sync::OnceLock;
 use camino::Utf8PathBuf;
 use fidget_spinner_core::{
     CommandRecipe, ExecutionBackend, FieldValueType, FrontierStatus, FrontierVerdict,
-    MetricAggregation, MetricDimension, MetricUnit, NonEmptyText, OptimizationObjective,
-    RegistryLockMode, RegistryName, ReportedMetricValue, RunDimensionValue, Slug,
-    SyntheticMetricExpression, TagFamilyName, TagName,
+    HypothesisAssessmentLevel, MetricAggregation, MetricDimension, MetricUnit, NonEmptyText,
+    OptimizationObjective, RegistryLockMode, RegistryName, ReportedMetricValue, RunDimensionValue,
+    Slug, SyntheticMetricExpression, TagFamilyName, TagName,
 };
 use fidget_spinner_store_sqlite::{
     AssignTagFamilyRequest, CloseExperimentRequest, CreateFrontierRequest, CreateHypothesisRequest,
@@ -340,6 +340,8 @@ fn seed_frontier_query_fixture(harness: &mut McpHarness) -> TestResult {
                 "title": format!("{label} hypothesis"),
                 "summary": "Scoped SQL should only see this frontier when selected.",
                 "body": "The query fixture records one closed experiment so scoped SQL can prove isolation.",
+                "expected_yield": "medium",
+                "confidence": "medium",
             }),
         )?);
         assert_tool_ok(&harness.call_tool(
@@ -529,6 +531,8 @@ fn experiment_tags_are_loaded_from_the_junction_table() -> TestResult {
                 "hypothesis summary",
             )?,
             body: must(NonEmptyText::new("Tag hypothesis body."), "hypothesis body")?,
+            expected_yield: HypothesisAssessmentLevel::Medium,
+            confidence: HypothesisAssessmentLevel::Medium,
             tags: BTreeSet::new(),
             parents: Vec::new(),
         }),
@@ -875,6 +879,8 @@ fn mandatory_tag_family_rejects_future_mcp_tag_sets() -> TestResult {
             "title": "No phase tag",
             "summary": "Missing mandatory tag family.",
             "body": "One paragraph body.",
+            "expected_yield": "medium",
+            "confidence": "medium",
         }),
     )?;
     assert_tool_error(&rejected);
@@ -891,6 +897,8 @@ fn mandatory_tag_family_rejects_future_mcp_tag_sets() -> TestResult {
             "title": "Tagged phase",
             "summary": "Includes mandatory family.",
             "body": "One paragraph body.",
+            "expected_yield": "medium",
+            "confidence": "medium",
             "tags": ["baseline"],
         }),
     )?;
@@ -925,6 +933,8 @@ fn mcp_hypothesis_record_requires_frontier_kpi() -> TestResult {
             "title": "Premature hypothesis",
             "summary": "No KPI exists yet.",
             "body": "One paragraph body.",
+            "expected_yield": "medium",
+            "confidence": "medium",
         }),
     )?;
     assert_tool_error(&rejected);
@@ -963,6 +973,8 @@ fn mcp_hypothesis_record_requires_frontier_kpi() -> TestResult {
             "title": "Grounded hypothesis",
             "summary": "KPI exists now.",
             "body": "One paragraph body.",
+            "expected_yield": "medium",
+            "confidence": "medium",
         }),
     )?);
     Ok(())
@@ -1013,6 +1025,8 @@ fn mcp_rejects_hypothesis_lifecycle_state() -> TestResult {
             "title": "Stale branch",
             "summary": "This branch remains a visible graph vertex.",
             "body": "One paragraph body.",
+            "expected_yield": "medium",
+            "confidence": "medium",
         }),
     )?);
     assert_tool_ok(&harness.call_tool(
@@ -1024,6 +1038,8 @@ fn mcp_rejects_hypothesis_lifecycle_state() -> TestResult {
             "title": "Live branch",
             "summary": "This branch remains active.",
             "body": "One paragraph body.",
+            "expected_yield": "medium",
+            "confidence": "medium",
         }),
     )?);
 
@@ -1118,6 +1134,8 @@ fn retired_assignment_lock_does_not_block_mcp_tag_sets() -> TestResult {
             "title": "Tagged despite assignment lock",
             "summary": "The retired assignment lock does not block tag sets.",
             "body": "One paragraph body.",
+            "expected_yield": "medium",
+            "confidence": "medium",
             "tags": ["baseline"],
         }),
     )?);
@@ -1358,6 +1376,8 @@ fn frontier_open_is_the_grounding_surface_for_live_state() -> TestResult {
             "title": "Node-local logical cut loop",
             "summary": "Push cut cash-out below root.",
             "body": "Thread node-local logical cuts through native LP reoptimization so the same intervention can cash out below root on parity rails without corrupting root ownership semantics.",
+            "expected_yield": "medium",
+            "confidence": "medium",
             "tags": ["root-conquest"],
         }),
     )?);
@@ -1617,6 +1637,8 @@ fn experiment_nearest_finds_structural_buckets_and_champion() -> TestResult {
             "title": "Structural loop",
             "summary": "Compare exact-slice structural LP lines.",
             "body": "Thread structural LP reuse through the same 4x5 parity slice so exact-slice comparators remain easy to recover and dead branches stay visible before the next iteration starts.",
+            "expected_yield": "medium",
+            "confidence": "medium",
         }),
     )?);
 
@@ -1845,6 +1867,8 @@ fn hypothesis_body_discipline_is_enforced_over_mcp() -> TestResult {
             "title": "Paragraph discipline",
             "summary": "Should reject multi-paragraph bodies.",
             "body": "first paragraph\n\nsecond paragraph",
+            "expected_yield": "medium",
+            "confidence": "medium",
         }),
     )?;
     assert_tool_error(&response);
@@ -1896,6 +1920,8 @@ fn experiment_close_drives_metric_best_and_analysis() -> TestResult {
             "title": "Node reopt dominates native LP spend",
             "summary": "Track node LP wallclock concentration on braid rails.",
             "body": "Matched LP site traces indicate native LP spend is dominated by node reoptimization on the braid rails, so the next interventions should target node-local LP churn instead of root-only machinery.",
+            "expected_yield": "medium",
+            "confidence": "medium",
         }),
     )?);
     assert_tool_ok(&harness.call_tool(
@@ -2111,6 +2137,8 @@ fn synthetic_kpi_ranks_from_reported_observed_leaves() -> TestResult {
                 ),
                 "hypothesis body",
             )?,
+            expected_yield: HypothesisAssessmentLevel::Medium,
+            confidence: HypothesisAssessmentLevel::Medium,
             tags: BTreeSet::new(),
             parents: Vec::new(),
         }),
@@ -2380,6 +2408,8 @@ fn experiment_close_rejects_dirty_worktree() -> TestResult {
             "title": "Dirty close rejection",
             "summary": "A dirty worktree must block close.",
             "body": "When the experiment implementation state is not committed, closing the experiment should fail so the ledger never records an unrecoverable slice.",
+            "expected_yield": "medium",
+            "confidence": "medium",
         }),
     )?);
     assert_tool_ok(&harness.call_tool(
@@ -2503,6 +2533,8 @@ fn experiment_close_uses_command_worktree_when_present() -> TestResult {
             "title": "Linked worktree closes should succeed",
             "summary": "Main checkout dirt should not block a clean linked worktree close.",
             "body": "When an experiment command names a linked worktree as its working directory, Spinner should capture cleanliness and HEAD from that worktree rather than from unrelated dirt in the bound checkout.",
+            "expected_yield": "medium",
+            "confidence": "medium",
         }),
     )?);
     assert_tool_ok(&harness.call_tool(

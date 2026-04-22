@@ -11,8 +11,8 @@ use super::{
     VertexSummary, experiment_href, experiment_status_class, format_metric_value, format_timestamp,
     frontier_href, frontier_status_class, frontier_tab_href, html, hypothesis_href,
     hypothesis_href_from_id, hypothesis_title_for_roadmap_item, limit_items, load_shell_frame,
-    open_store, pencil_icon, render_dimension_value, render_fact, render_kv, render_sidebar,
-    short_commit_hash, status_chip_classes, verdict_class,
+    open_store, pencil_icon, render_dimension_value, render_fact, render_hypothesis_meta_chips,
+    render_kv, render_sidebar, short_commit_hash, status_chip_classes, verdict_class,
 };
 
 pub(super) fn render_frontier_detail(
@@ -301,13 +301,11 @@ fn render_hypothesis_header(detail: &HypothesisDetail, frontier: &FrontierRecord
             span { "slug " code { (detail.record.slug) } }
             span.muted { "updated " (format_timestamp(detail.record.updated_at)) }
         }
-        @if !detail.record.tags.is_empty() {
-            div.chip-row {
-                @for tag in &detail.record.tags {
-                    span.tag-chip { (tag) }
-                }
-            }
-        }
+        (render_hypothesis_meta_chips(
+            detail.record.expected_yield,
+            detail.record.confidence,
+            &detail.record.tags,
+        ))
     }
     }
 }

@@ -59,8 +59,8 @@ If you need more context, pull it from:
 - `frontier.update` when the objective, situation, roadmap, or unknowns need to change
 - `frontier.query.schema` when you need the stable SQL view contract for advanced frontier-local mining; it lists the public `q_*` views and columns
 - `frontier.query.sql` when the normal read tools are too narrow and you need a compact read-only SQL table over one frontier; query only `q_*` views, prefer small projections, and rely on the frontier envelope rather than adding frontier filters
-- `hypothesis.record` whenever you get a plausible KPI-moving idea, mechanism, suspicion, or branch; hypotheses are cheap idea-capture nodes, not a ritual preamble to one experiment
-- `hypothesis.update` when the title, summary, body, tags, or influence parents need tightening; hypotheses are not archived, so clean stale wording/tags/parents in place and leave non-frontier visibility policy to the supervisor UI
+- `hypothesis.record` whenever you get a plausible KPI-moving idea, mechanism, suspicion, or branch; hypotheses are cheap idea-capture nodes, not a ritual preamble to one experiment, and every new hypothesis must set `expected_yield` and `confidence` as crude `low|medium|high` vibe checks
+- `hypothesis.update` when the title, summary, body, expected yield, confidence, tags, or influence parents need tightening; reprioritization should usually update `expected_yield` and/or `confidence` directly, and hypotheses are not archived, so clean stale wording/tags/parents in place and leave non-frontier visibility policy to the supervisor UI
 - `experiment.open` once a hypothesis has a concrete KPI-relevant slice and is ready to be tested
 - `experiment.list` or `experiment.read` when resuming a session and you need to recover open or recently closed state
 - `experiment.update` while the experiment is still live and its summary, tags, or influence parents need refinement
@@ -79,7 +79,8 @@ If you need more context, pull it from:
 
 1. Ground through `frontier.open`.
 2. Record KPI-relevant ideas eagerly with `hypothesis.record` as they occur;
-   there is no penalty for many hypotheses.
+   there is no penalty for many hypotheses, and each one should carry an
+   explicit `expected_yield` and `confidence` vibe check.
 3. Choose or record the hypothesis that owns the concrete KPI slice, then open
    a live experiment with `experiment.open`.
 4. Do the work.
@@ -119,13 +120,15 @@ If you need more context, pull it from:
     fact matters later, it should usually live in a closed experiment outcome
     rather than in freeform text.
 11. Spinner records the closing commit hash as a recoverability anchor, not as experiment identity.
-12. If you run into an obviously stale hypothesis, retire it; stale cleanup is
+12. If you reprioritize a hypothesis, update `expected_yield` and/or
+    `confidence` instead of trying to smuggle the new stance into prose alone.
+13. If you run into an obviously stale hypothesis, retire it; stale cleanup is
     healthy and does not invalidate the experiments it once organized.
-13. Porcelain is the terse triage surface. Use `detail=full` only when concise
+14. Porcelain is the terse triage surface. Use `detail=full` only when concise
     output stops being decision-sufficient.
-14. Raw SQL is an escape hatch for trusted, advanced frontier-local inspection,
+15. Raw SQL is an escape hatch for trusted, advanced frontier-local inspection,
     not a second write API. Start with `frontier.query.schema`, query only the
     stable `q_*` views, keep result sets narrow, and never expect physical table
     names or cross-frontier data to exist.
-15. When the task becomes a true indefinite optimization push, pair this skill
+16. When the task becomes a true indefinite optimization push, pair this skill
     with `frontier-loop`.

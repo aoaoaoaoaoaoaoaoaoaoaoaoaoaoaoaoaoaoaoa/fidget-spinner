@@ -8,9 +8,9 @@ use std::time::UNIX_EPOCH;
 use camino::{Utf8Path, Utf8PathBuf};
 use fidget_spinner_core::{
     CommandRecipe, ExecutionBackend, ExperimentAnalysis, ExperimentStatus, FieldValueType,
-    FrontierRecord, FrontierStatus, FrontierVerdict, MetricAggregation, MetricDimension,
-    MetricUnit, NonEmptyText, OptimizationObjective, ReportedMetricValue, RunDimensionValue, Slug,
-    TagName,
+    FrontierRecord, FrontierStatus, FrontierVerdict, HypothesisAssessmentLevel, MetricAggregation,
+    MetricDimension, MetricUnit, NonEmptyText, OptimizationObjective, ReportedMetricValue,
+    RunDimensionValue, Slug, TagName,
 };
 use fidget_spinner_store_sqlite::{
     CloseExperimentRequest, CreateFrontierRequest, CreateHypothesisRequest, CreateKpiRequest,
@@ -253,6 +253,8 @@ impl WorkerService {
                             summary: NonEmptyText::new(args.summary)
                                 .map_err(store_fault(&operation))?,
                             body: NonEmptyText::new(args.body).map_err(store_fault(&operation))?,
+                            expected_yield: args.expected_yield,
+                            confidence: args.confidence,
                             tags: tags_to_set(args.tags.unwrap_or_default())
                                 .map_err(store_fault(&operation))?,
                             parents: args.parents.unwrap_or_default(),
@@ -311,6 +313,8 @@ impl WorkerService {
                                 .map(NonEmptyText::new)
                                 .transpose()
                                 .map_err(store_fault(&operation))?,
+                            expected_yield: args.expected_yield,
+                            confidence: args.confidence,
                             tags: args
                                 .tags
                                 .map(tags_to_set)
@@ -693,6 +697,8 @@ struct HypothesisRecordArgs {
     title: String,
     summary: String,
     body: String,
+    expected_yield: HypothesisAssessmentLevel,
+    confidence: HypothesisAssessmentLevel,
     slug: Option<String>,
     tags: Option<Vec<String>>,
     parents: Option<Vec<VertexSelector>>,
@@ -717,6 +723,8 @@ struct HypothesisUpdateArgs {
     title: Option<String>,
     summary: Option<String>,
     body: Option<String>,
+    expected_yield: Option<HypothesisAssessmentLevel>,
+    confidence: Option<HypothesisAssessmentLevel>,
     tags: Option<Vec<String>>,
     parents: Option<Vec<VertexSelector>>,
     state: Option<HypothesisLifecyclePatch>,

@@ -14,7 +14,7 @@ use super::{
     SVGBackend, SeriesLabelPosition, ShapeStyle, Slug, StoreError, experiment_href,
     format_metric_value, format_timestamp, frontier_href, frontier_tab_href_with_query, html,
     hypothesis_href, limit_items, project_metrics_frontier_href, render_dimension_value,
-    status_chip_classes, verdict_class,
+    render_hypothesis_meta_chips, status_chip_classes, verdict_class,
 };
 use plotters::coord::ranged1d::{LightPoints, Ranged};
 use plotters::coord::types::RangedCoordf64;
@@ -251,13 +251,11 @@ fn render_closed_hypothesis_grid(
                             }
                         }
                         p.prose { (hypothesis.summary) }
-                        @if !hypothesis.tags.is_empty() {
-                            div.chip-row {
-                                @for tag in &hypothesis.tags {
-                                    span.tag-chip { (tag) }
-                                }
-                            }
-                        }
+                        (render_hypothesis_meta_chips(
+                            hypothesis.expected_yield,
+                            hypothesis.confidence,
+                            &hypothesis.tags,
+                        ))
                         div.meta-row.muted {
                             span { "updated " (format_timestamp(hypothesis.updated_at)) }
                         }
@@ -1194,13 +1192,11 @@ fn render_hypothesis_current_state_grid(
                             }
                         }
                         p.prose { (state.hypothesis.summary) }
-                        @if !state.hypothesis.tags.is_empty() {
-                            div.chip-row {
-                                @for tag in &state.hypothesis.tags {
-                                    span.tag-chip { (tag) }
-                                }
-                            }
-                        }
+                        (render_hypothesis_meta_chips(
+                            state.hypothesis.expected_yield,
+                            state.hypothesis.confidence,
+                            &state.hypothesis.tags,
+                        ))
                         div.meta-row {
                             span { (format!("{} open", state.open_experiments.len())) }
                             @if let Some(latest) = state.latest_closed_experiment.as_ref() {

@@ -12,8 +12,9 @@ use camino::{Utf8Path, Utf8PathBuf};
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use fidget_spinner_core::{
     CommandRecipe, ExecutionBackend, ExperimentAnalysis, ExperimentStatus, FieldValueType,
-    FrontierStatus, FrontierVerdict, MetricAggregation, MetricDimension, MetricUnit, NonEmptyText,
-    OptimizationObjective, ReportedMetricValue, RunDimensionValue, Slug, TagName,
+    FrontierStatus, FrontierVerdict, HypothesisAssessmentLevel, MetricAggregation, MetricDimension,
+    MetricUnit, NonEmptyText, OptimizationObjective, ReportedMetricValue, RunDimensionValue, Slug,
+    TagName,
 };
 use fidget_spinner_store_sqlite::{
     CloseExperimentRequest, CreateFrontierRequest, CreateHypothesisRequest, CreateKpiRequest,
@@ -300,6 +301,10 @@ struct HypothesisRecordArgs {
     summary: String,
     #[arg(long)]
     body: String,
+    #[arg(long, value_enum)]
+    expected_yield: CliHypothesisAssessmentLevel,
+    #[arg(long, value_enum)]
+    confidence: CliHypothesisAssessmentLevel,
     #[arg(long)]
     slug: Option<String>,
     #[arg(long = "tag")]
@@ -342,6 +347,10 @@ struct HypothesisUpdateArgs {
     summary: Option<String>,
     #[arg(long)]
     body: Option<String>,
+    #[arg(long, value_enum)]
+    expected_yield: Option<CliHypothesisAssessmentLevel>,
+    #[arg(long, value_enum)]
+    confidence: Option<CliHypothesisAssessmentLevel>,
     #[arg(long = "tag")]
     tags: Vec<String>,
     #[arg(long = "replace-tags")]
@@ -702,12 +711,29 @@ enum CliFrontierStatus {
     Archived,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+enum CliHypothesisAssessmentLevel {
+    Low,
+    Medium,
+    High,
+}
+
 impl From<CliFrontierStatus> for FrontierStatus {
     fn from(value: CliFrontierStatus) -> Self {
         match value {
             CliFrontierStatus::Exploring => Self::Exploring,
             CliFrontierStatus::Paused => Self::Paused,
             CliFrontierStatus::Archived => Self::Archived,
+        }
+    }
+}
+
+impl From<CliHypothesisAssessmentLevel> for HypothesisAssessmentLevel {
+    fn from(value: CliHypothesisAssessmentLevel) -> Self {
+        match value {
+            CliHypothesisAssessmentLevel::Low => Self::Low,
+            CliHypothesisAssessmentLevel::Medium => Self::Medium,
+            CliHypothesisAssessmentLevel::High => Self::High,
         }
     }
 }
@@ -879,6 +905,8 @@ fn run_hypothesis_record(args: HypothesisRecordArgs) -> Result<(), StoreError> {
         title: NonEmptyText::new(args.title)?,
         summary: NonEmptyText::new(args.summary)?,
         body: NonEmptyText::new(args.body)?,
+        expected_yield: args.expected_yield.into(),
+        confidence: args.confidence.into(),
         tags: parse_tag_set(args.tags)?,
         parents: parse_vertex_selectors(args.parents)?,
     })?)
@@ -911,6 +939,8 @@ fn run_hypothesis_update(args: HypothesisUpdateArgs) -> Result<(), StoreError> {
         title: args.title.map(NonEmptyText::new).transpose()?,
         summary: args.summary.map(NonEmptyText::new).transpose()?,
         body: args.body.map(NonEmptyText::new).transpose()?,
+        expected_yield: args.expected_yield.map(Into::into),
+        confidence: args.confidence.map(Into::into),
         tags,
         parents,
     })?)
