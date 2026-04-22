@@ -142,6 +142,12 @@ struct FrontierPageQuery {
     extra: BTreeMap<String, String>,
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct MetricAxisLogScales {
+    primary: bool,
+    secondary: bool,
+}
+
 #[derive(Clone, Debug, Default)]
 struct ProjectMetricsQuery {
     frontier: Option<String>,
@@ -242,10 +248,11 @@ impl FrontierPageQuery {
         Ok(query)
     }
 
-    fn log_y_requested(&self) -> bool {
-        self.extra
-            .get("log_y")
-            .is_some_and(|value| matches!(value.as_str(), "1" | "true" | "on" | "yes"))
+    fn requested_log_scales(&self) -> MetricAxisLogScales {
+        MetricAxisLogScales {
+            primary: query_flag_enabled(&self.extra, "log_y_primary"),
+            secondary: query_flag_enabled(&self.extra, "log_y_secondary"),
+        }
     }
 
     fn condition_filters(&self) -> BTreeMap<String, String> {
@@ -262,6 +269,12 @@ impl FrontierPageQuery {
             })
             .collect()
     }
+}
+
+fn query_flag_enabled(flags: &BTreeMap<String, String>, key: &str) -> bool {
+    flags
+        .get(key)
+        .is_some_and(|value| matches!(value.as_str(), "1" | "true" | "on" | "yes"))
 }
 
 fn render_response(result: Result<Markup, StoreError>) -> Response {
@@ -876,7 +889,13 @@ fn frontier_href(slug: &Slug) -> String {
 }
 
 fn frontier_results_href(slug: &Slug) -> String {
-    frontier_tab_href(slug, FrontierTab::Results, &[], false, None)
+    frontier_tab_href(
+        slug,
+        FrontierTab::Results,
+        &[],
+        MetricAxisLogScales::default(),
+        None,
+    )
 }
 
 fn project_metrics_frontier_href(slug: &Slug) -> String {
@@ -887,14 +906,14 @@ fn frontier_tab_href(
     slug: &Slug,
     tab: FrontierTab,
     selected_metrics: &[fidget_spinner_store_sqlite::MetricKeySummary],
-    log_y: bool,
+    log_scales: MetricAxisLogScales,
     table_metric: Option<&str>,
 ) -> String {
     frontier_tab_href_with_query(
         slug,
         tab,
         selected_metrics,
-        log_y,
+        log_scales,
         &BTreeMap::new(),
         table_metric,
     )
@@ -904,7 +923,7 @@ fn frontier_tab_href_with_query(
     slug: &Slug,
     tab: FrontierTab,
     selected_metrics: &[fidget_spinner_store_sqlite::MetricKeySummary],
-    log_y: bool,
+    log_scales: MetricAxisLogScales,
     condition_filters: &BTreeMap<String, String>,
     table_metric: Option<&str>,
 ) -> String {
@@ -917,8 +936,11 @@ fn frontier_tab_href_with_query(
         href.push_str("&metric=");
         href.push_str(&encode_path_segment(metric.key.as_str()));
     }
-    if log_y {
-        href.push_str("&log_y=1");
+    if log_scales.primary {
+        href.push_str("&log_y_primary=1");
+    }
+    if log_scales.secondary {
+        href.push_str("&log_y_secondary=1");
     }
     if let Some(table_metric) = table_metric.filter(|table_metric| !table_metric.trim().is_empty())
     {
@@ -1010,7 +1032,9 @@ mod tests {
         MetricChartAxis, best_metric_table_title_split, metric_chart_secondary_grid_values,
         render_metric_series_section, resolve_selected_metric_keys, truncated_entry_count,
     };
-    use super::{FrontierPageQuery, FrontierTab, METRIC_TABLE_TITLE_MIN_BUDGET_CH};
+    use super::{
+        FrontierPageQuery, FrontierTab, METRIC_TABLE_TITLE_MIN_BUDGET_CH, MetricAxisLogScales,
+    };
     use std::collections::BTreeMap;
 
     use fidget_spinner_core::{
@@ -1295,7 +1319,7 @@ mod tests {
     #[test]
     fn frontier_page_query_accepts_repeated_metric_selectors() {
         let query = FrontierPageQuery::parse(Some(
-            "metric=presolve_ms&metric=ingress_ms_gmean&table_metric=ingress_ms_gmean&log_y=1",
+            "metric=presolve_ms&metric=ingress_ms_gmean&table_metric=ingress_ms_gmean&log_y_primary=1&log_y_secondary=1",
         ));
         let query = must(query, "query should parse");
         assert_eq!(
@@ -1303,7 +1327,13 @@ mod tests {
             vec!["presolve_ms".to_owned(), "ingress_ms_gmean".to_owned()]
         );
         assert_eq!(query.table_metric.as_deref(), Some("ingress_ms_gmean"));
-        assert!(query.log_y_requested());
+        assert_eq!(
+            query.requested_log_scales(),
+            MetricAxisLogScales {
+                primary: true,
+                secondary: true,
+            }
+        );
     }
 
     #[test]
@@ -1377,7 +1407,7 @@ mod tests {
             &selected_metrics,
             &series,
             &BTreeMap::new(),
-            false,
+            MetricAxisLogScales::default(),
             Some(metric_a.key.as_str()),
             None,
         )
@@ -1410,7 +1440,7 @@ mod tests {
     }
 
     #[test]
-    fn metric_series_section_disarms_log_y_when_dual_axes_cannot_support_it() {
+    fn metric_series_section_clamps_log_scales_per_axis() {
         let frontier = test_frontier();
         let hypothesis = test_hypothesis(frontier.id, "hyp-one", "Hypothesis One");
         let time_metric = test_metric("presolve_ms", "ms");
@@ -1451,26 +1481,101 @@ mod tests {
             &selected_metrics,
             &series,
             &BTreeMap::new(),
-            true,
+            MetricAxisLogScales {
+                primary: true,
+                secondary: true,
+            },
             None,
             None,
         )
         .into_string();
-        assert!(!markup.contains("Metrics 2 · log"));
-        assert!(!markup.contains("log_y=1"));
-        let (_, log_y_input) = must(
+        assert!(markup.contains("Metrics 2 · log L"));
+        assert!(markup.contains("log_y_primary=1"));
+        assert!(!markup.contains("log_y_secondary=1"));
+        let (_, primary_input) = must(
             markup
-                .split_once("name=\"log_y\"")
-                .ok_or("log_y input should be rendered"),
-            "log_y input should be rendered",
+                .split_once("name=\"log_y_primary\"")
+                .ok_or("log_y_primary input should be rendered"),
+            "log_y_primary input should be rendered",
         );
-        let (log_y_input, _) = must(
-            log_y_input
+        let (primary_input, _) = must(
+            primary_input
                 .split_once('>')
-                .ok_or("log_y input tag should be bounded"),
-            "log_y input tag should be bounded",
+                .ok_or("log_y_primary input tag should be bounded"),
+            "log_y_primary input tag should be bounded",
         );
-        assert!(log_y_input.contains("disabled"));
-        assert!(!log_y_input.contains("checked"));
+        assert!(primary_input.contains("checked"));
+        assert!(!primary_input.contains("disabled"));
+        let (_, secondary_input) = must(
+            markup
+                .split_once("name=\"log_y_secondary\"")
+                .ok_or("log_y_secondary input should be rendered"),
+            "log_y_secondary input should be rendered",
+        );
+        let (secondary_input, _) = must(
+            secondary_input
+                .split_once('>')
+                .ok_or("log_y_secondary input tag should be bounded"),
+            "log_y_secondary input tag should be bounded",
+        );
+        assert!(secondary_input.contains("disabled"));
+        assert!(!secondary_input.contains("checked"));
+    }
+
+    #[test]
+    fn metric_series_section_renders_independent_dual_axis_log_controls() {
+        let frontier = test_frontier();
+        let hypothesis = test_hypothesis(frontier.id, "hyp-one", "Hypothesis One");
+        let time_metric = test_metric("presolve_ms", "ms");
+        let count_metric = test_metric("presolve_nz", "count");
+        let series = vec![
+            FrontierMetricSeries {
+                frontier: frontier.clone(),
+                metric: time_metric.clone(),
+                kpi: None,
+                points: vec![test_metric_point(
+                    frontier.id,
+                    &hypothesis,
+                    "exp-a",
+                    "Experiment A",
+                    10.0,
+                    test_timestamp("2026-04-11T01:00:00Z"),
+                )],
+            },
+            FrontierMetricSeries {
+                frontier: frontier.clone(),
+                metric: count_metric.clone(),
+                kpi: None,
+                points: vec![test_metric_point(
+                    frontier.id,
+                    &hypothesis,
+                    "exp-b",
+                    "Experiment B",
+                    100.0,
+                    test_timestamp("2026-04-11T02:00:00Z"),
+                )],
+            },
+        ];
+        let selected_metrics = vec![time_metric, count_metric];
+        let markup = render_metric_series_section(
+            &frontier.slug,
+            &selected_metrics,
+            &[],
+            &selected_metrics,
+            &series,
+            &BTreeMap::new(),
+            MetricAxisLogScales {
+                primary: true,
+                secondary: true,
+            },
+            None,
+            None,
+        )
+        .into_string();
+        assert!(markup.contains("Metrics 2 · log L+R"));
+        assert!(markup.contains("Left Log"));
+        assert!(markup.contains("Right Log"));
+        assert!(markup.contains("log_y_primary=1"));
+        assert!(markup.contains("log_y_secondary=1"));
     }
 }

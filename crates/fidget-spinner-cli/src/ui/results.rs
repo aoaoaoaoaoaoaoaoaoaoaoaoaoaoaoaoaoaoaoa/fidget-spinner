@@ -9,11 +9,12 @@ use super::{
     FrontierOpenProjection, FrontierPageQuery, FrontierTab, FrontierVerdict,
     HypothesisCurrentState, IntoDrawingArea, IntoFont, IntoLogRange, LineSeries,
     ListExperimentsQuery, ListHypothesesQuery, METRIC_TABLE_TITLE_MIN_BUDGET_CH,
-    METRIC_TABLE_TITLE_PERCENT_BUDGET, Markup, MetricDisplayUnit, MetricKeysQuery, MetricQuantity,
-    MetricScope, NonEmptyText, PathElement, PreEscaped, RGBColor, SVGBackend, SeriesLabelPosition,
-    ShapeStyle, Slug, StoreError, experiment_href, format_metric_value, format_timestamp,
-    frontier_href, frontier_tab_href_with_query, html, hypothesis_href, limit_items,
-    project_metrics_frontier_href, render_dimension_value, status_chip_classes, verdict_class,
+    METRIC_TABLE_TITLE_PERCENT_BUDGET, Markup, MetricAxisLogScales, MetricDisplayUnit,
+    MetricKeysQuery, MetricQuantity, MetricScope, NonEmptyText, PathElement, PreEscaped, RGBColor,
+    SVGBackend, SeriesLabelPosition, ShapeStyle, Slug, StoreError, experiment_href,
+    format_metric_value, format_timestamp, frontier_href, frontier_tab_href_with_query, html,
+    hypothesis_href, limit_items, project_metrics_frontier_href, render_dimension_value,
+    status_chip_classes, verdict_class,
 };
 use plotters::coord::ranged1d::{LightPoints, Ranged};
 use plotters::coord::types::RangedCoordf64;
@@ -96,7 +97,7 @@ pub(super) fn render_frontier_tab_content(
                     &selected_metrics,
                     &series,
                     &dimension_filters,
-                    query.log_y_requested(),
+                    query.requested_log_scales(),
                     query.table_metric.as_deref(),
                     limit,
                 ))
@@ -109,7 +110,7 @@ pub(super) fn render_frontier_tab_bar(
     frontier_slug: &Slug,
     active_tab: FrontierTab,
     selected_metrics: &[fidget_spinner_store_sqlite::MetricKeySummary],
-    log_y: bool,
+    log_scales: MetricAxisLogScales,
     dimension_filters: &BTreeMap<String, String>,
     table_metric: Option<&str>,
 ) -> Markup {
@@ -126,7 +127,7 @@ pub(super) fn render_frontier_tab_bar(
                     frontier_slug,
                     tab,
                     selected_metrics,
-                    log_y,
+                    log_scales,
                     dimension_filters,
                     table_metric,
                 );
@@ -287,7 +288,7 @@ pub(super) fn render_metric_series_section(
     selected_metrics: &[fidget_spinner_store_sqlite::MetricKeySummary],
     series: &[FrontierMetricSeries],
     dimension_filters: &BTreeMap<String, String>,
-    log_y: bool,
+    requested_log_scales: MetricAxisLogScales,
     requested_table_metric: Option<&str>,
     limit: Option<u32>,
 ) -> Markup {
@@ -299,10 +300,11 @@ pub(super) fn render_metric_series_section(
         .collect::<Vec<_>>();
     let experiment_positions = collect_metric_experiment_positions(&plotted_series);
     let chart_axes = MetricAxisSet::from_series(&plotted_series);
-    let can_use_log_y = chart_axes
+    let log_support = chart_axes
         .as_ref()
-        .is_some_and(|axes| metric_chart_supports_log_y(axes, &plotted_series));
-    let effective_log_y = log_y && can_use_log_y;
+        .map(|axes| metric_chart_log_support(axes, &plotted_series))
+        .unwrap_or_default();
+    let effective_log_scales = log_support.clamp(requested_log_scales);
     let no_metric_history =
         selected_metrics.is_empty() || series.iter().all(|series| series.points.is_empty());
     let table_series = filtered_series
@@ -323,7 +325,7 @@ pub(super) fn render_metric_series_section(
                     selected_metrics,
                     &facets,
                     dimension_filters,
-                    effective_log_y,
+                    effective_log_scales,
                     active_table_metric,
                 ))
                 (render_metric_selection_popout(
@@ -332,8 +334,8 @@ pub(super) fn render_metric_series_section(
                     other_metric_keys,
                     selected_metrics,
                     dimension_filters,
-                    effective_log_y,
-                    can_use_log_y,
+                    effective_log_scales,
+                    log_support,
                     active_table_metric,
                 ))
             }
@@ -351,7 +353,7 @@ pub(super) fn render_metric_series_section(
                         "Copy PNG"
                     }
                 }
-                (PreEscaped(render_metric_chart_svg(axes, &plotted_series, effective_log_y)))
+                (PreEscaped(render_metric_chart_svg(axes, &plotted_series, effective_log_scales)))
             }
             @if let Some(table_series) = table_series {
                 section.subcard.metric-table-section {
@@ -364,7 +366,7 @@ pub(super) fn render_metric_series_section(
                                         frontier_slug,
                                         FrontierTab::Results,
                                         selected_metrics,
-                                        effective_log_y,
+                                        effective_log_scales,
                                         dimension_filters,
                                         Some(metric_series.metric.key.as_str()),
                                     );
@@ -473,14 +475,14 @@ fn render_metric_filter_popout(
     selected_metrics: &[fidget_spinner_store_sqlite::MetricKeySummary],
     facets: &[DimensionFacet],
     active_filters: &BTreeMap<String, String>,
-    log_y: bool,
+    log_scales: MetricAxisLogScales,
     table_metric: Option<&str>,
 ) -> Markup {
     let clear_href = frontier_tab_href_with_query(
         frontier_slug,
         FrontierTab::Results,
         selected_metrics,
-        log_y,
+        log_scales,
         &BTreeMap::new(),
         table_metric,
     );
@@ -500,7 +502,7 @@ fn render_metric_filter_popout(
                 form.filter-form.auto-submit-form method="get" action=(frontier_href(frontier_slug)) data-preserve-viewport="true" {
                     input type="hidden" name="tab" value="results";
                     (render_metric_selection_hidden_inputs(selected_metrics))
-                    (render_log_hidden_input(log_y))
+                    (render_log_hidden_inputs(log_scales))
                     (render_table_metric_hidden_input(table_metric))
                     div.filter-form-grid {
                         @for facet in facets {
@@ -535,7 +537,7 @@ fn render_metric_filter_popout(
                             frontier_slug,
                             FrontierTab::Results,
                             selected_metrics,
-                            log_y,
+                            log_scales,
                             &remove_dimension_filter(active_filters, key),
                             table_metric,
                         );
@@ -556,11 +558,11 @@ fn render_metric_selection_popout(
     other_metric_keys: &[fidget_spinner_store_sqlite::MetricKeySummary],
     selected_metrics: &[fidget_spinner_store_sqlite::MetricKeySummary],
     dimension_filters: &BTreeMap<String, String>,
-    log_y: bool,
-    can_use_log_y: bool,
+    log_scales: MetricAxisLogScales,
+    log_support: MetricAxisLogSupport,
     table_metric: Option<&str>,
 ) -> Markup {
-    let label = metric_popout_label(selected_metrics, log_y);
+    let label = metric_popout_label(selected_metrics, log_scales);
     let selected_families = MetricAxisFamilies::from_metrics(selected_metrics);
     html! {
     details.control-popout id="metric-selection-popout" data-preserve-open="true" {
@@ -583,7 +585,7 @@ fn render_metric_selection_popout(
                                             selected_metrics,
                                             &selected_families,
                                             dimension_filters,
-                                            log_y,
+                                            log_scales,
                                         ))
                                     }
                                 }
@@ -602,7 +604,7 @@ fn render_metric_selection_popout(
                                             selected_metrics,
                                             &selected_families,
                                             dimension_filters,
-                                            log_y,
+                                            log_scales,
                                         ))
                                     }
                                 }
@@ -611,20 +613,38 @@ fn render_metric_selection_popout(
                     }
                     aside.metric-picker-sidecar {
                         h4 { "Options" }
-                        label.metric-checkbox-row.metric-checkbox-row-compact title=(if can_use_log_y {
-                            "Positive-only filtered values. Toggles logarithmic scaling on the active y axis or axes."
+                        label.metric-checkbox-row.metric-checkbox-row-compact title=(if log_support.primary {
+                            "Positive-only filtered values on the left axis. Toggles logarithmic scaling on the left y axis."
                         } else {
-                            "Logarithmic y scale is only available when all plotted values on every active y axis are strictly positive."
+                            "Left-axis logarithmic scaling is only available when all plotted left-axis values are strictly positive."
                         }) {
                             input
                                 type="checkbox"
                                 data-auto-submit="true"
-                                name="log_y"
+                                name="log_y_primary"
                                 value="1"
-                                checked[log_y]
-                                disabled[!can_use_log_y];
+                                checked[log_scales.primary]
+                                disabled[!log_support.primary];
                             span.metric-checkbox-copy {
-                                span.metric-checkbox-title { "Log Y" }
+                                span.metric-checkbox-title { "Left Log" }
+                            }
+                        }
+                        @if log_support.has_secondary {
+                            label.metric-checkbox-row.metric-checkbox-row-compact title=(if log_support.secondary {
+                                "Positive-only filtered values on the right axis. Toggles logarithmic scaling on the right y axis."
+                            } else {
+                                "Right-axis logarithmic scaling is only available when all plotted right-axis values are strictly positive."
+                            }) {
+                                input
+                                    type="checkbox"
+                                    data-auto-submit="true"
+                                    name="log_y_secondary"
+                                    value="1"
+                                    checked[log_scales.secondary]
+                                    disabled[!log_support.secondary];
+                                span.metric-checkbox-copy {
+                                    span.metric-checkbox-title { "Right Log" }
+                                }
                             }
                         }
                         p.muted.compact-note {
@@ -644,7 +664,7 @@ fn render_metric_picker_option(
     selected_metrics: &[fidget_spinner_store_sqlite::MetricKeySummary],
     selected_families: &MetricAxisFamilies,
     dimension_filters: &BTreeMap<String, String>,
-    log_y: bool,
+    log_scales: MetricAxisLogScales,
 ) -> Markup {
     let selected = selected_metrics
         .iter()
@@ -674,7 +694,7 @@ fn render_metric_picker_option(
             frontier_slug,
             FrontierTab::Results,
             replacement,
-            log_y,
+            log_scales,
             dimension_filters,
             Some(metric.key.as_str()),
         );
@@ -691,7 +711,7 @@ fn render_metric_picker_option(
 fn render_metric_chart_svg(
     axes: &MetricAxisSet,
     series: &[&FilteredMetricSeries<'_>],
-    log_y: bool,
+    log_scales: MetricAxisLogScales,
 ) -> String {
     let mut svg = String::new();
     {
@@ -708,7 +728,9 @@ fn render_metric_chart_svg(
             .filter(|series| series.side == MetricAxisSide::Primary)
             .flat_map(|series| series.points.iter().map(|(_, value, _)| *value))
             .collect::<Vec<_>>();
-        let Some((primary_min, primary_max)) = metric_chart_y_range(&primary_values, log_y) else {
+        let Some((primary_min, primary_max)) =
+            metric_chart_y_range(&primary_values, log_scales.primary)
+        else {
             return chart_error_markup("metric values are non-finite");
         };
         let secondary_values = chart_series
@@ -717,7 +739,7 @@ fn render_metric_chart_svg(
             .flat_map(|series| series.points.iter().map(|(_, value, _)| *value))
             .collect::<Vec<_>>();
         let secondary_range = if axes.secondary.is_some() {
-            let Some(range) = metric_chart_y_range(&secondary_values, log_y) else {
+            let Some(range) = metric_chart_y_range(&secondary_values, log_scales.secondary) else {
                 return chart_error_markup("secondary metric values are non-finite");
             };
             Some(range)
@@ -804,7 +826,7 @@ fn render_metric_chart_svg(
                     return chart_error_markup("mesh draw failed");
                 }
 
-                if log_y {
+                if log_scales.primary {
                     let refinement_style =
                         ShapeStyle::from(&RGBColor(223, 209, 189).mix(0.72)).stroke_width(1);
                     for value in
@@ -860,7 +882,7 @@ fn render_metric_chart_svg(
                     return chart_error_markup("mesh draw failed");
                 }
 
-                if log_y {
+                if log_scales.primary {
                     let refinement_style =
                         ShapeStyle::from(&RGBColor(223, 209, 189).mix(0.72)).stroke_width(1);
                     for value in
@@ -883,9 +905,11 @@ fn render_metric_chart_svg(
                 if let Some(secondary_axis) = axes.secondary.as_ref() {
                     let secondary_grid_style =
                         ShapeStyle::from(&RGBColor(89, 119, 138).mix(0.28)).stroke_width(1);
-                    for value in
-                        metric_chart_secondary_grid_values($secondary_min, $secondary_max, log_y)
-                    {
+                    for value in metric_chart_secondary_grid_values(
+                        $secondary_min,
+                        $secondary_max,
+                        log_scales.secondary,
+                    ) {
                         if chart
                             .draw_secondary_series(DashedLineSeries::new(
                                 [(0_i32, value), (x_end, value)],
@@ -930,53 +954,103 @@ fn render_metric_chart_svg(
         }
 
         if let Some((secondary_min, secondary_max)) = secondary_range {
-            if log_y {
-                let mut chart = match ChartBuilder::on(&root)
-                    .margin(18)
-                    .x_label_area_size(32)
-                    .y_label_area_size(84)
-                    .right_y_label_area_size(84)
-                    .build_cartesian_2d(0_i32..x_end, (primary_min..primary_max).log_scale())
-                {
-                    Ok(chart) => chart.set_secondary_coord(
-                        0_i32..x_end,
-                        (secondary_min..secondary_max).log_scale(),
-                    ),
-                    Err(error) => {
-                        return chart_error_markup(&format!("chart build failed: {error:?}"));
-                    }
-                };
-                draw_dual_chart!(
-                    chart,
-                    primary_min,
-                    primary_max,
-                    secondary_min,
-                    secondary_max
-                );
-            } else {
-                let mut chart = match ChartBuilder::on(&root)
-                    .margin(18)
-                    .x_label_area_size(32)
-                    .y_label_area_size(84)
-                    .right_y_label_area_size(84)
-                    .build_cartesian_2d(0_i32..x_end, primary_min..primary_max)
-                {
-                    Ok(chart) => {
-                        chart.set_secondary_coord(0_i32..x_end, secondary_min..secondary_max)
-                    }
-                    Err(error) => {
-                        return chart_error_markup(&format!("chart build failed: {error:?}"));
-                    }
-                };
-                draw_dual_chart!(
-                    chart,
-                    primary_min,
-                    primary_max,
-                    secondary_min,
-                    secondary_max
-                );
+            match (log_scales.primary, log_scales.secondary) {
+                (true, true) => {
+                    let mut chart = match ChartBuilder::on(&root)
+                        .margin(18)
+                        .x_label_area_size(32)
+                        .y_label_area_size(84)
+                        .right_y_label_area_size(84)
+                        .build_cartesian_2d(0_i32..x_end, (primary_min..primary_max).log_scale())
+                    {
+                        Ok(chart) => chart.set_secondary_coord(
+                            0_i32..x_end,
+                            (secondary_min..secondary_max).log_scale(),
+                        ),
+                        Err(error) => {
+                            return chart_error_markup(&format!("chart build failed: {error:?}"));
+                        }
+                    };
+                    draw_dual_chart!(
+                        chart,
+                        primary_min,
+                        primary_max,
+                        secondary_min,
+                        secondary_max
+                    );
+                }
+                (true, false) => {
+                    let mut chart = match ChartBuilder::on(&root)
+                        .margin(18)
+                        .x_label_area_size(32)
+                        .y_label_area_size(84)
+                        .right_y_label_area_size(84)
+                        .build_cartesian_2d(0_i32..x_end, (primary_min..primary_max).log_scale())
+                    {
+                        Ok(chart) => {
+                            chart.set_secondary_coord(0_i32..x_end, secondary_min..secondary_max)
+                        }
+                        Err(error) => {
+                            return chart_error_markup(&format!("chart build failed: {error:?}"));
+                        }
+                    };
+                    draw_dual_chart!(
+                        chart,
+                        primary_min,
+                        primary_max,
+                        secondary_min,
+                        secondary_max
+                    );
+                }
+                (false, true) => {
+                    let mut chart = match ChartBuilder::on(&root)
+                        .margin(18)
+                        .x_label_area_size(32)
+                        .y_label_area_size(84)
+                        .right_y_label_area_size(84)
+                        .build_cartesian_2d(0_i32..x_end, primary_min..primary_max)
+                    {
+                        Ok(chart) => chart.set_secondary_coord(
+                            0_i32..x_end,
+                            (secondary_min..secondary_max).log_scale(),
+                        ),
+                        Err(error) => {
+                            return chart_error_markup(&format!("chart build failed: {error:?}"));
+                        }
+                    };
+                    draw_dual_chart!(
+                        chart,
+                        primary_min,
+                        primary_max,
+                        secondary_min,
+                        secondary_max
+                    );
+                }
+                (false, false) => {
+                    let mut chart = match ChartBuilder::on(&root)
+                        .margin(18)
+                        .x_label_area_size(32)
+                        .y_label_area_size(84)
+                        .right_y_label_area_size(84)
+                        .build_cartesian_2d(0_i32..x_end, primary_min..primary_max)
+                    {
+                        Ok(chart) => {
+                            chart.set_secondary_coord(0_i32..x_end, secondary_min..secondary_max)
+                        }
+                        Err(error) => {
+                            return chart_error_markup(&format!("chart build failed: {error:?}"));
+                        }
+                    };
+                    draw_dual_chart!(
+                        chart,
+                        primary_min,
+                        primary_max,
+                        secondary_min,
+                        secondary_max
+                    );
+                }
             }
-        } else if log_y {
+        } else if log_scales.primary {
             let mut chart = match ChartBuilder::on(&root)
                 .margin(18)
                 .x_label_area_size(32)
@@ -1203,6 +1277,22 @@ struct MetricAxisSet {
     secondary: Option<MetricChartAxis>,
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct MetricAxisLogSupport {
+    primary: bool,
+    secondary: bool,
+    has_secondary: bool,
+}
+
+impl MetricAxisLogSupport {
+    fn clamp(self, requested: MetricAxisLogScales) -> MetricAxisLogScales {
+        MetricAxisLogScales {
+            primary: requested.primary && self.primary,
+            secondary: requested.secondary && self.has_secondary && self.secondary,
+        }
+    }
+}
+
 impl MetricAxisFamilies {
     fn from_metrics(metrics: &[fidget_spinner_store_sqlite::MetricKeySummary]) -> Self {
         let mut families = Self::default();
@@ -1347,10 +1437,13 @@ fn render_dimension_filter_hidden_inputs(filters: &BTreeMap<String, String>) -> 
     }
 }
 
-fn render_log_hidden_input(log_y: bool) -> Markup {
+fn render_log_hidden_inputs(log_scales: MetricAxisLogScales) -> Markup {
     html! {
-        @if log_y {
-            input type="hidden" name="log_y" value="1";
+        @if log_scales.primary {
+            input type="hidden" name="log_y_primary" value="1";
+        }
+        @if log_scales.secondary {
+            input type="hidden" name="log_y_secondary" value="1";
         }
     }
 }
@@ -1378,36 +1471,62 @@ fn metric_filter_anchor_id(key: &str) -> String {
 
 fn metric_popout_label(
     selected_metrics: &[fidget_spinner_store_sqlite::MetricKeySummary],
-    log_y: bool,
+    log_scales: MetricAxisLogScales,
 ) -> String {
     let mut label = if selected_metrics.len() <= 1 {
         "Metric".to_owned()
     } else {
         format!("Metrics {}", selected_metrics.len())
     };
-    if log_y {
-        label.push_str(" · log");
+    match (log_scales.primary, log_scales.secondary) {
+        (true, true) => label.push_str(" · log L+R"),
+        (true, false) => label.push_str(" · log L"),
+        (false, true) => label.push_str(" · log R"),
+        (false, false) => {}
     }
     label
 }
 
-fn metric_chart_supports_log_y(axes: &MetricAxisSet, series: &[&FilteredMetricSeries<'_>]) -> bool {
-    let mut saw_value = false;
+fn metric_chart_log_support(
+    axes: &MetricAxisSet,
+    series: &[&FilteredMetricSeries<'_>],
+) -> MetricAxisLogSupport {
+    let mut support = MetricAxisLogSupport {
+        primary: true,
+        secondary: axes.secondary.is_some(),
+        has_secondary: axes.secondary.is_some(),
+    };
+    let mut saw_primary = false;
+    let mut saw_secondary = false;
     for series in series {
-        let Some((_, axis)) = axes.axis_for_metric(series.metric) else {
-            return false;
+        let Some((side, axis)) = axes.axis_for_metric(series.metric) else {
+            return MetricAxisLogSupport::default();
         };
         for point in &series.points {
             let Some(value) = axis.normalize_value(point.value, &series.metric.display_unit) else {
-                return false;
+                match side {
+                    MetricAxisSide::Primary => support.primary = false,
+                    MetricAxisSide::Secondary => support.secondary = false,
+                }
+                continue;
             };
-            saw_value = true;
+            match side {
+                MetricAxisSide::Primary => saw_primary = true,
+                MetricAxisSide::Secondary => saw_secondary = true,
+            }
             if value <= 0.0 || !value.is_finite() {
-                return false;
+                match side {
+                    MetricAxisSide::Primary => support.primary = false,
+                    MetricAxisSide::Secondary => support.secondary = false,
+                }
             }
         }
     }
-    saw_value
+    support.primary &= saw_primary;
+    if support.has_secondary {
+        support.secondary &= saw_secondary;
+    }
+    support
 }
 
 fn collect_metric_experiment_positions(

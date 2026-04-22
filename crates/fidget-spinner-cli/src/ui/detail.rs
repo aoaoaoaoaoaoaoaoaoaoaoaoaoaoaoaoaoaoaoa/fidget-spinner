@@ -6,13 +6,13 @@ use super::results::{
 use super::{
     BTreeMap, DOCTYPE, ExperimentAnalysis, ExperimentDetail, ExperimentOutcome, ExperimentStatus,
     ExperimentSummary, FrontierOpenProjection, FrontierPageQuery, FrontierRecord, FrontierTab,
-    HypothesisDetail, Markup, MetricKeysQuery, MetricScope, NonEmptyText, PreEscaped,
-    ProjectRenderContext, RunDimensionValue, ShellFrame, StoreError, VertexRef, VertexSummary,
-    experiment_href, experiment_status_class, format_metric_value, format_timestamp, frontier_href,
-    frontier_status_class, frontier_tab_href, html, hypothesis_href, hypothesis_href_from_id,
-    hypothesis_title_for_roadmap_item, limit_items, load_shell_frame, open_store, pencil_icon,
-    render_dimension_value, render_fact, render_kv, render_sidebar, short_commit_hash,
-    status_chip_classes, verdict_class,
+    HypothesisDetail, Markup, MetricAxisLogScales, MetricKeysQuery, MetricScope, NonEmptyText,
+    PreEscaped, ProjectRenderContext, RunDimensionValue, ShellFrame, StoreError, VertexRef,
+    VertexSummary, experiment_href, experiment_status_class, format_metric_value, format_timestamp,
+    frontier_href, frontier_status_class, frontier_tab_href, html, hypothesis_href,
+    hypothesis_href_from_id, hypothesis_title_for_roadmap_item, limit_items, load_shell_frame,
+    open_store, pencil_icon, render_dimension_value, render_fact, render_kv, render_sidebar,
+    short_commit_hash, status_chip_classes, verdict_class,
 };
 
 pub(super) fn render_frontier_detail(
@@ -46,7 +46,7 @@ pub(super) fn render_frontier_detail(
                     &other_metric_keys_for_tab_bar,
                 ),
             ),
-            query.log_y_requested(),
+            query.requested_log_scales(),
             &query.condition_filters(),
             query.table_metric.as_deref(),
         )),
@@ -270,7 +270,7 @@ pub(super) fn render_frontier_active_sets(projection: &FrontierOpenProjection) -
                                                 &projection.frontier.slug,
                                                 FrontierTab::Results,
                                                 std::slice::from_ref(metric),
-                                                false,
+                                                MetricAxisLogScales::default(),
                                                 Some(metric.key.as_str()),
                                             )) {
                                                 (metric.key)
