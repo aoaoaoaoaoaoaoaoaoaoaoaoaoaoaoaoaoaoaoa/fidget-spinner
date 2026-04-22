@@ -24,6 +24,7 @@ const METRIC_CHART_LIGHT_LINE_LIMIT: usize = 5;
 const METRIC_CHART_Y_LABEL_COUNT: usize = 6;
 const METRIC_CHART_DOTTED_GRID_DASH: i32 = 1;
 const METRIC_CHART_DOTTED_GRID_GAP: i32 = 5;
+const METRIC_CHART_LOG_BUCKET_REFINEMENT_COUNT: usize = 4;
 
 pub(super) fn render_frontier_tab_content(
     store: &fidget_spinner_store_sqlite::ProjectStore,
@@ -322,7 +323,7 @@ pub(super) fn render_metric_series_section(
                     selected_metrics,
                     &facets,
                     dimension_filters,
-                    log_y,
+                    effective_log_y,
                     active_table_metric,
                 ))
                 (render_metric_selection_popout(
@@ -331,7 +332,7 @@ pub(super) fn render_metric_series_section(
                     other_metric_keys,
                     selected_metrics,
                     dimension_filters,
-                    log_y,
+                    effective_log_y,
                     can_use_log_y,
                     active_table_metric,
                 ))
@@ -363,7 +364,7 @@ pub(super) fn render_metric_series_section(
                                         frontier_slug,
                                         FrontierTab::Results,
                                         selected_metrics,
-                                        log_y,
+                                        effective_log_y,
                                         dimension_filters,
                                         Some(metric_series.metric.key.as_str()),
                                     );
@@ -611,11 +612,17 @@ fn render_metric_selection_popout(
                     aside.metric-picker-sidecar {
                         h4 { "Options" }
                         label.metric-checkbox-row.metric-checkbox-row-compact title=(if can_use_log_y {
-                            "Positive-only filtered values. Toggles logarithmic scaling on the y axis."
+                            "Positive-only filtered values. Toggles logarithmic scaling on the active y axis or axes."
                         } else {
-                            "Logarithmic y scale is only available when all plotted values are strictly positive."
+                            "Logarithmic y scale is only available when all plotted values on every active y axis are strictly positive."
                         }) {
-                            input type="checkbox" data-auto-submit="true" name="log_y" value="1" checked[log_y];
+                            input
+                                type="checkbox"
+                                data-auto-submit="true"
+                                name="log_y"
+                                value="1"
+                                checked[log_y]
+                                disabled[!can_use_log_y];
                             span.metric-checkbox-copy {
                                 span.metric-checkbox-title { "Log Y" }
                             }
@@ -778,7 +785,7 @@ fn render_metric_chart_svg(
         }
 
         macro_rules! draw_primary_chart {
-            ($chart:expr) => {{
+            ($chart:expr, $primary_min:expr, $primary_max:expr) => {{
                 let chart = &mut $chart;
                 if chart
                     .configure_mesh()
@@ -795,6 +802,26 @@ fn render_metric_chart_svg(
                     .is_err()
                 {
                     return chart_error_markup("mesh draw failed");
+                }
+
+                if log_y {
+                    let refinement_style =
+                        ShapeStyle::from(&RGBColor(223, 209, 189).mix(0.72)).stroke_width(1);
+                    for value in
+                        metric_chart_log_bucket_refinement_values($primary_min, $primary_max)
+                    {
+                        if chart
+                            .draw_series(DashedLineSeries::new(
+                                [(0_i32, value), (x_end, value)],
+                                METRIC_CHART_DOTTED_GRID_DASH,
+                                METRIC_CHART_DOTTED_GRID_GAP,
+                                refinement_style,
+                            ))
+                            .is_err()
+                        {
+                            return chart_error_markup("primary refinement grid draw failed");
+                        }
+                    }
                 }
 
                 draw_metric_side!(chart, draw_series, MetricAxisSide::Primary);
@@ -814,7 +841,7 @@ fn render_metric_chart_svg(
         }
 
         macro_rules! draw_dual_chart {
-            ($chart:expr, $secondary_min:expr, $secondary_max:expr) => {{
+            ($chart:expr, $primary_min:expr, $primary_max:expr, $secondary_min:expr, $secondary_max:expr) => {{
                 let chart = &mut $chart;
                 if chart
                     .configure_mesh()
@@ -831,6 +858,26 @@ fn render_metric_chart_svg(
                     .is_err()
                 {
                     return chart_error_markup("mesh draw failed");
+                }
+
+                if log_y {
+                    let refinement_style =
+                        ShapeStyle::from(&RGBColor(223, 209, 189).mix(0.72)).stroke_width(1);
+                    for value in
+                        metric_chart_log_bucket_refinement_values($primary_min, $primary_max)
+                    {
+                        if chart
+                            .draw_series(DashedLineSeries::new(
+                                [(0_i32, value), (x_end, value)],
+                                METRIC_CHART_DOTTED_GRID_DASH,
+                                METRIC_CHART_DOTTED_GRID_GAP,
+                                refinement_style,
+                            ))
+                            .is_err()
+                        {
+                            return chart_error_markup("primary refinement grid draw failed");
+                        }
+                    }
                 }
 
                 if let Some(secondary_axis) = axes.secondary.as_ref() {
@@ -899,7 +946,13 @@ fn render_metric_chart_svg(
                         return chart_error_markup(&format!("chart build failed: {error:?}"));
                     }
                 };
-                draw_dual_chart!(chart, secondary_min, secondary_max);
+                draw_dual_chart!(
+                    chart,
+                    primary_min,
+                    primary_max,
+                    secondary_min,
+                    secondary_max
+                );
             } else {
                 let mut chart = match ChartBuilder::on(&root)
                     .margin(18)
@@ -915,7 +968,13 @@ fn render_metric_chart_svg(
                         return chart_error_markup(&format!("chart build failed: {error:?}"));
                     }
                 };
-                draw_dual_chart!(chart, secondary_min, secondary_max);
+                draw_dual_chart!(
+                    chart,
+                    primary_min,
+                    primary_max,
+                    secondary_min,
+                    secondary_max
+                );
             }
         } else if log_y {
             let mut chart = match ChartBuilder::on(&root)
@@ -927,7 +986,7 @@ fn render_metric_chart_svg(
                 Ok(chart) => chart,
                 Err(error) => return chart_error_markup(&format!("chart build failed: {error:?}")),
             };
-            draw_primary_chart!(chart);
+            draw_primary_chart!(chart, primary_min, primary_max);
         } else {
             let mut chart = match ChartBuilder::on(&root)
                 .margin(18)
@@ -938,7 +997,7 @@ fn render_metric_chart_svg(
                 Ok(chart) => chart,
                 Err(error) => return chart_error_markup(&format!("chart build failed: {error:?}")),
             };
-            draw_primary_chart!(chart);
+            draw_primary_chart!(chart, primary_min, primary_max);
         }
 
         if root.present().is_err() {
@@ -985,9 +1044,42 @@ fn metric_chart_log_grid_values(min_value: f64, max_value: f64) -> Vec<f64> {
     if step_count == 0 {
         return Vec::new();
     }
-    (0..=step_count)
+    let mut values = (0..=step_count)
         .map(|index| 10_f64.powf(log_min + (log_max - log_min) * index as f64 / step_count as f64))
         .filter(|value| value.is_finite() && *value > min_value && *value < max_value)
+        .collect::<Vec<_>>();
+    values.extend(metric_chart_log_bucket_refinement_values(
+        min_value, max_value,
+    ));
+    values.sort_by(f64::total_cmp);
+    values.dedup_by(|left, right| {
+        (*left - *right).abs() <= f64::EPSILON * left.abs().max(right.abs()).max(1.0)
+    });
+    values
+}
+
+fn metric_chart_log_bucket_refinement_values(min_value: f64, max_value: f64) -> Vec<f64> {
+    if !(min_value.is_finite() && max_value.is_finite())
+        || min_value <= 0.0
+        || min_value >= max_value
+    {
+        return Vec::new();
+    }
+    let lower_bucket_floor = 10_f64.powf(min_value.log10().floor());
+    let lower_bucket_ceiling = lower_bucket_floor * 10.0;
+    if min_value / lower_bucket_floor < 9.0 {
+        return Vec::new();
+    }
+    let visible_bucket_ceiling = lower_bucket_ceiling.min(max_value);
+    if visible_bucket_ceiling <= min_value {
+        return Vec::new();
+    }
+    (1..=METRIC_CHART_LOG_BUCKET_REFINEMENT_COUNT)
+        .map(|step| {
+            let ratio = step as f64 / (METRIC_CHART_LOG_BUCKET_REFINEMENT_COUNT + 1) as f64;
+            min_value * (visible_bucket_ceiling / min_value).powf(ratio)
+        })
+        .filter(|value| value.is_finite() && *value > min_value && *value < visible_bucket_ceiling)
         .collect()
 }
 

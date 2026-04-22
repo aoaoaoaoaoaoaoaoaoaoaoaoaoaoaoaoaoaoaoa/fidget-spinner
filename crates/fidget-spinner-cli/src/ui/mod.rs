@@ -1267,6 +1267,12 @@ mod tests {
     }
 
     #[test]
+    fn log_grid_refines_truncated_upper_decade_bucket() {
+        let values = metric_chart_secondary_grid_values(0.91, 1000.0, true);
+        assert!(values.iter().any(|value| *value > 0.91 && *value < 1.0));
+    }
+
+    #[test]
     fn frontier_page_query_accepts_result_metric_selector() {
         let query = must(
             FrontierPageQuery::parse(Some("tab=results&metric=presolve_ms_gmean")),
@@ -1401,5 +1407,70 @@ mod tests {
         assert!(
             matches!((rank_three_offset, rank_one_offset), (Some(left), Some(right)) if left < right)
         );
+    }
+
+    #[test]
+    fn metric_series_section_disarms_log_y_when_dual_axes_cannot_support_it() {
+        let frontier = test_frontier();
+        let hypothesis = test_hypothesis(frontier.id, "hyp-one", "Hypothesis One");
+        let time_metric = test_metric("presolve_ms", "ms");
+        let count_metric = test_metric("presolve_nz", "count");
+        let series = vec![
+            FrontierMetricSeries {
+                frontier: frontier.clone(),
+                metric: time_metric.clone(),
+                kpi: None,
+                points: vec![test_metric_point(
+                    frontier.id,
+                    &hypothesis,
+                    "exp-a",
+                    "Experiment A",
+                    10.0,
+                    test_timestamp("2026-04-11T01:00:00Z"),
+                )],
+            },
+            FrontierMetricSeries {
+                frontier: frontier.clone(),
+                metric: count_metric.clone(),
+                kpi: None,
+                points: vec![test_metric_point(
+                    frontier.id,
+                    &hypothesis,
+                    "exp-b",
+                    "Experiment B",
+                    0.0,
+                    test_timestamp("2026-04-11T02:00:00Z"),
+                )],
+            },
+        ];
+        let selected_metrics = vec![time_metric, count_metric];
+        let markup = render_metric_series_section(
+            &frontier.slug,
+            &selected_metrics,
+            &[],
+            &selected_metrics,
+            &series,
+            &BTreeMap::new(),
+            true,
+            None,
+            None,
+        )
+        .into_string();
+        assert!(!markup.contains("Metrics 2 · log"));
+        assert!(!markup.contains("log_y=1"));
+        let (_, log_y_input) = must(
+            markup
+                .split_once("name=\"log_y\"")
+                .ok_or("log_y input should be rendered"),
+            "log_y input should be rendered",
+        );
+        let (log_y_input, _) = must(
+            log_y_input
+                .split_once('>')
+                .ok_or("log_y input tag should be bounded"),
+            "log_y input tag should be bounded",
+        );
+        assert!(log_y_input.contains("disabled"));
+        assert!(!log_y_input.contains("checked"));
     }
 }
