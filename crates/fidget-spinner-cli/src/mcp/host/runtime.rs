@@ -672,7 +672,7 @@ fn resolve_project_binding(
     requested_path: PathBuf,
 ) -> Result<ResolvedProjectBinding, fidget_spinner_store_sqlite::StoreError> {
     let store = crate::open_or_init_store_for_binding(&requested_path)?;
-    let project_status = store.status()?;
+    let project_status = store.status_from_mcp()?;
     Ok(ResolvedProjectBinding {
         binding: ProjectBinding {
             requested_path: requested_path.clone(),

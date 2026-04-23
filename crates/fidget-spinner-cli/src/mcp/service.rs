@@ -98,7 +98,9 @@ impl WorkerService {
             };
         }
         let output = match name {
-            "project.status" => project_status_output(&lift!(self.store.status()), &operation)?,
+            "project.status" => {
+                project_status_output(&lift!(self.store.status_from_mcp()), &operation)?
+            }
             "tag.add" => {
                 let args = deserialize::<TagAddArgs>(arguments)?;
                 let tag = lift!(self.store.register_tag_from_mcp(
@@ -264,15 +266,19 @@ impl WorkerService {
             }
             "hypothesis.list" => {
                 let args = deserialize::<HypothesisListArgs>(arguments)?;
+                reject_optional_frontier_selector_for_mcp(
+                    &self.store,
+                    args.frontier.as_deref(),
+                    &operation,
+                )?;
                 let hypotheses = lift!(
-                    self.store.list_hypotheses(ListHypothesesQuery {
+                    self.store.list_hypotheses_from_mcp(ListHypothesesQuery {
                         frontier: args.frontier,
                         tags: tags_to_set(args.tags.unwrap_or_default())
                             .map_err(store_fault(&operation))?,
                         limit: args.limit,
                     })
                 );
-                let hypotheses = mcp_visible_hypotheses(&self.store, hypotheses, &operation)?;
                 hypothesis_list_output(&hypotheses, &operation)?
             }
             "hypothesis.read" => {
@@ -361,8 +367,18 @@ impl WorkerService {
             }
             "experiment.list" => {
                 let args = deserialize::<ExperimentListArgs>(arguments)?;
+                reject_optional_frontier_selector_for_mcp(
+                    &self.store,
+                    args.frontier.as_deref(),
+                    &operation,
+                )?;
+                reject_optional_hypothesis_selector_for_mcp(
+                    &self.store,
+                    args.hypothesis.as_deref(),
+                    &operation,
+                )?;
                 let experiments = lift!(
-                    self.store.list_experiments(ListExperimentsQuery {
+                    self.store.list_experiments_from_mcp(ListExperimentsQuery {
                         frontier: args.frontier,
                         hypothesis: args.hypothesis,
                         tags: tags_to_set(args.tags.unwrap_or_default())
@@ -371,7 +387,6 @@ impl WorkerService {
                         limit: args.limit,
                     })
                 );
-                let experiments = mcp_visible_experiments(&self.store, experiments, &operation)?;
                 experiment_list_output(&experiments, &operation)?
             }
             "experiment.read" => {
@@ -444,26 +459,42 @@ impl WorkerService {
             }
             "experiment.nearest" => {
                 let args = deserialize::<ExperimentNearestArgs>(arguments)?;
+                reject_optional_frontier_selector_for_mcp(
+                    &self.store,
+                    args.frontier.as_deref(),
+                    &operation,
+                )?;
+                reject_optional_hypothesis_selector_for_mcp(
+                    &self.store,
+                    args.hypothesis.as_deref(),
+                    &operation,
+                )?;
+                reject_optional_experiment_selector_for_mcp(
+                    &self.store,
+                    args.experiment.as_deref(),
+                    &operation,
+                )?;
                 experiment_nearest_output(
                     &lift!(
-                        self.store.experiment_nearest(ExperimentNearestQuery {
-                            frontier: args.frontier,
-                            hypothesis: args.hypothesis,
-                            experiment: args.experiment,
-                            metric: args
-                                .metric
-                                .map(NonEmptyText::new)
-                                .transpose()
-                                .map_err(store_fault(&operation))?,
-                            dimensions: condition_map_from_wire(args.conditions)?,
-                            tags: args
-                                .tags
-                                .map(tags_to_set)
-                                .transpose()
-                                .map_err(store_fault(&operation))?
-                                .unwrap_or_default(),
-                            order: args.order,
-                        })
+                        self.store
+                            .experiment_nearest_from_mcp(ExperimentNearestQuery {
+                                frontier: args.frontier,
+                                hypothesis: args.hypothesis,
+                                experiment: args.experiment,
+                                metric: args
+                                    .metric
+                                    .map(NonEmptyText::new)
+                                    .transpose()
+                                    .map_err(store_fault(&operation))?,
+                                dimensions: condition_map_from_wire(args.conditions)?,
+                                tags: args
+                                    .tags
+                                    .map(tags_to_set)
+                                    .transpose()
+                                    .map_err(store_fault(&operation))?
+                                    .unwrap_or_default(),
+                                order: args.order,
+                            })
                     ),
                     &operation,
                 )?
@@ -523,6 +554,11 @@ impl WorkerService {
                     args.frontier.as_deref(),
                     &operation,
                 )?;
+                reject_optional_hypothesis_selector_for_mcp(
+                    &self.store,
+                    args.hypothesis.as_deref(),
+                    &operation,
+                )?;
                 let key = NonEmptyText::new(args.key).map_err(store_fault(&operation))?;
                 let default_metrics = lift!(self.store.metric_keys(MetricKeysQuery {
                     frontier: None,
@@ -534,7 +570,7 @@ impl WorkerService {
                     ));
                 }
                 metric_best_output(
-                    &lift!(self.store.metric_best(MetricBestQuery {
+                    &lift!(self.store.metric_best_from_mcp(MetricBestQuery {
                         frontier: args.frontier,
                         hypothesis: args.hypothesis,
                         key,
@@ -1014,6 +1050,34 @@ fn reject_optional_frontier_selector_for_mcp(
     Ok(())
 }
 
+fn reject_optional_hypothesis_selector_for_mcp(
+    store: &ProjectStore,
+    selector: Option<&str>,
+    operation: &str,
+) -> Result<(), FaultRecord> {
+    if let Some(selector) = selector {
+        let detail = store
+            .read_hypothesis(selector)
+            .map_err(store_fault(operation))?;
+        reject_hidden_hypothesis_detail_for_mcp(store, &detail, operation)?;
+    }
+    Ok(())
+}
+
+fn reject_optional_experiment_selector_for_mcp(
+    store: &ProjectStore,
+    selector: Option<&str>,
+    operation: &str,
+) -> Result<(), FaultRecord> {
+    if let Some(selector) = selector {
+        let detail = store
+            .read_experiment(selector)
+            .map_err(store_fault(operation))?;
+        reject_hidden_experiment_detail_for_mcp(store, &detail, operation)?;
+    }
+    Ok(())
+}
+
 fn reject_hidden_hypothesis_detail_for_mcp(
     store: &ProjectStore,
     detail: &HypothesisDetail,
@@ -1028,51 +1092,6 @@ fn reject_hidden_experiment_detail_for_mcp(
     operation: &str,
 ) -> Result<(), FaultRecord> {
     reject_archived_frontier_id_for_mcp(store, detail.record.frontier_id, operation)
-}
-
-fn mcp_visible_hypotheses(
-    store: &ProjectStore,
-    hypotheses: Vec<HypothesisSummary>,
-    operation: &str,
-) -> Result<Vec<HypothesisSummary>, FaultRecord> {
-    hypotheses
-        .into_iter()
-        .filter_map(|hypothesis| {
-            match frontier_id_is_mcp_visible(store, hypothesis.frontier_id, operation) {
-                Ok(true) => Some(Ok(hypothesis)),
-                Ok(false) => None,
-                Err(error) => Some(Err(error)),
-            }
-        })
-        .collect()
-}
-
-fn mcp_visible_experiments(
-    store: &ProjectStore,
-    experiments: Vec<ExperimentSummary>,
-    operation: &str,
-) -> Result<Vec<ExperimentSummary>, FaultRecord> {
-    experiments
-        .into_iter()
-        .filter_map(|experiment| {
-            match frontier_id_is_mcp_visible(store, experiment.frontier_id, operation) {
-                Ok(true) => Some(Ok(experiment)),
-                Ok(false) => None,
-                Err(error) => Some(Err(error)),
-            }
-        })
-        .collect()
-}
-
-fn frontier_id_is_mcp_visible(
-    store: &ProjectStore,
-    frontier_id: fidget_spinner_core::FrontierId,
-    operation: &str,
-) -> Result<bool, FaultRecord> {
-    let frontier = store
-        .read_frontier(&frontier_id.to_string())
-        .map_err(store_fault(operation))?;
-    Ok(frontier.status != FrontierStatus::Archived)
 }
 
 fn read_store_identity(project_root: &Utf8Path) -> Result<StoreIdentity, StoreError> {

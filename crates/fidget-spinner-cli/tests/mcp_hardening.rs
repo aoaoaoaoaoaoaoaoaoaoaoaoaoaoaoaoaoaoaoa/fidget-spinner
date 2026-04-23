@@ -501,6 +501,224 @@ fn frontier_archive_hides_default_enumeration_without_breaking_direct_reads() ->
 }
 
 #[test]
+fn archived_frontiers_are_absent_from_mcp_generic_surfaces() -> TestResult {
+    let project_root = temp_project_root("archived_frontier_mcp_absence")?;
+    init_project(&project_root)?;
+    let _ = seed_clean_git_repository(&project_root)?;
+    {
+        let mut store = must(ProjectStore::open(&project_root), "open store")?;
+        let _ = must(
+            store.define_metric(DefineMetricRequest {
+                key: must(NonEmptyText::new("nodes_solved"), "metric key")?,
+                dimension: MetricDimension::Count,
+                display_unit: Some(must(MetricUnit::new("count"), "metric unit")?),
+                aggregation: MetricAggregation::Point,
+                objective: OptimizationObjective::Maximize,
+                description: Some(must(
+                    NonEmptyText::new("Archive visibility fixture metric"),
+                    "metric description",
+                )?),
+            }),
+            "define metric",
+        )?;
+        for (slug, label) in [
+            ("visible", "Visible Frontier"),
+            ("archived", "Archived Frontier"),
+        ] {
+            let _ = must(
+                store.create_frontier(CreateFrontierRequest {
+                    label: must(NonEmptyText::new(label), "frontier label")?,
+                    objective: must(
+                        NonEmptyText::new("Ensure archived frontiers vanish from MCP"),
+                        "frontier objective",
+                    )?,
+                    slug: Some(must(Slug::new(slug), "frontier slug")?),
+                }),
+                "create frontier",
+            )?;
+            let _ = must(
+                store.create_kpi(CreateKpiRequest {
+                    frontier: slug.to_owned(),
+                    metric: must(NonEmptyText::new("nodes_solved"), "kpi metric")?,
+                }),
+                "create kpi",
+            )?;
+        }
+        for (frontier, hypothesis, title) in [
+            ("visible", "visible-hyp", "Visible Hypothesis"),
+            ("archived", "archived-hyp", "Archived Hypothesis"),
+        ] {
+            let _ = must(
+                store.create_hypothesis(CreateHypothesisRequest {
+                    frontier: frontier.to_owned(),
+                    slug: Some(must(Slug::new(hypothesis), "hypothesis slug")?),
+                    title: must(NonEmptyText::new(title), "hypothesis title")?,
+                    summary: must(
+                        NonEmptyText::new("Archive visibility hypothesis"),
+                        "hypothesis summary",
+                    )?,
+                    body: must(
+                        NonEmptyText::new(
+                            "Archive visibility fixture hypotheses exist only to verify that archived frontiers disappear completely from MCP generic queries.",
+                        ),
+                        "hypothesis body",
+                    )?,
+                    expected_yield: HypothesisAssessmentLevel::Medium,
+                    confidence: HypothesisAssessmentLevel::Medium,
+                    tags: BTreeSet::new(),
+                    parents: Vec::new(),
+                }),
+                "create hypothesis",
+            )?;
+        }
+        for (hypothesis, slug, title) in [
+            ("visible-hyp", "visible-exp", "Visible Experiment"),
+            ("archived-hyp", "archived-exp", "Archived Experiment"),
+            ("archived-hyp", "archived-open", "Archived Open Experiment"),
+        ] {
+            let _ = must(
+                store.open_experiment(OpenExperimentRequest {
+                    hypothesis: hypothesis.to_owned(),
+                    slug: Some(must(Slug::new(slug), "experiment slug")?),
+                    title: must(NonEmptyText::new(title), "experiment title")?,
+                    summary: Some(must(
+                        NonEmptyText::new("Archive visibility experiment"),
+                        "experiment summary",
+                    )?),
+                    tags: BTreeSet::new(),
+                    parents: Vec::new(),
+                }),
+                "open experiment",
+            )?;
+        }
+        for (experiment, value, verdict, rationale) in [
+            (
+                "visible-exp",
+                10.0,
+                FrontierVerdict::Accepted,
+                "Visible frontier result should remain the best visible entry.",
+            ),
+            (
+                "archived-exp",
+                999.0,
+                FrontierVerdict::Accepted,
+                "Archived frontier result should never bleed back into MCP surfaces.",
+            ),
+        ] {
+            let _ = must(
+                store.close_experiment(CloseExperimentRequest {
+                    experiment: experiment.to_owned(),
+                    expected_revision: None,
+                    backend: ExecutionBackend::Manual,
+                    command: CommandRecipe {
+                        argv: vec![must(NonEmptyText::new(experiment), "command argv")?],
+                        working_directory: None,
+                        env: BTreeMap::new(),
+                    },
+                    dimensions: BTreeMap::new(),
+                    primary_metric: ReportedMetricValue {
+                        key: must(NonEmptyText::new("nodes_solved"), "metric key")?,
+                        value,
+                        unit: Some(must(MetricUnit::new("count"), "metric unit")?),
+                    },
+                    supporting_metrics: Vec::new(),
+                    verdict,
+                    rationale: must(NonEmptyText::new(rationale), "rationale")?,
+                    analysis: None,
+                }),
+                "close experiment",
+            )?;
+        }
+        let archived_frontier = must(store.read_frontier("archived"), "read archived frontier")?;
+        let _ = must(
+            store.update_frontier(UpdateFrontierRequest {
+                frontier: "archived".to_owned(),
+                expected_revision: Some(archived_frontier.revision),
+                label: None,
+                objective: None,
+                status: Some(FrontierStatus::Archived),
+                situation: None,
+                roadmap: None,
+                unknowns: None,
+            }),
+            "archive frontier",
+        )?;
+    }
+
+    let mut harness = McpHarness::spawn(None)?;
+    let _ = harness.initialize()?;
+    harness.notify_initialized()?;
+
+    let bind = harness.bind_project(600, &project_root)?;
+    assert_tool_ok(&bind);
+    assert_eq!(tool_content(&bind)["frontier_count"].as_u64(), Some(1));
+    assert_eq!(tool_content(&bind)["hypothesis_count"].as_u64(), Some(1));
+    assert_eq!(tool_content(&bind)["experiment_count"].as_u64(), Some(1));
+    assert_eq!(
+        tool_content(&bind)["open_experiment_count"].as_u64(),
+        Some(0)
+    );
+
+    let status = harness.call_tool_full(601, "project.status", json!({}))?;
+    assert_tool_ok(&status);
+    assert_eq!(tool_content(&status)["frontier_count"].as_u64(), Some(1));
+    assert_eq!(tool_content(&status)["hypothesis_count"].as_u64(), Some(1));
+    assert_eq!(tool_content(&status)["experiment_count"].as_u64(), Some(1));
+    assert_eq!(
+        tool_content(&status)["open_experiment_count"].as_u64(),
+        Some(0)
+    );
+
+    let frontiers = harness.call_tool_full(602, "frontier.list", json!({}))?;
+    assert_tool_ok(&frontiers);
+    assert_eq!(frontier_slugs(&frontiers), vec!["visible"]);
+
+    let hidden_hypotheses =
+        harness.call_tool(603, "hypothesis.list", json!({"frontier": "archived"}))?;
+    assert_tool_error(&hidden_hypotheses);
+
+    let hidden_best = harness.call_tool(
+        604,
+        "metric.best",
+        json!({"hypothesis": "archived-hyp", "key": "nodes_solved"}),
+    )?;
+    assert_tool_error(&hidden_best);
+
+    let best = harness.call_tool_full(
+        605,
+        "metric.best",
+        json!({"key": "nodes_solved", "limit": 1}),
+    )?;
+    assert_tool_ok(&best);
+    let best_entries = must_some(tool_content(&best)["entries"].as_array(), "best entries")?;
+    assert_eq!(
+        best_entries[0]["experiment"]["slug"].as_str(),
+        Some("visible-exp")
+    );
+    assert_eq!(best_entries[0]["value"].as_f64(), Some(10.0));
+
+    let hidden_anchor = harness.call_tool(
+        606,
+        "experiment.nearest",
+        json!({"experiment": "archived-exp", "metric": "nodes_solved"}),
+    )?;
+    assert_tool_error(&hidden_anchor);
+
+    let nearest =
+        harness.call_tool_full(607, "experiment.nearest", json!({"metric": "nodes_solved"}))?;
+    assert_tool_ok(&nearest);
+    assert_eq!(
+        tool_content(&nearest)["accepted"]["experiment"]["slug"].as_str(),
+        Some("visible-exp")
+    );
+    assert_eq!(
+        tool_content(&nearest)["champion"]["experiment"]["slug"].as_str(),
+        Some("visible-exp")
+    );
+    Ok(())
+}
+
+#[test]
 fn experiment_tags_are_loaded_from_the_junction_table() -> TestResult {
     let root = temp_project_root("experiment_tags_junction")?;
     init_project(&root)?;

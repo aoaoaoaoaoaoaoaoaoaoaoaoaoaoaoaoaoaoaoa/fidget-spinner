@@ -746,6 +746,12 @@ pub struct ProjectStore {
     connection: Connection,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum FrontierVisibility {
+    IncludeArchived,
+    McpVisibleOnly,
+}
+
 #[derive(Clone, Debug)]
 pub struct UpdateProjectRequest {
     pub description: TextPatch<NonEmptyText>,
@@ -830,23 +836,92 @@ impl ProjectStore {
     }
 
     pub fn status(&self) -> Result<ProjectStatus, StoreError> {
+        self.status_with_visibility(FrontierVisibility::IncludeArchived)
+    }
+
+    pub fn status_from_mcp(&self) -> Result<ProjectStatus, StoreError> {
+        self.status_with_visibility(FrontierVisibility::McpVisibleOnly)
+    }
+
+    fn status_with_visibility(
+        &self,
+        visibility: FrontierVisibility,
+    ) -> Result<ProjectStatus, StoreError> {
+        let frontier_predicate = match visibility {
+            FrontierVisibility::IncludeArchived => None,
+            FrontierVisibility::McpVisibleOnly => Some("status != 'archived'"),
+        };
+        let hypothesis_predicate = match visibility {
+            FrontierVisibility::IncludeArchived => None,
+            FrontierVisibility::McpVisibleOnly => Some(
+                "EXISTS (
+                    SELECT 1
+                    FROM frontiers
+                    WHERE frontiers.id = hypotheses.frontier_id
+                      AND frontiers.status != 'archived'
+                )",
+            ),
+        };
+        let experiment_predicate = match visibility {
+            FrontierVisibility::IncludeArchived => None,
+            FrontierVisibility::McpVisibleOnly => Some(
+                "EXISTS (
+                    SELECT 1
+                    FROM hypotheses
+                    JOIN frontiers ON frontiers.id = hypotheses.frontier_id
+                    WHERE hypotheses.id = experiments.hypothesis_id
+                      AND frontiers.status != 'archived'
+                )",
+            ),
+        };
+        let open_experiment_predicate = match visibility {
+            FrontierVisibility::IncludeArchived => Some(
+                "NOT EXISTS (
+                    SELECT 1
+                    FROM experiment_outcomes
+                    WHERE experiment_outcomes.experiment_id = experiments.id
+                )",
+            ),
+            FrontierVisibility::McpVisibleOnly => Some(
+                "NOT EXISTS (
+                    SELECT 1
+                    FROM experiment_outcomes
+                    WHERE experiment_outcomes.experiment_id = experiments.id
+                )
+                AND EXISTS (
+                    SELECT 1
+                    FROM hypotheses
+                    JOIN frontiers ON frontiers.id = hypotheses.frontier_id
+                    WHERE hypotheses.id = experiments.hypothesis_id
+                      AND frontiers.status != 'archived'
+                )",
+            ),
+        };
         Ok(ProjectStatus {
             project_root: self.project_root.clone(),
             state_root: self.state_root.clone(),
             display_name: self.config.display_name.clone(),
             description: self.config.description.clone(),
             store_format_version: load_store_user_version(&self.connection)?,
-            frontier_count: count_rows(&self.connection, "frontiers")?,
-            hypothesis_count: count_rows(&self.connection, "hypotheses")?,
-            experiment_count: count_rows(&self.connection, "experiments")?,
-            open_experiment_count: count_rows_where(
+            frontier_count: count_rows_maybe_where(
+                &self.connection,
+                "frontiers",
+                frontier_predicate,
+            )?,
+            hypothesis_count: count_rows_maybe_where(
+                &self.connection,
+                "hypotheses",
+                hypothesis_predicate,
+            )?,
+            experiment_count: count_rows_maybe_where(
                 &self.connection,
                 "experiments",
-                "NOT EXISTS (
-                    SELECT 1
-                    FROM experiment_outcomes
-                    WHERE experiment_outcomes.experiment_id = experiments.id
-                )",
+                experiment_predicate,
+            )?,
+            open_experiment_count: count_rows_maybe_where(
+                &self.connection,
+                "experiments",
+                open_experiment_predicate,
             )?,
         })
     }
@@ -2029,20 +2104,14 @@ impl ProjectStore {
         &self,
         query: ListHypothesesQuery,
     ) -> Result<Vec<HypothesisSummary>, StoreError> {
-        let frontier_id = query
-            .frontier
-            .as_deref()
-            .map(|selector| self.resolve_frontier(selector).map(|frontier| frontier.id))
-            .transpose()?;
-        let records = self.load_hypothesis_records(frontier_id)?;
-        let filtered = records
-            .into_iter()
-            .filter(|record| {
-                query.tags.is_empty() || query.tags.iter().all(|tag| record.tags.contains(tag))
-            })
-            .map(|record| self.hypothesis_summary_from_record(record))
-            .collect::<Result<Vec<_>, _>>()?;
-        Ok(apply_limit(filtered, query.limit))
+        self.list_hypotheses_with_visibility(query, FrontierVisibility::IncludeArchived)
+    }
+
+    pub fn list_hypotheses_from_mcp(
+        &self,
+        query: ListHypothesesQuery,
+    ) -> Result<Vec<HypothesisSummary>, StoreError> {
+        self.list_hypotheses_with_visibility(query, FrontierVisibility::McpVisibleOnly)
     }
 
     pub fn read_hypothesis(&self, selector: &str) -> Result<HypothesisDetail, StoreError> {
@@ -2217,29 +2286,14 @@ impl ProjectStore {
         &self,
         query: ListExperimentsQuery,
     ) -> Result<Vec<ExperimentSummary>, StoreError> {
-        let frontier_id = query
-            .frontier
-            .as_deref()
-            .map(|selector| self.resolve_frontier(selector).map(|frontier| frontier.id))
-            .transpose()?;
-        let hypothesis_id = query
-            .hypothesis
-            .as_deref()
-            .map(|selector| {
-                self.resolve_hypothesis(selector)
-                    .map(|hypothesis| hypothesis.id)
-            })
-            .transpose()?;
-        let records = self.load_experiment_records(frontier_id, hypothesis_id)?;
-        let filtered = records
-            .into_iter()
-            .filter(|record| query.status.is_none_or(|status| record.status == status))
-            .filter(|record| {
-                query.tags.is_empty() || query.tags.iter().all(|tag| record.tags.contains(tag))
-            })
-            .map(|record| self.experiment_summary_from_record(record))
-            .collect::<Result<Vec<_>, _>>()?;
-        Ok(apply_limit(filtered, query.limit))
+        self.list_experiments_with_visibility(query, FrontierVisibility::IncludeArchived)
+    }
+
+    pub fn list_experiments_from_mcp(
+        &self,
+        query: ListExperimentsQuery,
+    ) -> Result<Vec<ExperimentSummary>, StoreError> {
+        self.list_experiments_with_visibility(query, FrontierVisibility::McpVisibleOnly)
     }
 
     pub fn read_experiment(&self, selector: &str) -> Result<ExperimentDetail, StoreError> {
@@ -2562,6 +2616,21 @@ impl ProjectStore {
     }
 
     pub fn metric_best(&self, query: MetricBestQuery) -> Result<Vec<MetricBestEntry>, StoreError> {
+        self.metric_best_with_visibility(query, FrontierVisibility::IncludeArchived)
+    }
+
+    pub fn metric_best_from_mcp(
+        &self,
+        query: MetricBestQuery,
+    ) -> Result<Vec<MetricBestEntry>, StoreError> {
+        self.metric_best_with_visibility(query, FrontierVisibility::McpVisibleOnly)
+    }
+
+    fn metric_best_with_visibility(
+        &self,
+        query: MetricBestQuery,
+        visibility: FrontierVisibility,
+    ) -> Result<Vec<MetricBestEntry>, StoreError> {
         let definition = self
             .metric_definition(&query.key)?
             .ok_or_else(|| StoreError::UnknownMetricDefinition(query.key.clone()))?;
@@ -2588,7 +2657,7 @@ impl ProjectStore {
             }
         });
         let experiments = self
-            .load_experiment_records(frontier_id, hypothesis_id)?
+            .load_experiment_records_with_visibility(frontier_id, hypothesis_id, visibility)?
             .into_iter()
             .filter(|record| record.status == ExperimentStatus::Closed)
             .filter(|record| {
@@ -2639,6 +2708,21 @@ impl ProjectStore {
     pub fn experiment_nearest(
         &self,
         query: ExperimentNearestQuery,
+    ) -> Result<ExperimentNearestResult, StoreError> {
+        self.experiment_nearest_with_visibility(query, FrontierVisibility::IncludeArchived)
+    }
+
+    pub fn experiment_nearest_from_mcp(
+        &self,
+        query: ExperimentNearestQuery,
+    ) -> Result<ExperimentNearestResult, StoreError> {
+        self.experiment_nearest_with_visibility(query, FrontierVisibility::McpVisibleOnly)
+    }
+
+    fn experiment_nearest_with_visibility(
+        &self,
+        query: ExperimentNearestQuery,
+        visibility: FrontierVisibility,
     ) -> Result<ExperimentNearestResult, StoreError> {
         let anchor_experiment = query
             .experiment
@@ -2709,7 +2793,7 @@ impl ProjectStore {
         let influence_neighborhood =
             self.influence_neighborhood(anchor_experiment.as_ref(), anchor_hypothesis_id)?;
         let candidates = self
-            .load_experiment_records(frontier_id, None)?
+            .load_experiment_records_with_visibility(frontier_id, None, visibility)?
             .into_iter()
             .filter(|record| record.status == ExperimentStatus::Closed)
             .filter(|record| {
@@ -2814,6 +2898,58 @@ impl ProjectStore {
                 )
             }),
         })
+    }
+
+    fn list_hypotheses_with_visibility(
+        &self,
+        query: ListHypothesesQuery,
+        visibility: FrontierVisibility,
+    ) -> Result<Vec<HypothesisSummary>, StoreError> {
+        let frontier_id = query
+            .frontier
+            .as_deref()
+            .map(|selector| self.resolve_frontier(selector).map(|frontier| frontier.id))
+            .transpose()?;
+        let records = self.load_hypothesis_records_with_visibility(frontier_id, visibility)?;
+        let filtered = records
+            .into_iter()
+            .filter(|record| {
+                query.tags.is_empty() || query.tags.iter().all(|tag| record.tags.contains(tag))
+            })
+            .map(|record| self.hypothesis_summary_from_record(record))
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(apply_limit(filtered, query.limit))
+    }
+
+    fn list_experiments_with_visibility(
+        &self,
+        query: ListExperimentsQuery,
+        visibility: FrontierVisibility,
+    ) -> Result<Vec<ExperimentSummary>, StoreError> {
+        let frontier_id = query
+            .frontier
+            .as_deref()
+            .map(|selector| self.resolve_frontier(selector).map(|frontier| frontier.id))
+            .transpose()?;
+        let hypothesis_id = query
+            .hypothesis
+            .as_deref()
+            .map(|selector| {
+                self.resolve_hypothesis(selector)
+                    .map(|hypothesis| hypothesis.id)
+            })
+            .transpose()?;
+        let records =
+            self.load_experiment_records_with_visibility(frontier_id, hypothesis_id, visibility)?;
+        let filtered = records
+            .into_iter()
+            .filter(|record| query.status.is_none_or(|status| record.status == status))
+            .filter(|record| {
+                query.tags.is_empty() || query.tags.iter().all(|tag| record.tags.contains(tag))
+            })
+            .map(|record| self.experiment_summary_from_record(record))
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(apply_limit(filtered, query.limit))
     }
 
     pub fn frontier_history(&self, selector: &str) -> Result<Vec<EntityHistoryEntry>, StoreError> {
@@ -3359,31 +3495,50 @@ impl ProjectStore {
         Ok(neighborhood)
     }
 
-    fn load_hypothesis_records(
+    fn load_hypothesis_records_with_visibility(
         &self,
         frontier_id: Option<FrontierId>,
+        visibility: FrontierVisibility,
     ) -> Result<Vec<HypothesisRecord>, StoreError> {
-        let records = if let Some(frontier_id) = frontier_id {
-            let mut statement = self.connection.prepare(
-                "SELECT id, slug, frontier_id, title, summary, body, expected_yield, confidence,
-                        revision, created_at, updated_at
-                 FROM hypotheses
-                 WHERE frontier_id = ?1
-                 ORDER BY updated_at DESC, created_at DESC",
-            )?;
-            let rows = statement.query_map(params![frontier_id.to_string()], |row| {
-                self.decode_hypothesis_row(row)
-            })?;
-            rows.collect::<Result<Vec<_>, _>>()?
-        } else {
-            let mut statement = self.connection.prepare(
-                "SELECT id, slug, frontier_id, title, summary, body, expected_yield, confidence,
-                        revision, created_at, updated_at
-                 FROM hypotheses
-                 ORDER BY updated_at DESC, created_at DESC",
-            )?;
-            let rows = statement.query_map([], |row| self.decode_hypothesis_row(row))?;
-            rows.collect::<Result<Vec<_>, _>>()?
+        let base_sql = "SELECT hypotheses.id, hypotheses.slug, hypotheses.frontier_id,
+                               hypotheses.title, hypotheses.summary, hypotheses.body,
+                               hypotheses.expected_yield, hypotheses.confidence,
+                               hypotheses.revision, hypotheses.created_at, hypotheses.updated_at
+                        FROM hypotheses
+                        JOIN frontiers ON frontiers.id = hypotheses.frontier_id";
+        let records = match (frontier_id, visibility) {
+            (Some(frontier_id), FrontierVisibility::IncludeArchived) => {
+                let mut statement = self.connection.prepare(&format!(
+                    "{base_sql} WHERE hypotheses.frontier_id = ?1 ORDER BY hypotheses.updated_at DESC, hypotheses.created_at DESC"
+                ))?;
+                let rows = statement.query_map(params![frontier_id.to_string()], |row| {
+                    self.decode_hypothesis_row(row)
+                })?;
+                rows.collect::<Result<Vec<_>, _>>()?
+            }
+            (Some(frontier_id), FrontierVisibility::McpVisibleOnly) => {
+                let mut statement = self.connection.prepare(&format!(
+                    "{base_sql} WHERE hypotheses.frontier_id = ?1 AND frontiers.status != 'archived' ORDER BY hypotheses.updated_at DESC, hypotheses.created_at DESC"
+                ))?;
+                let rows = statement.query_map(params![frontier_id.to_string()], |row| {
+                    self.decode_hypothesis_row(row)
+                })?;
+                rows.collect::<Result<Vec<_>, _>>()?
+            }
+            (None, FrontierVisibility::IncludeArchived) => {
+                let mut statement = self.connection.prepare(&format!(
+                    "{base_sql} ORDER BY hypotheses.updated_at DESC, hypotheses.created_at DESC"
+                ))?;
+                let rows = statement.query_map([], |row| self.decode_hypothesis_row(row))?;
+                rows.collect::<Result<Vec<_>, _>>()?
+            }
+            (None, FrontierVisibility::McpVisibleOnly) => {
+                let mut statement = self.connection.prepare(&format!(
+                    "{base_sql} WHERE frontiers.status != 'archived' ORDER BY hypotheses.updated_at DESC, hypotheses.created_at DESC"
+                ))?;
+                let rows = statement.query_map([], |row| self.decode_hypothesis_row(row))?;
+                rows.collect::<Result<Vec<_>, _>>()?
+            }
         };
         Ok(records)
     }
@@ -3393,13 +3548,27 @@ impl ProjectStore {
         frontier_id: Option<FrontierId>,
         hypothesis_id: Option<HypothesisId>,
     ) -> Result<Vec<ExperimentRecord>, StoreError> {
+        self.load_experiment_records_with_visibility(
+            frontier_id,
+            hypothesis_id,
+            FrontierVisibility::IncludeArchived,
+        )
+    }
+
+    fn load_experiment_records_with_visibility(
+        &self,
+        frontier_id: Option<FrontierId>,
+        hypothesis_id: Option<HypothesisId>,
+        visibility: FrontierVisibility,
+    ) -> Result<Vec<ExperimentRecord>, StoreError> {
         let base_sql = "SELECT experiments.id, experiments.slug, hypotheses.frontier_id,
                                experiments.hypothesis_id, experiments.title, experiments.summary,
                                experiments.revision, experiments.created_at, experiments.updated_at
                         FROM experiments
-                        JOIN hypotheses ON hypotheses.id = experiments.hypothesis_id";
-        let records = match (frontier_id, hypothesis_id) {
-            (Some(frontier_id), Some(hypothesis_id)) => {
+                        JOIN hypotheses ON hypotheses.id = experiments.hypothesis_id
+                        JOIN frontiers ON frontiers.id = hypotheses.frontier_id";
+        let records = match (frontier_id, hypothesis_id, visibility) {
+            (Some(frontier_id), Some(hypothesis_id), FrontierVisibility::IncludeArchived) => {
                 let mut statement = self.connection.prepare(&format!(
                     "{base_sql} WHERE hypotheses.frontier_id = ?1 AND experiments.hypothesis_id = ?2 ORDER BY experiments.updated_at DESC, experiments.created_at DESC"
                 ))?;
@@ -3409,7 +3578,17 @@ impl ProjectStore {
                 )?;
                 rows.collect::<Result<Vec<_>, _>>()?
             }
-            (Some(frontier_id), None) => {
+            (Some(frontier_id), Some(hypothesis_id), FrontierVisibility::McpVisibleOnly) => {
+                let mut statement = self.connection.prepare(&format!(
+                    "{base_sql} WHERE hypotheses.frontier_id = ?1 AND experiments.hypothesis_id = ?2 AND frontiers.status != 'archived' ORDER BY experiments.updated_at DESC, experiments.created_at DESC"
+                ))?;
+                let rows = statement.query_map(
+                    params![frontier_id.to_string(), hypothesis_id.to_string()],
+                    decode_experiment_row,
+                )?;
+                rows.collect::<Result<Vec<_>, _>>()?
+            }
+            (Some(frontier_id), None, FrontierVisibility::IncludeArchived) => {
                 let mut statement = self.connection.prepare(&format!(
                     "{base_sql} WHERE hypotheses.frontier_id = ?1 ORDER BY experiments.updated_at DESC, experiments.created_at DESC"
                 ))?;
@@ -3417,7 +3596,15 @@ impl ProjectStore {
                     statement.query_map(params![frontier_id.to_string()], decode_experiment_row)?;
                 rows.collect::<Result<Vec<_>, _>>()?
             }
-            (None, Some(hypothesis_id)) => {
+            (Some(frontier_id), None, FrontierVisibility::McpVisibleOnly) => {
+                let mut statement = self.connection.prepare(&format!(
+                    "{base_sql} WHERE hypotheses.frontier_id = ?1 AND frontiers.status != 'archived' ORDER BY experiments.updated_at DESC, experiments.created_at DESC"
+                ))?;
+                let rows =
+                    statement.query_map(params![frontier_id.to_string()], decode_experiment_row)?;
+                rows.collect::<Result<Vec<_>, _>>()?
+            }
+            (None, Some(hypothesis_id), FrontierVisibility::IncludeArchived) => {
                 let mut statement = self.connection.prepare(&format!(
                     "{base_sql} WHERE experiments.hypothesis_id = ?1 ORDER BY experiments.updated_at DESC, experiments.created_at DESC"
                 ))?;
@@ -3425,9 +3612,24 @@ impl ProjectStore {
                     .query_map(params![hypothesis_id.to_string()], decode_experiment_row)?;
                 rows.collect::<Result<Vec<_>, _>>()?
             }
-            (None, None) => {
+            (None, Some(hypothesis_id), FrontierVisibility::McpVisibleOnly) => {
+                let mut statement = self.connection.prepare(&format!(
+                    "{base_sql} WHERE experiments.hypothesis_id = ?1 AND frontiers.status != 'archived' ORDER BY experiments.updated_at DESC, experiments.created_at DESC"
+                ))?;
+                let rows = statement
+                    .query_map(params![hypothesis_id.to_string()], decode_experiment_row)?;
+                rows.collect::<Result<Vec<_>, _>>()?
+            }
+            (None, None, FrontierVisibility::IncludeArchived) => {
                 let mut statement = self.connection.prepare(&format!(
                     "{base_sql} ORDER BY experiments.updated_at DESC, experiments.created_at DESC"
+                ))?;
+                let rows = statement.query_map([], decode_experiment_row)?;
+                rows.collect::<Result<Vec<_>, _>>()?
+            }
+            (None, None, FrontierVisibility::McpVisibleOnly) => {
+                let mut statement = self.connection.prepare(&format!(
+                    "{base_sql} WHERE frontiers.status != 'archived' ORDER BY experiments.updated_at DESC, experiments.created_at DESC"
                 ))?;
                 let rows = statement.query_map([], decode_experiment_row)?;
                 rows.collect::<Result<Vec<_>, _>>()?
@@ -7504,6 +7706,17 @@ fn count_rows(connection: &Connection, table: &str) -> Result<u64, StoreError> {
     connection
         .query_row(&sql, [], |row| row.get::<_, u64>(0))
         .map_err(StoreError::from)
+}
+
+fn count_rows_maybe_where(
+    connection: &Connection,
+    table: &str,
+    predicate: Option<&str>,
+) -> Result<u64, StoreError> {
+    match predicate {
+        Some(predicate) => count_rows_where(connection, table, predicate),
+        None => count_rows(connection, table),
+    }
 }
 
 fn count_rows_where(
