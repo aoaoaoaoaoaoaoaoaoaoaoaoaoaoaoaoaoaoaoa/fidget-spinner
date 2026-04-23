@@ -18,10 +18,12 @@ use super::{
 };
 use plotters::coord::ranged1d::{LightPoints, Ranged};
 use plotters::coord::types::RangedCoordf64;
+use plotters::prelude::BindKeyPoints;
 
 const METRIC_CHART_ACCEPTED_MARKER_RADIUS: i32 = 2;
 const METRIC_CHART_REJECTED_MARKER_SIZE: i32 = 3;
 const METRIC_CHART_LIGHT_LINE_LIMIT: usize = 5;
+const METRIC_CHART_X_MAJOR_STRIDE: i32 = 10;
 const METRIC_CHART_Y_LABEL_COUNT: usize = 6;
 const METRIC_CHART_DOTTED_GRID_DASH: i32 = 1;
 const METRIC_CHART_DOTTED_GRID_GAP: i32 = 5;
@@ -413,15 +415,14 @@ pub(super) fn render_metric_series_section(
                                     }
                                 }
                                 tbody {
-                                    @for (index, point) in visible_points.iter().copied().enumerate() {
-                                        @let display_index = experiment_positions
-                                            .get(point.experiment.slug.as_str())
-                                            .copied()
-                                            .unwrap_or(index)
-                                            + 1;
-                                        tr {
-                                            td.metric-table-rank-cell {
-                                                span.metric-table-fixed-text { (display_index.to_string()) }
+                                        @for (index, point) in visible_points.iter().copied().enumerate() {
+                                            @let display_index = experiment_positions
+                                                .get(point.experiment.slug.as_str())
+                                                .copied()
+                                                .unwrap_or(index);
+                                            tr {
+                                                td.metric-table-rank-cell {
+                                                    span.metric-table-fixed-text { (display_index.to_string()) }
                                             }
                                             td.metric-table-title-cell {
                                                 (render_metric_table_title_link(
@@ -744,12 +745,19 @@ fn render_metric_chart_svg(
         } else {
             None
         };
-        let x_end = chart_series
+        let max_close_order = chart_series
             .iter()
             .flat_map(|series| series.points.iter().map(|(x, _, _)| *x))
             .max()
-            .unwrap_or(0)
-            .max(1);
+            .unwrap_or(0);
+        let x_end = max_close_order.max(1);
+        let x_major_points = metric_chart_x_major_values(max_close_order);
+        let x_minor_points = metric_chart_x_minor_values(max_close_order);
+        let close_order_axis = || {
+            (0_i32..x_end)
+                .with_key_points(x_major_points.clone())
+                .with_light_points(x_minor_points.clone())
+        };
 
         macro_rules! draw_metric_side {
             ($chart:expr, $method:ident, $side:expr) => {{
@@ -817,7 +825,7 @@ fn render_metric_chart_svg(
                     .max_light_lines(METRIC_CHART_LIGHT_LINE_LIMIT)
                     .x_desc("close order")
                     .y_desc(axes.primary.display_unit.label())
-                    .x_label_formatter(&|value| format!("{}", value + 1))
+                    .x_label_formatter(&|value| value.to_string())
                     .draw()
                     .is_err()
                 {
@@ -873,7 +881,7 @@ fn render_metric_chart_svg(
                     .max_light_lines(METRIC_CHART_LIGHT_LINE_LIMIT)
                     .x_desc("close order")
                     .y_desc(axes.primary.display_unit.label())
-                    .x_label_formatter(&|value| format!("{}", value + 1))
+                    .x_label_formatter(&|value| value.to_string())
                     .draw()
                     .is_err()
                 {
@@ -959,10 +967,12 @@ fn render_metric_chart_svg(
                         .x_label_area_size(32)
                         .y_label_area_size(84)
                         .right_y_label_area_size(84)
-                        .build_cartesian_2d(0_i32..x_end, (primary_min..primary_max).log_scale())
-                    {
+                        .build_cartesian_2d(
+                            close_order_axis(),
+                            (primary_min..primary_max).log_scale(),
+                        ) {
                         Ok(chart) => chart.set_secondary_coord(
-                            0_i32..x_end,
+                            close_order_axis(),
                             (secondary_min..secondary_max).log_scale(),
                         ),
                         Err(error) => {
@@ -983,11 +993,12 @@ fn render_metric_chart_svg(
                         .x_label_area_size(32)
                         .y_label_area_size(84)
                         .right_y_label_area_size(84)
-                        .build_cartesian_2d(0_i32..x_end, (primary_min..primary_max).log_scale())
-                    {
-                        Ok(chart) => {
-                            chart.set_secondary_coord(0_i32..x_end, secondary_min..secondary_max)
-                        }
+                        .build_cartesian_2d(
+                            close_order_axis(),
+                            (primary_min..primary_max).log_scale(),
+                        ) {
+                        Ok(chart) => chart
+                            .set_secondary_coord(close_order_axis(), secondary_min..secondary_max),
                         Err(error) => {
                             return chart_error_markup(&format!("chart build failed: {error:?}"));
                         }
@@ -1006,10 +1017,10 @@ fn render_metric_chart_svg(
                         .x_label_area_size(32)
                         .y_label_area_size(84)
                         .right_y_label_area_size(84)
-                        .build_cartesian_2d(0_i32..x_end, primary_min..primary_max)
+                        .build_cartesian_2d(close_order_axis(), primary_min..primary_max)
                     {
                         Ok(chart) => chart.set_secondary_coord(
-                            0_i32..x_end,
+                            close_order_axis(),
                             (secondary_min..secondary_max).log_scale(),
                         ),
                         Err(error) => {
@@ -1030,11 +1041,10 @@ fn render_metric_chart_svg(
                         .x_label_area_size(32)
                         .y_label_area_size(84)
                         .right_y_label_area_size(84)
-                        .build_cartesian_2d(0_i32..x_end, primary_min..primary_max)
+                        .build_cartesian_2d(close_order_axis(), primary_min..primary_max)
                     {
-                        Ok(chart) => {
-                            chart.set_secondary_coord(0_i32..x_end, secondary_min..secondary_max)
-                        }
+                        Ok(chart) => chart
+                            .set_secondary_coord(close_order_axis(), secondary_min..secondary_max),
                         Err(error) => {
                             return chart_error_markup(&format!("chart build failed: {error:?}"));
                         }
@@ -1053,7 +1063,7 @@ fn render_metric_chart_svg(
                 .margin(18)
                 .x_label_area_size(32)
                 .y_label_area_size(84)
-                .build_cartesian_2d(0_i32..x_end, (primary_min..primary_max).log_scale())
+                .build_cartesian_2d(close_order_axis(), (primary_min..primary_max).log_scale())
             {
                 Ok(chart) => chart,
                 Err(error) => return chart_error_markup(&format!("chart build failed: {error:?}")),
@@ -1064,7 +1074,7 @@ fn render_metric_chart_svg(
                 .margin(18)
                 .x_label_area_size(32)
                 .y_label_area_size(84)
-                .build_cartesian_2d(0_i32..x_end, primary_min..primary_max)
+                .build_cartesian_2d(close_order_axis(), primary_min..primary_max)
             {
                 Ok(chart) => chart,
                 Err(error) => return chart_error_markup(&format!("chart build failed: {error:?}")),
@@ -1091,6 +1101,24 @@ pub(super) fn metric_chart_secondary_grid_values(
         return metric_chart_log_grid_values(min_value, max_value);
     }
     metric_chart_linear_grid_values(min_value, max_value)
+}
+
+pub(super) fn metric_chart_x_major_values(max_close_order: i32) -> Vec<i32> {
+    if max_close_order < METRIC_CHART_X_MAJOR_STRIDE {
+        return (0..=max_close_order).collect();
+    }
+    (0..=max_close_order)
+        .step_by(usize::try_from(METRIC_CHART_X_MAJOR_STRIDE).unwrap_or(1))
+        .collect()
+}
+
+pub(super) fn metric_chart_x_minor_values(max_close_order: i32) -> Vec<i32> {
+    if max_close_order < METRIC_CHART_X_MAJOR_STRIDE {
+        return Vec::new();
+    }
+    (0..=max_close_order)
+        .filter(|value| value.rem_euclid(METRIC_CHART_X_MAJOR_STRIDE) != 0)
+        .collect()
 }
 
 fn metric_chart_linear_grid_values(min_value: f64, max_value: f64) -> Vec<f64> {

@@ -1050,7 +1050,8 @@ mod tests {
     use super::registry::{metric_registry_filter_text, render_metric_registry_table};
     use super::results::{
         MetricChartAxis, best_metric_table_title_split, metric_chart_secondary_grid_values,
-        render_metric_series_section, resolve_selected_metric_keys, truncated_entry_count,
+        metric_chart_x_major_values, metric_chart_x_minor_values, render_metric_series_section,
+        resolve_selected_metric_keys, truncated_entry_count,
     };
     use super::{
         FrontierPageQuery, FrontierTab, METRIC_TABLE_TITLE_MIN_BUDGET_CH, MetricAxisLogScales,
@@ -1320,6 +1321,20 @@ mod tests {
     }
 
     #[test]
+    fn close_order_axis_uses_zero_based_decades_with_unit_subdivisions() {
+        assert_eq!(metric_chart_x_major_values(4), vec![0, 1, 2, 3, 4]);
+        assert!(metric_chart_x_minor_values(4).is_empty());
+
+        assert_eq!(metric_chart_x_major_values(23), vec![0, 10, 20]);
+        assert_eq!(
+            metric_chart_x_minor_values(23),
+            vec![
+                1, 2, 3, 4, 5, 6, 7, 8, 9, 11, 12, 13, 14, 15, 16, 17, 18, 19, 21, 22, 23,
+            ]
+        );
+    }
+
+    #[test]
     fn frontier_page_query_accepts_result_metric_selector() {
         let query = must(
             FrontierPageQuery::parse(Some("tab=results&metric=presolve_ms_gmean")),
@@ -1435,12 +1450,14 @@ mod tests {
             None,
         )
         .into_string();
+        let rank_cell_zero = "<td class=\"metric-table-rank-cell\"><span class=\"metric-table-fixed-text\">0</span></td>";
         let rank_cell_one = "<td class=\"metric-table-rank-cell\"><span class=\"metric-table-fixed-text\">1</span></td>";
         let rank_cell_two = "<td class=\"metric-table-rank-cell\"><span class=\"metric-table-fixed-text\">2</span></td>";
         let rank_cell_three = "<td class=\"metric-table-rank-cell\"><span class=\"metric-table-fixed-text\">3</span></td>";
-        assert!(markup.contains(rank_cell_one));
-        assert!(markup.contains(rank_cell_three));
-        assert!(!markup.contains(rank_cell_two));
+        assert!(markup.contains(rank_cell_zero));
+        assert!(markup.contains(rank_cell_two));
+        assert!(!markup.contains(rank_cell_one));
+        assert!(!markup.contains(rank_cell_three));
         assert!(markup.contains("id=\"metric-selection-popout\""));
         assert!(markup.contains("id=\"metric-filter-popout\""));
         assert!(markup.contains("data-preserve-viewport=\"true\""));
@@ -1455,10 +1472,10 @@ mod tests {
         assert!(!markup.contains("Experiment C With A Long Full Title..."));
         assert!(markup.contains("table_metric=presolve%5Fms"));
         assert!(markup.contains("class=\"metric-table-tab active\""));
-        let rank_three_offset = markup.find(rank_cell_three);
-        let rank_one_offset = markup.find(rank_cell_one);
+        let rank_two_offset = markup.find(rank_cell_two);
+        let rank_zero_offset = markup.find(rank_cell_zero);
         assert!(
-            matches!((rank_three_offset, rank_one_offset), (Some(left), Some(right)) if left < right)
+            matches!((rank_two_offset, rank_zero_offset), (Some(left), Some(right)) if left < right)
         );
     }
 
