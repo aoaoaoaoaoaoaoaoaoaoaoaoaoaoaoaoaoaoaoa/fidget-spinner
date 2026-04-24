@@ -53,7 +53,7 @@ pub enum StoreError {
     },
     #[error("I/O failure")]
     Io(#[from] io::Error),
-    #[error("SQLite failure")]
+    #[error("SQLite failure: {0}")]
     Sql(#[from] rusqlite::Error),
     #[error("JSON failure")]
     Json(#[from] serde_json::Error),
@@ -1460,7 +1460,6 @@ impl ProjectStore {
         renamed.revision = renamed.revision.saturating_add(1);
         renamed.updated_at = OffsetDateTime::now_utc();
         let transaction = self.connection.transaction()?;
-        rewrite_outcome_metric_key(&transaction, &metric.key, &request.new_key)?;
         update_metric_definition_row(&transaction, &renamed)?;
         insert_metric_name_history(
             &transaction,
@@ -1541,7 +1540,6 @@ impl ProjectStore {
             )));
         }
         let transaction = self.connection.transaction()?;
-        rewrite_outcome_metric_key(&transaction, &source.key, &target.key)?;
         merge_experiment_metric_rows(&transaction, source.id, target.id)?;
         merge_kpi_metric_edges(&transaction, source.id, target.id)?;
         delete_metric_definition_row(&transaction, source.id)?;
@@ -5878,7 +5876,7 @@ fn normalize_legacy_time_metric_keys(
                     definition.key, normalized_key
                 )));
             }
-            rewrite_outcome_metric_key(transaction, &definition.key, &normalized_key)?;
+            rewrite_legacy_outcome_metric_key(transaction, &definition.key, &normalized_key)?;
             merge_experiment_metric_rows(transaction, definition.id, target.id)?;
             merge_kpi_metric_edges(transaction, definition.id, target.id)?;
             delete_metric_definition_row(transaction, definition.id)?;
@@ -5912,7 +5910,7 @@ fn normalize_legacy_time_metric_keys(
         renamed.key = normalized_key.clone();
         renamed.revision = renamed.revision.saturating_add(1);
         renamed.updated_at = OffsetDateTime::now_utc();
-        rewrite_outcome_metric_key(transaction, &definition.key, &normalized_key)?;
+        rewrite_legacy_outcome_metric_key(transaction, &definition.key, &normalized_key)?;
         update_metric_definition_row(transaction, &renamed)?;
         insert_metric_name_history(
             transaction,
@@ -6726,7 +6724,7 @@ fn insert_metric_name_history(
     Ok(())
 }
 
-fn rewrite_outcome_metric_key(
+fn rewrite_legacy_outcome_metric_key(
     transaction: &Transaction<'_>,
     source: &NonEmptyText,
     target: &NonEmptyText,

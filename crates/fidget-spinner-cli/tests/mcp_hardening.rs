@@ -19,10 +19,10 @@ use fidget_spinner_store_sqlite::{
     AssignTagFamilyRequest, CloseExperimentRequest, CreateFrontierRequest, CreateHypothesisRequest,
     CreateKpiRequest, CreateTagFamilyRequest, DefineMetricRequest, DefineRunDimensionRequest,
     DefineSyntheticMetricRequest, DeleteKpiRequest, DeleteTagRequest, FrontierSqlQuery,
-    KpiListQuery, ListExperimentsQuery, ListFrontiersQuery, MergeTagRequest, MetricBestQuery,
-    MetricKeysQuery, MetricScope, MoveKpiDirection, MoveKpiRequest, OpenExperimentRequest,
-    ProjectStore, RenameTagRequest, SetFrontierRegistryLockRequest, SetRegistryLockRequest,
-    UpdateFrontierRequest,
+    KpiListQuery, ListExperimentsQuery, ListFrontiersQuery, MergeMetricRequest, MergeTagRequest,
+    MetricBestQuery, MetricKeysQuery, MetricScope, MoveKpiDirection, MoveKpiRequest,
+    OpenExperimentRequest, ProjectStore, RenameMetricRequest, RenameTagRequest,
+    SetFrontierRegistryLockRequest, SetRegistryLockRequest, UpdateFrontierRequest,
 };
 use libmcp as _;
 use libmcp_testkit::assert_no_opaque_ids;
@@ -791,6 +791,172 @@ fn experiment_tags_are_loaded_from_the_junction_table() -> TestResult {
         .and_then(|summary| summary.tags.into_iter().next()),
         Some(tag)
     );
+    Ok(())
+}
+
+#[test]
+fn metric_rename_and_merge_operate_on_normalized_outcomes() -> TestResult {
+    let root = temp_project_root("metric_rename_normalized_outcomes")?;
+    init_project(&root)?;
+    let _ = seed_clean_git_repository(&root)?;
+    let mut store = must(ProjectStore::open(&root), "open store")?;
+    for key in ["root_wallclock_ms", "root_elapsed_ms"] {
+        let _ = must(
+            store.define_metric(DefineMetricRequest {
+                key: must(NonEmptyText::new(key), "metric key")?,
+                dimension: MetricDimension::Time,
+                display_unit: Some(must(MetricUnit::new("ms"), "metric unit")?),
+                aggregation: MetricAggregation::Point,
+                objective: OptimizationObjective::Minimize,
+                description: None,
+            }),
+            format!("define metric {key}"),
+        )?;
+    }
+    let frontier = must(
+        store.create_frontier(CreateFrontierRequest {
+            label: must(
+                NonEmptyText::new("metric rename frontier"),
+                "frontier label",
+            )?,
+            objective: must(
+                NonEmptyText::new("Keep normalized outcome metric keys coherent"),
+                "frontier objective",
+            )?,
+            slug: Some(must(Slug::new("metric-rename-frontier"), "frontier slug")?),
+        }),
+        "create frontier",
+    )?;
+    for key in ["root_wallclock_ms", "root_elapsed_ms"] {
+        let _ = must(
+            store.create_kpi(CreateKpiRequest {
+                frontier: frontier.slug.to_string(),
+                metric: must(NonEmptyText::new(key), "kpi metric")?,
+            }),
+            format!("create KPI {key}"),
+        )?;
+    }
+    let hypothesis = must(
+        store.create_hypothesis(CreateHypothesisRequest {
+            frontier: frontier.slug.to_string(),
+            slug: Some(must(Slug::new("metric-rename-hyp"), "hypothesis slug")?),
+            title: must(NonEmptyText::new("Metric rename hypothesis"), "hypothesis title")?,
+            summary: must(
+                NonEmptyText::new("Metric rename should preserve normalized outcomes."),
+                "hypothesis summary",
+            )?,
+            body: must(
+                NonEmptyText::new(
+                    "Metric rename and merge should operate through metric ids after outcome normalization, so closed experiment rows remain readable and rankable.",
+                ),
+                "hypothesis body",
+            )?,
+            expected_yield: HypothesisAssessmentLevel::Medium,
+            confidence: HypothesisAssessmentLevel::Medium,
+            tags: BTreeSet::new(),
+            parents: Vec::new(),
+        }),
+        "create hypothesis",
+    )?;
+    for (slug, metric, value) in [
+        ("rename-exp", "root_wallclock_ms", 123.0),
+        ("merge-exp", "root_elapsed_ms", 111.0),
+    ] {
+        let _ = must(
+            store.open_experiment(OpenExperimentRequest {
+                hypothesis: hypothesis.slug.to_string(),
+                slug: Some(must(Slug::new(slug), "experiment slug")?),
+                title: must(
+                    NonEmptyText::new(format!("{slug} experiment")),
+                    "experiment title",
+                )?,
+                summary: None,
+                tags: BTreeSet::new(),
+                parents: Vec::new(),
+            }),
+            format!("open experiment {slug}"),
+        )?;
+        let _ = must(
+            store.close_experiment(CloseExperimentRequest {
+                experiment: slug.to_owned(),
+                expected_revision: None,
+                backend: ExecutionBackend::Manual,
+                command: CommandRecipe {
+                    working_directory: None,
+                    argv: vec![must(NonEmptyText::new(slug), "command argv")?],
+                    env: BTreeMap::new(),
+                },
+                dimensions: BTreeMap::new(),
+                primary_metric: ReportedMetricValue {
+                    key: must(NonEmptyText::new(metric), "reported metric")?,
+                    value,
+                    unit: Some(must(MetricUnit::new("ms"), "reported unit")?),
+                },
+                supporting_metrics: Vec::new(),
+                verdict: FrontierVerdict::Accepted,
+                rationale: must(
+                    NonEmptyText::new("Closed metric row for rename regression."),
+                    "rationale",
+                )?,
+                analysis: None,
+            }),
+            format!("close experiment {slug}"),
+        )?;
+    }
+
+    let renamed = must(
+        store.rename_metric(RenameMetricRequest {
+            metric: must(NonEmptyText::new("root_wallclock_ms"), "old metric key")?,
+            new_key: must(NonEmptyText::new("root_wallclock"), "new metric key")?,
+        }),
+        "rename metric",
+    )?;
+    assert_eq!(renamed.key.as_str(), "root_wallclock");
+    assert_eq!(
+        must(
+            store.read_experiment("rename-exp"),
+            "read renamed experiment"
+        )?
+        .record
+        .outcome
+        .map(|outcome| outcome.primary_metric.key)
+        .as_ref()
+        .map(NonEmptyText::as_str),
+        Some("root_wallclock")
+    );
+
+    must(
+        store.merge_metric(MergeMetricRequest {
+            source: must(NonEmptyText::new("root_elapsed_ms"), "source metric")?,
+            target: must(NonEmptyText::new("root_wallclock"), "target metric")?,
+        }),
+        "merge metric",
+    )?;
+    let kpis = must(
+        store.list_kpis(KpiListQuery {
+            frontier: frontier.slug.to_string(),
+        }),
+        "list KPIs",
+    )?;
+    assert_eq!(kpis.len(), 1);
+    assert_eq!(kpis[0].metric.key.as_str(), "root_wallclock");
+    let best = must(
+        store.metric_best(MetricBestQuery {
+            frontier: Some(frontier.slug.to_string()),
+            hypothesis: None,
+            key: must(NonEmptyText::new("root_wallclock"), "metric best key")?,
+            dimensions: BTreeMap::new(),
+            include_rejected: true,
+            limit: None,
+            order: None,
+        }),
+        "metric best",
+    )?;
+    assert_eq!(best.len(), 2);
+    assert_eq!(best[0].experiment.slug.as_str(), "merge-exp");
+    assert_eq!(best[0].value, 111.0);
+    assert_eq!(best[1].experiment.slug.as_str(), "rename-exp");
+    assert_eq!(best[1].value, 123.0);
     Ok(())
 }
 
