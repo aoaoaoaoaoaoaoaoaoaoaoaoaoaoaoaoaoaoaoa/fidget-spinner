@@ -663,7 +663,7 @@ fn render_create_kpi_form(
     }
 }
 
-fn render_kpi_registry(frontier: &FrontierSummary, kpis: &[KpiSummary]) -> Markup {
+pub(super) fn render_kpi_registry(frontier: &FrontierSummary, kpis: &[KpiSummary]) -> Markup {
     let has_reorder = kpis.len() > 1;
     html! {
         @if kpis.is_empty() {
@@ -671,42 +671,52 @@ fn render_kpi_registry(frontier: &FrontierSummary, kpis: &[KpiSummary]) -> Marku
         } @else {
             div.table-scroll {
                 table.metric-table.kpi-table {
+                    colgroup {
+                        col.kpi-action-col;
+                        col.kpi-metric-col;
+                        col.kpi-unit-col;
+                        col.kpi-obs-col;
+                    }
                     thead {
                         tr {
                             th { "" }
                             th { "Metric" }
                             th { "Unit" }
-                            th { "Shape" }
                             th { "Obs" }
-                            th { "Reference Lines" }
                         }
                     }
                     tbody {
                         @for (index, kpi) in kpis.iter().enumerate() {
-                            tr {
-                                td.no-truncate {
-                                    @if has_reorder {
-                                        (render_kpi_move_button(frontier, kpi, MoveKpiDirection::Up, index == 0))
-                                        (render_kpi_move_button(frontier, kpi, MoveKpiDirection::Down, index + 1 == kpis.len()))
-                                    }
-                                    form.tag-icon-form method="post" action="metrics/kpi/delete" data-preserve-viewport="true" {
-                                        input type="hidden" name="frontier" value=(frontier.slug.as_str());
-                                        input type="hidden" name="kpi" value=(kpi.metric.key.as_str());
-                                        button.inline-icon-button.danger-icon-button type="submit" aria-label=(format!("Demote KPI metric {}", kpi.metric.key)) title="Demote KPI metric" {
-                                            (trash_icon())
+                            tr.kpi-metric-row {
+                                td.no-truncate.kpi-action-cell {
+                                    div.kpi-action-row {
+                                        @if has_reorder {
+                                            (render_kpi_move_button(frontier, kpi, MoveKpiDirection::Up, index == 0))
+                                            (render_kpi_move_button(frontier, kpi, MoveKpiDirection::Down, index + 1 == kpis.len()))
+                                        }
+                                        form.tag-icon-form method="post" action="metrics/kpi/delete" data-preserve-viewport="true" {
+                                            input type="hidden" name="frontier" value=(frontier.slug.as_str());
+                                            input type="hidden" name="kpi" value=(kpi.metric.key.as_str());
+                                            button.inline-icon-button.danger-icon-button type="submit" aria-label=(format!("Demote KPI metric {}", kpi.metric.key)) title="Demote KPI metric" {
+                                                (trash_icon())
+                                            }
                                         }
                                     }
                                 }
-                                td.no-truncate {
-                                    span.tag-chip { (kpi.metric.key) }
+                                td.kpi-metric-cell {
+                                    div.kpi-metric-stack {
+                                        span.tag-chip { (kpi.metric.key) }
                                     @if let Some(description) = kpi.metric.description.as_ref() {
-                                        div.muted { (description) }
+                                            div.kpi-description.muted { (description) }
+                                        }
                                     }
                                 }
-                                td.no-truncate { (kpi.metric.display_unit.label()) }
-                                td.no-truncate { (kpi.metric.objective.as_str()) " · " (kpi.metric.aggregation.as_str()) }
-                                td.no-truncate { (kpi.metric.reference_count) }
-                                td.kpi-reference-cell {
+                                td.no-truncate.kpi-unit-cell { (kpi.metric.display_unit.label()) }
+                                td.no-truncate.kpi-obs-cell { (kpi.metric.reference_count) }
+                            }
+                            tr.kpi-reference-row {
+                                td.kpi-reference-gutter {}
+                                td.kpi-reference-lane colspan="3" {
                                     (render_kpi_reference_editor(frontier, kpi))
                                 }
                             }
@@ -720,39 +730,42 @@ fn render_kpi_registry(frontier: &FrontierSummary, kpis: &[KpiSummary]) -> Marku
 
 fn render_kpi_reference_editor(frontier: &FrontierSummary, kpi: &KpiSummary) -> Markup {
     html! {
-        div.kpi-reference-stack {
-            @if !kpi.references.is_empty() {
-                div.kpi-reference-chip-row {
-                    @for reference in &kpi.references {
-                        span.kpi-reference-chip title=(format!(
-                            "{} = {}",
-                            reference.label,
-                            format_metric_value(reference.value, &reference.display_unit),
-                        )) {
-                            span.kpi-reference-label { (&reference.label) }
-                            span.kpi-reference-value {
-                                (format_metric_value(reference.value, &reference.display_unit))
-                            }
-                            form.tag-icon-form method="post" action="metrics/kpi/reference/delete" data-preserve-viewport="true" {
-                                input type="hidden" name="frontier" value=(frontier.slug.as_str());
-                                input type="hidden" name="kpi" value=(kpi.metric.key.as_str());
-                                input type="hidden" name="reference" value=(reference.label.as_str());
-                                button.inline-icon-button.danger-icon-button type="submit" aria-label=(format!("Delete KPI reference {}", reference.label)) title="Delete reference line" {
-                                    (trash_icon())
+        div.kpi-reference-band {
+            span.kpi-reference-heading { "References" }
+            div.kpi-reference-stack {
+                @if !kpi.references.is_empty() {
+                    div.kpi-reference-chip-row {
+                        @for reference in &kpi.references {
+                            span.kpi-reference-chip title=(format!(
+                                "{} = {}",
+                                reference.label,
+                                format_metric_value(reference.value, &reference.display_unit),
+                            )) {
+                                span.kpi-reference-label { (&reference.label) }
+                                span.kpi-reference-value {
+                                    (format_metric_value(reference.value, &reference.display_unit))
+                                }
+                                form.tag-icon-form method="post" action="metrics/kpi/reference/delete" data-preserve-viewport="true" {
+                                    input type="hidden" name="frontier" value=(frontier.slug.as_str());
+                                    input type="hidden" name="kpi" value=(kpi.metric.key.as_str());
+                                    input type="hidden" name="reference" value=(reference.label.as_str());
+                                    button.inline-icon-button.danger-icon-button type="submit" aria-label=(format!("Delete KPI reference {}", reference.label)) title="Delete reference line" {
+                                        (trash_icon())
+                                    }
                                 }
                             }
                         }
                     }
                 }
-            }
-            form.kpi-reference-form method="post" action="metrics/kpi/reference" data-preserve-viewport="true" {
-                input type="hidden" name="frontier" value=(frontier.slug.as_str());
-                input type="hidden" name="kpi" value=(kpi.metric.key.as_str());
-                input.compact-input type="text" name="label" placeholder="label" aria-label=(format!("Reference label for {}", kpi.metric.key)) required;
-                input.compact-input.kpi-reference-value-input type="number" step="any" name="value" placeholder="value" aria-label=(format!("Reference value for {}", kpi.metric.key)) required;
-                input.compact-input.kpi-reference-unit-input type="text" name="unit" placeholder=(kpi.metric.display_unit.label()) aria-label=(format!("Reference unit for {}", kpi.metric.key));
-                button.inline-icon-button type="submit" aria-label=(format!("Set KPI reference for {}", kpi.metric.key)) title="Set reference line" {
-                    (plus_icon())
+                form.kpi-reference-form method="post" action="metrics/kpi/reference" data-preserve-viewport="true" {
+                    input type="hidden" name="frontier" value=(frontier.slug.as_str());
+                    input type="hidden" name="kpi" value=(kpi.metric.key.as_str());
+                    input.compact-input.kpi-reference-label-input type="text" name="label" placeholder="label" aria-label=(format!("Reference label for {}", kpi.metric.key)) required;
+                    input.compact-input.kpi-reference-value-input type="number" step="any" name="value" placeholder="value" aria-label=(format!("Reference value for {}", kpi.metric.key)) required;
+                    input.compact-input.kpi-reference-unit-input type="text" name="unit" placeholder=(kpi.metric.display_unit.label()) aria-label=(format!("Reference unit for {}", kpi.metric.key));
+                    button.inline-icon-button type="submit" aria-label=(format!("Set KPI reference for {}", kpi.metric.key)) title="Set reference line" {
+                        (plus_icon())
+                    }
                 }
             }
         }

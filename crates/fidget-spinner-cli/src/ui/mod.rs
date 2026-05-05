@@ -1048,7 +1048,9 @@ fn limit_items<T>(items: &[T], limit: Option<u32>) -> &[T] {
 #[cfg(test)]
 mod tests {
     use super::assets::harden_autofill_controls;
-    use super::registry::{metric_registry_filter_text, render_metric_registry_table};
+    use super::registry::{
+        metric_registry_filter_text, render_kpi_registry, render_metric_registry_table,
+    };
     use super::results::{
         MetricChartAxis, best_metric_table_title_split, metric_chart_secondary_grid_values,
         metric_chart_x_major_values, metric_chart_x_minor_values, render_metric_series_section,
@@ -1066,8 +1068,8 @@ mod tests {
         MetricDisplayUnit, MetricUnit, NonEmptyText, OptimizationObjective, Slug,
     };
     use fidget_spinner_store_sqlite::{
-        ExperimentSummary, FrontierMetricPoint, FrontierMetricSeries, HypothesisSummary,
-        KpiReferenceSummary, KpiSummary, MetricKeySummary,
+        ExperimentSummary, FrontierMetricPoint, FrontierMetricSeries, FrontierSummary,
+        HypothesisSummary, KpiReferenceSummary, KpiSummary, MetricKeySummary,
     };
     use time::OffsetDateTime;
     use time::format_description::well_known::Rfc3339;
@@ -1158,6 +1160,59 @@ mod tests {
             created_at: timestamp,
             updated_at: timestamp,
         }
+    }
+
+    fn test_frontier_summary() -> FrontierSummary {
+        let frontier = test_frontier();
+        FrontierSummary {
+            id: frontier.id,
+            slug: frontier.slug,
+            label: frontier.label,
+            objective: frontier.objective,
+            status: frontier.status,
+            active_hypothesis_count: 0,
+            open_experiment_count: 0,
+            revision: frontier.revision,
+            updated_at: frontier.updated_at,
+        }
+    }
+
+    #[test]
+    fn kpi_registry_renders_references_as_sibling_rows() {
+        let frontier = test_frontier_summary();
+        let mut metric = test_metric("post_native_ingress_wallclock", "milliseconds");
+        metric.description = Some(must(
+            NonEmptyText::new(
+                "Wallclock after native ingress/presolve, computed as total solve elapsed minus native ingress elapsed.".to_owned(),
+            ),
+            "metric description",
+        ));
+        metric.reference_count = 4;
+        let timestamp = test_timestamp("2026-04-11T01:00:00Z");
+        let reference = KpiReferenceSummary {
+            id: KpiReferenceId::fresh(),
+            ordinal: KpiReferenceOrdinal::FIRST,
+            label: must(NonEmptyText::new("highs-owner-4x5"), "reference label"),
+            value: 3418.847,
+            canonical_value: 3_418_847_000.0,
+            display_unit: metric.display_unit.clone(),
+            created_at: timestamp,
+            updated_at: timestamp,
+        };
+        let kpi = KpiSummary {
+            id: KpiId::fresh(),
+            ordinal: KpiOrdinal::FIRST,
+            metric,
+            references: vec![reference],
+        };
+        let markup = render_kpi_registry(&frontier, &[kpi]).into_string();
+
+        assert!(markup.contains(r#"<tr class="kpi-reference-row">"#));
+        assert!(markup.contains(r#"<td class="kpi-reference-lane" colspan="3">"#));
+        assert!(markup.contains(r#"<div class="kpi-description muted">"#));
+        assert!(markup.contains("highs-owner-4x5"));
+        assert!(!markup.contains("<th>Shape</th>"));
+        assert!(!markup.contains("<th>Reference Lines</th>"));
     }
 
     fn test_hypothesis(frontier_id: FrontierId, slug: &str, title: &str) -> HypothesisSummary {

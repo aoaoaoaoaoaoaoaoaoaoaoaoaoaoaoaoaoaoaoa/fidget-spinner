@@ -885,18 +885,81 @@ pub(super) fn styles() -> &'static str {
         width: 100%;
         max-width: none;
     }
-    .kpi-reference-stack {
-        display: grid;
-        gap: 5px;
-        min-width: min(42ch, 100%);
+    .kpi-table {
+        table-layout: fixed;
     }
+    .kpi-action-col,
+    .kpi-unit-col,
+    .kpi-obs-col {
+        width: 1%;
+    }
+    .kpi-metric-col {
+        width: auto;
+    }
+    .kpi-action-row {
+        display: flex;
+        gap: 3px;
+        align-items: flex-start;
+    }
+    .kpi-metric-cell,
+    .kpi-reference-lane {
+        white-space: normal !important;
+        overflow-wrap: anywhere !important;
+    }
+    .kpi-metric-stack {
+        display: grid;
+        gap: 4px;
+        min-width: 0;
+    }
+    .kpi-description {
+        max-width: min(86ch, 100%);
+        line-height: 1.35;
+        white-space: normal;
+        overflow-wrap: anywhere;
+    }
+    .kpi-reference-row td {
+        border-top: 0;
+        padding-top: 0;
+    }
+    .kpi-reference-gutter {
+        padding: 0 !important;
+    }
+    .kpi-reference-lane {
+        padding-bottom: 9px !important;
+    }
+    .kpi-reference-band {
+        display: flex;
+        gap: 8px;
+        align-items: flex-start;
+        flex-wrap: wrap;
+        min-width: 0;
+    }
+    .kpi-reference-heading {
+        color: var(--muted);
+        font-size: 11px;
+        font-weight: 700;
+        letter-spacing: 0.05em;
+        text-transform: uppercase;
+        padding-top: 5px;
+        flex: 0 0 auto;
+    }
+    .kpi-reference-stack,
     .kpi-reference-chip-row,
-    .kpi-reference-form,
-    .kpi-reference-chip {
+    .kpi-reference-form {
         display: inline-flex;
         align-items: center;
         gap: 5px;
         flex-wrap: wrap;
+        min-width: 0;
+    }
+    .kpi-reference-stack {
+        flex: 1 1 38ch;
+    }
+    .kpi-reference-chip {
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+        flex-wrap: nowrap;
         min-width: 0;
     }
     .kpi-reference-chip {
@@ -908,18 +971,23 @@ pub(super) fn styles() -> &'static str {
     }
     .kpi-reference-label {
         font-weight: 700;
+        max-width: min(38ch, 42vw);
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
     }
     .kpi-reference-value {
         color: var(--muted);
+        white-space: nowrap;
+    }
+    .kpi-reference-label-input {
+        width: min(22ch, 30vw);
     }
     .kpi-reference-value-input {
-        width: 10ch;
+        width: 9ch;
     }
     .kpi-reference-unit-input {
-        width: 13ch;
-    }
-    .kpi-reference-cell {
-        white-space: normal !important;
+        width: 12ch;
     }
     .inline-icon-button {
         display: grid;
