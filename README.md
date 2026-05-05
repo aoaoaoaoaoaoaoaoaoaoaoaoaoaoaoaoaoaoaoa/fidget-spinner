@@ -1,319 +1,54 @@
 # Fidget Spinner
 
-Fidget Spinner is a local-first frontier ledger for long-running optimization
-work.
+Local-first experiment ledger for agents doing long optimization runs.
 
-It is intentionally not a general research notebook. It is a hard scientific
-spine:
+Not a notebook. Not a diary. Not a cloud service.
 
-- `frontier` is scope and grounding, not a graph node
-- `hypothesis` is a real graph vertex
-- `experiment` is a real graph vertex with one mandatory owning hypothesis
-- influence edges form a sparse DAG over that canonical tree spine
+## Shape
 
-The product goal is token austerity. `frontier.open` is the only sanctioned
-overview dump. Everything else should require deliberate traversal one object at
-a time.
+- `frontier`: scope, brief, KPIs
+- `hypothesis`: cheap KPI-moving idea
+- `experiment`: measured trial owned by one hypothesis
 
-## Current Model
+Closed experiments require a clean git worktree and record `HEAD`.
 
-The ledger has three first-class object families:
+State lives under:
 
-- `frontier`
-  - a named scope
-  - owns one mutable `brief`
-  - partitions hypotheses and experiments
-- `hypothesis`
-  - terse claim or intervention
-  - title + summary + exactly one paragraph of body
-- `experiment`
-  - open or closed
-  - belongs to exactly one hypothesis
-  - may cite other hypotheses or experiments as influences
-  - when closed, stores conditions, metrics, verdict, rationale, and optional analysis
+```text
+~/.local/state/fidget-spinner/projects/
+```
 
-There are no canonical freeform `note` or `source` nodes anymore. If a piece of
-text does not belong in a frontier brief, hypothesis, or experiment analysis, it
-probably belongs outside Spinner.
-
-## Design Rules
-
-- `frontier.open` is the only overview surface.
-- No broad prose dumps in list-like tools.
-- Live metrics are derived, not manually curated.
-- Selectors are permissive: UUID or slug, one field, no parallel `_id` / `_slug`.
-- Slow intentional graph walking is preferred to burning context on giant feeds.
-
-## Local Install
-
-Install the release CLI into `~/.local/bin` and refresh the bundled skill
-symlinks in `~/.codex/skills`:
+## Install
 
 ```bash
 ./scripts/install-local.sh
 ```
 
-The installed binary is `~/.local/bin/fidget-spinner-cli`.
-Successful `python3 check.py` and `python3 check.py deep` runs also invoke the
-local installer automatically after the requested checks pass.
+Installs:
 
-The installer also installs a user systemd service for the central navigator at
-`http://127.0.0.1:8913/` and refreshes it on every reinstall:
+- `~/.local/bin/fidget-spinner-cli`
+- Codex skills
+- user service at `http://127.0.0.1:8913/`
 
-```bash
-systemctl --user status fidget-spinner-ui.service
-journalctl --user -u fidget-spinner-ui.service -f
-```
-
-By default it scans `~/programming/projects`. You can override the scan root for
-one install with:
+## Use
 
 ```bash
-FIDGET_SPINNER_UI_PATH=/abs/path/to/projects ./scripts/install-local.sh
+fidget-spinner-cli init --project . --name my-project
+fidget-spinner-cli mcp serve
 ```
 
-## Quickstart
-
-Initialize a project:
-
-```bash
-cargo run -p fidget-spinner-cli -- init --project . --name libgrid
-```
-
-Register the tag, metric, and condition vocabulary before heavy ingest:
-
-```bash
-cargo run -p fidget-spinner-cli -- tag add \
-  --project . \
-  --name root-conquest \
-  --description "Root-cash-out work"
-```
-
-```bash
-cargo run -p fidget-spinner-cli -- metric define \
-  --project . \
-  --key nodes_solved \
-  --unit count \
-  --objective maximize \
-  --description "Solved search nodes on the target rail"
-```
-
-```bash
-cargo run -p fidget-spinner-cli -- condition define \
-  --project . \
-  --key instance \
-  --value-type string \
-  --description "Workload slice"
-```
-
-Create a frontier:
-
-```bash
-cargo run -p fidget-spinner-cli -- frontier create \
-  --project . \
-  --label "native mip" \
-  --objective "Drive braid-rail LP cash-out" \
-  --slug native-mip
-```
-
-Write the frontier brief:
-
-```bash
-cargo run -p fidget-spinner-cli -- frontier update \
-  --project . \
-  --frontier native-mip \
-  --objective "Drive braid-rail LP cash-out" \
-  --situation "Root LP spend is understood; node-local LP churn is the active frontier."
-```
-
-Promote a metric as a frontier KPI:
-
-```bash
-cargo run -p fidget-spinner-cli -- kpi create \
-  --project . \
-  --frontier native-mip \
-  --metric nodes_solved
-```
-
-Record a hypothesis:
-
-```bash
-cargo run -p fidget-spinner-cli -- hypothesis record \
-  --project . \
-  --frontier native-mip \
-  --slug node-local-loop \
-  --title "Node-local logical cut loop" \
-  --summary "Push cut cash-out below root." \
-  --body "Thread node-local logical cuts through native LP reoptimization so the same intervention can cash out below root on parity rails without corrupting root ownership semantics." \
-  --tag root-conquest
-```
-
-Open an experiment:
-
-```bash
-cargo run -p fidget-spinner-cli -- experiment open \
-  --project . \
-  --hypothesis node-local-loop \
-  --slug parity-20s \
-  --title "Parity rail 20s" \
-  --summary "Live challenger on the canonical braid slice." \
-  --tag root-conquest
-```
-
-Close an experiment:
-
-```bash
-cargo run -p fidget-spinner-cli -- experiment close \
-  --project . \
-  --experiment parity-20s \
-  --backend manual \
-  --argv matched-lp-site-traces \
-  --dimension instance=4x5-braid \
-  --primary-metric nodes_solved=273 \
-  --verdict accepted \
-  --rationale "Matched LP site traces isolate node reoptimization as the dominant native LP sink."
-```
-
-`experiment close` only succeeds from a clean git worktree and records `HEAD`
-automatically in the closed outcome. Make a fast commit first; bypass
-heavyweight hooks if needed because the goal is recoverable experimental state,
-not production readiness.
-
-Inspect live metrics:
-
-```bash
-cargo run -p fidget-spinner-cli -- metric keys --project . --frontier native-mip --scope live
-```
-
-Inspect KPI metrics:
-
-```bash
-cargo run -p fidget-spinner-cli -- metric keys --project . --frontier native-mip --scope kpi
-```
-
-```bash
-cargo run -p fidget-spinner-cli -- metric best \
-  --project . \
-  --frontier native-mip \
-  --hypothesis node-local-loop \
-  --key nodes_solved
-```
-
-Find the nearest accepted, kept, rejected, and champion comparators for one slice:
-
-```bash
-cargo run -p fidget-spinner-cli -- experiment nearest \
-  --project . \
-  --frontier native-mip \
-  --metric nodes_solved \
-  --dimension instance=4x5-braid \
-  --dimension duration_s=20
-```
-
-## MCP Surface
-
-Serve the MCP host:
-
-```bash
-cargo run -p fidget-spinner-cli -- mcp serve
-```
-
-If the host starts unbound, bind it with:
-
-```json
-{"name":"project.bind","arguments":{"path":"<project-root-or-nested-path>"}}
-```
-
-Use the repo root, the repo’s `.git` directory, or any nested path inside the
-repo. Do not create `.fidget_spinner` directories by hand; Spinner state is
-centralized, not repo-local. If the repo does not have a Spinner store yet,
-`project.bind` will bootstrap one automatically in the centralized state path.
-
-The main model-facing tools are:
-
-- `system.health`
-- `system.telemetry`
-- `project.bind`
-- `project.status`
-- `tag.add`
-- `tag.list`
-- `frontier.create`
-- `frontier.list`
-- `frontier.read`
-- `frontier.open`
-- `frontier.update`
-- `frontier.history`
-- `hypothesis.record`
-- `hypothesis.list`
-- `hypothesis.read`
-- `hypothesis.update`
-- `hypothesis.history`
-- `experiment.open`
-- `experiment.list`
-- `experiment.read`
-- `experiment.update`
-- `experiment.close`
-- `experiment.nearest`
-- `experiment.history`
-- `metric.define`
-- `metric.keys`
-- `metric.best`
-- `kpi.create`
-- `kpi.list`
-- `kpi.best`
-- `condition.define`
-- `condition.list`
-
-`frontier.open` is the grounding call. It returns:
-
-- frontier brief
-- active tags
-- KPIs
-- live metric keys
-- active hypotheses with deduped current state
-- open experiments
-
-Everything deeper should be fetched by explicit selector.
-
-## Navigator
-
-Serve the local navigator:
-
-```bash
-cargo run -p fidget-spinner-cli -- ui serve --path . --bind 127.0.0.1:8913
-```
-
-`ui serve --path` accepts:
-
-- the project root
-- the project’s `.git/`
-- any descendant inside the project root
-- a parent scan root containing descendant Spinner projects, in which case the root page stays a central project index
-
-The navigator mirrors the product philosophy:
-
-- root page lists projects when serving a scan root, otherwise frontiers
-- frontier page is the only overview
-- hypothesis / experiment pages are detail reads
-- local navigation happens card-to-card
-
-## Store Layout
-
-Each initialized project gets a centralized private state root:
+In MCP, start with:
 
 ```text
-~/.local/state/fidget-spinner/projects/<project>-<stable-id>/
-    state.sqlite
+system.health
+project.bind
+frontier.open
 ```
 
-The project root remains the binding identity, but the live ledger stays out of
-the git worktree.
+Then walk deliberately by selector.
 
 ## Doctrine
 
-- hypotheses are short and disciplined
-- experiments carry the real scientific record
-- closed experiments pin the recoverable implementation commit automatically
-- verdicts are explicit: `accepted`, `kept`, `parked`, `rejected`
-- live metrics answer “what matters now?”, not “what has ever existed?”
-- the ledger is about experimental truth, not recreating git inside the database
+Open hypotheses eagerly. Open experiments only for KPI-directed work. Commit
+fast before closing. Let git hold implementation state; let Spinner hold
+experimental truth.
