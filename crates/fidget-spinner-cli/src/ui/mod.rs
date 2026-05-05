@@ -1136,10 +1136,11 @@ mod tests {
         assert!(markup.contains(r#"data-table-filter-input="metric-registry""#));
         assert!(markup.contains(r#"data-table-filter-row="metric-registry""#));
         assert!(markup.contains(r#"data-table-filter-empty="metric-registry" hidden"#));
-        assert_eq!(
-            filter_text,
-            "presolve_wallclock observed time point minimize "
-        );
+        assert_eq!(filter_text, "presolve_wallclock time minimize ");
+        assert!(!markup.contains("<th>Shape</th>"));
+        assert!(!markup.contains(r#"aria-label="Aggregation""#));
+        assert!(markup.contains(r#"class="metric-objective-chip metric-objective-minimize""#));
+        assert!(markup.contains(">MIN</span>"));
         assert!(markup.contains(r#"<td class="no-truncate">time</td>"#));
         assert!(markup.contains(r#"action="metrics/description""#));
         assert!(markup.contains(r#"data-inline-edit-allow-clear="true""#));

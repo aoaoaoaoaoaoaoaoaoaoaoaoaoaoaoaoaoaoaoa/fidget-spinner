@@ -865,6 +865,32 @@ pub(super) fn styles() -> &'static str {
     .metric-name-form {
         white-space: nowrap;
     }
+    .metric-name-row {
+        display: inline-flex;
+        gap: 6px;
+        align-items: center;
+        min-width: 0;
+        flex-wrap: wrap;
+    }
+    .metric-objective-chip {
+        display: inline-grid;
+        place-items: center;
+        min-width: 3.4ch;
+        height: 20px;
+        padding: 0 5px;
+        border: 1px solid var(--border);
+        background: var(--panel);
+        color: var(--muted);
+        font-size: 10px;
+        font-weight: 700;
+        letter-spacing: 0.06em;
+    }
+    .metric-objective-maximize {
+        color: color-mix(in srgb, var(--accepted) 70%, var(--muted));
+    }
+    .metric-objective-minimize {
+        color: color-mix(in srgb, var(--rejected) 55%, var(--muted));
+    }
     .metric-description-form {
         display: grid;
         grid-template-columns: minmax(0, 1fr) auto;

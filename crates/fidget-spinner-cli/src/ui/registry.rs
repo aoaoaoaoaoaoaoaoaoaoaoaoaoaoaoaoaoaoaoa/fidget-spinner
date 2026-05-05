@@ -484,7 +484,7 @@ fn render_create_metric_form(metrics: &[fidget_spinner_store_sqlite::MetricKeySu
                     option value="dimensionless" { "dimensionless" }
                 }
                 input.compact-input type="text" name="display_unit" placeholder="milliseconds" aria-label="Display unit";
-                (render_metric_aggregation_select())
+                input type="hidden" name="aggregation" value="point";
                 (render_metric_objective_select())
                 input.compact-input.wide-compact-input type="text" name="description" placeholder="description" aria-label="Metric description";
                 button.inline-icon-button type="submit" aria-label="Add observed metric" title="Add observed metric" {
@@ -505,23 +505,13 @@ fn render_create_metric_form(metrics: &[fidget_spinner_store_sqlite::MetricKeySu
                     (render_metric_operand_select("right", "Right operand", metrics, true))
                     (render_metric_operand_select("term_3", "Gmean term 3", metrics, false))
                     (render_metric_operand_select("term_4", "Gmean term 4", metrics, false))
-                    (render_metric_aggregation_select())
+                    input type="hidden" name="aggregation" value="point";
                     (render_metric_objective_select())
                     input.compact-input.wide-compact-input type="text" name="description" placeholder="synthetic description" aria-label="Synthetic metric description";
                     button.inline-icon-button type="submit" aria-label="Add synthetic metric" title="Add synthetic metric" {
                         (plus_icon())
                     }
                 }
-            }
-        }
-    }
-}
-
-fn render_metric_aggregation_select() -> Markup {
-    html! {
-        select.compact-select name="aggregation" aria-label="Aggregation" {
-            @for aggregation in ["point", "mean", "geomean", "median", "p95", "min", "max", "sum"] {
-                option value=(aggregation) { (aggregation) }
             }
         }
     }
@@ -832,7 +822,6 @@ pub(super) fn render_metric_registry_table(
                                     }
                                 }
                                 th { "Dimension" }
-                                th { "Shape" }
                                 th { "Refs" }
                                 th { "Merge" }
                             }
@@ -850,13 +839,19 @@ pub(super) fn render_metric_registry_table(
                                     }
                                     td.no-truncate {
                                         div.metric-identity-stack {
-                                            form.tag-inline-rename-form.metric-name-form method="post" action="metrics/rename" data-preserve-viewport="true" data-inline-edit-form="true" data-original-value=(metric.key.as_str()) {
-                                                input type="hidden" name="metric" value=(metric.key.as_str());
-                                                span.tag-chip data-inline-edit-label="true" { (metric.key) }
-                                                button.inline-icon-button type="button" data-inline-edit-trigger="true" aria-label=(format!("Rename {}", metric.key)) title="Rename metric" {
-                                                    (pencil_icon())
+                                            div.metric-name-row {
+                                                span class=(format!("metric-objective-chip metric-objective-{}", metric.objective.as_str()))
+                                                    title=(metric.objective.as_str()) {
+                                                    (metric_objective_chip_label(metric.objective.as_str()))
                                                 }
-                                                input.inline-rename-input type="text" name="new_key" value=(metric.key.as_str()) aria-label=(format!("New key for {}", metric.key)) data-inline-edit-input="true";
+                                                form.tag-inline-rename-form.metric-name-form method="post" action="metrics/rename" data-preserve-viewport="true" data-inline-edit-form="true" data-original-value=(metric.key.as_str()) {
+                                                    input type="hidden" name="metric" value=(metric.key.as_str());
+                                                    span.tag-chip data-inline-edit-label="true" { (metric.key) }
+                                                    button.inline-icon-button type="button" data-inline-edit-trigger="true" aria-label=(format!("Rename {}", metric.key)) title="Rename metric" {
+                                                        (pencil_icon())
+                                                    }
+                                                    input.inline-rename-input type="text" name="new_key" value=(metric.key.as_str()) aria-label=(format!("New key for {}", metric.key)) data-inline-edit-input="true";
+                                                }
                                             }
                                             form.tag-inline-rename-form.metric-description-form method="post" action="metrics/description" data-preserve-viewport="true" data-inline-edit-form="true" data-inline-edit-allow-clear="true" data-original-value=(metric.description.as_ref().map_or("", NonEmptyText::as_str)) {
                                                 input type="hidden" name="metric" value=(metric.key.as_str());
@@ -875,7 +870,6 @@ pub(super) fn render_metric_registry_table(
                                         }
                                     }
                                     td.no-truncate { (metric.dimension.to_string()) }
-                                    td.no-truncate { (metric.kind.as_str()) " · " (metric.aggregation.as_str()) " · " (metric.objective.as_str()) }
                                     td.no-truncate { (metric.reference_count) }
                                     td.no-truncate {
                                         form.tag-inline-form method="post" action="metrics/merge" data-preserve-viewport="true" {
@@ -892,7 +886,7 @@ pub(super) fn render_metric_registry_table(
                                 }
                             }
                             tr data-table-filter-empty="metric-registry" hidden {
-                                td.muted colspan="6" { "No matching metrics." }
+                                td.muted colspan="5" { "No matching metrics." }
                             }
                         }
                     }
@@ -908,13 +902,20 @@ pub(super) fn metric_registry_filter_text(
     let dimension = metric.dimension.to_string();
     [
         metric.key.as_str(),
-        metric.kind.as_str(),
         dimension.as_str(),
-        metric.aggregation.as_str(),
         metric.objective.as_str(),
         metric.description.as_ref().map_or("", NonEmptyText::as_str),
     ]
     .join(" ")
+}
+
+fn metric_objective_chip_label(objective: &str) -> &'static str {
+    match objective {
+        "maximize" => "MAX",
+        "minimize" => "MIN",
+        "target" => "TGT",
+        _ => "OBJ",
+    }
 }
 
 fn render_frontier_grid(frontiers: &[FrontierSummary], limit: Option<u32>) -> Markup {
