@@ -7,7 +7,7 @@ use super::{
     BLACK, BTreeMap, BTreeSet, ChartBuilder, Circle, Color, Cross, DashedLineSeries,
     DimensionFacet, ExperimentStatus, ExperimentSummary, FrontierMetricSeries,
     FrontierOpenProjection, FrontierPageQuery, FrontierTab, FrontierVerdict,
-    HypothesisCurrentState, IntoDrawingArea, IntoFont, IntoLogRange, LineSeries,
+    HypothesisCurrentState, IntoDrawingArea, IntoFont, IntoLogRange, LabelAreaPosition, LineSeries,
     ListExperimentsQuery, ListHypothesesQuery, METRIC_TABLE_TITLE_MIN_BUDGET_CH,
     METRIC_TABLE_TITLE_PERCENT_BUDGET, Markup, MetricAxisLogScales, MetricDisplayUnit,
     MetricKeysQuery, MetricQuantity, MetricScope, NonEmptyText, PathElement, PreEscaped, RGBColor,
@@ -16,6 +16,7 @@ use super::{
     hypothesis_href, limit_items, project_metrics_frontier_href, render_dimension_value,
     render_hypothesis_meta_chips, status_chip_classes, verdict_class,
 };
+use plotters::coord::combinators::LogCoord;
 use plotters::coord::ranged1d::{LightPoints, Ranged};
 use plotters::coord::types::RangedCoordf64;
 use plotters::prelude::BindKeyPoints;
@@ -28,6 +29,7 @@ const METRIC_CHART_Y_LABEL_COUNT: usize = 6;
 const METRIC_CHART_DOTTED_GRID_DASH: i32 = 1;
 const METRIC_CHART_DOTTED_GRID_GAP: i32 = 5;
 const METRIC_CHART_LOG_BUCKET_REFINEMENT_COUNT: usize = 4;
+const METRIC_CHART_SECONDARY_TICK_PX: i32 = 5;
 
 pub(super) fn render_frontier_tab_content(
     store: &fidget_spinner_store_sqlite::ProjectStore,
@@ -956,14 +958,15 @@ fn render_metric_chart_svg(
                 if let Some(secondary_axis) = axes.secondary.as_ref() {
                     let secondary_grid_style =
                         ShapeStyle::from(&RGBColor(89, 119, 138).mix(0.28)).stroke_width(1);
-                    for value in metric_chart_secondary_grid_values(
+                    let secondary_grid_values = metric_chart_secondary_grid_values(
                         $secondary_min,
                         $secondary_max,
                         log_scales.secondary,
-                    ) {
+                    );
+                    for value in &secondary_grid_values {
                         if chart
                             .draw_secondary_series(DashedLineSeries::new(
-                                [(0_i32, value), (x_end, value)],
+                                [(0_i32, *value), (x_end, *value)],
                                 METRIC_CHART_DOTTED_GRID_DASH,
                                 METRIC_CHART_DOTTED_GRID_GAP,
                                 secondary_grid_style,
@@ -978,12 +981,33 @@ fn render_metric_chart_svg(
                         .configure_secondary_axes()
                         .axis_style(RGBColor(103, 86, 63))
                         .label_style(("Iosevka Web", 12).into_font().color(&RGBColor(79, 71, 58)))
+                        .set_tick_mark_size(
+                            LabelAreaPosition::Right,
+                            METRIC_CHART_SECONDARY_TICK_PX,
+                        )
                         .y_labels(METRIC_CHART_Y_LABEL_COUNT)
                         .y_desc(secondary_axis.display_unit.label())
                         .draw()
                         .is_err()
                     {
                         return chart_error_markup("secondary axis draw failed");
+                    }
+
+                    let secondary_tick_style =
+                        ShapeStyle::from(&RGBColor(89, 119, 138).mix(0.58)).stroke_width(1);
+                    for value in secondary_grid_values {
+                        let (right_x, y) = chart
+                            .secondary_plotting_area()
+                            .map_coordinate(&(x_end, value));
+                        if root
+                            .draw(&PathElement::new(
+                                vec![(right_x, y), (right_x + METRIC_CHART_SECONDARY_TICK_PX, y)],
+                                secondary_tick_style,
+                            ))
+                            .is_err()
+                        {
+                            return chart_error_markup("secondary tick draw failed");
+                        }
                     }
                 }
 
@@ -1182,15 +1206,13 @@ fn metric_chart_log_grid_values(min_value: f64, max_value: f64) -> Vec<f64> {
     if min_value <= 0.0 {
         return Vec::new();
     }
-    let log_min = min_value.log10();
-    let log_max = max_value.log10();
-    let point_count = METRIC_CHART_Y_LABEL_COUNT * METRIC_CHART_LIGHT_LINE_LIMIT;
-    let step_count = point_count.saturating_sub(1);
-    if step_count == 0 {
-        return Vec::new();
-    }
-    let mut values = (0..=step_count)
-        .map(|index| 10_f64.powf(log_min + (log_max - log_min) * index as f64 / step_count as f64))
+    let coord: LogCoord<f64> = (min_value..max_value).log_scale().into();
+    let mut values = coord
+        .key_points(LightPoints::new(
+            METRIC_CHART_Y_LABEL_COUNT,
+            METRIC_CHART_Y_LABEL_COUNT * METRIC_CHART_LIGHT_LINE_LIMIT,
+        ))
+        .into_iter()
         .filter(|value| value.is_finite() && *value > min_value && *value < max_value)
         .collect::<Vec<_>>();
     values.extend(metric_chart_log_bucket_refinement_values(

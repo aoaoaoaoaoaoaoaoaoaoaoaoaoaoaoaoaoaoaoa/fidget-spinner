@@ -32,7 +32,7 @@ use maud::{DOCTYPE, Markup, PreEscaped, html};
 use percent_encoding::{NON_ALPHANUMERIC, percent_decode_str, utf8_percent_encode};
 use plotters::prelude::{
     BLACK, ChartBuilder, Circle, Cross, DashedLineSeries, IntoDrawingArea, IntoLogRange,
-    LineSeries, PathElement, SVGBackend, SeriesLabelPosition, ShapeStyle, Text,
+    LabelAreaPosition, LineSeries, PathElement, SVGBackend, SeriesLabelPosition, ShapeStyle, Text,
 };
 use plotters::style::{Color, IntoFont, RGBColor};
 use time::OffsetDateTime;
@@ -1368,6 +1368,24 @@ mod tests {
             log_values
                 .iter()
                 .all(|value| *value > 10.0 && *value < 1000.0)
+        );
+        for expected in [20.0, 30.0, 100.0, 900.0] {
+            assert!(
+                log_values
+                    .iter()
+                    .any(|value| (*value - expected).abs() <= expected * 1e-12),
+                "missing canonical log tick {expected}: {log_values:?}"
+            );
+        }
+        let log_gaps = log_values
+            .windows(2)
+            .map(|pair| pair[1].log10() - pair[0].log10())
+            .collect::<Vec<_>>();
+        assert!(
+            log_gaps
+                .windows(2)
+                .any(|pair| (pair[0] - pair[1]).abs() > 1e-9),
+            "log grid should use canonical decade subdivisions, not equal log slices: {log_values:?}"
         );
     }
 
