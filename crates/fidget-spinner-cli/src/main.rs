@@ -13,16 +13,18 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
 use fidget_spinner_core::{
     CommandRecipe, ExecutionBackend, ExperimentAnalysis, ExperimentStatus, FieldValueType,
     FrontierStatus, FrontierVerdict, HypothesisAssessmentLevel, MetricAggregation, MetricDimension,
-    MetricUnit, NonEmptyText, OptimizationObjective, ReportedMetricValue, RunDimensionValue, Slug,
-    TagName,
+    MetricDisplayUnit, MetricUnit, NonEmptyText, OptimizationObjective, ReportedMetricValue,
+    RunDimensionValue, Slug, TagName,
 };
 use fidget_spinner_store_sqlite::{
     CloseExperimentRequest, CreateFrontierRequest, CreateHypothesisRequest, CreateKpiRequest,
-    DefineMetricRequest, DefineRunDimensionRequest, DeleteMetricRequest, ExperimentOutcomePatch,
-    FrontierRoadmapItemDraft, KpiBestQuery, KpiListQuery, ListExperimentsQuery, ListFrontiersQuery,
-    ListHypothesesQuery, MergeMetricRequest, MetricBestQuery, MetricKeysQuery, MetricRankOrder,
-    MetricScope, OpenExperimentRequest, ProjectStore, RenameMetricRequest, StoreError, TextPatch,
-    UpdateExperimentRequest, UpdateFrontierRequest, UpdateHypothesisRequest, VertexSelector,
+    DefineMetricRequest, DefineRunDimensionRequest, DeleteKpiReferenceRequest, DeleteMetricRequest,
+    ExperimentOutcomePatch, FrontierRoadmapItemDraft, KpiBestQuery, KpiListQuery,
+    KpiReferenceListQuery, ListExperimentsQuery, ListFrontiersQuery, ListHypothesesQuery,
+    MergeMetricRequest, MetricBestQuery, MetricKeysQuery, MetricRankOrder, MetricScope,
+    OpenExperimentRequest, ProjectStore, RenameMetricRequest, SetKpiReferenceRequest, StoreError,
+    TextPatch, UpdateExperimentRequest, UpdateFrontierRequest, UpdateHypothesisRequest,
+    VertexSelector,
 };
 #[cfg(test)]
 use libmcp_testkit as _;
@@ -164,7 +166,18 @@ enum MetricCommand {
 enum KpiCommand {
     Create(KpiCreateArgs),
     List(KpiListArgs),
+    Reference {
+        #[command(subcommand)]
+        command: KpiReferenceCommand,
+    },
     Best(KpiBestArgs),
+}
+
+#[derive(Subcommand)]
+enum KpiReferenceCommand {
+    Set(KpiReferenceSetArgs),
+    List(KpiReferenceListArgs),
+    Delete(KpiReferenceDeleteArgs),
 }
 
 #[derive(Subcommand)]
@@ -578,6 +591,44 @@ struct KpiListArgs {
 }
 
 #[derive(Args)]
+struct KpiReferenceSetArgs {
+    #[command(flatten)]
+    project: ProjectArg,
+    #[arg(long)]
+    frontier: String,
+    #[arg(long)]
+    kpi: String,
+    #[arg(long)]
+    label: String,
+    #[arg(long)]
+    value: f64,
+    #[arg(long)]
+    unit: Option<String>,
+}
+
+#[derive(Args)]
+struct KpiReferenceListArgs {
+    #[command(flatten)]
+    project: ProjectArg,
+    #[arg(long)]
+    frontier: String,
+    #[arg(long)]
+    kpi: Option<String>,
+}
+
+#[derive(Args)]
+struct KpiReferenceDeleteArgs {
+    #[command(flatten)]
+    project: ProjectArg,
+    #[arg(long)]
+    frontier: String,
+    #[arg(long)]
+    kpi: String,
+    #[arg(long)]
+    reference: String,
+}
+
+#[derive(Args)]
 struct KpiBestArgs {
     #[command(flatten)]
     project: ProjectArg,
@@ -808,6 +859,11 @@ fn main() -> Result<(), StoreError> {
         Command::Kpi { command } => match command {
             KpiCommand::Create(args) => run_kpi_create(args),
             KpiCommand::List(args) => run_kpi_list(args),
+            KpiCommand::Reference { command } => match command {
+                KpiReferenceCommand::Set(args) => run_kpi_reference_set(args),
+                KpiReferenceCommand::List(args) => run_kpi_reference_list(args),
+                KpiReferenceCommand::Delete(args) => run_kpi_reference_delete(args),
+            },
             KpiCommand::Best(args) => run_kpi_best(args),
         },
         Command::Condition { command } => match command {
@@ -1116,6 +1172,40 @@ fn run_kpi_list(args: KpiListArgs) -> Result<(), StoreError> {
     print_json(&store.list_kpis(KpiListQuery {
         frontier: args.frontier,
     })?)
+}
+
+fn run_kpi_reference_set(args: KpiReferenceSetArgs) -> Result<(), StoreError> {
+    let mut store = open_store(&args.project.project)?;
+    print_json(
+        &store.set_kpi_reference(SetKpiReferenceRequest {
+            frontier: args.frontier,
+            kpi: args.kpi,
+            label: NonEmptyText::new(args.label)?,
+            value: args.value,
+            unit: args
+                .unit
+                .map(|unit| MetricDisplayUnit::parse(&unit))
+                .transpose()?,
+        })?,
+    )
+}
+
+fn run_kpi_reference_list(args: KpiReferenceListArgs) -> Result<(), StoreError> {
+    let store = open_store(&args.project.project)?;
+    print_json(&store.list_kpi_references(KpiReferenceListQuery {
+        frontier: args.frontier,
+        kpi: args.kpi,
+    })?)
+}
+
+fn run_kpi_reference_delete(args: KpiReferenceDeleteArgs) -> Result<(), StoreError> {
+    let mut store = open_store(&args.project.project)?;
+    store.delete_kpi_reference(DeleteKpiReferenceRequest {
+        frontier: args.frontier,
+        kpi: args.kpi,
+        reference: args.reference,
+    })?;
+    print_json(&serde_json::json!({"deleted": true}))
 }
 
 fn run_kpi_best(args: KpiBestArgs) -> Result<(), StoreError> {

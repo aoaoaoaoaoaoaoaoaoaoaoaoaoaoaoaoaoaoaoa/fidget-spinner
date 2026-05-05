@@ -544,6 +544,41 @@ const CREATE_QUERY_VIEWS_SQL: &str = concat!(
     FROM q_metric
     WHERE q_metric.kpi_ordinal IS NOT NULL;
 
+    CREATE TEMP VIEW q_kpi_reference AS
+    SELECT
+        frontier_kpis.ordinal AS kpi_ordinal,
+        metric_definitions.key AS metric_key,
+        frontier_kpi_references.ordinal AS reference_ordinal,
+        frontier_kpi_references.label AS label,
+        frontier_kpi_references.canonical_value AS canonical_value,
+        ",
+    "
+        CASE metric_definitions.dimension
+            WHEN 'time' THEN 'nanoseconds'
+            WHEN 'bytes' THEN 'bytes'
+            WHEN 'dimensionless' THEN 'dimensionless'
+            WHEN 'count' THEN 'count'
+            ELSE metric_definitions.dimension
+        END",
+    " AS canonical_unit,
+        metric_definitions.display_unit AS display_unit,
+        CASE metric_definitions.display_unit
+            WHEN 'nanoseconds' THEN frontier_kpi_references.canonical_value
+            WHEN 'microseconds' THEN frontier_kpi_references.canonical_value / 1000.0
+            WHEN 'milliseconds' THEN frontier_kpi_references.canonical_value / 1000000.0
+            WHEN 'seconds' THEN frontier_kpi_references.canonical_value / 1000000000.0
+            WHEN 'bytes' THEN frontier_kpi_references.canonical_value
+            WHEN 'kibibytes' THEN frontier_kpi_references.canonical_value / 1024.0
+            WHEN 'mebibytes' THEN frontier_kpi_references.canonical_value / 1048576.0
+            WHEN 'gibibytes' THEN frontier_kpi_references.canonical_value / 1073741824.0
+            WHEN 'percent' THEN frontier_kpi_references.canonical_value * 100.0
+            ELSE frontier_kpi_references.canonical_value
+        END AS display_value
+    FROM frontier_kpi_references
+    JOIN frontier_kpis ON frontier_kpis.id = frontier_kpi_references.kpi_id
+    JOIN metric_definitions ON metric_definitions.id = frontier_kpis.metric_id
+    WHERE frontier_kpis.frontier_id = (SELECT frontier_id FROM temp.__spinner_query_scope);
+
     CREATE TEMP VIEW q_experiment_metric AS
     SELECT
         experiments.slug AS experiment_slug,
@@ -898,6 +933,11 @@ const QUERY_VIEWS: &[FrontierSqlView] = &[
         columns: KPI_COLUMNS,
     },
     FrontierSqlView {
+        name: "q_kpi_reference",
+        description: "Named supervisor/model reference lines attached to frontier KPI metrics.",
+        columns: KPI_REFERENCE_COLUMNS,
+    },
+    FrontierSqlView {
         name: "q_experiment_metric",
         description: "Every observed metric recorded by frontier experiments.",
         columns: &[
@@ -1064,6 +1104,29 @@ const KPI_COLUMNS: &[FrontierSqlColumn] = &[
     col("aggregation", "text", "Observation aggregation semantics."),
     col("objective", "text", "Optimization objective."),
     col("description", "text", "Optional metric description."),
+];
+
+const KPI_REFERENCE_COLUMNS: &[FrontierSqlColumn] = &[
+    col("kpi_ordinal", "integer", "Supervisor-defined KPI order."),
+    col("metric_key", "text", "KPI metric key."),
+    col(
+        "reference_ordinal",
+        "integer",
+        "Reference order within the KPI metric.",
+    ),
+    col("label", "text", "Named reference label."),
+    col(
+        "canonical_value",
+        "real",
+        "Canonical backing-unit reference value.",
+    ),
+    col("canonical_unit", "text", "Canonical backing unit."),
+    col("display_unit", "text", "Default display unit."),
+    col(
+        "display_value",
+        "real",
+        "Reference value in the display unit.",
+    ),
 ];
 
 const fn col(

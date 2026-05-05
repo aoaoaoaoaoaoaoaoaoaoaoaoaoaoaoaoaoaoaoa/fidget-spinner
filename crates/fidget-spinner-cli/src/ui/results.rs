@@ -11,7 +11,7 @@ use super::{
     ListExperimentsQuery, ListHypothesesQuery, METRIC_TABLE_TITLE_MIN_BUDGET_CH,
     METRIC_TABLE_TITLE_PERCENT_BUDGET, Markup, MetricAxisLogScales, MetricDisplayUnit,
     MetricKeysQuery, MetricQuantity, MetricScope, NonEmptyText, PathElement, PreEscaped, RGBColor,
-    SVGBackend, SeriesLabelPosition, ShapeStyle, Slug, StoreError, experiment_href,
+    SVGBackend, SeriesLabelPosition, ShapeStyle, Slug, StoreError, Text, experiment_href,
     format_metric_value, format_timestamp, frontier_href, frontier_tab_href_with_query, html,
     hypothesis_href, limit_items, project_metrics_frontier_href, render_dimension_value,
     render_hypothesis_meta_chips, status_chip_classes, verdict_class,
@@ -271,7 +271,13 @@ fn render_closed_hypothesis_grid(
 
 struct FilteredMetricSeries<'a> {
     metric: &'a fidget_spinner_store_sqlite::MetricKeySummary,
+    references: &'a [fidget_spinner_store_sqlite::KpiReferenceSummary],
     points: Vec<&'a fidget_spinner_store_sqlite::FrontierMetricPoint>,
+}
+
+struct MetricChartReference {
+    label: String,
+    value: f64,
 }
 
 struct MetricChartSeries {
@@ -279,6 +285,7 @@ struct MetricChartSeries {
     color: RGBColor,
     side: MetricAxisSide,
     points: Vec<(i32, f64, FrontierVerdict)>,
+    references: Vec<MetricChartReference>,
 }
 
 pub(super) fn render_metric_series_section(
@@ -725,7 +732,13 @@ fn render_metric_chart_svg(
         let primary_values = chart_series
             .iter()
             .filter(|series| series.side == MetricAxisSide::Primary)
-            .flat_map(|series| series.points.iter().map(|(_, value, _)| *value))
+            .flat_map(|series| {
+                series
+                    .points
+                    .iter()
+                    .map(|(_, value, _)| *value)
+                    .chain(series.references.iter().map(|reference| reference.value))
+            })
             .collect::<Vec<_>>();
         let Some((primary_min, primary_max)) =
             metric_chart_y_range(&primary_values, log_scales.primary)
@@ -735,7 +748,13 @@ fn render_metric_chart_svg(
         let secondary_values = chart_series
             .iter()
             .filter(|series| series.side == MetricAxisSide::Secondary)
-            .flat_map(|series| series.points.iter().map(|(_, value, _)| *value))
+            .flat_map(|series| {
+                series
+                    .points
+                    .iter()
+                    .map(|(_, value, _)| *value)
+                    .chain(series.references.iter().map(|reference| reference.value))
+            })
             .collect::<Vec<_>>();
         let secondary_range = if axes.secondary.is_some() {
             let Some(range) = metric_chart_y_range(&secondary_values, log_scales.secondary) else {
@@ -762,6 +781,32 @@ fn render_metric_chart_svg(
         macro_rules! draw_metric_side {
             ($chart:expr, $method:ident, $side:expr) => {{
                 for series in chart_series.iter().filter(|series| series.side == $side) {
+                    let reference_style = ShapeStyle::from(&series.color.mix(0.42)).stroke_width(1);
+                    let reference_label_x = x_end;
+                    for reference in &series.references {
+                        if $chart
+                            .$method(DashedLineSeries::new(
+                                [(0_i32, reference.value), (x_end, reference.value)],
+                                5,
+                                5,
+                                reference_style,
+                            ))
+                            .is_err()
+                        {
+                            return chart_error_markup("reference line draw failed");
+                        }
+                        if $chart
+                            .$method(std::iter::once(Text::new(
+                                reference.label.clone(),
+                                (reference_label_x, reference.value),
+                                ("Iosevka Web", 11).into_font().color(&series.color),
+                            )))
+                            .is_err()
+                        {
+                            return chart_error_markup("reference label draw failed");
+                        }
+                    }
+
                     let line_points = series
                         .points
                         .iter()
@@ -1417,6 +1462,10 @@ fn filter_metric_series<'a>(
         .iter()
         .map(|series| FilteredMetricSeries {
             metric: &series.metric,
+            references: series
+                .kpi
+                .as_ref()
+                .map_or(&[][..], |kpi| kpi.references.as_slice()),
             points: filter_metric_points(&series.points, dimension_filters),
         })
         .collect()
@@ -1545,6 +1594,25 @@ fn metric_chart_log_support(
                 }
             }
         }
+        for reference in series.references {
+            let Some(value) = axis.normalize_value(reference.value, &reference.display_unit) else {
+                match side {
+                    MetricAxisSide::Primary => support.primary = false,
+                    MetricAxisSide::Secondary => support.secondary = false,
+                }
+                continue;
+            };
+            match side {
+                MetricAxisSide::Primary => saw_primary = true,
+                MetricAxisSide::Secondary => saw_secondary = true,
+            }
+            if value <= 0.0 || !value.is_finite() {
+                match side {
+                    MetricAxisSide::Primary => support.primary = false,
+                    MetricAxisSide::Secondary => support.secondary = false,
+                }
+            }
+        }
     }
     support.primary &= saw_primary;
     if support.has_secondary {
@@ -1612,11 +1680,23 @@ fn build_metric_chart_series(
                     Some((x, value, point.verdict))
                 })
                 .collect::<Vec<_>>();
+            let references = series
+                .references
+                .iter()
+                .filter_map(|reference| {
+                    let value = axis.normalize_value(reference.value, &reference.display_unit)?;
+                    Some(MetricChartReference {
+                        label: reference.label.to_string(),
+                        value,
+                    })
+                })
+                .collect::<Vec<_>>();
             (!points.is_empty()).then(|| MetricChartSeries {
                 color: metric_chart_color(index),
                 label: series.metric.key.to_string(),
                 side,
                 points,
+                references,
             })
         })
         .collect()

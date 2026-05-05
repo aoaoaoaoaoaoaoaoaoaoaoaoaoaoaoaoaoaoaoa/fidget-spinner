@@ -410,6 +410,9 @@ fn cold_start_exposes_bound_surface_and_new_toolset() -> TestResult {
     assert!(tool_names.contains(&"hypothesis.record"));
     assert!(tool_names.contains(&"experiment.close"));
     assert!(tool_names.contains(&"experiment.nearest"));
+    assert!(tool_names.contains(&"kpi.reference.set"));
+    assert!(tool_names.contains(&"kpi.reference.list"));
+    assert!(tool_names.contains(&"kpi.reference.delete"));
     assert!(!tool_names.contains(&"node.list"));
     assert!(!tool_names.contains(&"research.record"));
     assert!(!tool_names.contains(&"frontier.brief.update"));
@@ -1153,6 +1156,136 @@ fn kpi_order_is_canonical_metric_scope_order() -> TestResult {
     )?;
     assert_eq!(kpi_metric_keys(&store)?, ["zeta_nodes".to_owned()]);
     assert_eq!(kpi_ordinals(&store)?, [0]);
+    Ok(())
+}
+
+#[test]
+fn kpi_references_are_mcp_settable_normalized_and_queryable() -> TestResult {
+    let project_root = temp_project_root("kpi_references")?;
+    init_project(&project_root)?;
+    let mut harness = McpHarness::spawn(Some(&project_root))?;
+    let _ = harness.initialize()?;
+    harness.notify_initialized()?;
+
+    assert_tool_ok(&harness.call_tool(
+        1160,
+        "metric.define",
+        json!({
+            "key": "root_wallclock",
+            "dimension": "time",
+            "display_unit": "milliseconds",
+            "objective": "minimize",
+            "description": "Root solve wallclock.",
+        }),
+    )?);
+    assert_tool_ok(&harness.call_tool(
+        1161,
+        "frontier.create",
+        json!({
+            "label": "KPI reference frontier",
+            "objective": "Render baseline reference lines.",
+            "slug": "kpi-reference-frontier",
+        }),
+    )?);
+    assert_tool_ok(&harness.call_tool(
+        1162,
+        "kpi.create",
+        json!({
+            "frontier": "kpi-reference-frontier",
+            "metric": "root_wallclock",
+        }),
+    )?);
+
+    let set = harness.call_tool(
+        1163,
+        "kpi.reference.set",
+        json!({
+            "frontier": "kpi-reference-frontier",
+            "kpi": "root_wallclock",
+            "label": "rival",
+            "value": 8.5,
+            "unit": "seconds",
+        }),
+    )?;
+    assert_tool_ok(&set);
+    assert_eq!(
+        tool_content(&set)["record"]["label"].as_str(),
+        Some("rival")
+    );
+    assert_eq!(tool_content(&set)["record"]["value"].as_f64(), Some(8500.0));
+    assert_eq!(
+        tool_content(&set)["record"]["canonical_value"].as_f64(),
+        Some(8_500_000_000.0)
+    );
+
+    let kpis = harness.call_tool(
+        1164,
+        "kpi.list",
+        json!({"frontier": "kpi-reference-frontier"}),
+    )?;
+    assert_tool_ok(&kpis);
+    assert_eq!(
+        tool_content(&kpis)["kpis"][0]["references"][0]["value"].as_f64(),
+        Some(8500.0)
+    );
+
+    let updated = harness.call_tool(
+        1165,
+        "kpi.reference.set",
+        json!({
+            "frontier": "kpi-reference-frontier",
+            "kpi": "root_wallclock",
+            "label": "rival",
+            "value": 8400.0,
+        }),
+    )?;
+    assert_tool_ok(&updated);
+    assert_eq!(
+        tool_content(&updated)["record"]["value"].as_f64(),
+        Some(8400.0)
+    );
+
+    let references = harness.call_tool(
+        1166,
+        "kpi.reference.list",
+        json!({"frontier": "kpi-reference-frontier"}),
+    )?;
+    assert_tool_ok(&references);
+    assert_eq!(tool_content(&references)["count"].as_u64(), Some(1));
+    assert_eq!(
+        tool_content(&references)["references"][0]["canonical_value"].as_f64(),
+        Some(8_400_000_000.0)
+    );
+
+    let query = harness.call_tool(
+        1167,
+        "frontier.query.sql",
+        json!({
+            "frontier": "kpi-reference-frontier",
+            "sql": "select metric_key, label, display_value, canonical_value from q_kpi_reference order by reference_ordinal",
+        }),
+    )?;
+    assert_tool_ok(&query);
+    let text = must_some(tool_text(&query), "kpi reference query text")?;
+    assert!(text.contains("root_wallclock|rival|8400"));
+    assert!(text.contains("8400000000"));
+
+    assert_tool_ok(&harness.call_tool(
+        1168,
+        "kpi.reference.delete",
+        json!({
+            "frontier": "kpi-reference-frontier",
+            "kpi": "root_wallclock",
+            "reference": "rival",
+        }),
+    )?);
+    let empty = harness.call_tool(
+        1169,
+        "kpi.reference.list",
+        json!({"frontier": "kpi-reference-frontier"}),
+    )?;
+    assert_tool_ok(&empty);
+    assert_eq!(tool_content(&empty)["count"].as_u64(), Some(0));
     Ok(())
 }
 

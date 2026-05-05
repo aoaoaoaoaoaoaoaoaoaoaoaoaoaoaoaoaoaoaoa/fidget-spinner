@@ -4,19 +4,20 @@ use super::registry::{
 };
 use super::{
     AssignTagFamilyRequest, CONTENT_TYPE, CreateKpiRequest, CreateTagFamilyRequest,
-    DefineMetricRequest, DefineSyntheticMetricRequest, DeleteKpiRequest, DeleteMetricRequest,
-    DeleteTagRequest, FAVICON_SVG, Form, FrontierPageQuery, FrontierStatus, IntoResponse,
-    MergeMetricRequest, MergeTagRequest, MetricUnit, MoveKpiDirection, MoveKpiRequest,
-    NavigatorScope, NavigatorState, NonEmptyText, Path, ProjectMetricsQuery, ProjectRenderContext,
-    RegistryLockMode, RegistryName, RenameMetricRequest, RenameTagRequest, Response, Router,
-    SetFrontierRegistryLockRequest, SetRegistryLockRequest, SetTagFamilyMandatoryRequest,
-    SocketAddr, State, StatusCode, StoreError, SyntheticMetricExpression, TagFamilyName, TagName,
-    UpdateFrontierRequest, Uri, frontier_href, frontier_status_mutation_response, get, io,
-    metric_mutation_response, metrics_frontier_href, open_store, optional_text_field,
-    parse_metric_aggregation_ui, parse_metric_dimension_ui, parse_optimization_objective_ui,
-    parse_ui_lock_mode, post, project_mutation_response, project_refresh_token_for,
-    refresh_token_response, render_response, resolve_project_context, tag_mutation_response,
-    text_patch_field, update_frontier_status, update_project_description,
+    DefineMetricRequest, DefineSyntheticMetricRequest, DeleteKpiReferenceRequest, DeleteKpiRequest,
+    DeleteMetricRequest, DeleteTagRequest, FAVICON_SVG, Form, FrontierPageQuery, FrontierStatus,
+    IntoResponse, MergeMetricRequest, MergeTagRequest, MetricDisplayUnit, MetricUnit,
+    MoveKpiDirection, MoveKpiRequest, NavigatorScope, NavigatorState, NonEmptyText, Path,
+    ProjectMetricsQuery, ProjectRenderContext, RegistryLockMode, RegistryName, RenameMetricRequest,
+    RenameTagRequest, Response, Router, SetFrontierRegistryLockRequest, SetKpiReferenceRequest,
+    SetRegistryLockRequest, SetTagFamilyMandatoryRequest, SocketAddr, State, StatusCode,
+    StoreError, SyntheticMetricExpression, TagFamilyName, TagName, UpdateFrontierRequest, Uri,
+    frontier_href, frontier_status_mutation_response, get, io, metric_mutation_response,
+    metrics_frontier_href, open_store, optional_text_field, parse_metric_aggregation_ui,
+    parse_metric_dimension_ui, parse_optimization_objective_ui, parse_ui_lock_mode, post,
+    project_mutation_response, project_refresh_token_for, refresh_token_response, render_response,
+    resolve_project_context, tag_mutation_response, text_patch_field, update_frontier_status,
+    update_project_description,
 };
 use serde::Deserialize;
 
@@ -78,6 +79,14 @@ pub(crate) fn serve(
             .route("/project/{project}/metrics/kpi", post(create_kpi))
             .route("/project/{project}/metrics/kpi/lock", post(set_kpi_lock))
             .route("/project/{project}/metrics/kpi/move", post(move_kpi))
+            .route(
+                "/project/{project}/metrics/kpi/reference",
+                post(set_kpi_reference),
+            )
+            .route(
+                "/project/{project}/metrics/kpi/reference/delete",
+                post(delete_kpi_reference),
+            )
             .route("/project/{project}/metrics/kpi/delete", post(delete_kpi))
             .route(
                 "/project/{project}/frontier/{selector}",
@@ -673,6 +682,22 @@ struct DeleteKpiForm {
 }
 
 #[derive(Deserialize)]
+struct SetKpiReferenceForm {
+    frontier: String,
+    kpi: String,
+    label: String,
+    value: f64,
+    unit: String,
+}
+
+#[derive(Deserialize)]
+struct DeleteKpiReferenceForm {
+    frontier: String,
+    kpi: String,
+    reference: String,
+}
+
+#[derive(Deserialize)]
 struct MoveKpiForm {
     frontier: String,
     kpi: String,
@@ -698,6 +723,47 @@ async fn move_kpi(
     )
 }
 
+async fn set_kpi_reference(
+    State(state): State<NavigatorState>,
+    Path(project): Path<String>,
+    Form(form): Form<SetKpiReferenceForm>,
+) -> Response {
+    metric_mutation_response(
+        resolve_project_context(&state, &project).and_then(|context| {
+            let mut store = open_store(context.project_root.as_std_path())?;
+            let frontier = form.frontier;
+            let unit = optional_metric_display_unit_field(form.unit)?;
+            let _ = store.set_kpi_reference(SetKpiReferenceRequest {
+                frontier: frontier.clone(),
+                kpi: form.kpi,
+                label: NonEmptyText::new(form.label)?,
+                value: form.value,
+                unit,
+            })?;
+            Ok(metrics_frontier_href(&context, &frontier))
+        }),
+    )
+}
+
+async fn delete_kpi_reference(
+    State(state): State<NavigatorState>,
+    Path(project): Path<String>,
+    Form(form): Form<DeleteKpiReferenceForm>,
+) -> Response {
+    metric_mutation_response(
+        resolve_project_context(&state, &project).and_then(|context| {
+            let mut store = open_store(context.project_root.as_std_path())?;
+            let frontier = form.frontier;
+            store.delete_kpi_reference(DeleteKpiReferenceRequest {
+                frontier: frontier.clone(),
+                kpi: form.kpi,
+                reference: form.reference,
+            })?;
+            Ok(metrics_frontier_href(&context, &frontier))
+        }),
+    )
+}
+
 async fn delete_kpi(
     State(state): State<NavigatorState>,
     Path(project): Path<String>,
@@ -714,6 +780,19 @@ async fn delete_kpi(
             Ok(metrics_frontier_href(&context, &frontier))
         }),
     )
+}
+
+fn optional_metric_display_unit_field(
+    raw: String,
+) -> Result<Option<MetricDisplayUnit>, StoreError> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        Ok(None)
+    } else {
+        MetricDisplayUnit::parse(trimmed)
+            .map(Some)
+            .map_err(StoreError::from)
+    }
 }
 
 async fn frontier_detail(

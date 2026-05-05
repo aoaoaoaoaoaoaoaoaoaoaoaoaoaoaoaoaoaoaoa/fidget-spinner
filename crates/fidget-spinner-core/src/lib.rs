@@ -10,17 +10,19 @@ mod model;
 
 pub use crate::error::CoreError;
 pub use crate::id::{
-    ExperimentId, FrontierId, HypothesisId, KpiId, MetricId, RegistryLockId, TagFamilyId, TagId,
+    ExperimentId, FrontierId, HypothesisId, KpiId, KpiReferenceId, MetricId, RegistryLockId,
+    TagFamilyId, TagId,
 };
 pub use crate::model::{
     CommandRecipe, DefaultVisibility, ExecutionBackend, ExperimentAnalysis, ExperimentOutcome,
     ExperimentRecord, ExperimentStatus, FieldValueType, FrontierBrief, FrontierKpiRecord,
     FrontierRecord, FrontierRoadmapItem, FrontierStatus, FrontierVerdict, GitCommitHash,
     HiddenByDefaultReason, HypothesisAssessmentLevel, HypothesisRecord, KnownMetricUnit,
-    KpiOrdinal, MetricAggregation, MetricBaseDimension, MetricDefinition, MetricDefinitionKind,
-    MetricDimension, MetricDisplayUnit, MetricQuantity, MetricUnit, MetricValue, NonEmptyText,
-    OptimizationObjective, RationalExponent, RegistryLockMode, RegistryLockRecord, RegistryName,
-    ReportedMetricValue, RunDimensionDefinition, RunDimensionValue, Slug,
-    SyntheticMetricExpression, TagFamilyName, TagFamilyRecord, TagName, TagNameDisposition,
-    TagNameHistoryRecord, TagRecord, TagRegistrySnapshot, VertexKind, VertexRef,
+    KpiOrdinal, KpiReferenceOrdinal, KpiReferenceRecord, MetricAggregation, MetricBaseDimension,
+    MetricDefinition, MetricDefinitionKind, MetricDimension, MetricDisplayUnit, MetricQuantity,
+    MetricUnit, MetricValue, NonEmptyText, OptimizationObjective, RationalExponent,
+    RegistryLockMode, RegistryLockRecord, RegistryName, ReportedMetricValue,
+    RunDimensionDefinition, RunDimensionValue, Slug, SyntheticMetricExpression, TagFamilyName,
+    TagFamilyRecord, TagName, TagNameDisposition, TagNameHistoryRecord, TagRecord,
+    TagRegistrySnapshot, VertexKind, VertexRef,
 };

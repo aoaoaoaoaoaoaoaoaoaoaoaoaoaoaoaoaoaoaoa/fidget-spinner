@@ -330,6 +330,12 @@ Tools:
   frontier's KPI metrics.
 - `kpi.create`: promotes one existing metric into a frontier KPI metric.
 - `kpi.list`: lists frontier KPI metrics.
+- `kpi.reference.set`: sets one named reference line for one frontier KPI
+  metric; values are normalized through the metric dimension, and an omitted
+  unit means the metric display unit.
+- `kpi.reference.list`: lists named reference lines for a frontier, optionally
+  narrowed to one KPI metric.
+- `kpi.reference.delete`: deletes one named reference line.
 - `kpi.best`: ranks experiments by one KPI metric.
 - `metric.best`: remains for ad hoc metric inspection, but frontier loops
   should prefer KPIs.

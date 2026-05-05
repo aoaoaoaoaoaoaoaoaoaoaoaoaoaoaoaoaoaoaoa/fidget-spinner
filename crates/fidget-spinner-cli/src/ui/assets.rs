@@ -885,6 +885,42 @@ pub(super) fn styles() -> &'static str {
         width: 100%;
         max-width: none;
     }
+    .kpi-reference-stack {
+        display: grid;
+        gap: 5px;
+        min-width: min(42ch, 100%);
+    }
+    .kpi-reference-chip-row,
+    .kpi-reference-form,
+    .kpi-reference-chip {
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+        flex-wrap: wrap;
+        min-width: 0;
+    }
+    .kpi-reference-chip {
+        width: fit-content;
+        max-width: 100%;
+        padding: 2px 3px 2px 7px;
+        border: 1px solid var(--border);
+        background: var(--panel);
+    }
+    .kpi-reference-label {
+        font-weight: 700;
+    }
+    .kpi-reference-value {
+        color: var(--muted);
+    }
+    .kpi-reference-value-input {
+        width: 10ch;
+    }
+    .kpi-reference-unit-input {
+        width: 13ch;
+    }
+    .kpi-reference-cell {
+        white-space: normal !important;
+    }
     .inline-icon-button {
         display: grid;
         place-items: center;

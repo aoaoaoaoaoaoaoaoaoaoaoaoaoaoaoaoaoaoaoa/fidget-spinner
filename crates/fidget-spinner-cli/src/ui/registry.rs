@@ -5,7 +5,7 @@ use super::{
     ListHypothesesQuery, Markup, MetricKeysQuery, MetricScope, MoveKpiDirection, NavigatorScope,
     NavigatorState, NonEmptyText, PreEscaped, ProjectIndexItem, ProjectMetricsQuery,
     ProjectRenderContext, ProjectStatus, RegistryLockMode, RegistryName, StoreError, TagName,
-    TagUsage, arrow_down_icon, arrow_up_icon, format_timestamp, frontier_href,
+    TagUsage, arrow_down_icon, arrow_up_icon, format_metric_value, format_timestamp, frontier_href,
     frontier_results_href, frontier_status_class, html, limit_items, load_shell_frame, open_store,
     pencil_icon, plus_icon, project_root_href, render_fact, render_kv, status_chip_classes,
     trash_icon,
@@ -677,7 +677,8 @@ fn render_kpi_registry(frontier: &FrontierSummary, kpis: &[KpiSummary]) -> Marku
                             th { "Metric" }
                             th { "Unit" }
                             th { "Shape" }
-                            th { "Refs" }
+                            th { "Obs" }
+                            th { "Reference Lines" }
                         }
                     }
                     tbody {
@@ -705,9 +706,53 @@ fn render_kpi_registry(frontier: &FrontierSummary, kpis: &[KpiSummary]) -> Marku
                                 td.no-truncate { (kpi.metric.display_unit.label()) }
                                 td.no-truncate { (kpi.metric.objective.as_str()) " · " (kpi.metric.aggregation.as_str()) }
                                 td.no-truncate { (kpi.metric.reference_count) }
+                                td.kpi-reference-cell {
+                                    (render_kpi_reference_editor(frontier, kpi))
+                                }
                             }
                         }
                     }
+                }
+            }
+        }
+    }
+}
+
+fn render_kpi_reference_editor(frontier: &FrontierSummary, kpi: &KpiSummary) -> Markup {
+    html! {
+        div.kpi-reference-stack {
+            @if !kpi.references.is_empty() {
+                div.kpi-reference-chip-row {
+                    @for reference in &kpi.references {
+                        span.kpi-reference-chip title=(format!(
+                            "{} = {}",
+                            reference.label,
+                            format_metric_value(reference.value, &reference.display_unit),
+                        )) {
+                            span.kpi-reference-label { (&reference.label) }
+                            span.kpi-reference-value {
+                                (format_metric_value(reference.value, &reference.display_unit))
+                            }
+                            form.tag-icon-form method="post" action="metrics/kpi/reference/delete" data-preserve-viewport="true" {
+                                input type="hidden" name="frontier" value=(frontier.slug.as_str());
+                                input type="hidden" name="kpi" value=(kpi.metric.key.as_str());
+                                input type="hidden" name="reference" value=(reference.label.as_str());
+                                button.inline-icon-button.danger-icon-button type="submit" aria-label=(format!("Delete KPI reference {}", reference.label)) title="Delete reference line" {
+                                    (trash_icon())
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            form.kpi-reference-form method="post" action="metrics/kpi/reference" data-preserve-viewport="true" {
+                input type="hidden" name="frontier" value=(frontier.slug.as_str());
+                input type="hidden" name="kpi" value=(kpi.metric.key.as_str());
+                input.compact-input type="text" name="label" placeholder="label" aria-label=(format!("Reference label for {}", kpi.metric.key)) required;
+                input.compact-input.kpi-reference-value-input type="number" step="any" name="value" placeholder="value" aria-label=(format!("Reference value for {}", kpi.metric.key)) required;
+                input.compact-input.kpi-reference-unit-input type="text" name="unit" placeholder=(kpi.metric.display_unit.label()) aria-label=(format!("Reference unit for {}", kpi.metric.key));
+                button.inline-icon-button type="submit" aria-label=(format!("Set KPI reference for {}", kpi.metric.key)) title="Set reference line" {
+                    (plus_icon())
                 }
             }
         }

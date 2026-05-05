@@ -8,8 +8,8 @@ use fidget_spinner_core::{
 use fidget_spinner_store_sqlite::{
     EntityHistoryEntry, ExperimentDetail, ExperimentNearestHit, ExperimentNearestResult,
     ExperimentSummary, FrontierOpenProjection, FrontierSummary, HypothesisCurrentState,
-    HypothesisDetail, KpiBestEntry, KpiSummary, MetricBestEntry, MetricKeySummary,
-    MetricObservationSummary, ProjectStore, StoreError, VertexSummary,
+    HypothesisDetail, KpiBestEntry, KpiReferenceSummary, KpiSummary, MetricBestEntry,
+    MetricKeySummary, MetricObservationSummary, ProjectStore, StoreError, VertexSummary,
 };
 use libmcp::{ProjectionError, StructuredProjection, SurfaceKind, SurfacePolicy, TimestampText};
 use serde::Serialize;
@@ -319,6 +319,17 @@ pub(crate) struct MetricKeySummaryProjection {
 pub(crate) struct KpiSummaryProjection {
     pub(crate) ordinal: u32,
     pub(crate) metric: MetricKeySummaryProjection,
+    pub(crate) references: Vec<KpiReferenceProjection>,
+}
+
+#[derive(Clone, Serialize)]
+pub(crate) struct KpiReferenceProjection {
+    pub(crate) ordinal: u32,
+    pub(crate) label: String,
+    pub(crate) value: f64,
+    pub(crate) canonical_value: f64,
+    pub(crate) display_unit: String,
+    pub(crate) updated_at: TimestampText,
 }
 
 #[derive(Clone, Serialize, libmcp::ToolProjection)]
@@ -332,6 +343,25 @@ pub(crate) struct KpiRecordOutput {
 pub(crate) struct KpiListOutput {
     pub(crate) count: usize,
     pub(crate) kpis: Vec<KpiSummaryProjection>,
+}
+
+#[derive(Clone, Serialize, libmcp::ToolProjection)]
+#[libmcp(kind = "mutation", reference_only)]
+pub(crate) struct KpiReferenceRecordOutput {
+    pub(crate) record: KpiReferenceProjection,
+}
+
+#[derive(Clone, Serialize, libmcp::ToolProjection)]
+#[libmcp(kind = "list")]
+pub(crate) struct KpiReferenceListOutput {
+    pub(crate) count: usize,
+    pub(crate) references: Vec<KpiReferenceProjection>,
+}
+
+#[derive(Clone, Serialize, libmcp::ToolProjection)]
+#[libmcp(kind = "mutation", reference_only)]
+pub(crate) struct KpiReferenceDeleteOutput {
+    pub(crate) deleted: bool,
 }
 
 #[derive(Clone, Serialize)]
@@ -797,6 +827,23 @@ pub(crate) fn kpi_list(kpis: &[KpiSummary]) -> KpiListOutput {
     }
 }
 
+pub(crate) fn kpi_reference_record(reference: &KpiReferenceSummary) -> KpiReferenceRecordOutput {
+    KpiReferenceRecordOutput {
+        record: kpi_reference(reference),
+    }
+}
+
+pub(crate) fn kpi_reference_list(references: &[KpiReferenceSummary]) -> KpiReferenceListOutput {
+    KpiReferenceListOutput {
+        count: references.len(),
+        references: references.iter().map(kpi_reference).collect(),
+    }
+}
+
+pub(crate) fn kpi_reference_deleted() -> KpiReferenceDeleteOutput {
+    KpiReferenceDeleteOutput { deleted: true }
+}
+
 pub(crate) fn kpi_best(entries: &[KpiBestEntry]) -> KpiBestOutput {
     KpiBestOutput {
         count: entries.len(),
@@ -1035,6 +1082,18 @@ fn kpi_summary(kpi: &KpiSummary) -> KpiSummaryProjection {
     KpiSummaryProjection {
         ordinal: kpi.ordinal.value(),
         metric: metric_key_summary(&kpi.metric),
+        references: kpi.references.iter().map(kpi_reference).collect(),
+    }
+}
+
+fn kpi_reference(reference: &KpiReferenceSummary) -> KpiReferenceProjection {
+    KpiReferenceProjection {
+        ordinal: reference.ordinal.value(),
+        label: reference.label.to_string(),
+        value: reference.value,
+        canonical_value: reference.canonical_value,
+        display_unit: reference.display_unit.label(),
+        updated_at: timestamp_value(reference.updated_at),
     }
 }
 

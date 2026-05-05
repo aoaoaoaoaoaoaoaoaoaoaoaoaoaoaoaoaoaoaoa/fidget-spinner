@@ -19,20 +19,20 @@ use fidget_spinner_core::{
 };
 use fidget_spinner_store_sqlite::{
     AssignTagFamilyRequest, CreateKpiRequest, CreateTagFamilyRequest, DefineMetricRequest,
-    DefineSyntheticMetricRequest, DeleteKpiRequest, DeleteMetricRequest, DeleteTagRequest,
-    ExperimentDetail, ExperimentSummary, FrontierMetricSeries, FrontierOpenProjection,
-    FrontierSummary, HypothesisCurrentState, HypothesisDetail, KpiSummary, ListExperimentsQuery,
-    ListFrontiersQuery, ListHypothesesQuery, MergeMetricRequest, MergeTagRequest, MetricKeysQuery,
-    MetricScope, MoveKpiDirection, MoveKpiRequest, ProjectStatus, RenameMetricRequest,
-    RenameTagRequest, STATE_DB_NAME, SetFrontierRegistryLockRequest, SetRegistryLockRequest,
-    SetTagFamilyMandatoryRequest, StoreError, TextPatch, UpdateFrontierRequest,
-    UpdateProjectRequest, VertexSummary,
+    DefineSyntheticMetricRequest, DeleteKpiReferenceRequest, DeleteKpiRequest, DeleteMetricRequest,
+    DeleteTagRequest, ExperimentDetail, ExperimentSummary, FrontierMetricSeries,
+    FrontierOpenProjection, FrontierSummary, HypothesisCurrentState, HypothesisDetail, KpiSummary,
+    ListExperimentsQuery, ListFrontiersQuery, ListHypothesesQuery, MergeMetricRequest,
+    MergeTagRequest, MetricKeysQuery, MetricScope, MoveKpiDirection, MoveKpiRequest, ProjectStatus,
+    RenameMetricRequest, RenameTagRequest, STATE_DB_NAME, SetFrontierRegistryLockRequest,
+    SetKpiReferenceRequest, SetRegistryLockRequest, SetTagFamilyMandatoryRequest, StoreError,
+    TextPatch, UpdateFrontierRequest, UpdateProjectRequest, VertexSummary,
 };
 use maud::{DOCTYPE, Markup, PreEscaped, html};
 use percent_encoding::{NON_ALPHANUMERIC, percent_decode_str, utf8_percent_encode};
 use plotters::prelude::{
     BLACK, ChartBuilder, Circle, Cross, DashedLineSeries, IntoDrawingArea, IntoLogRange,
-    LineSeries, PathElement, SVGBackend, SeriesLabelPosition, ShapeStyle,
+    LineSeries, PathElement, SVGBackend, SeriesLabelPosition, ShapeStyle, Text,
 };
 use plotters::style::{Color, IntoFont, RGBColor};
 use time::OffsetDateTime;
@@ -365,6 +365,7 @@ fn metric_mutation_response(result: Result<String, StoreError>) -> Response {
         Ok(location) => Redirect::to(&location).into_response(),
         Err(StoreError::UnknownMetricDefinition(_))
         | Err(StoreError::UnknownKpi(_))
+        | Err(StoreError::UnknownKpiReference(_))
         | Err(StoreError::UnknownFrontierSelector(_)) => {
             (StatusCode::NOT_FOUND, "not found".to_owned()).into_response()
         }
@@ -1060,13 +1061,13 @@ mod tests {
 
     use fidget_spinner_core::{
         DefaultVisibility, ExperimentStatus, FrontierBrief, FrontierId, FrontierRecord,
-        FrontierStatus, FrontierVerdict, HypothesisAssessmentLevel, HypothesisId,
-        MetricAggregation, MetricDefinitionKind, MetricDisplayUnit, MetricUnit, NonEmptyText,
-        OptimizationObjective, Slug,
+        FrontierStatus, FrontierVerdict, HypothesisAssessmentLevel, HypothesisId, KpiId,
+        KpiOrdinal, KpiReferenceId, KpiReferenceOrdinal, MetricAggregation, MetricDefinitionKind,
+        MetricDisplayUnit, MetricUnit, NonEmptyText, OptimizationObjective, Slug,
     };
     use fidget_spinner_store_sqlite::{
         ExperimentSummary, FrontierMetricPoint, FrontierMetricSeries, HypothesisSummary,
-        MetricKeySummary,
+        KpiReferenceSummary, KpiSummary, MetricKeySummary,
     };
     use time::OffsetDateTime;
     use time::format_description::well_known::Rfc3339;
@@ -1477,6 +1478,57 @@ mod tests {
         assert!(
             matches!((rank_two_offset, rank_zero_offset), (Some(left), Some(right)) if left < right)
         );
+    }
+
+    #[test]
+    fn metric_chart_renders_kpi_reference_lines() {
+        let frontier = test_frontier();
+        let hypothesis = test_hypothesis(frontier.id, "hyp-one", "Hypothesis One");
+        let metric = test_metric("presolve_ms", "milliseconds");
+        let timestamp = test_timestamp("2026-04-11T01:00:00Z");
+        let reference = KpiReferenceSummary {
+            id: KpiReferenceId::fresh(),
+            ordinal: KpiReferenceOrdinal::FIRST,
+            label: must(NonEmptyText::new("rival baseline"), "reference label"),
+            value: 42.0,
+            canonical_value: 42_000_000.0,
+            display_unit: metric.display_unit.clone(),
+            created_at: timestamp,
+            updated_at: timestamp,
+        };
+        let kpi = KpiSummary {
+            id: KpiId::fresh(),
+            ordinal: KpiOrdinal::FIRST,
+            metric: metric.clone(),
+            references: vec![reference],
+        };
+        let series = vec![FrontierMetricSeries {
+            frontier: frontier.clone(),
+            metric: metric.clone(),
+            kpi: Some(kpi),
+            points: vec![test_metric_point(
+                frontier.id,
+                &hypothesis,
+                "exp-a",
+                "Experiment A",
+                50.0,
+                timestamp,
+            )],
+        }];
+        let markup = render_metric_series_section(
+            &frontier.slug,
+            std::slice::from_ref(&metric),
+            &[],
+            std::slice::from_ref(&metric),
+            &series,
+            &BTreeMap::new(),
+            MetricAxisLogScales::default(),
+            None,
+            None,
+        )
+        .into_string();
+        assert!(markup.contains("rival baseline"));
+        assert!(!markup.contains("chart render failed"));
     }
 
     #[test]

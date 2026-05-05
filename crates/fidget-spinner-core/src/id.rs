@@ -40,6 +40,7 @@ define_id!(ExperimentId);
 define_id!(FrontierId);
 define_id!(HypothesisId);
 define_id!(KpiId);
+define_id!(KpiReferenceId);
 define_id!(MetricId);
 define_id!(RegistryLockId);
 define_id!(TagFamilyId);

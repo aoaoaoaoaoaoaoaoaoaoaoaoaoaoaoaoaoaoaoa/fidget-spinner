@@ -68,7 +68,8 @@ If you need more context, pull it from:
 - `experiment.nearest` when you need the nearest accepted, kept, rejected, or champion comparator for one structural slice
 - `metric.define` when a project-level observed metric key needs a dimension, objective, aggregation, or description; use `display_unit` only as presentation, and keep the key focused on the measured concept rather than the unit. Synthetic metrics are supervisor-defined only: you may query them through `metric.keys`, `metric.best`, `kpi.best`, Results, and frontier SQL, but you must report their observed leaf metrics rather than reporting the synthetic key itself
 - `kpi.create` before `hypothesis.record` on a new frontier, promoting one existing metric into a frontier KPI; supervisor locks may reject KPI creation, and there is intentionally no bulk KPI mutation tool
-- `kpi.list` or `metric.keys --scope kpi` before guessing which mandatory frontier metrics define the real hill
+- `kpi.reference.set` when you have gathered a named baseline, rival, target, or theoretical bound for an existing frontier KPI; set one reference at a time with `frontier`, `kpi`, `label`, `value`, and optional `unit` so Results can draw the horizontal comparison line. Use `kpi.reference.list` to inspect current reference lines and `kpi.reference.delete` only to remove an obsolete line
+- `kpi.list` or `metric.keys --scope kpi` before guessing which mandatory frontier metrics define the real hill; `kpi.list` includes named reference lines
 - `kpi.best` when you need the frontier ranking for one KPI metric
 - `metric.keys --scope live` before guessing which numeric signals matter now
 - `metric.best` when you need the best closed experiments by one numeric key; pass exact condition filters when comparing one like-for-like slice

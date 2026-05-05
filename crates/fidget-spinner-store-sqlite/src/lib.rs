@@ -10,13 +10,14 @@ use fidget_spinner_core::{
     ExperimentId, ExperimentOutcome, ExperimentRecord, ExperimentStatus, FieldValueType,
     FrontierBrief, FrontierId, FrontierKpiRecord, FrontierRecord, FrontierRoadmapItem,
     FrontierStatus, FrontierVerdict, GitCommitHash, HiddenByDefaultReason,
-    HypothesisAssessmentLevel, HypothesisId, HypothesisRecord, KpiId, KpiOrdinal,
-    MetricAggregation, MetricDefinition, MetricDefinitionKind, MetricDimension, MetricDisplayUnit,
-    MetricId, MetricQuantity, MetricUnit, MetricValue, NonEmptyText, OptimizationObjective,
-    RegistryLockId, RegistryLockMode, RegistryLockRecord, RegistryName, ReportedMetricValue,
-    RunDimensionDefinition, RunDimensionValue, Slug, SyntheticMetricExpression, TagFamilyId,
-    TagFamilyName, TagFamilyRecord, TagId, TagName, TagNameDisposition, TagNameHistoryRecord,
-    TagRecord, TagRegistrySnapshot, VertexRef,
+    HypothesisAssessmentLevel, HypothesisId, HypothesisRecord, KpiId, KpiOrdinal, KpiReferenceId,
+    KpiReferenceOrdinal, KpiReferenceRecord, MetricAggregation, MetricDefinition,
+    MetricDefinitionKind, MetricDimension, MetricDisplayUnit, MetricId, MetricQuantity, MetricUnit,
+    MetricValue, NonEmptyText, OptimizationObjective, RegistryLockId, RegistryLockMode,
+    RegistryLockRecord, RegistryName, ReportedMetricValue, RunDimensionDefinition,
+    RunDimensionValue, Slug, SyntheticMetricExpression, TagFamilyId, TagFamilyName,
+    TagFamilyRecord, TagId, TagName, TagNameDisposition, TagNameHistoryRecord, TagRecord,
+    TagRegistrySnapshot, VertexRef,
 };
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde::{Deserialize, Serialize};
@@ -35,7 +36,7 @@ pub use query::{
 pub const STORE_DIR_NAME: &str = ".fidget_spinner";
 pub const GIT_DIR_NAME: &str = ".git";
 pub const STATE_DB_NAME: &str = "state.sqlite";
-pub const CURRENT_STORE_FORMAT_VERSION: u32 = 15;
+pub const CURRENT_STORE_FORMAT_VERSION: u32 = 16;
 pub const STATE_HOME_DIR_NAME: &str = "fidget-spinner";
 pub const PROJECT_STATE_DIR_NAME: &str = "projects";
 const LEGACY_PROJECT_CONFIG_NAME: &str = "project.json";
@@ -85,6 +86,8 @@ pub enum StoreError {
     UnknownMetricDefinition(NonEmptyText),
     #[error("KPI metric `{0}` is not registered")]
     UnknownKpi(String),
+    #[error("KPI reference `{0}` is not registered")]
+    UnknownKpiReference(String),
     #[error("metric `{0}` already exists")]
     DuplicateMetricDefinition(NonEmptyText),
     #[error("metric `{0}` is already a KPI metric")]
@@ -479,11 +482,24 @@ pub struct MetricObservationSummary {
     pub objective: OptimizationObjective,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct KpiSummary {
     pub id: KpiId,
     pub ordinal: KpiOrdinal,
     pub metric: MetricKeySummary,
+    pub references: Vec<KpiReferenceSummary>,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct KpiReferenceSummary {
+    pub id: KpiReferenceId,
+    pub ordinal: KpiReferenceOrdinal,
+    pub label: NonEmptyText,
+    pub value: f64,
+    pub canonical_value: f64,
+    pub display_unit: MetricDisplayUnit,
+    pub created_at: OffsetDateTime,
+    pub updated_at: OffsetDateTime,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -576,6 +592,28 @@ pub struct CreateKpiRequest {
 pub struct DeleteKpiRequest {
     pub frontier: String,
     pub kpi: String,
+}
+
+#[derive(Clone, Debug)]
+pub struct SetKpiReferenceRequest {
+    pub frontier: String,
+    pub kpi: String,
+    pub label: NonEmptyText,
+    pub value: f64,
+    pub unit: Option<MetricDisplayUnit>,
+}
+
+#[derive(Clone, Debug)]
+pub struct DeleteKpiReferenceRequest {
+    pub frontier: String,
+    pub kpi: String,
+    pub reference: String,
+}
+
+#[derive(Clone, Debug)]
+pub struct KpiReferenceListQuery {
+    pub frontier: String,
+    pub kpi: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -1571,7 +1609,7 @@ impl ProjectStore {
             .metric_definition(&request.metric)?
             .ok_or_else(|| StoreError::UnknownMetricDefinition(request.metric.clone()))?;
         let reference_count = self.metric_reference_count(None, metric.id)?;
-        let kpi_count = self.kpi_reference_count(metric.id)?;
+        let kpi_count = self.kpi_edge_reference_count(metric.id)?;
         let synthetic_count = self.synthetic_dependency_reference_count(metric.id)?;
         if reference_count != 0 || kpi_count != 0 || synthetic_count != 0 {
             return Err(StoreError::PolicyViolation(format!(
@@ -1674,6 +1712,121 @@ impl ProjectStore {
         compact_frontier_kpi_ordinals(&transaction, frontier.id)?;
         transaction.commit()?;
         Ok(())
+    }
+
+    pub fn set_kpi_reference(
+        &mut self,
+        request: SetKpiReferenceRequest,
+    ) -> Result<KpiReferenceSummary, StoreError> {
+        let frontier = self.resolve_frontier(&request.frontier)?;
+        let kpi = self
+            .kpi_by_selector(frontier.id, &request.kpi)?
+            .ok_or_else(|| StoreError::UnknownKpi(request.kpi.clone()))?;
+        let metric = self.metric_definition_by_id(kpi.metric_id)?;
+        let entry_unit = request.unit.unwrap_or_else(|| metric.display_unit.clone());
+        if entry_unit.quantity() != metric.dimension {
+            return Err(StoreError::InvalidInput(format!(
+                "KPI reference `{}` for metric `{}` has dimension `{}`; unit `{}` belongs to `{}`",
+                request.label,
+                metric.key,
+                metric.dimension,
+                entry_unit.label(),
+                entry_unit.quantity()
+            )));
+        }
+        let canonical_value = entry_unit.canonical_value(request.value);
+        if !canonical_value.is_finite() {
+            return Err(StoreError::InvalidInput(format!(
+                "KPI reference `{}` has non-finite value `{}`",
+                request.label, request.value
+            )));
+        }
+        let now = OffsetDateTime::now_utc();
+        let existing = self.kpi_reference_by_label(kpi.id, &request.label)?;
+        let record = existing.map_or_else(
+            || -> Result<KpiReferenceRecord, StoreError> {
+                Ok(KpiReferenceRecord {
+                    id: KpiReferenceId::fresh(),
+                    kpi_id: kpi.id,
+                    label: request.label.clone(),
+                    canonical_value,
+                    ordinal: self.next_kpi_reference_ordinal(kpi.id)?,
+                    created_at: now,
+                    updated_at: now,
+                })
+            },
+            |existing| {
+                Ok(KpiReferenceRecord {
+                    canonical_value,
+                    updated_at: now,
+                    ..existing
+                })
+            },
+        )?;
+        let transaction = self.connection.transaction()?;
+        upsert_kpi_reference(&transaction, &record)?;
+        let revision = next_event_revision(&transaction, "kpi_reference", &record.id.to_string())?;
+        record_event(
+            &transaction,
+            "kpi_reference",
+            &record.id.to_string(),
+            revision,
+            if revision == 1 { "created" } else { "updated" },
+            &record,
+        )?;
+        transaction.commit()?;
+        Ok(kpi_reference_summary(record, &metric.display_unit))
+    }
+
+    pub fn delete_kpi_reference(
+        &mut self,
+        request: DeleteKpiReferenceRequest,
+    ) -> Result<(), StoreError> {
+        let frontier = self.resolve_frontier(&request.frontier)?;
+        let kpi = self
+            .kpi_by_selector(frontier.id, &request.kpi)?
+            .ok_or_else(|| StoreError::UnknownKpi(request.kpi.clone()))?;
+        let reference = self
+            .kpi_reference_by_selector(kpi.id, &request.reference)?
+            .ok_or_else(|| StoreError::UnknownKpiReference(request.reference.clone()))?;
+        let transaction = self.connection.transaction()?;
+        let _ = transaction.execute(
+            "DELETE FROM frontier_kpi_references WHERE id = ?1",
+            params![reference.id.to_string()],
+        )?;
+        let revision =
+            next_event_revision(&transaction, "kpi_reference", &reference.id.to_string())?;
+        record_event(
+            &transaction,
+            "kpi_reference",
+            &reference.id.to_string(),
+            revision,
+            "deleted",
+            &reference,
+        )?;
+        compact_kpi_reference_ordinals(&transaction, kpi.id)?;
+        transaction.commit()?;
+        Ok(())
+    }
+
+    pub fn list_kpi_references(
+        &self,
+        query: KpiReferenceListQuery,
+    ) -> Result<Vec<KpiReferenceSummary>, StoreError> {
+        let frontier = self.resolve_frontier(&query.frontier)?;
+        let kpis = match query.kpi.as_deref() {
+            Some(selector) => vec![
+                self.kpi_by_selector(frontier.id, selector)?
+                    .ok_or_else(|| StoreError::UnknownKpi(selector.to_owned()))?,
+            ],
+            None => self.frontier_kpi_records(frontier.id)?,
+        };
+        let mut references = Vec::new();
+        for kpi in kpis {
+            let metric = self.metric_definition_by_id(kpi.metric_id)?;
+            references.extend(self.kpi_references(kpi.id, &metric.display_unit)?);
+        }
+        Ok(references)
     }
 
     pub fn move_kpi(&mut self, request: MoveKpiRequest) -> Result<(), StoreError> {
@@ -3255,6 +3408,53 @@ impl ProjectStore {
             .map_err(StoreError::from)
     }
 
+    fn kpi_reference_by_label(
+        &self,
+        kpi_id: KpiId,
+        label: &NonEmptyText,
+    ) -> Result<Option<KpiReferenceRecord>, StoreError> {
+        self.connection
+            .query_row(
+                "SELECT id, kpi_id, label, canonical_value, ordinal, created_at, updated_at
+                 FROM frontier_kpi_references
+                 WHERE kpi_id = ?1 AND label = ?2",
+                params![kpi_id.to_string(), label.as_str()],
+                decode_kpi_reference_row,
+            )
+            .optional()
+            .map_err(StoreError::from)
+    }
+
+    fn kpi_reference_by_selector(
+        &self,
+        kpi_id: KpiId,
+        selector: &str,
+    ) -> Result<Option<KpiReferenceRecord>, StoreError> {
+        self.connection
+            .query_row(
+                "SELECT id, kpi_id, label, canonical_value, ordinal, created_at, updated_at
+                 FROM frontier_kpi_references
+                 WHERE kpi_id = ?1
+                   AND (id = ?2 OR label = ?2)",
+                params![kpi_id.to_string(), selector],
+                decode_kpi_reference_row,
+            )
+            .optional()
+            .map_err(StoreError::from)
+    }
+
+    fn next_kpi_reference_ordinal(&self, kpi_id: KpiId) -> Result<KpiReferenceOrdinal, StoreError> {
+        self.connection
+            .query_row(
+                "SELECT COALESCE(MAX(ordinal) + 1, 0)
+                 FROM frontier_kpi_references
+                 WHERE kpi_id = ?1",
+                params![kpi_id.to_string()],
+                |row| parse_kpi_reference_ordinal_sql(row.get::<_, i64>(0)?),
+            )
+            .map_err(StoreError::from)
+    }
+
     fn frontier_kpi_records(
         &self,
         frontier_id: FrontierId,
@@ -3277,10 +3477,12 @@ impl ProjectStore {
             self.metric_definition_by_id(record.metric_id)?,
             Some(record.frontier_id),
         )?;
+        let references = self.kpi_references(record.id, &metric.display_unit)?;
         Ok(KpiSummary {
             id: record.id,
             ordinal: record.ordinal,
             metric,
+            references,
         })
     }
 
@@ -3289,6 +3491,23 @@ impl ProjectStore {
             .into_iter()
             .map(|record| self.kpi_summary(record))
             .collect()
+    }
+
+    fn kpi_references(
+        &self,
+        kpi_id: KpiId,
+        display_unit: &MetricDisplayUnit,
+    ) -> Result<Vec<KpiReferenceSummary>, StoreError> {
+        let mut statement = self.connection.prepare(
+            "SELECT id, kpi_id, label, canonical_value, ordinal, created_at, updated_at
+             FROM frontier_kpi_references
+             WHERE kpi_id = ?1
+             ORDER BY ordinal ASC, label ASC, id ASC",
+        )?;
+        let rows = statement.query_map(params![kpi_id.to_string()], decode_kpi_reference_row)?;
+        rows.map(|row| row.map(|record| kpi_reference_summary(record, display_unit)))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(StoreError::from)
     }
 
     fn resolve_kpi_for_query(
@@ -4387,7 +4606,7 @@ impl ProjectStore {
             .map_err(StoreError::from)
     }
 
-    fn kpi_reference_count(&self, metric_id: MetricId) -> Result<u64, StoreError> {
+    fn kpi_edge_reference_count(&self, metric_id: MetricId) -> Result<u64, StoreError> {
         self.connection
             .query_row(
                 "SELECT COUNT(*) FROM frontier_kpis WHERE metric_id = ?1",
@@ -5253,6 +5472,18 @@ fn install_schema(connection: &Connection) -> Result<(), StoreError> {
             UNIQUE (frontier_id, ordinal)
         );
 
+        CREATE TABLE IF NOT EXISTS frontier_kpi_references (
+            id TEXT PRIMARY KEY NOT NULL,
+            kpi_id TEXT NOT NULL REFERENCES frontier_kpis(id) ON DELETE CASCADE,
+            label TEXT NOT NULL,
+            canonical_value REAL NOT NULL,
+            ordinal INTEGER NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            UNIQUE (kpi_id, label),
+            UNIQUE (kpi_id, ordinal)
+        );
+
         CREATE TABLE IF NOT EXISTS run_dimension_definitions (
             key TEXT PRIMARY KEY NOT NULL,
             value_type TEXT NOT NULL,
@@ -5377,6 +5608,10 @@ fn migrate_store_to_current(
     if version == 14 {
         migrate_store_v14_to_v15(connection)?;
         version = 15;
+    }
+    if version == 15 {
+        migrate_store_v15_to_v16(connection)?;
+        version = 16;
     }
     if version == CURRENT_STORE_FORMAT_VERSION {
         return Ok(());
@@ -5688,6 +5923,28 @@ fn migrate_store_v14_to_v15(connection: &mut Connection) -> Result<(), StoreErro
     )?;
     transaction.commit()?;
     connection.pragma_update(None, "user_version", 15_i64)?;
+    Ok(())
+}
+
+fn migrate_store_v15_to_v16(connection: &mut Connection) -> Result<(), StoreError> {
+    let transaction = connection.transaction()?;
+    transaction.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS frontier_kpi_references (
+            id TEXT PRIMARY KEY NOT NULL,
+            kpi_id TEXT NOT NULL REFERENCES frontier_kpis(id) ON DELETE CASCADE,
+            label TEXT NOT NULL,
+            canonical_value REAL NOT NULL,
+            ordinal INTEGER NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            UNIQUE (kpi_id, label),
+            UNIQUE (kpi_id, ordinal)
+        );
+        ",
+    )?;
+    transaction.commit()?;
+    connection.pragma_update(None, "user_version", 16_i64)?;
     Ok(())
 }
 
@@ -6101,6 +6358,45 @@ fn insert_kpi(transaction: &Transaction<'_>, record: &FrontierKpiRecord) -> Resu
         ],
     )?;
     Ok(())
+}
+
+fn upsert_kpi_reference(
+    transaction: &Transaction<'_>,
+    record: &KpiReferenceRecord,
+) -> Result<(), StoreError> {
+    let _ = transaction.execute(
+        "INSERT INTO frontier_kpi_references (id, kpi_id, label, canonical_value, ordinal, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+         ON CONFLICT(kpi_id, label) DO UPDATE SET
+             canonical_value = excluded.canonical_value,
+             updated_at = excluded.updated_at",
+        params![
+            record.id.to_string(),
+            record.kpi_id.to_string(),
+            record.label.as_str(),
+            record.canonical_value,
+            i64::from(record.ordinal.value()),
+            encode_timestamp(record.created_at)?,
+            encode_timestamp(record.updated_at)?,
+        ],
+    )?;
+    Ok(())
+}
+
+fn kpi_reference_summary(
+    record: KpiReferenceRecord,
+    display_unit: &MetricDisplayUnit,
+) -> KpiReferenceSummary {
+    KpiReferenceSummary {
+        id: record.id,
+        ordinal: record.ordinal,
+        label: record.label,
+        value: display_unit.display_value(record.canonical_value),
+        canonical_value: record.canonical_value,
+        display_unit: display_unit.clone(),
+        created_at: record.created_at,
+        updated_at: record.updated_at,
+    }
 }
 
 fn upsert_tag_name_history(
@@ -6803,6 +7099,7 @@ fn merge_kpi_metric_edges(
     source: MetricId,
     target: MetricId,
 ) -> Result<(), StoreError> {
+    merge_duplicate_kpi_references(transaction, source, target)?;
     let affected_frontiers = {
         let mut statement = transaction.prepare(
             "SELECT DISTINCT frontier_id
@@ -6832,6 +7129,77 @@ fn merge_kpi_metric_edges(
     )?;
     for frontier_id in affected_frontiers {
         compact_frontier_kpi_ordinals(transaction, frontier_id)?;
+    }
+    Ok(())
+}
+
+fn merge_duplicate_kpi_references(
+    transaction: &Transaction<'_>,
+    source: MetricId,
+    target: MetricId,
+) -> Result<(), StoreError> {
+    let duplicate_kpis = {
+        let mut statement = transaction.prepare(
+            "SELECT source.id, target.id
+             FROM frontier_kpis source
+             JOIN frontier_kpis target
+               ON target.frontier_id = source.frontier_id
+              AND target.metric_id = ?2
+             WHERE source.metric_id = ?1",
+        )?;
+        statement
+            .query_map(params![source.to_string(), target.to_string()], |row| {
+                Ok((
+                    parse_kpi_id_sql(&row.get::<_, String>(0)?)?,
+                    parse_kpi_id_sql(&row.get::<_, String>(1)?)?,
+                ))
+            })?
+            .collect::<Result<Vec<_>, _>>()?
+    };
+    for (source_kpi, target_kpi) in duplicate_kpis {
+        let _ = transaction.execute(
+            "DELETE FROM frontier_kpi_references
+             WHERE kpi_id = ?1
+               AND EXISTS (
+                 SELECT 1
+                 FROM frontier_kpi_references target
+                 WHERE target.kpi_id = ?2
+                   AND target.label = frontier_kpi_references.label
+               )",
+            params![source_kpi.to_string(), target_kpi.to_string()],
+        )?;
+        let reference_ids = {
+            let mut statement = transaction.prepare(
+                "SELECT id
+                 FROM frontier_kpi_references
+                 WHERE kpi_id = ?1
+                 ORDER BY ordinal ASC, label ASC, id ASC",
+            )?;
+            statement
+                .query_map(params![source_kpi.to_string()], |row| {
+                    parse_kpi_reference_id_sql(&row.get::<_, String>(0)?)
+                })?
+                .collect::<Result<Vec<_>, _>>()?
+        };
+        let first_ordinal = transaction.query_row(
+            "SELECT COALESCE(MAX(ordinal) + 1, 0)
+             FROM frontier_kpi_references
+             WHERE kpi_id = ?1",
+            params![target_kpi.to_string()],
+            |row| row.get::<_, i64>(0),
+        )?;
+        for (offset, reference_id) in reference_ids.into_iter().enumerate() {
+            let ordinal = first_ordinal
+                + i64::try_from(offset).map_err(|error| {
+                    StoreError::InvalidInput(format!("too many KPI references to merge: {error}"))
+                })?;
+            let _ = transaction.execute(
+                "UPDATE frontier_kpi_references
+                 SET kpi_id = ?2, ordinal = ?3
+                 WHERE id = ?1",
+                params![reference_id.to_string(), target_kpi.to_string(), ordinal,],
+            )?;
+        }
     }
     Ok(())
 }
@@ -6890,6 +7258,44 @@ fn compact_frontier_kpi_ordinals(
         let _ = transaction.execute(
             "UPDATE frontier_kpis SET ordinal = ?2 WHERE id = ?1",
             params![kpi_id.to_string(), ordinal],
+        )?;
+    }
+    Ok(())
+}
+
+fn compact_kpi_reference_ordinals(
+    transaction: &Transaction<'_>,
+    kpi_id: KpiId,
+) -> Result<(), StoreError> {
+    let reference_ids = {
+        let mut statement = transaction.prepare(
+            "SELECT id
+             FROM frontier_kpi_references
+             WHERE kpi_id = ?1
+             ORDER BY ordinal ASC, label ASC, id ASC",
+        )?;
+        statement
+            .query_map(params![kpi_id.to_string()], |row| {
+                parse_kpi_reference_id_sql(&row.get::<_, String>(0)?)
+            })?
+            .collect::<Result<Vec<_>, _>>()?
+    };
+    for (index, reference_id) in reference_ids.iter().enumerate() {
+        let offset = i64::try_from(index).map_err(|error| {
+            StoreError::InvalidInput(format!("too many KPI references to compact: {error}"))
+        })?;
+        let _ = transaction.execute(
+            "UPDATE frontier_kpi_references SET ordinal = ?2 WHERE id = ?1",
+            params![reference_id.to_string(), -1_i64 - offset],
+        )?;
+    }
+    for (index, reference_id) in reference_ids.iter().enumerate() {
+        let ordinal = i64::try_from(index).map_err(|error| {
+            StoreError::InvalidInput(format!("too many KPI references to compact: {error}"))
+        })?;
+        let _ = transaction.execute(
+            "UPDATE frontier_kpi_references SET ordinal = ?2 WHERE id = ?1",
+            params![reference_id.to_string(), ordinal],
         )?;
     }
     Ok(())
@@ -7103,6 +7509,20 @@ fn decode_kpi_row(row: &rusqlite::Row<'_>) -> Result<FrontierKpiRecord, rusqlite
         metric_id: parse_metric_id_sql(&row.get::<_, String>(2)?)?,
         ordinal: parse_kpi_ordinal_sql(row.get::<_, i64>(3)?)?,
         created_at: parse_timestamp_sql(&row.get::<_, String>(4)?)?,
+    })
+}
+
+fn decode_kpi_reference_row(
+    row: &rusqlite::Row<'_>,
+) -> Result<KpiReferenceRecord, rusqlite::Error> {
+    Ok(KpiReferenceRecord {
+        id: parse_kpi_reference_id_sql(&row.get::<_, String>(0)?)?,
+        kpi_id: parse_kpi_id_sql(&row.get::<_, String>(1)?)?,
+        label: parse_non_empty_text(&row.get::<_, String>(2)?)?,
+        canonical_value: row.get::<_, f64>(3)?,
+        ordinal: parse_kpi_reference_ordinal_sql(row.get::<_, i64>(4)?)?,
+        created_at: parse_timestamp_sql(&row.get::<_, String>(5)?)?,
+        updated_at: parse_timestamp_sql(&row.get::<_, String>(6)?)?,
     })
 }
 
@@ -7890,7 +8310,18 @@ fn canonicalize_utf8_path(path: &Utf8Path) -> Result<Utf8PathBuf, StoreError> {
 fn has_git_marker(path: &Utf8Path) -> Result<bool, StoreError> {
     let git_marker = path.join(".git");
     match fs::metadata(git_marker.as_std_path()) {
-        Ok(_) => Ok(true),
+        Ok(metadata) if metadata.is_dir() => {
+            match fs::metadata(git_marker.join("HEAD").as_std_path()) {
+                Ok(head) => Ok(head.is_file()),
+                Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
+                Err(error) => Err(StoreError::from(error)),
+            }
+        }
+        Ok(metadata) if metadata.is_file() => {
+            let marker = fs::read_to_string(git_marker.as_std_path())?;
+            Ok(marker.trim_start().starts_with("gitdir:"))
+        }
+        Ok(_) => Ok(false),
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
         Err(error) => Err(StoreError::from(error)),
     }
@@ -7954,6 +8385,10 @@ fn parse_kpi_id_sql(raw: &str) -> Result<KpiId, rusqlite::Error> {
     parse_uuid_sql(raw).map(KpiId::from_uuid)
 }
 
+fn parse_kpi_reference_id_sql(raw: &str) -> Result<KpiReferenceId, rusqlite::Error> {
+    parse_uuid_sql(raw).map(KpiReferenceId::from_uuid)
+}
+
 fn parse_kpi_ordinal_sql(raw: i64) -> Result<KpiOrdinal, rusqlite::Error> {
     let value = u32::try_from(raw).map_err(|error| {
         to_sql_conversion_error(StoreError::InvalidInput(format!(
@@ -7963,10 +8398,76 @@ fn parse_kpi_ordinal_sql(raw: i64) -> Result<KpiOrdinal, rusqlite::Error> {
     Ok(KpiOrdinal::new(value))
 }
 
+fn parse_kpi_reference_ordinal_sql(raw: i64) -> Result<KpiReferenceOrdinal, rusqlite::Error> {
+    let value = u32::try_from(raw).map_err(|error| {
+        to_sql_conversion_error(StoreError::InvalidInput(format!(
+            "invalid KPI reference ordinal `{raw}`: {error}"
+        )))
+    })?;
+    Ok(KpiReferenceOrdinal::new(value))
+}
+
 fn parse_uuid_sql(raw: &str) -> Result<Uuid, rusqlite::Error> {
     Uuid::parse_str(raw).map_err(uuid_to_sql_conversion_error)
 }
 
 fn parse_timestamp_sql(raw: &str) -> Result<OffsetDateTime, rusqlite::Error> {
     decode_timestamp(raw).map_err(time_to_sql_conversion_error)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn fresh_test_root(label: &str) -> Result<Utf8PathBuf, StoreError> {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |duration| duration.as_nanos());
+        let root = std::env::temp_dir().join(format!(
+            "fidget-spinner-store-{label}-{}-{nanos}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&root)?;
+        Ok(utf8_path(root))
+    }
+
+    #[test]
+    fn preferred_project_root_ignores_empty_git_directory() -> Result<(), StoreError> {
+        let root = fresh_test_root("empty-git-marker")?;
+        let nested = root.join("nested");
+        fs::create_dir_all(root.join(".git").as_std_path())?;
+        fs::create_dir_all(nested.as_std_path())?;
+
+        assert_eq!(preferred_project_root(&nested)?, nested);
+        fs::remove_dir_all(root.as_std_path())?;
+        Ok(())
+    }
+
+    #[test]
+    fn preferred_project_root_accepts_real_git_directory() -> Result<(), StoreError> {
+        let root = fresh_test_root("real-git-marker")?;
+        let nested = root.join("nested");
+        fs::create_dir_all(root.join(".git").as_std_path())?;
+        fs::write(
+            root.join(".git").join("HEAD").as_std_path(),
+            "ref: refs/heads/main\n",
+        )?;
+        fs::create_dir_all(nested.as_std_path())?;
+
+        assert_eq!(preferred_project_root(&nested)?, root);
+        fs::remove_dir_all(root.as_std_path())?;
+        Ok(())
+    }
+
+    #[test]
+    fn preferred_project_root_accepts_gitfile_worktree_marker() -> Result<(), StoreError> {
+        let root = fresh_test_root("gitfile-marker")?;
+        let nested = root.join("nested");
+        fs::write(root.join(".git").as_std_path(), "gitdir: /tmp/gitdir\n")?;
+        fs::create_dir_all(nested.as_std_path())?;
+
+        assert_eq!(preferred_project_root(&nested)?, root);
+        fs::remove_dir_all(root.as_std_path())?;
+        Ok(())
+    }
 }

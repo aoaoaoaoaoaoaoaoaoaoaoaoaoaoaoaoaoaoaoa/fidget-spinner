@@ -222,6 +222,24 @@ const TOOL_SPECS: &[ToolSpec] = &[
         replay: ReplayContract::Convergent,
     },
     ToolSpec {
+        name: "kpi.reference.set",
+        description: "Set one named reference line for one frontier KPI metric. The value is normalized through the metric dimension; omitted unit means the metric display unit.",
+        dispatch: DispatchTarget::Worker,
+        replay: ReplayContract::NeverReplay,
+    },
+    ToolSpec {
+        name: "kpi.reference.list",
+        description: "List named reference lines for frontier KPI metrics.",
+        dispatch: DispatchTarget::Worker,
+        replay: ReplayContract::Convergent,
+    },
+    ToolSpec {
+        name: "kpi.reference.delete",
+        description: "Delete one named reference line from one frontier KPI metric.",
+        dispatch: DispatchTarget::Worker,
+        replay: ReplayContract::NeverReplay,
+    },
+    ToolSpec {
         name: "kpi.best",
         description: "Rank closed experiments by one frontier KPI metric.",
         dispatch: DispatchTarget::Worker,
@@ -718,6 +736,37 @@ fn tool_input_schema(name: &str) -> Value {
             &[("frontier", selector_schema("Frontier UUID or slug."))],
             &["frontier"],
         ),
+        "kpi.reference.set" => object_schema(
+            &[
+                ("frontier", selector_schema("Frontier UUID or slug.")),
+                ("kpi", string_schema("KPI metric key or KPI id.")),
+                ("label", string_schema("Reference line label.")),
+                ("value", number_schema("Reference value.")),
+                (
+                    "unit",
+                    string_schema("Optional metric unit. Omit to use the metric display unit."),
+                ),
+            ],
+            &["frontier", "kpi", "label", "value"],
+        ),
+        "kpi.reference.list" => object_schema(
+            &[
+                ("frontier", selector_schema("Frontier UUID or slug.")),
+                ("kpi", string_schema("Optional KPI metric key or KPI id.")),
+            ],
+            &["frontier"],
+        ),
+        "kpi.reference.delete" => object_schema(
+            &[
+                ("frontier", selector_schema("Frontier UUID or slug.")),
+                ("kpi", string_schema("KPI metric key or KPI id.")),
+                (
+                    "reference",
+                    string_schema("Reference label or reference id."),
+                ),
+            ],
+            &["frontier", "kpi", "reference"],
+        ),
         "kpi.best" => object_schema(
             &[
                 ("frontier", selector_schema("Frontier UUID or slug.")),
@@ -791,6 +840,10 @@ fn nullable_string_schema(description: &str) -> Value {
 
 fn integer_schema(description: &str) -> Value {
     json!({ "type": "integer", "minimum": 0, "description": description })
+}
+
+fn number_schema(description: &str) -> Value {
+    json!({ "type": "number", "description": description })
 }
 
 fn boolean_schema(description: &str) -> Value {

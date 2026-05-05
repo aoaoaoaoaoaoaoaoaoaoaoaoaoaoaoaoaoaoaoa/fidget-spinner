@@ -11,8 +11,8 @@ use time::format_description::well_known::Rfc3339;
 use uuid::Uuid;
 
 use crate::{
-    CoreError, ExperimentId, FrontierId, HypothesisId, KpiId, MetricId, RegistryLockId,
-    TagFamilyId, TagId,
+    CoreError, ExperimentId, FrontierId, HypothesisId, KpiId, KpiReferenceId, MetricId,
+    RegistryLockId, TagFamilyId, TagId,
 };
 
 #[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
@@ -1241,6 +1241,35 @@ pub struct FrontierKpiRecord {
 pub struct KpiOrdinal(u32);
 
 impl KpiOrdinal {
+    pub const FIRST: Self = Self(0);
+
+    #[must_use]
+    pub const fn new(value: u32) -> Self {
+        Self(value)
+    }
+
+    #[must_use]
+    pub const fn value(self) -> u32 {
+        self.0
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct KpiReferenceRecord {
+    pub id: KpiReferenceId,
+    pub kpi_id: KpiId,
+    pub label: NonEmptyText,
+    pub canonical_value: f64,
+    pub ordinal: KpiReferenceOrdinal,
+    pub created_at: OffsetDateTime,
+    pub updated_at: OffsetDateTime,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(transparent)]
+pub struct KpiReferenceOrdinal(u32);
+
+impl KpiReferenceOrdinal {
     pub const FIRST: Self = Self(0);
 
     #[must_use]

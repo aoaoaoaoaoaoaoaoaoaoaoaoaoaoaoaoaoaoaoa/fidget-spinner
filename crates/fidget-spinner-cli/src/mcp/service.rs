@@ -9,19 +9,21 @@ use camino::{Utf8Path, Utf8PathBuf};
 use fidget_spinner_core::{
     CommandRecipe, ExecutionBackend, ExperimentAnalysis, ExperimentStatus, FieldValueType,
     FrontierRecord, FrontierStatus, FrontierVerdict, HypothesisAssessmentLevel, MetricAggregation,
-    MetricDimension, MetricUnit, NonEmptyText, OptimizationObjective, ReportedMetricValue,
-    RunDimensionValue, Slug, TagName,
+    MetricDimension, MetricDisplayUnit, MetricUnit, NonEmptyText, OptimizationObjective,
+    ReportedMetricValue, RunDimensionValue, Slug, TagName,
 };
 use fidget_spinner_store_sqlite::{
     CloseExperimentRequest, CreateFrontierRequest, CreateHypothesisRequest, CreateKpiRequest,
-    DefineMetricRequest, DefineRunDimensionRequest, EntityHistoryEntry, ExperimentDetail,
-    ExperimentNearestQuery, ExperimentOutcomePatch, ExperimentSummary, FrontierOpenProjection,
-    FrontierRoadmapItemDraft, FrontierSqlQuery, FrontierSummary, HypothesisDetail,
-    HypothesisSummary, KpiBestEntry, KpiBestQuery, KpiListQuery, KpiSummary, ListExperimentsQuery,
+    DefineMetricRequest, DefineRunDimensionRequest, DeleteKpiReferenceRequest, EntityHistoryEntry,
+    ExperimentDetail, ExperimentNearestQuery, ExperimentOutcomePatch, ExperimentSummary,
+    FrontierOpenProjection, FrontierRoadmapItemDraft, FrontierSqlQuery, FrontierSummary,
+    HypothesisDetail, HypothesisSummary, KpiBestEntry, KpiBestQuery, KpiListQuery,
+    KpiReferenceListQuery, KpiReferenceSummary, KpiSummary, ListExperimentsQuery,
     ListFrontiersQuery, ListHypothesesQuery, MetricBestEntry, MetricBestQuery, MetricKeySummary,
     MetricKeysQuery, MetricRankOrder, MetricScope, OpenExperimentRequest, ProjectStatus,
-    ProjectStore, StoreError, TagRegistryQuery, TextPatch, UpdateExperimentRequest,
-    UpdateFrontierRequest, UpdateHypothesisRequest, VertexSelector, VertexSummary,
+    ProjectStore, SetKpiReferenceRequest, StoreError, TagRegistryQuery, TextPatch,
+    UpdateExperimentRequest, UpdateFrontierRequest, UpdateHypothesisRequest, VertexSelector,
+    VertexSummary,
 };
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
@@ -601,6 +603,39 @@ impl WorkerService {
                     &operation,
                 )?
             }
+            "kpi.reference.set" => {
+                let args = deserialize::<KpiReferenceSetArgs>(arguments)?;
+                reject_frontier_selector_for_mcp(&self.store, &args.frontier, &operation)?;
+                let reference = lift!(self.store.set_kpi_reference(SetKpiReferenceRequest {
+                    frontier: args.frontier,
+                    kpi: args.kpi,
+                    label: NonEmptyText::new(args.label).map_err(store_fault(&operation))?,
+                    value: args.value,
+                    unit: optional_metric_display_unit_arg(args.unit, &operation)?,
+                }));
+                kpi_reference_record_output(&reference, &operation)?
+            }
+            "kpi.reference.list" => {
+                let args = deserialize::<KpiReferenceListArgs>(arguments)?;
+                reject_frontier_selector_for_mcp(&self.store, &args.frontier, &operation)?;
+                kpi_reference_list_output(
+                    &lift!(self.store.list_kpi_references(KpiReferenceListQuery {
+                        frontier: args.frontier,
+                        kpi: args.kpi,
+                    })),
+                    &operation,
+                )?
+            }
+            "kpi.reference.delete" => {
+                let args = deserialize::<KpiReferenceDeleteArgs>(arguments)?;
+                reject_frontier_selector_for_mcp(&self.store, &args.frontier, &operation)?;
+                lift!(self.store.delete_kpi_reference(DeleteKpiReferenceRequest {
+                    frontier: args.frontier,
+                    kpi: args.kpi,
+                    reference: args.reference,
+                }));
+                kpi_reference_delete_output(&operation)?
+            }
             "kpi.best" => {
                 let args = deserialize::<KpiBestArgs>(arguments)?;
                 reject_frontier_selector_for_mcp(&self.store, &args.frontier, &operation)?;
@@ -904,6 +939,28 @@ struct KpiListArgs {
 }
 
 #[derive(Debug, Deserialize)]
+struct KpiReferenceSetArgs {
+    frontier: String,
+    kpi: String,
+    label: String,
+    value: f64,
+    unit: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct KpiReferenceListArgs {
+    frontier: String,
+    kpi: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct KpiReferenceDeleteArgs {
+    frontier: String,
+    kpi: String,
+    reference: String,
+}
+
+#[derive(Debug, Deserialize)]
 struct KpiBestArgs {
     frontier: String,
     kpi: Option<String>,
@@ -955,6 +1012,7 @@ where
             | StoreError::UnknownTagFamily(_)
             | StoreError::UnknownMetricDefinition(_)
             | StoreError::UnknownKpi(_)
+            | StoreError::UnknownKpiReference(_)
             | StoreError::UnknownRunDimension(_)
             | StoreError::UnknownFrontierSelector(_)
             | StoreError::UnknownHypothesisSelector(_)
@@ -1138,6 +1196,15 @@ fn metric_value_from_wire(
         value: wire.value,
         unit: wire.unit,
     })
+}
+
+fn optional_metric_display_unit_arg(
+    raw: Option<String>,
+    operation: &str,
+) -> Result<Option<MetricDisplayUnit>, FaultRecord> {
+    raw.filter(|unit| !unit.trim().is_empty())
+        .map(|unit| MetricDisplayUnit::parse(&unit).map_err(store_fault(operation)))
+        .transpose()
 }
 
 fn experiment_analysis_from_wire(
@@ -1812,6 +1879,65 @@ fn kpi_list_output(kpis: &[KpiSummary], operation: &str) -> Result<ToolOutput, F
     )
 }
 
+fn kpi_reference_record_output(
+    reference: &KpiReferenceSummary,
+    operation: &str,
+) -> Result<ToolOutput, FaultRecord> {
+    let projection = projection::kpi_reference_record(reference);
+    projected_tool_output(
+        &projection,
+        format!(
+            "{} = {} {}",
+            reference.label,
+            reference.value,
+            reference.display_unit.label()
+        ),
+        None,
+        FaultStage::Worker,
+        operation,
+    )
+}
+
+fn kpi_reference_list_output(
+    references: &[KpiReferenceSummary],
+    operation: &str,
+) -> Result<ToolOutput, FaultRecord> {
+    let projection = projection::kpi_reference_list(references);
+    projected_tool_output(
+        &projection,
+        if references.is_empty() {
+            "no KPI references".to_owned()
+        } else {
+            references
+                .iter()
+                .map(|reference| {
+                    format!(
+                        "{} = {} {}",
+                        reference.label,
+                        reference.value,
+                        reference.display_unit.label()
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        },
+        None,
+        FaultStage::Worker,
+        operation,
+    )
+}
+
+fn kpi_reference_delete_output(operation: &str) -> Result<ToolOutput, FaultRecord> {
+    let projection = projection::kpi_reference_deleted();
+    projected_tool_output(
+        &projection,
+        "KPI reference deleted",
+        None,
+        FaultStage::Worker,
+        operation,
+    )
+}
+
 fn kpi_best_output(entries: &[KpiBestEntry], operation: &str) -> Result<ToolOutput, FaultRecord> {
     let projection = projection::kpi_best(entries);
     projected_tool_output(
@@ -2330,6 +2456,18 @@ mod legacy_projection_values {
                 "description": kpi.metric.description,
                 "reference_count": kpi.metric.reference_count,
             },
+            "references": kpi.references.iter().map(kpi_reference_value).collect::<Vec<_>>(),
+        })
+    }
+
+    fn kpi_reference_value(reference: &KpiReferenceSummary) -> Value {
+        json!({
+            "ordinal": reference.ordinal.value(),
+            "label": reference.label,
+            "value": reference.value,
+            "canonical_value": reference.canonical_value,
+            "display_unit": reference.display_unit.label(),
+            "updated_at": reference.updated_at,
         })
     }
 
