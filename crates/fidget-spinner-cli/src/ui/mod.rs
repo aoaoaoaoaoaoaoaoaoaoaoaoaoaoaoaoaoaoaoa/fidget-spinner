@@ -1047,7 +1047,7 @@ fn limit_items<T>(items: &[T], limit: Option<u32>) -> &[T] {
 
 #[cfg(test)]
 mod tests {
-    use super::assets::harden_autofill_controls;
+    use super::assets::{harden_autofill_controls, styles};
     use super::registry::{
         metric_registry_filter_text, render_kpi_registry, render_metric_registry_table,
     };
@@ -1125,6 +1125,17 @@ mod tests {
                 .count(),
             3
         );
+    }
+
+    #[test]
+    fn stylesheet_codifies_text_containment_contract() {
+        let css = styles();
+        assert!(css.contains("minmax(min(100%, 320px), 1fr)"));
+        assert!(css.contains("minmax(min(100%, 260px), 1fr)"));
+        assert!(css.contains("overflow-wrap: anywhere"));
+        assert!(!css.contains("minmax(320px, 1fr)"));
+        assert!(!css.contains("minmax(260px, 1fr)"));
+        assert!(!css.contains("overflow-x: hidden;\n    }\n    a"));
     }
 
     #[test]

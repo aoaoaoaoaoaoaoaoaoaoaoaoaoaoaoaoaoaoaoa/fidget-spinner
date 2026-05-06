@@ -617,13 +617,25 @@ pub(super) fn styles() -> &'static str {
         --rejected: #8a3a34;
         --shadow: rgba(83, 61, 33, 0.055);
     }
-    * { box-sizing: border-box; }
+    *, *::before, *::after { box-sizing: border-box; }
+    :where(.shell, .main-column, .sidebar, .card, .subcard, .mini-card, .card-header, .block, .split, .card-grid, .chip-row, .link-list, .meta-row, .roadmap-list, .simple-list) {
+        min-width: 0;
+    }
+    :where(.card, .subcard, .mini-card) {
+        max-width: 100%;
+    }
+    :where(.card, .subcard, .mini-card) > * {
+        min-width: 0;
+    }
+    :where(.title-link, .prose, .sidebar-copy, .frontier-nav-title, .frontier-nav-meta, .roadmap-list, .simple-list, .roadmap-list a, .simple-list a, .link-chip-title, .link-chip-summary, .meta-row > *, .kv-value) {
+        overflow-wrap: anywhere;
+        word-break: break-word;
+    }
     body {
         margin: 0;
         background: var(--bg);
         color: var(--text);
         font: 15px/1.55 "Iosevka Web", "IBM Plex Mono", "SFMono-Regular", monospace;
-        overflow-x: hidden;
     }
     a {
         color: var(--accent);
@@ -640,7 +652,6 @@ pub(super) fn styles() -> &'static str {
         grid-template-columns: 280px minmax(0, 1fr);
         align-items: start;
         min-width: 0;
-        overflow-x: clip;
     }
     .sidebar {
         position: sticky;
@@ -736,10 +747,12 @@ pub(super) fn styles() -> &'static str {
     .frontier-nav-title {
         color: var(--text);
         font-weight: 700;
+        min-width: 0;
     }
     .frontier-nav-meta {
         color: var(--muted);
         font-size: 12px;
+        min-width: 0;
     }
     .frontier-action-form {
         display: grid;
@@ -827,7 +840,7 @@ pub(super) fn styles() -> &'static str {
     .tag-family-grid {
         display: grid;
         gap: 10px;
-        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+        grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr));
     }
     .tag-create-form,
     .tag-inline-form {
@@ -1238,13 +1251,13 @@ pub(super) fn styles() -> &'static str {
     .split {
         display: grid;
         gap: 16px;
-        grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+        grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr));
         align-items: start;
     }
     .card-grid {
         display: grid;
         gap: 12px;
-        grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+        grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr));
         align-items: start;
     }
     .mini-card {
@@ -1255,7 +1268,6 @@ pub(super) fn styles() -> &'static str {
         gap: 9px;
         min-width: 0;
         align-content: start;
-        overflow: hidden;
     }
     .frontier-card-header {
         display: grid;
@@ -1333,6 +1345,8 @@ pub(super) fn styles() -> &'static str {
         color: var(--text);
         max-width: 92ch;
         white-space: pre-wrap;
+        overflow-wrap: anywhere;
+        word-break: break-word;
     }
     .muted { color: var(--muted); }
     .meta-row {
@@ -1345,7 +1359,7 @@ pub(super) fn styles() -> &'static str {
     .kv-grid {
         display: grid;
         gap: 6px 12px;
-        grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+        grid-template-columns: repeat(auto-fit, minmax(min(100%, 160px), 1fr));
     }
     .kv {
         display: grid;
@@ -1522,12 +1536,15 @@ pub(super) fn styles() -> &'static str {
         flex: 0 0 auto;
         width: auto;
         max-width: 100%;
+        min-width: 0;
         border: 1px solid var(--border-strong);
         background: var(--tag);
         padding: 4px 8px;
         font-size: 12px;
         line-height: 1.2;
-        white-space: nowrap;
+        white-space: normal;
+        overflow-wrap: anywhere;
+        word-break: break-word;
     }
     .plot-card-header {
         align-items: center;
@@ -1592,7 +1609,7 @@ pub(super) fn styles() -> &'static str {
     .metric-popout-layout {
         display: grid;
         gap: 14px;
-        grid-template-columns: minmax(0, 1.6fr) minmax(180px, 0.8fr);
+        grid-template-columns: repeat(auto-fit, minmax(min(100%, 180px), 1fr));
         align-items: start;
     }
     .metric-picker-main,
@@ -1677,7 +1694,7 @@ pub(super) fn styles() -> &'static str {
     .filter-form-grid {
         display: grid;
         gap: 10px 12px;
-        grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+        grid-template-columns: repeat(auto-fit, minmax(min(100%, 180px), 1fr));
     }
     .filter-control {
         display: grid;
@@ -1956,7 +1973,10 @@ pub(super) fn styles() -> &'static str {
         gap: 6px;
     }
     .roadmap-list li, .simple-list li {
+        min-width: 0;
+        max-width: 100%;
         overflow-wrap: anywhere;
+        word-break: break-word;
     }
     .code-block {
         white-space: pre-wrap;

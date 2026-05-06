@@ -91,6 +91,33 @@ user-visible effect over implementation categories: `new tags` beats
 `definition`, and `registry edits` beats storage-level lock names. Supervisor
 controls set MCP policy; they must not disable or veto the supervisor UI itself.
 
+### Text Containment
+
+Text must be contained by default. A component should assume its enclosing
+column may become narrower than its comfortable design width, because the
+navigator is often used in split panes, zoomed browsers, and narrow inspector
+windows.
+
+The default contract:
+
+- Grid and flex children are shrinkable: `min-width: 0` is part of the
+  primitive, not an afterthought.
+- Auto-fit grid floors must be bounded by the container, e.g.
+  `minmax(min(100%, 260px), 1fr)`, never a naked `minmax(260px, 1fr)`.
+- Human prose, titles, links, list items, identifiers, and chips wrap or break
+  inside their owner with `overflow-wrap: anywhere`.
+- Generic cards do not hide overflow. Clipping is allowed only for explicit
+  truncation or clamping primitives, and those should preserve full text by
+  hover/title or adjacent detail.
+- `white-space: nowrap` is reserved for short bounded atoms. It is not a default
+  style for chips that may contain user, model, metric, tag, or slug text.
+- Page-level overflow hiding is not a layout strategy. It turns broken geometry
+  into invisible amputation.
+
+When text is cut off, treat it as a primitive failure first. Do not patch a
+single card width until the shrink, wrap, grid-floor, and clipping contracts
+have been checked.
+
 ## Supervisory Registry Governance
 
 Driving models should be allowed to explore quickly and leave imperfect
