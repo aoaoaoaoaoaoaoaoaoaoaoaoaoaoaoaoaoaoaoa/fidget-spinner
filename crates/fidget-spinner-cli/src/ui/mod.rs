@@ -1133,6 +1133,8 @@ mod tests {
         assert!(css.contains("minmax(min(100%, 320px), 1fr)"));
         assert!(css.contains("minmax(min(100%, 260px), 1fr)"));
         assert!(css.contains("overflow-wrap: anywhere"));
+        assert!(css.contains(".status-chip {\n        text-transform: uppercase;"));
+        assert!(css.contains("white-space: nowrap;\n        overflow-wrap: normal;"));
         assert!(!css.contains("minmax(320px, 1fr)"));
         assert!(!css.contains("minmax(260px, 1fr)"));
         assert!(!css.contains("overflow-x: hidden;\n    }\n    a"));

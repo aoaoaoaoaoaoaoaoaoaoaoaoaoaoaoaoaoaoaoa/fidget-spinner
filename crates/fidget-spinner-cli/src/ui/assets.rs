@@ -1782,11 +1782,19 @@ pub(super) fn styles() -> &'static str {
         color: var(--muted);
         text-transform: uppercase;
         letter-spacing: 0.05em;
+        max-width: none;
+        white-space: nowrap;
+        overflow-wrap: normal;
+        word-break: normal;
     }
     .status-chip {
         text-transform: uppercase;
         letter-spacing: 0.05em;
         font-weight: 700;
+        max-width: none;
+        white-space: nowrap;
+        overflow-wrap: normal;
+        word-break: normal;
     }
     .status-accepted { color: var(--accepted); border-color: color-mix(in srgb, var(--accepted) 24%, white); background: color-mix(in srgb, var(--accepted) 10%, white); }
     .status-kept { color: var(--kept); border-color: color-mix(in srgb, var(--kept) 22%, white); background: color-mix(in srgb, var(--kept) 9%, white); }
