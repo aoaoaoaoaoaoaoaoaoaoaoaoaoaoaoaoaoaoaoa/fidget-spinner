@@ -5,11 +5,11 @@ use super::{
     ListHypothesesQuery, Markup, MetricKeysQuery, MetricScope, MoveKpiDirection, NavigatorScope,
     NavigatorState, NonEmptyText, PreEscaped, ProjectIndexItem, ProjectMetricsQuery,
     ProjectRenderContext, ProjectStatus, RegistryLockMode, RegistryName, StoreError, TagName,
-    TagUsage, arrow_down_icon, arrow_up_icon, format_metric_value, format_timestamp, frontier_href,
-    frontier_results_href, frontier_status_class, html, limit_items, load_shell_frame,
-    metric_choice_detail, open_store, pencil_icon, plus_icon, project_root_href, render_fact,
-    render_kv, render_metric_choice_option, render_metric_kind_chip, status_chip_classes,
-    trash_icon,
+    TagUsage, arrow_down_icon, arrow_up_icon, chevron_down_icon, chevron_up_icon,
+    format_metric_value, format_timestamp, frontier_href, frontier_results_href,
+    frontier_status_class, html, limit_items, load_shell_frame, metric_choice_detail, open_store,
+    pencil_icon, plus_icon, project_root_href, render_fact, render_kv, render_metric_choice_option,
+    render_metric_kind_chip, status_chip_classes, trash_icon,
 };
 
 pub(super) fn render_project_index(state: NavigatorState) -> Result<Markup, StoreError> {
@@ -247,7 +247,11 @@ pub(super) fn render_project_metrics(
             &metrics,
             kpi_creation_locked,
         ))
-        (render_metric_registry_table(&metrics))
+        (render_metric_registry_table(
+            &metrics,
+            selected_frontier.as_ref(),
+            &selected_kpis,
+        ))
     };
     Ok(render_shell(&title, &shell, None, content))
 }
@@ -645,8 +649,8 @@ fn render_create_kpi_form(
                     option value="" { "all metrics are KPIs" }
                 }
             }
-            button.inline-icon-button type="submit" aria-label="Promote KPI metric" title="Promote metric to KPI" disabled[!has_candidates] {
-                (plus_icon())
+            button.inline-icon-button.promote-icon-button type="submit" aria-label="Promote KPI metric" title="Promote metric to KPI" disabled[!has_candidates] {
+                (chevron_up_icon())
             }
         }
     }
@@ -678,7 +682,7 @@ pub(super) fn render_kpi_registry(frontier: &FrontierSummary, kpis: &[KpiSummary
                         @for (index, kpi) in kpis.iter().enumerate() {
                             tr.kpi-metric-row {
                                 td.no-truncate.kpi-action-cell {
-                                    div.kpi-action-row {
+                                    div.inline-action-row {
                                         @if has_reorder {
                                             (render_kpi_move_button(frontier, kpi, MoveKpiDirection::Up, index == 0))
                                             (render_kpi_move_button(frontier, kpi, MoveKpiDirection::Down, index + 1 == kpis.len()))
@@ -687,7 +691,7 @@ pub(super) fn render_kpi_registry(frontier: &FrontierSummary, kpis: &[KpiSummary
                                             input type="hidden" name="frontier" value=(frontier.slug.as_str());
                                             input type="hidden" name="kpi" value=(kpi.metric.key.as_str());
                                             button.inline-icon-button.danger-icon-button type="submit" aria-label=(format!("Demote KPI metric {}", kpi.metric.key)) title="Demote KPI metric" {
-                                                (trash_icon())
+                                                (chevron_down_icon())
                                             }
                                         }
                                     }
@@ -793,9 +797,37 @@ const fn kpi_move_direction_value(direction: MoveKpiDirection) -> &'static str {
     }
 }
 
+fn render_metric_promote_kpi_button(
+    selected_frontier: Option<&FrontierSummary>,
+    metric: &fidget_spinner_store_sqlite::MetricKeySummary,
+    already_kpi: bool,
+) -> Markup {
+    html! {
+        @if let Some(frontier) = selected_frontier {
+            form.tag-icon-form method="post" action="metrics/kpi" data-preserve-viewport="true" {
+                input type="hidden" name="frontier" value=(frontier.slug.as_str());
+                input type="hidden" name="metric" value=(metric.key.as_str());
+                button.inline-icon-button.promote-icon-button
+                    type="submit"
+                    aria-label=(format!("Promote {} to KPI", metric.key))
+                    title=(if already_kpi { "Already a KPI for selected frontier" } else { "Promote metric to KPI" })
+                    disabled[already_kpi] {
+                    (chevron_up_icon())
+                }
+            }
+        }
+    }
+}
+
 pub(super) fn render_metric_registry_table(
     metrics: &[fidget_spinner_store_sqlite::MetricKeySummary],
+    selected_frontier: Option<&FrontierSummary>,
+    kpis: &[KpiSummary],
 ) -> Markup {
+    let kpi_keys = kpis
+        .iter()
+        .map(|kpi| kpi.metric.key.clone())
+        .collect::<BTreeSet<_>>();
     html! {
         section.card {
             div.card-header { h2 { "Metric Registry" } }
@@ -832,10 +864,17 @@ pub(super) fn render_metric_registry_table(
                             @for metric in metrics {
                                 tr data-table-filter-row="metric-registry" data-table-filter-text=(metric_registry_filter_text(metric)) {
                                     td.no-truncate {
-                                        form.tag-icon-form method="post" action="metrics/delete" data-preserve-viewport="true" {
-                                            input type="hidden" name="metric" value=(metric.key.as_str());
-                                            button.inline-icon-button.danger-icon-button type="submit" aria-label=(format!("Delete {}", metric.key)) title="Delete unused metric" {
-                                                (trash_icon())
+                                        div.inline-action-row {
+                                            (render_metric_promote_kpi_button(
+                                                selected_frontier,
+                                                metric,
+                                                kpi_keys.contains(&metric.key),
+                                            ))
+                                            form.tag-icon-form method="post" action="metrics/delete" data-preserve-viewport="true" {
+                                                input type="hidden" name="metric" value=(metric.key.as_str());
+                                                button.inline-icon-button.danger-icon-button type="submit" aria-label=(format!("Delete {}", metric.key)) title="Delete unused metric" {
+                                                    (trash_icon())
+                                                }
                                             }
                                         }
                                     }

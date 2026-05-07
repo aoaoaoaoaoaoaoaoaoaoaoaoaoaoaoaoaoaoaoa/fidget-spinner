@@ -994,7 +994,7 @@ pub(super) fn styles() -> &'static str {
     .kpi-metric-col {
         width: auto;
     }
-    .kpi-action-row {
+    .inline-action-row {
         display: flex;
         gap: 3px;
         align-items: flex-start;
@@ -1105,6 +1105,9 @@ pub(super) fn styles() -> &'static str {
     }
     .danger-icon-button {
         color: var(--rejected);
+    }
+    .promote-icon-button {
+        color: var(--accepted);
     }
     .inline-action-icon {
         width: 14px;

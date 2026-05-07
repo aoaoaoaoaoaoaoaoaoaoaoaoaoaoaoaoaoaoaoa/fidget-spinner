@@ -718,6 +718,22 @@ fn trash_icon() -> Markup {
     }
 }
 
+fn chevron_up_icon() -> Markup {
+    html! {
+        svg.inline-action-icon aria-hidden="true" viewBox="0 0 24 24" fill="none" {
+            path d="M6.5 14.5 12 9l5.5 5.5" {}
+        }
+    }
+}
+
+fn chevron_down_icon() -> Markup {
+    html! {
+        svg.inline-action-icon aria-hidden="true" viewBox="0 0 24 24" fill="none" {
+            path d="M6.5 9.5 12 15l5.5-5.5" {}
+        }
+    }
+}
+
 fn plus_icon() -> Markup {
     html! {
         svg.inline-action-icon aria-hidden="true" viewBox="0 0 24 24" fill="none" {
@@ -1160,6 +1176,15 @@ mod tests {
         }
     }
 
+    fn test_kpi(metric: MetricKeySummary) -> KpiSummary {
+        KpiSummary {
+            id: KpiId::fresh(),
+            ordinal: KpiOrdinal::FIRST,
+            metric,
+            references: Vec::new(),
+        }
+    }
+
     fn test_timestamp(raw: &str) -> OffsetDateTime {
         must(OffsetDateTime::parse(raw, &Rfc3339), "timestamp")
     }
@@ -1210,7 +1235,9 @@ mod tests {
             test_metric("presolve_wallclock", "milliseconds"),
             test_synthetic_metric("presolve_wallclock_per_row", "milliseconds"),
         ];
-        let markup = render_metric_registry_table(&metrics).into_string();
+        let frontier = test_frontier_summary();
+        let kpi = test_kpi(metrics[0].clone());
+        let markup = render_metric_registry_table(&metrics, Some(&frontier), &[kpi]).into_string();
         let filter_text = metric_registry_filter_text(&metrics[0]);
 
         assert!(markup.contains(r#"data-table-filter-input="metric-registry""#));
@@ -1240,6 +1267,10 @@ mod tests {
         assert!(markup.contains(r#"data-inline-edit-allow-clear="true""#));
         assert!(markup.contains(r#"class="metric-identity-stack""#));
         assert!(markup.contains(r#"class="tag-inline-rename-form metric-description-form""#));
+        assert!(markup.contains(r#"title="Already a KPI for selected frontier" disabled"#));
+        assert!(markup.contains(r#"title="Promote metric to KPI""#));
+        assert!(markup.contains(r#"class="inline-icon-button promote-icon-button""#));
+        assert!(markup.contains(r#"d="M6.5 14.5 12 9l5.5 5.5""#));
     }
 
     fn test_frontier() -> FrontierRecord {
@@ -1309,6 +1340,8 @@ mod tests {
         assert!(
             markup.contains(r#"class="metric-kind-chip" title="Synthetic metric">SYNTH</span>"#)
         );
+        assert!(markup.contains(r#"title="Demote KPI metric""#));
+        assert!(markup.contains(r#"d="M6.5 9.5 12 15l5.5-5.5""#));
         assert!(!markup.contains("<th>Shape</th>"));
         assert!(!markup.contains("<th>Reference Lines</th>"));
     }
