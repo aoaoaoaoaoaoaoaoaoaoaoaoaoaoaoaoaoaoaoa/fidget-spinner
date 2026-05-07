@@ -6,8 +6,9 @@ use super::{
     NavigatorState, NonEmptyText, PreEscaped, ProjectIndexItem, ProjectMetricsQuery,
     ProjectRenderContext, ProjectStatus, RegistryLockMode, RegistryName, StoreError, TagName,
     TagUsage, arrow_down_icon, arrow_up_icon, format_metric_value, format_timestamp, frontier_href,
-    frontier_results_href, frontier_status_class, html, limit_items, load_shell_frame, open_store,
-    pencil_icon, plus_icon, project_root_href, render_fact, render_kv, status_chip_classes,
+    frontier_results_href, frontier_status_class, html, limit_items, load_shell_frame,
+    metric_choice_detail, open_store, pencil_icon, plus_icon, project_root_href, render_fact,
+    render_kv, render_metric_choice_option, render_metric_kind_chip, status_chip_classes,
     trash_icon,
 };
 
@@ -536,17 +537,12 @@ fn render_metric_operand_select(
     required: bool,
 ) -> Markup {
     html! {
-        select.compact-select.wide-compact-select name=(name) aria-label=(label) required[required] {
+        select.compact-select.wide-compact-select name=(name) aria-label=(label) required[required] data-metric-choice-select="true" {
             @if !required {
                 option value="" { "optional" }
             }
             @for metric in metrics {
-                option value=(metric.key.as_str()) {
-                    @if is_synthetic_metric(metric) {
-                        "SYNTH · "
-                    }
-                    (metric.key) " · " (metric.dimension.to_string())
-                }
+                (render_metric_choice_option(metric))
             }
         }
     }
@@ -640,12 +636,10 @@ fn render_create_kpi_form(
     html! {
         form.tag-create-form method="post" action="metrics/kpi" data-preserve-viewport="true" {
             input type="hidden" name="frontier" value=(frontier.slug.as_str());
-            select.compact-select.wide-compact-select name="metric" aria-label="Metric to promote" required {
+            select.compact-select.wide-compact-select name="metric" aria-label="Metric to promote" required data-metric-choice-select="true" {
                 @if has_candidates {
                     @for metric in candidates {
-                        option value=(metric.key.as_str()) {
-                            (metric.key) " · " (metric.objective.as_str()) " · " (metric.display_unit.label())
-                        }
+                        (render_metric_choice_option(metric))
                     }
                 } @else {
                     option value="" { "all metrics are KPIs" }
@@ -701,9 +695,7 @@ pub(super) fn render_kpi_registry(frontier: &FrontierSummary, kpis: &[KpiSummary
                                 td.kpi-metric-cell {
                                     div.kpi-metric-stack {
                                         div.metric-name-row {
-                                            @if is_synthetic_metric(&kpi.metric) {
-                                                span.metric-kind-chip title="Synthetic metric" { "SYNTH" }
-                                            }
+                                            (render_metric_kind_chip(&kpi.metric))
                                             span.tag-chip { (kpi.metric.key) }
                                         }
                                     @if let Some(description) = kpi.metric.description.as_ref() {
@@ -814,7 +806,7 @@ pub(super) fn render_metric_registry_table(
                 div.table-scroll {
                     datalist id="metric-merge-targets" {
                         @for target in metrics {
-                            option value=(target.key.as_str()) {}
+                            option value=(target.key.as_str()) title=(metric_choice_detail(target)) {}
                         }
                     }
                     table.metric-table {
@@ -850,9 +842,7 @@ pub(super) fn render_metric_registry_table(
                                     td.no-truncate {
                                         div.metric-identity-stack {
                                             div.metric-name-row {
-                                                @if is_synthetic_metric(metric) {
-                                                    span.metric-kind-chip title="Synthetic metric" { "SYNTH" }
-                                                }
+                                                (render_metric_kind_chip(metric))
                                                 span class=(format!("metric-objective-chip metric-objective-{}", metric.objective.as_str()))
                                                     title=(metric.objective.as_str()) {
                                                     (metric_objective_chip_label(metric.objective.as_str()))
@@ -929,10 +919,6 @@ fn metric_objective_chip_label(objective: &str) -> &'static str {
         "target" => "TGT",
         _ => "OBJ",
     }
-}
-
-fn is_synthetic_metric(metric: &fidget_spinner_store_sqlite::MetricKeySummary) -> bool {
-    metric.kind.as_str() == "synthetic"
 }
 
 fn render_frontier_grid(frontiers: &[FrontierSummary], limit: Option<u32>) -> Markup {

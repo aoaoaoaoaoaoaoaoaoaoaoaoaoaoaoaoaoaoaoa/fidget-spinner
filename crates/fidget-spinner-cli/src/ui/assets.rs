@@ -460,6 +460,26 @@ function applyAllTableFilters() {{
     }}
 }}
 
+function syncMetricChoiceSelectTitle(select) {{
+    const option = select.selectedOptions && select.selectedOptions[0];
+    const detail = option instanceof HTMLOptionElement
+        ? option.dataset.metricChoiceDetail || option.title
+        : "";
+    if (detail) {{
+        select.title = detail;
+    }} else {{
+        select.removeAttribute("title");
+    }}
+}}
+
+function syncAllMetricChoiceSelectTitles() {{
+    for (const select of document.querySelectorAll("select[data-metric-choice-select]")) {{
+        if (select instanceof HTMLSelectElement) {{
+            syncMetricChoiceSelectTitle(select);
+        }}
+    }}
+}}
+
 window.setInterval(pollRefreshToken, AUTO_REFRESH_INTERVAL_MS);
 window.addEventListener("focus", pollRefreshToken);
 document.addEventListener("visibilitychange", () => {{
@@ -469,6 +489,7 @@ document.addEventListener("visibilitychange", () => {{
 }});
 pollRefreshToken();
 applyAllTableFilters();
+syncAllMetricChoiceSelectTitles();
 
 document.addEventListener("click", (event) => {{
     const target = event.target;
@@ -575,6 +596,9 @@ document.addEventListener("change", (event) => {{
     const target = event.target;
     if (!(target instanceof HTMLElement)) {{
         return;
+    }}
+    if (target instanceof HTMLSelectElement && target.hasAttribute("data-metric-choice-select")) {{
+        syncMetricChoiceSelectTitle(target);
     }}
     if (!target.hasAttribute("data-auto-submit")) {{
         return;

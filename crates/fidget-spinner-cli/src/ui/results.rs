@@ -13,8 +13,9 @@ use super::{
     MetricKeysQuery, MetricQuantity, MetricScope, NonEmptyText, PathElement, PreEscaped, RGBColor,
     SVGBackend, SeriesLabelPosition, ShapeStyle, Slug, StoreError, Text, experiment_href,
     format_metric_value, format_timestamp, frontier_href, frontier_tab_href_with_query, html,
-    hypothesis_href, limit_items, project_metrics_frontier_href, render_dimension_value,
-    render_hypothesis_meta_chips, status_chip_classes, verdict_class,
+    hypothesis_href, limit_items, metric_choice_detail, project_metrics_frontier_href,
+    render_dimension_value, render_hypothesis_meta_chips, render_metric_kind_chip,
+    status_chip_classes, verdict_class,
 };
 use plotters::coord::combinators::LogCoord;
 use plotters::coord::ranged1d::{LightPoints, Ranged};
@@ -678,11 +679,7 @@ fn render_metric_picker_option(
         .iter()
         .any(|selected_metric| selected_metric.key == metric.key);
     let compatible = selected_families.supports(&metric.dimension);
-    let detail = format!(
-        "{} · {}",
-        metric.objective.as_str(),
-        metric.display_unit.label()
-    );
+    let detail = metric_choice_detail(metric);
     if compatible || selected {
         html! {
             label class={(if selected {
@@ -692,9 +689,7 @@ fn render_metric_picker_option(
             })} title=(detail) {
                 input type="checkbox" data-auto-submit="true" name="metric" value=(metric.key.as_str()) checked[selected];
                 span.metric-checkbox-copy {
-                    @if metric.kind.as_str() == "synthetic" {
-                        span.metric-kind-chip title="Synthetic metric" { "SYNTH" }
-                    }
+                    (render_metric_kind_chip(metric))
                     span.metric-checkbox-title { (&metric.key) }
                 }
             }
@@ -712,9 +707,7 @@ fn render_metric_picker_option(
         html! {
             a.metric-checkbox-row.incompatible href=(href) data-preserve-viewport="true" title=(format!("{detail} · click to switch metric family")) {
                 span.metric-checkbox-copy {
-                    @if metric.kind.as_str() == "synthetic" {
-                        span.metric-kind-chip title="Synthetic metric" { "SYNTH" }
-                    }
+                    (render_metric_kind_chip(metric))
                     span.metric-checkbox-title { (&metric.key) }
                 }
             }

@@ -23,10 +23,11 @@ use fidget_spinner_store_sqlite::{
     DeleteTagRequest, ExperimentDetail, ExperimentSummary, FrontierMetricSeries,
     FrontierOpenProjection, FrontierSummary, HypothesisCurrentState, HypothesisDetail, KpiSummary,
     ListExperimentsQuery, ListFrontiersQuery, ListHypothesesQuery, MergeMetricRequest,
-    MergeTagRequest, MetricKeysQuery, MetricScope, MoveKpiDirection, MoveKpiRequest, ProjectStatus,
-    RenameMetricRequest, RenameTagRequest, STATE_DB_NAME, SetFrontierRegistryLockRequest,
-    SetKpiReferenceRequest, SetRegistryLockRequest, SetTagFamilyMandatoryRequest, StoreError,
-    TextPatch, UpdateFrontierRequest, UpdateProjectRequest, VertexSummary,
+    MergeTagRequest, MetricKeySummary, MetricKeysQuery, MetricScope, MoveKpiDirection,
+    MoveKpiRequest, ProjectStatus, RenameMetricRequest, RenameTagRequest, STATE_DB_NAME,
+    SetFrontierRegistryLockRequest, SetKpiReferenceRequest, SetRegistryLockRequest,
+    SetTagFamilyMandatoryRequest, StoreError, TextPatch, UpdateFrontierRequest,
+    UpdateProjectRequest, VertexSummary,
 };
 use maud::{DOCTYPE, Markup, PreEscaped, html};
 use percent_encoding::{NON_ALPHANUMERIC, percent_decode_str, utf8_percent_encode};
@@ -903,10 +904,65 @@ fn project_metrics_frontier_href(slug: &Slug) -> String {
     format!("metrics?frontier={}", encode_path_segment(slug.as_str()))
 }
 
+struct MetricChoicePresentation<'a> {
+    metric: &'a MetricKeySummary,
+}
+
+impl<'a> MetricChoicePresentation<'a> {
+    const fn new(metric: &'a MetricKeySummary) -> Self {
+        Self { metric }
+    }
+
+    fn value(&self) -> &'a str {
+        self.metric.key.as_str()
+    }
+
+    fn label(&self) -> &'a NonEmptyText {
+        &self.metric.key
+    }
+
+    fn detail(&self) -> String {
+        format!(
+            "{} · {} · {} · {} · {}",
+            self.metric.kind.as_str(),
+            self.metric.objective.as_str(),
+            self.metric.dimension,
+            self.metric.display_unit.label(),
+            self.metric.aggregation.as_str()
+        )
+    }
+}
+
+fn metric_choice_detail(metric: &MetricKeySummary) -> String {
+    MetricChoicePresentation::new(metric).detail()
+}
+
+fn metric_is_synthetic(metric: &MetricKeySummary) -> bool {
+    metric.kind.as_str() == "synthetic"
+}
+
+fn render_metric_choice_option(metric: &MetricKeySummary) -> Markup {
+    let choice = MetricChoicePresentation::new(metric);
+    let detail = choice.detail();
+    html! {
+        option value=(choice.value()) title=(&detail) data-metric-choice-detail=(&detail) {
+            (choice.label())
+        }
+    }
+}
+
+fn render_metric_kind_chip(metric: &MetricKeySummary) -> Markup {
+    html! {
+        @if metric_is_synthetic(metric) {
+            span.metric-kind-chip title="Synthetic metric" { "SYNTH" }
+        }
+    }
+}
+
 fn frontier_tab_href(
     slug: &Slug,
     tab: FrontierTab,
-    selected_metrics: &[fidget_spinner_store_sqlite::MetricKeySummary],
+    selected_metrics: &[MetricKeySummary],
     log_scales: MetricAxisLogScales,
     table_metric: Option<&str>,
 ) -> String {
@@ -923,7 +979,7 @@ fn frontier_tab_href(
 fn frontier_tab_href_with_query(
     slug: &Slug,
     tab: FrontierTab,
-    selected_metrics: &[fidget_spinner_store_sqlite::MetricKeySummary],
+    selected_metrics: &[MetricKeySummary],
     log_scales: MetricAxisLogScales,
     condition_filters: &BTreeMap<String, String>,
     table_metric: Option<&str>,
@@ -1171,7 +1227,12 @@ mod tests {
         assert!(
             markup.contains(r#"class="metric-kind-chip" title="Synthetic metric">SYNTH</span>"#)
         );
-        assert!(markup.contains("SYNTH · presolve_wallclock_per_row"));
+        assert!(markup.contains(r#"data-metric-choice-select="true""#));
+        assert!(markup.contains(r#"title="synthetic · minimize · time · milliseconds · point""#));
+        assert!(markup.contains(
+            r#"<option value="presolve_wallclock_per_row" title="synthetic · minimize · time · milliseconds · point" data-metric-choice-detail="synthetic · minimize · time · milliseconds · point">presolve_wallclock_per_row</option>"#
+        ));
+        assert!(!markup.contains("SYNTH · presolve_wallclock_per_row"));
         assert!(!markup.contains(">BASE</span>"));
         assert!(markup.contains(">MIN</span>"));
         assert!(markup.contains(r#"<td class="no-truncate">time</td>"#));
