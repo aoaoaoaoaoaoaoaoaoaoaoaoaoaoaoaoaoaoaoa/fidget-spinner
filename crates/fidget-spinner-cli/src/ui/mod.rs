@@ -1255,6 +1255,10 @@ mod tests {
             markup.contains(r#"class="metric-kind-chip" title="Synthetic metric">SYNTH</span>"#)
         );
         assert!(markup.contains(r#"data-metric-choice-select="true""#));
+        assert!(markup.contains(r#"data-synthetic-operation-select="true""#));
+        assert!(markup.contains(r#"data-synthetic-gmean-extra="true""#));
+        assert!(markup.contains(">Extra gmean term 3</option>"));
+        assert!(!markup.contains(">optional</option>"));
         assert!(markup.contains(r#"title="synthetic · minimize · time · milliseconds · point""#));
         assert!(markup.contains(
             r#"<option value="presolve_wallclock_per_row" title="synthetic · minimize · time · milliseconds · point" data-metric-choice-detail="synthetic · minimize · time · milliseconds · point">presolve_wallclock_per_row</option>"#

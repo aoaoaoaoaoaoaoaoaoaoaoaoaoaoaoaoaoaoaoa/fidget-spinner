@@ -1417,8 +1417,9 @@ impl ProjectStore {
         &mut self,
         request: DefineMetricRequest,
     ) -> Result<MetricDefinition, StoreError> {
-        if self.metric_definition(&request.key)?.is_some() {
-            return Err(StoreError::DuplicateMetricDefinition(request.key));
+        let key = normalize_metric_definition_key(request.key)?;
+        if self.metric_definition(&key)?.is_some() {
+            return Err(StoreError::DuplicateMetricDefinition(key));
         }
         let display_unit = request
             .display_unit
@@ -1426,14 +1427,14 @@ impl ProjectStore {
         if !request.dimension.supports(display_unit) {
             return Err(StoreError::InvalidInput(format!(
                 "metric `{}` has dimension `{}`; display unit `{}` belongs to `{}`",
-                request.key,
+                key,
                 request.dimension.quantity(),
                 display_unit,
                 display_unit.quantity()
             )));
         }
         let record = MetricDefinition::new(
-            request.key,
+            key,
             request.dimension.quantity(),
             MetricDisplayUnit::Known(display_unit),
             request.aggregation,
@@ -1487,14 +1488,15 @@ impl ProjectStore {
         &mut self,
         request: RenameMetricRequest,
     ) -> Result<MetricDefinition, StoreError> {
-        if self.metric_definition(&request.new_key)?.is_some() {
-            return Err(StoreError::DuplicateMetricDefinition(request.new_key));
+        let new_key = normalize_metric_definition_key(request.new_key)?;
+        if self.metric_definition(&new_key)?.is_some() {
+            return Err(StoreError::DuplicateMetricDefinition(new_key));
         }
         let metric = self
             .metric_definition(&request.metric)?
             .ok_or_else(|| StoreError::UnknownMetricDefinition(request.metric.clone()))?;
         let mut renamed = metric.clone();
-        renamed.key = request.new_key.clone();
+        renamed.key = new_key.clone();
         renamed.revision = renamed.revision.saturating_add(1);
         renamed.updated_at = OffsetDateTime::now_utc();
         let transaction = self.connection.transaction()?;
@@ -1503,12 +1505,9 @@ impl ProjectStore {
             &transaction,
             metric.key.as_str(),
             Some(metric.id),
-            Some(request.new_key.as_str()),
+            Some(new_key.as_str()),
             TagNameDisposition::Renamed,
-            &format!(
-                "metric `{}` was renamed to `{}`",
-                metric.key, request.new_key
-            ),
+            &format!("metric `{}` was renamed to `{}`", metric.key, new_key),
         )?;
         record_event(
             &transaction,
@@ -3190,14 +3189,15 @@ impl ProjectStore {
         &self,
         request: DefineSyntheticMetricRequest,
     ) -> Result<SyntheticMetricPlan, StoreError> {
-        if self.metric_definition(&request.key)?.is_some() {
-            return Err(StoreError::DuplicateMetricDefinition(request.key));
+        let key = normalize_metric_definition_key(request.key)?;
+        if self.metric_definition(&key)?.is_some() {
+            return Err(StoreError::DuplicateMetricDefinition(key));
         }
         let analysis = self.analyze_synthetic_expression(&request.expression)?;
         let quantity = analysis.quantity;
         let display_unit = MetricDisplayUnit::for_quantity(&quantity);
         let mut metric = MetricDefinition::new(
-            request.key,
+            key,
             quantity,
             display_unit,
             request.aggregation,
@@ -7842,6 +7842,12 @@ fn validate_metric_key(key: &NonEmptyText) -> Result<(), StoreError> {
     Ok(())
 }
 
+fn normalize_metric_definition_key(key: NonEmptyText) -> Result<NonEmptyText, StoreError> {
+    let key = NonEmptyText::new(key.as_str().trim().to_owned())?;
+    validate_metric_key(&key)?;
+    Ok(key)
+}
+
 enum Selector {
     Id(Uuid),
     Slug(Slug),
@@ -8483,43 +8489,48 @@ mod tests {
     }
 
     #[test]
-    fn metric_keys_reject_whitespace() -> Result<(), StoreError> {
+    fn metric_keys_trim_boundary_whitespace_and_reject_interior_whitespace()
+    -> Result<(), StoreError> {
         let root = fresh_test_root("metric-key-whitespace")?;
         let mut store = ProjectStore::init(&root, NonEmptyText::new("metric key test")?)?;
         let state_root = store.state_root.clone();
         let unit = MetricUnit::Count;
 
-        let error = match store.define_metric(DefineMetricRequest {
-            key: NonEmptyText::new(" bad_metric")?,
-            dimension: MetricDimension::Count,
-            display_unit: Some(unit),
-            aggregation: MetricAggregation::Point,
-            objective: OptimizationObjective::Minimize,
-            description: None,
-        }) {
-            Ok(_) => {
-                return Err(StoreError::InvalidInput(
-                    "leading whitespace metric key was accepted".to_owned(),
-                ));
-            }
-            Err(error) => error,
-        };
-        assert!(
-            error
-                .to_string()
-                .contains("metric key ` bad_metric` must not contain whitespace")
-        );
-
-        let _ = store.define_metric(DefineMetricRequest {
-            key: NonEmptyText::new("good_metric")?,
+        let observed = store.define_metric(DefineMetricRequest {
+            key: NonEmptyText::new(" observed_metric ")?,
             dimension: MetricDimension::Count,
             display_unit: Some(unit),
             aggregation: MetricAggregation::Point,
             objective: OptimizationObjective::Minimize,
             description: None,
         })?;
+        assert_eq!(observed.key.as_str(), "observed_metric");
+
+        let synthetic = store.define_synthetic_metric(DefineSyntheticMetricRequest {
+            key: NonEmptyText::new(" synthetic_metric ")?,
+            expression: SyntheticMetricExpression::metric(observed.key.clone()),
+            aggregation: MetricAggregation::Point,
+            objective: OptimizationObjective::Minimize,
+            description: None,
+        })?;
+        assert_eq!(synthetic.key.as_str(), "synthetic_metric");
+
+        let rename_source = store.define_metric(DefineMetricRequest {
+            key: NonEmptyText::new("rename_source")?,
+            dimension: MetricDimension::Count,
+            display_unit: Some(unit),
+            aggregation: MetricAggregation::Point,
+            objective: OptimizationObjective::Minimize,
+            description: None,
+        })?;
+        let renamed = store.rename_metric(RenameMetricRequest {
+            metric: rename_source.key,
+            new_key: NonEmptyText::new(" renamed_metric ")?,
+        })?;
+        assert_eq!(renamed.key.as_str(), "renamed_metric");
+
         let error = match store.rename_metric(RenameMetricRequest {
-            metric: NonEmptyText::new("good_metric")?,
+            metric: renamed.key,
             new_key: NonEmptyText::new("bad metric")?,
         }) {
             Ok(_) => {

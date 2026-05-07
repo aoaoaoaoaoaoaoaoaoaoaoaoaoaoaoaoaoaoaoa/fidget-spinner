@@ -480,6 +480,28 @@ function syncAllMetricChoiceSelectTitles() {{
     }}
 }}
 
+function syncSyntheticMetricExtras(form) {{
+    const operation = form.querySelector("select[data-synthetic-operation-select]");
+    if (!(operation instanceof HTMLSelectElement)) {{
+        return;
+    }}
+    const showExtras = operation.value === "gmean";
+    for (const extra of form.querySelectorAll("select[data-synthetic-gmean-extra]")) {{
+        if (extra instanceof HTMLSelectElement) {{
+            extra.hidden = !showExtras;
+        }}
+    }}
+}}
+
+function syncAllSyntheticMetricExtras() {{
+    for (const operation of document.querySelectorAll("select[data-synthetic-operation-select]")) {{
+        const form = operation.closest("form");
+        if (form instanceof HTMLFormElement) {{
+            syncSyntheticMetricExtras(form);
+        }}
+    }}
+}}
+
 window.setInterval(pollRefreshToken, AUTO_REFRESH_INTERVAL_MS);
 window.addEventListener("focus", pollRefreshToken);
 document.addEventListener("visibilitychange", () => {{
@@ -490,6 +512,7 @@ document.addEventListener("visibilitychange", () => {{
 pollRefreshToken();
 applyAllTableFilters();
 syncAllMetricChoiceSelectTitles();
+syncAllSyntheticMetricExtras();
 
 document.addEventListener("click", (event) => {{
     const target = event.target;
@@ -599,6 +622,12 @@ document.addEventListener("change", (event) => {{
     }}
     if (target instanceof HTMLSelectElement && target.hasAttribute("data-metric-choice-select")) {{
         syncMetricChoiceSelectTitle(target);
+    }}
+    if (target instanceof HTMLSelectElement && target.hasAttribute("data-synthetic-operation-select")) {{
+        const form = target.closest("form");
+        if (form instanceof HTMLFormElement) {{
+            syncSyntheticMetricExtras(form);
+        }}
     }}
     if (!target.hasAttribute("data-auto-submit")) {{
         return;

@@ -501,7 +501,7 @@ fn render_create_metric_form(metrics: &[fidget_spinner_store_sqlite::MetricKeySu
                 form.tag-create-form.metric-create-form.synthetic-metric-create-form method="post" action="metrics/synthetic/create" data-preserve-viewport="true" {
                     span.metric-create-label { "Synthetic" }
                     input.compact-input type="text" name="key" placeholder="synthetic_key" aria-label="Synthetic metric key" required;
-                    select.compact-select name="operation" aria-label="Synthetic operation" {
+                    select.compact-select name="operation" aria-label="Synthetic operation" data-synthetic-operation-select="true" {
                         option value="add" { "+" }
                         option value="sub" { "-" }
                         option value="mul" { "*" }
@@ -510,8 +510,8 @@ fn render_create_metric_form(metrics: &[fidget_spinner_store_sqlite::MetricKeySu
                     }
                     (render_metric_operand_select("left", "Left operand", metrics, true))
                     (render_metric_operand_select("right", "Right operand", metrics, true))
-                    (render_metric_operand_select("term_3", "Gmean term 3", metrics, false))
-                    (render_metric_operand_select("term_4", "Gmean term 4", metrics, false))
+                    (render_metric_operand_select("term_3", "Extra gmean term 3", metrics, false))
+                    (render_metric_operand_select("term_4", "Extra gmean term 4", metrics, false))
                     input type="hidden" name="aggregation" value="point";
                     (render_metric_objective_select())
                     input.compact-input.wide-compact-input type="text" name="description" placeholder="synthetic description" aria-label="Synthetic metric description";
@@ -540,14 +540,31 @@ fn render_metric_operand_select(
     metrics: &[fidget_spinner_store_sqlite::MetricKeySummary],
     required: bool,
 ) -> Markup {
+    if required {
+        html! {
+            select.compact-select.wide-compact-select name=(name) aria-label=(label) required data-metric-choice-select="true" {
+                (render_metric_operand_options(None, metrics))
+            }
+        }
+    } else {
+        html! {
+            select.compact-select.wide-compact-select name=(name) aria-label=(label) data-metric-choice-select="true" data-synthetic-gmean-extra="true" title="Only used by the gmean operation." {
+                (render_metric_operand_options(Some(label), metrics))
+            }
+        }
+    }
+}
+
+fn render_metric_operand_options(
+    placeholder: Option<&str>,
+    metrics: &[fidget_spinner_store_sqlite::MetricKeySummary],
+) -> Markup {
     html! {
-        select.compact-select.wide-compact-select name=(name) aria-label=(label) required[required] data-metric-choice-select="true" {
-            @if !required {
-                option value="" { "optional" }
-            }
-            @for metric in metrics {
-                (render_metric_choice_option(metric))
-            }
+        @if let Some(placeholder) = placeholder {
+            option value="" { (placeholder) }
+        }
+        @for metric in metrics {
+            (render_metric_choice_option(metric))
         }
     }
 }
