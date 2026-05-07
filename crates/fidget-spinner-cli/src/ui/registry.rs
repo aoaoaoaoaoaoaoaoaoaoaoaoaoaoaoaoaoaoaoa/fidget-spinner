@@ -542,6 +542,9 @@ fn render_metric_operand_select(
             }
             @for metric in metrics {
                 option value=(metric.key.as_str()) {
+                    @if is_synthetic_metric(metric) {
+                        "SYNTH · "
+                    }
                     (metric.key) " · " (metric.dimension.to_string())
                 }
             }
@@ -697,7 +700,12 @@ pub(super) fn render_kpi_registry(frontier: &FrontierSummary, kpis: &[KpiSummary
                                 }
                                 td.kpi-metric-cell {
                                     div.kpi-metric-stack {
-                                        span.tag-chip { (kpi.metric.key) }
+                                        div.metric-name-row {
+                                            @if is_synthetic_metric(&kpi.metric) {
+                                                span.metric-kind-chip title="Synthetic metric" { "SYNTH" }
+                                            }
+                                            span.tag-chip { (kpi.metric.key) }
+                                        }
                                     @if let Some(description) = kpi.metric.description.as_ref() {
                                             div.kpi-description.muted { (description) }
                                         }
@@ -842,6 +850,9 @@ pub(super) fn render_metric_registry_table(
                                     td.no-truncate {
                                         div.metric-identity-stack {
                                             div.metric-name-row {
+                                                @if is_synthetic_metric(metric) {
+                                                    span.metric-kind-chip title="Synthetic metric" { "SYNTH" }
+                                                }
                                                 span class=(format!("metric-objective-chip metric-objective-{}", metric.objective.as_str()))
                                                     title=(metric.objective.as_str()) {
                                                     (metric_objective_chip_label(metric.objective.as_str()))
@@ -918,6 +929,10 @@ fn metric_objective_chip_label(objective: &str) -> &'static str {
         "target" => "TGT",
         _ => "OBJ",
     }
+}
+
+fn is_synthetic_metric(metric: &fidget_spinner_store_sqlite::MetricKeySummary) -> bool {
+    metric.kind.as_str() == "synthetic"
 }
 
 fn render_frontier_grid(frontiers: &[FrontierSummary], limit: Option<u32>) -> Markup {

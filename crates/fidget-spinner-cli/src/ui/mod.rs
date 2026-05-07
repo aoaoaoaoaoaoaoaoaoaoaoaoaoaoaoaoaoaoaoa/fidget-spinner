@@ -1097,6 +1097,13 @@ mod tests {
         }
     }
 
+    fn test_synthetic_metric(key: &str, unit: &str) -> MetricKeySummary {
+        MetricKeySummary {
+            kind: MetricDefinitionKind::Synthetic,
+            ..test_metric(key, unit)
+        }
+    }
+
     fn test_timestamp(raw: &str) -> OffsetDateTime {
         must(OffsetDateTime::parse(raw, &Rfc3339), "timestamp")
     }
@@ -1143,7 +1150,10 @@ mod tests {
 
     #[test]
     fn metric_registry_table_exposes_reactive_filter_hooks() {
-        let metrics = vec![test_metric("presolve_wallclock", "milliseconds")];
+        let metrics = vec![
+            test_metric("presolve_wallclock", "milliseconds"),
+            test_synthetic_metric("presolve_wallclock_per_row", "milliseconds"),
+        ];
         let markup = render_metric_registry_table(&metrics).into_string();
         let filter_text = metric_registry_filter_text(&metrics[0]);
 
@@ -1158,6 +1168,11 @@ mod tests {
             r#"class="tag-create-form metric-create-form synthetic-metric-create-form""#
         ));
         assert!(markup.contains(r#"class="metric-objective-chip metric-objective-minimize""#));
+        assert!(
+            markup.contains(r#"class="metric-kind-chip" title="Synthetic metric">SYNTH</span>"#)
+        );
+        assert!(markup.contains("SYNTH · presolve_wallclock_per_row"));
+        assert!(!markup.contains(">BASE</span>"));
         assert!(markup.contains(">MIN</span>"));
         assert!(markup.contains(r#"<td class="no-truncate">time</td>"#));
         assert!(markup.contains(r#"action="metrics/description""#));
@@ -1199,7 +1214,7 @@ mod tests {
     #[test]
     fn kpi_registry_renders_references_as_sibling_rows() {
         let frontier = test_frontier_summary();
-        let mut metric = test_metric("post_native_ingress_wallclock", "milliseconds");
+        let mut metric = test_synthetic_metric("post_native_ingress_wallclock", "milliseconds");
         metric.description = Some(must(
             NonEmptyText::new(
                 "Wallclock after native ingress/presolve, computed as total solve elapsed minus native ingress elapsed.".to_owned(),
@@ -1230,6 +1245,9 @@ mod tests {
         assert!(markup.contains(r#"<td class="kpi-reference-lane" colspan="3">"#));
         assert!(markup.contains(r#"<div class="kpi-description muted">"#));
         assert!(markup.contains("highs-owner-4x5"));
+        assert!(
+            markup.contains(r#"class="metric-kind-chip" title="Synthetic metric">SYNTH</span>"#)
+        );
         assert!(!markup.contains("<th>Shape</th>"));
         assert!(!markup.contains("<th>Reference Lines</th>"));
     }

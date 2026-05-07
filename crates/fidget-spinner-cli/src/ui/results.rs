@@ -692,6 +692,9 @@ fn render_metric_picker_option(
             })} title=(detail) {
                 input type="checkbox" data-auto-submit="true" name="metric" value=(metric.key.as_str()) checked[selected];
                 span.metric-checkbox-copy {
+                    @if metric.kind.as_str() == "synthetic" {
+                        span.metric-kind-chip title="Synthetic metric" { "SYNTH" }
+                    }
                     span.metric-checkbox-title { (&metric.key) }
                 }
             }
@@ -709,6 +712,9 @@ fn render_metric_picker_option(
         html! {
             a.metric-checkbox-row.incompatible href=(href) data-preserve-viewport="true" title=(format!("{detail} · click to switch metric family")) {
                 span.metric-checkbox-copy {
+                    @if metric.kind.as_str() == "synthetic" {
+                        span.metric-kind-chip title="Synthetic metric" { "SYNTH" }
+                    }
                     span.metric-checkbox-title { (&metric.key) }
                 }
             }

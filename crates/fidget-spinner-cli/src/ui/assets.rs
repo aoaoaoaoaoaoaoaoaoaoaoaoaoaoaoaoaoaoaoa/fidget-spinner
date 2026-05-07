@@ -925,6 +925,20 @@ pub(super) fn styles() -> &'static str {
     .metric-objective-minimize {
         color: color-mix(in srgb, var(--rejected) 55%, var(--muted));
     }
+    .metric-kind-chip {
+        display: inline-grid;
+        place-items: center;
+        flex: 0 0 auto;
+        height: 20px;
+        padding: 0 5px;
+        border: 1px solid var(--border);
+        background: var(--panel);
+        color: var(--muted);
+        font-size: 10px;
+        font-weight: 700;
+        letter-spacing: 0.06em;
+        white-space: nowrap;
+    }
     .metric-description-form {
         display: grid;
         grid-template-columns: minmax(0, 1fr) auto;
@@ -1691,12 +1705,15 @@ pub(super) fn styles() -> &'static str {
         margin: 0;
     }
     .metric-checkbox-copy {
-        display: block;
+        display: inline-flex;
+        gap: 6px;
+        align-items: center;
         min-width: 0;
     }
     .metric-checkbox-title {
         color: var(--text);
         font-weight: 700;
+        min-width: 0;
         overflow: hidden;
         text-overflow: ellipsis;
         white-space: nowrap;
