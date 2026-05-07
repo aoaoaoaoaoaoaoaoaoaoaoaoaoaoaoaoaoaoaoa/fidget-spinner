@@ -3128,6 +3128,7 @@ impl ProjectStore {
         &self,
         key: &NonEmptyText,
     ) -> Result<Option<MetricDefinition>, StoreError> {
+        validate_metric_key(key)?;
         self.connection
             .query_row(
                 "SELECT id, key, dimension, display_unit, aggregation, objective, description, revision, created_at, updated_at
@@ -7831,6 +7832,16 @@ fn resolve_selector(raw: &str) -> Result<Selector, StoreError> {
     }
 }
 
+fn validate_metric_key(key: &NonEmptyText) -> Result<(), StoreError> {
+    if key.as_str().chars().any(char::is_whitespace) {
+        return Err(StoreError::InvalidInput(format!(
+            "metric key `{}` must not contain whitespace; use underscores",
+            key.as_str().escape_debug()
+        )));
+    }
+    Ok(())
+}
+
 enum Selector {
     Id(Uuid),
     Slug(Slug),
@@ -8467,6 +8478,67 @@ mod tests {
         fs::create_dir_all(nested.as_std_path())?;
 
         assert_eq!(preferred_project_root(&nested)?, root);
+        fs::remove_dir_all(root.as_std_path())?;
+        Ok(())
+    }
+
+    #[test]
+    fn metric_keys_reject_whitespace() -> Result<(), StoreError> {
+        let root = fresh_test_root("metric-key-whitespace")?;
+        let mut store = ProjectStore::init(&root, NonEmptyText::new("metric key test")?)?;
+        let state_root = store.state_root.clone();
+        let unit = MetricUnit::Count;
+
+        let error = match store.define_metric(DefineMetricRequest {
+            key: NonEmptyText::new(" bad_metric")?,
+            dimension: MetricDimension::Count,
+            display_unit: Some(unit),
+            aggregation: MetricAggregation::Point,
+            objective: OptimizationObjective::Minimize,
+            description: None,
+        }) {
+            Ok(_) => {
+                return Err(StoreError::InvalidInput(
+                    "leading whitespace metric key was accepted".to_owned(),
+                ));
+            }
+            Err(error) => error,
+        };
+        assert!(
+            error
+                .to_string()
+                .contains("metric key ` bad_metric` must not contain whitespace")
+        );
+
+        let _ = store.define_metric(DefineMetricRequest {
+            key: NonEmptyText::new("good_metric")?,
+            dimension: MetricDimension::Count,
+            display_unit: Some(unit),
+            aggregation: MetricAggregation::Point,
+            objective: OptimizationObjective::Minimize,
+            description: None,
+        })?;
+        let error = match store.rename_metric(RenameMetricRequest {
+            metric: NonEmptyText::new("good_metric")?,
+            new_key: NonEmptyText::new("bad metric")?,
+        }) {
+            Ok(_) => {
+                return Err(StoreError::InvalidInput(
+                    "interior whitespace metric key was accepted".to_owned(),
+                ));
+            }
+            Err(error) => error,
+        };
+        assert!(
+            error
+                .to_string()
+                .contains("metric key `bad metric` must not contain whitespace")
+        );
+
+        drop(store);
+        if state_root.exists() {
+            fs::remove_dir_all(state_root.as_std_path())?;
+        }
         fs::remove_dir_all(root.as_std_path())?;
         Ok(())
     }
