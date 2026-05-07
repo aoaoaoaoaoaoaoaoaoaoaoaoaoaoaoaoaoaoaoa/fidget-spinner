@@ -1135,6 +1135,7 @@ mod tests {
         assert!(css.contains("overflow-wrap: anywhere"));
         assert!(css.contains(".status-chip {\n        text-transform: uppercase;"));
         assert!(css.contains("white-space: nowrap;\n        overflow-wrap: normal;"));
+        assert!(css.contains(".metric-create-stack {\n        display: grid;"));
         assert!(!css.contains("minmax(320px, 1fr)"));
         assert!(!css.contains("minmax(260px, 1fr)"));
         assert!(!css.contains("overflow-x: hidden;\n    }\n    a"));
@@ -1152,6 +1153,10 @@ mod tests {
         assert_eq!(filter_text, "presolve_wallclock time minimize ");
         assert!(!markup.contains("<th>Shape</th>"));
         assert!(!markup.contains(r#"aria-label="Aggregation""#));
+        assert!(markup.contains(r#"class="tag-create-form metric-create-form""#));
+        assert!(markup.contains(
+            r#"class="tag-create-form metric-create-form synthetic-metric-create-form""#
+        ));
         assert!(markup.contains(r#"class="metric-objective-chip metric-objective-minimize""#));
         assert!(markup.contains(">MIN</span>"));
         assert!(markup.contains(r#"<td class="no-truncate">time</td>"#));

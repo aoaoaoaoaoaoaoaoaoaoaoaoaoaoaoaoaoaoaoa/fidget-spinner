@@ -850,6 +850,27 @@ pub(super) fn styles() -> &'static str {
         flex-wrap: wrap;
         margin: 0;
     }
+    .metric-create-stack {
+        display: grid;
+        gap: 8px;
+        min-width: 0;
+    }
+    .metric-create-form {
+        padding: 7px;
+        border: 1px solid var(--border);
+        background: var(--panel-2);
+    }
+    .synthetic-metric-create-form {
+        background: var(--panel);
+    }
+    .metric-create-label {
+        color: var(--muted);
+        font-size: 11px;
+        font-weight: 700;
+        letter-spacing: 0.05em;
+        text-transform: uppercase;
+        white-space: nowrap;
+    }
     .family-policy-row {
         display: inline-flex;
         gap: 6px;

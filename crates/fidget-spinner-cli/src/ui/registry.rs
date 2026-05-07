@@ -475,7 +475,8 @@ fn render_create_tag_form(families: &[fidget_spinner_core::TagFamilyRecord]) -> 
 fn render_create_metric_form(metrics: &[fidget_spinner_store_sqlite::MetricKeySummary]) -> Markup {
     html! {
         div.metric-create-stack {
-            form.tag-create-form method="post" action="metrics/create" data-preserve-viewport="true" {
+            form.tag-create-form.metric-create-form method="post" action="metrics/create" data-preserve-viewport="true" {
+                span.metric-create-label { "Observed" }
                 input.compact-input type="text" name="key" placeholder="metric_key" aria-label="Metric key" required;
                 select.compact-select name="dimension" aria-label="Metric dimension" {
                     option value="time" { "time" }
@@ -492,7 +493,8 @@ fn render_create_metric_form(metrics: &[fidget_spinner_store_sqlite::MetricKeySu
                 }
             }
             @if !metrics.is_empty() {
-                form.tag-create-form method="post" action="metrics/synthetic/create" data-preserve-viewport="true" {
+                form.tag-create-form.metric-create-form.synthetic-metric-create-form method="post" action="metrics/synthetic/create" data-preserve-viewport="true" {
+                    span.metric-create-label { "Synthetic" }
                     input.compact-input type="text" name="key" placeholder="synthetic_key" aria-label="Synthetic metric key" required;
                     select.compact-select name="operation" aria-label="Synthetic operation" {
                         option value="add" { "+" }
