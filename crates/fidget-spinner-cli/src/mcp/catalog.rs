@@ -223,7 +223,7 @@ const TOOL_SPECS: &[ToolSpec] = &[
     },
     ToolSpec {
         name: "kpi.reference.set",
-        description: "Set one named reference line for one frontier KPI metric. The value is normalized through the metric dimension; omitted unit means the metric display unit.",
+        description: "Set one stable comparison/reference line for one frontier KPI metric. Use only for external baselines, rivals, targets, theoretical bounds, or pre-ledger known values. Do not use for experiment observations, running bests, playtest updates, or any material hypothesis-driven result; close an experiment instead.",
         dispatch: DispatchTarget::Worker,
         replay: ReplayContract::NeverReplay,
     },
@@ -740,11 +740,23 @@ fn tool_input_schema(name: &str) -> Value {
             &[
                 ("frontier", selector_schema("Frontier UUID or slug.")),
                 ("kpi", string_schema("KPI metric key or KPI id.")),
-                ("label", string_schema("Reference line label.")),
-                ("value", number_schema("Reference value.")),
+                (
+                    "label",
+                    string_schema(
+                        "Stable comparison-line label, such as an external baseline, rival, target, theoretical bound, or pre-ledger known value. Reusing a label overwrites that same comparison line.",
+                    ),
+                ),
+                (
+                    "value",
+                    number_schema(
+                        "Reference-line value. This is not an experiment observation; report fresh KPI measurements through experiment.close.",
+                    ),
+                ),
                 (
                     "unit",
-                    string_schema("Optional metric unit. Omit to use the metric display unit."),
+                    string_schema(
+                        "Optional metric unit for the reference line. Omit to use the metric display unit.",
+                    ),
                 ),
             ],
             &["frontier", "kpi", "label", "value"],

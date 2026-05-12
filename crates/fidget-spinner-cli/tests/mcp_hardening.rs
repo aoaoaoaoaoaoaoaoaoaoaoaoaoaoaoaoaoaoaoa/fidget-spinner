@@ -1208,6 +1208,9 @@ fn kpi_references_are_mcp_settable_normalized_and_queryable() -> TestResult {
         }),
     )?;
     assert_tool_ok(&set);
+    let set_text = must_some(tool_text(&set), "reference set text")?;
+    assert!(set_text.contains("comparison only"));
+    assert!(set_text.contains("experiment.close"));
     assert_eq!(
         tool_content(&set)["record"]["label"].as_str(),
         Some("rival")

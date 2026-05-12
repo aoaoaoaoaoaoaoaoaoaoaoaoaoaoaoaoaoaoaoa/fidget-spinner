@@ -1887,7 +1887,7 @@ fn kpi_reference_record_output(
     projected_tool_output(
         &projection,
         format!(
-            "{} = {} {}",
+            "reference line set: {} = {} {} (comparison only; put fresh hypothesis-driven measurements in experiment.close)",
             reference.label,
             reference.value,
             reference.display_unit.label()

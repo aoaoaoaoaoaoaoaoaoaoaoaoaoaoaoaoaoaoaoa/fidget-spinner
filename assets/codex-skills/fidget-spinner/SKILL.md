@@ -50,6 +50,9 @@ If you need more context, pull it from:
 - every experiment has one mandatory owning hypothesis
 - experiments and hypotheses may also cite other hypotheses or experiments as influence parents
 - the frontier brief is the one sanctioned freeform overview
+- the operator’s main view of progress is the closed-experiment record; material
+  hypothesis-driven observations must be preserved by closing experiments, not
+  by updating references, briefs, or other ambient surfaces
 - token austerity matters more than convenience dumps
 
 ## Choose The Cheapest Tool
@@ -64,11 +67,11 @@ If you need more context, pull it from:
 - `experiment.open` once a hypothesis has a concrete KPI-relevant slice and is ready to be tested
 - `experiment.list` or `experiment.read` when resuming a session and you need to recover open or recently closed state
 - `experiment.update` while the experiment is still live and its summary, tags, or influence parents need refinement
-- `experiment.close` only for an already-open experiment and only when you have measured result, verdict, and rationale; it requires a clean git worktree and records `HEAD` automatically, anchoring to `command.working_directory` when provided, so make a fast commit in the actual implementation worktree first and attach `analysis` only when the result needs interpretation beyond the rationale
+- `experiment.close` only for an already-open experiment and only when you have measured result, verdict, and rationale; this is the canonical way to put material hypothesis-driven evidence into the operator-visible record. It requires a clean git worktree and records `HEAD` automatically, anchoring to `command.working_directory` when provided, so make a fast commit in the actual implementation worktree first and attach `analysis` only when the result needs interpretation beyond the rationale
 - `experiment.nearest` when you need the nearest accepted, kept, rejected, or champion comparator for one structural slice
 - `metric.define` when a project-level observed metric key needs a dimension, objective, aggregation, or description; use `display_unit` only as presentation, and keep the key focused on the measured concept rather than the unit. Synthetic metrics are supervisor-defined only: you may query them through `metric.keys`, `metric.best`, `kpi.best`, Results, and frontier SQL, but you must report their observed leaf metrics rather than reporting the synthetic key itself
 - `kpi.create` before `hypothesis.record` on a new frontier, promoting one existing metric into a frontier KPI; supervisor locks may reject KPI creation, and there is intentionally no bulk KPI mutation tool
-- `kpi.reference.set` when you have gathered a named baseline, rival, target, or theoretical bound for an existing frontier KPI; set one reference at a time with `frontier`, `kpi`, `label`, `value`, and optional `unit` so Results can draw the horizontal comparison line. Use `kpi.reference.list` to inspect current reference lines and `kpi.reference.delete` only to remove an obsolete line
+- `kpi.reference.set` only for stable comparison lines: an external baseline, rival, target, theoretical bound, or pre-ledger known value for an existing frontier KPI. It is not an experiment-result ingestion tool, not a running best value, and not a place to update after each playtest or benchmark run. Fresh measurements and any material update to a hypothesis belong in `experiment.close`, attached to the owning hypothesis and conditions. Reusing a reference label overwrites that reference line; use `kpi.reference.delete` only to remove an obsolete comparison line
 - `kpi.list` or `metric.keys --scope kpi` before guessing which mandatory frontier metrics define the real hill; `kpi.list` includes named reference lines
 - `kpi.best` when you need the frontier ranking for one KPI metric
 - `metric.keys --scope live` before guessing which numeric signals matter now
@@ -120,16 +123,20 @@ If you need more context, pull it from:
 10. Experiments are the scientific record for KPI-directed work. If a KPI-relevant
     fact matters later, it should usually live in a closed experiment outcome
     rather than in freeform text.
-11. Spinner records the closing commit hash as a recoverability anchor, not as experiment identity.
-12. If you reprioritize a hypothesis, update `expected_yield` and/or
+11. The operator primarily reviews progress through closed experiments. If a new
+    result changes what you believe about a hypothesis, close an experiment with
+    that result; do not substitute KPI references, frontier brief edits, or
+    metric-best lookups for the experimental record.
+12. Spinner records the closing commit hash as a recoverability anchor, not as experiment identity.
+13. If you reprioritize a hypothesis, update `expected_yield` and/or
     `confidence` instead of trying to smuggle the new stance into prose alone.
-13. If you run into an obviously stale hypothesis, retire it; stale cleanup is
+14. If you run into an obviously stale hypothesis, retire it; stale cleanup is
     healthy and does not invalidate the experiments it once organized.
-14. Porcelain is the terse triage surface. Use `detail=full` only when concise
+15. Porcelain is the terse triage surface. Use `detail=full` only when concise
     output stops being decision-sufficient.
-15. Raw SQL is an escape hatch for trusted, advanced frontier-local inspection,
+16. Raw SQL is an escape hatch for trusted, advanced frontier-local inspection,
     not a second write API. Start with `frontier.query.schema`, query only the
     stable `q_*` views, keep result sets narrow, and never expect physical table
     names or cross-frontier data to exist.
-16. When the task becomes a true indefinite optimization push, pair this skill
+17. When the task becomes a true indefinite optimization push, pair this skill
     with `frontier-loop`.

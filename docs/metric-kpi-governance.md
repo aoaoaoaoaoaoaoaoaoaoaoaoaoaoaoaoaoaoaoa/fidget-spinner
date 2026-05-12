@@ -82,6 +82,12 @@ horizontal comparison line.
 
 Use it for baselines, rivals, targets, or theoretical bounds.
 
+Do not use references as experiment observations, running bests, or a scratchpad
+for new benchmark/playtest measurements. The operator’s primary progress view is
+the closed-experiment record. Any material hypothesis-driven result must enter
+that record through `experiment.close`, with its conditions, metric values,
+verdict, rationale, and owning hypothesis.
+
 ## MCP
 
 Model-facing tools:
