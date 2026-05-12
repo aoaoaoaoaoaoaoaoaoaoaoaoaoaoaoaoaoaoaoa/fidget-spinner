@@ -464,17 +464,21 @@ fn resolve_project_context(
     encoded_project_root: &str,
 ) -> Result<ProjectRenderContext, StoreError> {
     let project_root = decode_project_root(encoded_project_root)?;
-    match &state.scope {
-        NavigatorScope::Single(expected_root) if expected_root == &project_root => {}
-        NavigatorScope::Single(_) => {
-            return Err(StoreError::MissingProjectStore(project_root));
-        }
-        NavigatorScope::Multi { project_roots, .. } if project_roots.contains(&project_root) => {}
-        NavigatorScope::Multi { .. } => {
-            return Err(StoreError::MissingProjectStore(project_root));
-        }
+    if project_root_is_in_scope(state, &project_root) {
+        return Ok(ProjectRenderContext::nested(project_root, state.limit));
     }
-    Ok(ProjectRenderContext::nested(project_root, state.limit))
+    let store = open_store(project_root.as_std_path())?;
+    Ok(ProjectRenderContext::nested(
+        store.status()?.project_root,
+        state.limit,
+    ))
+}
+
+fn project_root_is_in_scope(state: &NavigatorState, project_root: &Utf8PathBuf) -> bool {
+    match &state.scope {
+        NavigatorScope::Single(expected_root) => expected_root == project_root,
+        NavigatorScope::Multi { project_roots, .. } => project_roots.contains(project_root),
+    }
 }
 
 fn project_refresh_token_for(context: &ProjectRenderContext) -> Result<String, StoreError> {
@@ -1130,8 +1134,12 @@ mod tests {
     };
     use super::{
         FrontierPageQuery, FrontierTab, METRIC_TABLE_TITLE_MIN_BUDGET_CH, MetricAxisLogScales,
+        NavigatorScope, NavigatorState, Utf8PathBuf, encode_path_segment, resolve_project_context,
     };
-    use std::collections::BTreeMap;
+    use std::collections::{BTreeMap, BTreeSet};
+    use std::error::Error;
+    use std::fs;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     use fidget_spinner_core::{
         DefaultVisibility, ExperimentStatus, FrontierBrief, FrontierId, FrontierRecord,
@@ -1141,7 +1149,7 @@ mod tests {
     };
     use fidget_spinner_store_sqlite::{
         ExperimentSummary, FrontierMetricPoint, FrontierMetricSeries, FrontierSummary,
-        HypothesisSummary, KpiReferenceSummary, KpiSummary, MetricKeySummary,
+        HypothesisSummary, KpiReferenceSummary, KpiSummary, MetricKeySummary, ProjectStore,
     };
     use time::OffsetDateTime;
     use time::format_description::well_known::Rfc3339;
@@ -1152,6 +1160,18 @@ mod tests {
             Ok(value) => value,
             Err(error) => panic!("{context}: {error}"),
         }
+    }
+
+    fn fresh_temp_root(label: &str) -> Result<Utf8PathBuf, Box<dyn Error>> {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |duration| duration.as_nanos());
+        let root = std::env::temp_dir().join(format!(
+            "fidget-spinner-ui-{label}-{}-{nanos}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&root)?;
+        Ok(Utf8PathBuf::from(root.to_string_lossy().into_owned()))
     }
 
     fn test_metric(key: &str, unit: &str) -> MetricKeySummary {
@@ -1167,6 +1187,28 @@ mod tests {
             description: None,
             reference_count: 0,
         }
+    }
+
+    #[test]
+    fn explicit_initialized_project_url_escapes_scan_root() -> Result<(), Box<dyn Error>> {
+        let scan_root = fresh_temp_root("scan-root")?;
+        let project_root = fresh_temp_root("outside-project")?;
+        drop(ProjectStore::init(
+            &project_root,
+            NonEmptyText::new("Outside".to_owned())?,
+        )?);
+        let state = NavigatorState {
+            scope: NavigatorScope::Multi {
+                scan_root,
+                project_roots: BTreeSet::new(),
+            },
+            limit: None,
+        };
+
+        let context = resolve_project_context(&state, &encode_path_segment(project_root.as_str()))?;
+
+        assert_eq!(context.project_root, project_root);
+        Ok(())
     }
 
     fn test_synthetic_metric(key: &str, unit: &str) -> MetricKeySummary {
