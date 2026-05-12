@@ -4,7 +4,6 @@ mod ui;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
-use std::io;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 
@@ -670,8 +669,6 @@ struct McpWorkerArgs {
 
 #[derive(Args)]
 struct UiServeArgs {
-    #[arg(long, default_value = ".")]
-    path: PathBuf,
     #[arg(long, default_value = "127.0.0.1:8913")]
     bind: SocketAddr,
     #[arg(long)]
@@ -1248,8 +1245,7 @@ fn run_skill_install(args: SkillInstallArgs) -> Result<(), StoreError> {
 }
 
 fn run_ui_serve(args: UiServeArgs) -> Result<(), StoreError> {
-    let scope = resolve_ui_scope(&utf8_path(args.path))?;
-    ui::serve(scope, args.bind, args.limit)
+    ui::serve(args.bind, args.limit)
 }
 
 fn resolve_bundled_skill(
@@ -1280,21 +1276,6 @@ pub(crate) fn open_store(path: &Path) -> Result<ProjectStore, StoreError> {
     ProjectStore::open(utf8_path(path.to_path_buf()))
 }
 
-pub(crate) fn resolve_ui_scope(path: &Utf8Path) -> Result<ui::NavigatorScope, StoreError> {
-    if let Some(project_root) = fidget_spinner_store_sqlite::discover_project_root(path)? {
-        return Ok(ui::NavigatorScope::Single(project_root));
-    }
-    let scan_root = binding_bootstrap_root(path)?;
-    let candidates = discover_descendant_project_roots(path)?;
-    match candidates.len() {
-        0 => Err(StoreError::MissingProjectStore(path.to_path_buf())),
-        _ => Ok(ui::NavigatorScope::Multi {
-            scan_root,
-            project_roots: candidates,
-        }),
-    }
-}
-
 pub(crate) fn open_or_init_store_for_binding(path: &Path) -> Result<ProjectStore, StoreError> {
     let requested_root = utf8_path(path.to_path_buf());
     let project_root = if let Some(project_root) =
@@ -1315,61 +1296,6 @@ pub(crate) fn open_or_init_store_for_binding(path: &Path) -> Result<ProjectStore
 
 pub(crate) fn utf8_path(path: impl Into<PathBuf>) -> Utf8PathBuf {
     Utf8PathBuf::from(path.into().to_string_lossy().into_owned())
-}
-
-fn binding_bootstrap_root(path: &Utf8Path) -> Result<Utf8PathBuf, StoreError> {
-    if matches!(
-        path.file_name(),
-        Some(fidget_spinner_store_sqlite::STORE_DIR_NAME)
-            | Some(fidget_spinner_store_sqlite::GIT_DIR_NAME)
-    ) {
-        return Ok(path
-            .parent()
-            .map_or_else(|| path.to_path_buf(), Utf8Path::to_path_buf));
-    }
-    match fs::metadata(path.as_std_path()) {
-        Ok(metadata) if metadata.is_file() => Ok(path
-            .parent()
-            .map_or_else(|| path.to_path_buf(), Utf8Path::to_path_buf)),
-        Ok(_) => Ok(path.to_path_buf()),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(path.to_path_buf()),
-        Err(error) => Err(StoreError::from(error)),
-    }
-}
-
-fn discover_descendant_project_roots(path: &Utf8Path) -> Result<BTreeSet<Utf8PathBuf>, StoreError> {
-    let start = binding_bootstrap_root(path)?;
-    let mut candidates = BTreeSet::new();
-    collect_descendant_project_roots(&start, &mut candidates)?;
-    Ok(candidates)
-}
-
-fn collect_descendant_project_roots(
-    path: &Utf8Path,
-    candidates: &mut BTreeSet<Utf8PathBuf>,
-) -> Result<(), StoreError> {
-    let metadata = match fs::metadata(path.as_std_path()) {
-        Ok(metadata) => metadata,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
-        Err(error) => return Err(StoreError::from(error)),
-    };
-    if metadata.is_file() {
-        return Ok(());
-    }
-    if let Some(project_root) = fidget_spinner_store_sqlite::discover_project_root(path)? {
-        let _ = candidates.insert(project_root);
-        return Ok(());
-    }
-    for entry in fs::read_dir(path.as_std_path())? {
-        let entry = entry?;
-        let entry_type = entry.file_type()?;
-        if !entry_type.is_dir() {
-            continue;
-        }
-        let child = utf8_path(entry.path());
-        collect_descendant_project_roots(&child, candidates)?;
-    }
-    Ok(())
 }
 
 fn default_display_name_for_root(project_root: &Utf8Path) -> Result<NonEmptyText, StoreError> {
@@ -1655,11 +1581,31 @@ impl From<CliExperimentStatus> for ExperimentStatus {
 #[cfg(test)]
 mod tests {
     use std::error::Error;
+    use std::sync::OnceLock;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use super::*;
 
+    static TEST_STATE_HOME: OnceLock<Result<Utf8PathBuf, String>> = OnceLock::new();
+
+    fn ensure_test_state_home() -> Result<(), Box<dyn Error>> {
+        let state_home = TEST_STATE_HOME
+            .get_or_init(|| {
+                let root = std::env::temp_dir()
+                    .join(format!("fidget-spinner-cli-state-{}", std::process::id()));
+                fs::create_dir_all(&root)
+                    .map_err(|error| error.to_string())
+                    .map(|()| utf8_path(root))
+            })
+            .as_ref()
+            .map_err(|error| error.clone())?
+            .clone();
+        fidget_spinner_store_sqlite::install_state_home_override(state_home)?;
+        Ok(())
+    }
+
     fn fresh_temp_root(label: &str) -> Result<Utf8PathBuf, Box<dyn Error>> {
+        ensure_test_state_home()?;
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_or(0, |duration| duration.as_nanos());
@@ -1672,48 +1618,17 @@ mod tests {
     }
 
     #[test]
-    fn scan_root_with_single_descendant_project_stays_multi() -> Result<(), Box<dyn Error>> {
-        let root = fresh_temp_root("ui-scope-single-descendant")?;
-        let project_root = root.join("alpha");
-        drop(ProjectStore::init(
-            &project_root,
-            NonEmptyText::new("Alpha".to_owned())?,
-        )?);
+    fn project_binding_initializes_the_preferred_git_root() -> Result<(), Box<dyn Error>> {
+        let project_root = fresh_temp_root("project-binding")?;
+        fs::create_dir_all(project_root.join(".git"))?;
+        fs::write(
+            project_root.join(".git").join("HEAD"),
+            b"ref: refs/heads/main\n",
+        )?;
 
-        let scope = resolve_ui_scope(&root)?;
-        match scope {
-            ui::NavigatorScope::Multi {
-                scan_root,
-                project_roots,
-            } => {
-                assert_eq!(scan_root, root);
-                assert_eq!(project_roots, BTreeSet::from([project_root]));
-                Ok(())
-            }
-            ui::NavigatorScope::Single(project_root) => Err(format!(
-                "expected multi-project scan root, got single project {project_root}"
-            )
-            .into()),
-        }
-    }
+        let store = open_or_init_store_for_binding(project_root.as_std_path())?;
 
-    #[test]
-    fn explicit_project_root_stays_single() -> Result<(), Box<dyn Error>> {
-        let project_root = fresh_temp_root("ui-scope-explicit-project")?;
-        drop(ProjectStore::init(
-            &project_root,
-            NonEmptyText::new("Explicit".to_owned())?,
-        )?);
-
-        let scope = resolve_ui_scope(&project_root)?;
-        match scope {
-            ui::NavigatorScope::Single(observed_root) => {
-                assert_eq!(observed_root, project_root);
-                Ok(())
-            }
-            ui::NavigatorScope::Multi { .. } => {
-                Err("expected single-project scope for explicit project root".into())
-            }
-        }
+        assert_eq!(store.project_root(), project_root);
+        Ok(())
     }
 }

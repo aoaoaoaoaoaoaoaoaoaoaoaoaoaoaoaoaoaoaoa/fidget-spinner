@@ -27,7 +27,7 @@ use fidget_spinner_store_sqlite::{
     MoveKpiRequest, ProjectStatus, RenameMetricRequest, RenameTagRequest, STATE_DB_NAME,
     SetFrontierRegistryLockRequest, SetKpiReferenceRequest, SetRegistryLockRequest,
     SetTagFamilyMandatoryRequest, StoreError, TextPatch, UpdateFrontierRequest,
-    UpdateProjectRequest, VertexSummary,
+    UpdateProjectRequest, VertexSummary, list_project_manifests, project_state_home,
 };
 use maud::{DOCTYPE, Markup, PreEscaped, html};
 use percent_encoding::{NON_ALPHANUMERIC, percent_decode_str, utf8_percent_encode};
@@ -59,17 +59,7 @@ const METRIC_TABLE_TITLE_MIN_BUDGET_CH: usize = 22;
 
 #[derive(Clone)]
 struct NavigatorState {
-    scope: NavigatorScope,
     limit: Option<u32>,
-}
-
-#[derive(Clone)]
-pub(crate) enum NavigatorScope {
-    Single(Utf8PathBuf),
-    Multi {
-        scan_root: Utf8PathBuf,
-        project_roots: BTreeSet<Utf8PathBuf>,
-    },
 }
 
 #[derive(Clone)]
@@ -93,16 +83,6 @@ struct ProjectRenderContext {
 }
 
 impl ProjectRenderContext {
-    fn root(project_root: Utf8PathBuf, limit: Option<u32>) -> Self {
-        Self {
-            project_root,
-            base_href: "/".to_owned(),
-            project_home_href: ".".to_owned(),
-            refresh_token_href: "/refresh-token".to_owned(),
-            limit,
-        }
-    }
-
     fn nested(project_root: Utf8PathBuf, limit: Option<u32>) -> Self {
         let base_href = project_base_href(&project_root);
         Self {
@@ -464,21 +444,11 @@ fn resolve_project_context(
     encoded_project_root: &str,
 ) -> Result<ProjectRenderContext, StoreError> {
     let project_root = decode_project_root(encoded_project_root)?;
-    if project_root_is_in_scope(state, &project_root) {
-        return Ok(ProjectRenderContext::nested(project_root, state.limit));
-    }
     let store = open_store(project_root.as_std_path())?;
     Ok(ProjectRenderContext::nested(
         store.status()?.project_root,
         state.limit,
     ))
-}
-
-fn project_root_is_in_scope(state: &NavigatorState, project_root: &Utf8PathBuf) -> bool {
-    match &state.scope {
-        NavigatorScope::Single(expected_root) => expected_root == project_root,
-        NavigatorScope::Multi { project_roots, .. } => project_roots.contains(project_root),
-    }
 }
 
 fn project_refresh_token_for(context: &ProjectRenderContext) -> Result<String, StoreError> {
@@ -1134,11 +1104,12 @@ mod tests {
     };
     use super::{
         FrontierPageQuery, FrontierTab, METRIC_TABLE_TITLE_MIN_BUDGET_CH, MetricAxisLogScales,
-        NavigatorScope, NavigatorState, Utf8PathBuf, encode_path_segment, resolve_project_context,
+        NavigatorState, Utf8PathBuf, encode_path_segment, resolve_project_context,
     };
-    use std::collections::{BTreeMap, BTreeSet};
+    use std::collections::BTreeMap;
     use std::error::Error;
     use std::fs;
+    use std::sync::OnceLock;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use fidget_spinner_core::{
@@ -1154,6 +1125,8 @@ mod tests {
     use time::OffsetDateTime;
     use time::format_description::well_known::Rfc3339;
 
+    static TEST_STATE_HOME: OnceLock<Result<Utf8PathBuf, String>> = OnceLock::new();
+
     #[allow(clippy::panic, reason = "test constructors should fail loudly")]
     fn must<T, E: std::fmt::Display>(result: Result<T, E>, context: &str) -> T {
         match result {
@@ -1162,7 +1135,24 @@ mod tests {
         }
     }
 
+    fn ensure_test_state_home() -> Result<(), Box<dyn Error>> {
+        let state_home = TEST_STATE_HOME
+            .get_or_init(|| {
+                let root = std::env::temp_dir()
+                    .join(format!("fidget-spinner-cli-state-{}", std::process::id()));
+                fs::create_dir_all(&root)
+                    .map_err(|error| error.to_string())
+                    .map(|()| Utf8PathBuf::from(root.to_string_lossy().into_owned()))
+            })
+            .as_ref()
+            .map_err(|error| error.clone())?
+            .clone();
+        fidget_spinner_store_sqlite::install_state_home_override(state_home)?;
+        Ok(())
+    }
+
     fn fresh_temp_root(label: &str) -> Result<Utf8PathBuf, Box<dyn Error>> {
+        ensure_test_state_home()?;
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_or(0, |duration| duration.as_nanos());
@@ -1190,20 +1180,13 @@ mod tests {
     }
 
     #[test]
-    fn explicit_initialized_project_url_escapes_scan_root() -> Result<(), Box<dyn Error>> {
-        let scan_root = fresh_temp_root("scan-root")?;
+    fn explicit_initialized_project_url_resolves_context() -> Result<(), Box<dyn Error>> {
         let project_root = fresh_temp_root("outside-project")?;
         drop(ProjectStore::init(
             &project_root,
             NonEmptyText::new("Outside".to_owned())?,
         )?);
-        let state = NavigatorState {
-            scope: NavigatorScope::Multi {
-                scan_root,
-                project_roots: BTreeSet::new(),
-            },
-            limit: None,
-        };
+        let state = NavigatorState { limit: None };
 
         let context = resolve_project_context(&state, &encode_path_segment(project_root.as_str()))?;
 

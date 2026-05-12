@@ -2,42 +2,28 @@ use super::assets::styles;
 use super::detail::{render_favicon_links, render_shell};
 use super::{
     BTreeMap, BTreeSet, DOCTYPE, FrontierSummary, KpiSummary, ListExperimentsQuery,
-    ListHypothesesQuery, Markup, MetricKeysQuery, MetricScope, MoveKpiDirection, NavigatorScope,
-    NavigatorState, NonEmptyText, PreEscaped, ProjectIndexItem, ProjectMetricsQuery,
-    ProjectRenderContext, ProjectStatus, RegistryLockMode, RegistryName, StoreError, TagName,
-    TagUsage, arrow_down_icon, arrow_up_icon, chevron_down_icon, chevron_up_icon,
-    format_metric_value, format_timestamp, frontier_href, frontier_results_href,
-    frontier_status_class, html, limit_items, load_shell_frame, metric_choice_detail, open_store,
-    pencil_icon, plus_icon, project_root_href, render_fact, render_kv, render_metric_choice_option,
-    render_metric_kind_chip, status_chip_classes, trash_icon,
+    ListHypothesesQuery, Markup, MetricKeysQuery, MetricScope, MoveKpiDirection, NavigatorState,
+    NonEmptyText, PreEscaped, ProjectIndexItem, ProjectMetricsQuery, ProjectRenderContext,
+    ProjectStatus, RegistryLockMode, RegistryName, StoreError, TagName, TagUsage, arrow_down_icon,
+    arrow_up_icon, chevron_down_icon, chevron_up_icon, format_metric_value, format_timestamp,
+    frontier_href, frontier_results_href, frontier_status_class, html, limit_items,
+    list_project_manifests, load_shell_frame, metric_choice_detail, open_store, pencil_icon,
+    plus_icon, project_root_href, project_state_home, render_fact, render_kv,
+    render_metric_choice_option, render_metric_kind_chip, status_chip_classes, trash_icon,
 };
 
 pub(super) fn render_project_index(state: NavigatorState) -> Result<Markup, StoreError> {
-    let NavigatorScope::Multi {
-        scan_root,
-        project_roots,
-    } = state.scope
-    else {
-        return Err(StoreError::InvalidInput(
-            "project index requested for single-project navigator".to_owned(),
-        ));
-    };
-    let mut projects = project_roots
+    let state_home = project_state_home()?;
+    let projects = list_project_manifests()?
         .into_iter()
-        .map(|project_root| {
-            let store = open_store(project_root.as_std_path())?;
+        .map(|manifest| {
+            let store = open_store(manifest.project_root.as_std_path())?;
             Ok(ProjectIndexItem {
-                project_root,
+                project_root: manifest.project_root,
                 project_status: store.status()?,
             })
         })
         .collect::<Result<Vec<_>, StoreError>>()?;
-    projects.sort_by(|left, right| {
-        left.project_status
-            .display_name
-            .cmp(&right.project_status.display_name)
-            .then_with(|| left.project_root.cmp(&right.project_root))
-    });
 
     Ok(html! {
         (DOCTYPE)
@@ -55,14 +41,14 @@ pub(super) fn render_project_index(state: NavigatorState) -> Result<Markup, Stor
                         div.eyebrow { "home" }
                         h1.page-title { "Fidget Spinner navigator" }
                         p.page-subtitle {
-                            "Central project index rooted at "
-                            code { (scan_root.as_str()) }
+                            "Central project index from "
+                            code { (state_home.as_str()) }
                         }
                     }
                     section.card {
                         h2 { "Projects" }
                         @if projects.is_empty() {
-                            p.muted { "No Spinner projects were discovered under this root." }
+                            p.muted { "No self-described Spinner project stores are indexed yet." }
                         } @else {
                             div.card-grid {
                                 @for project in limit_items(&projects, state.limit) {

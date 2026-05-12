@@ -7,39 +7,32 @@ use super::{
     DefineMetricRequest, DefineSyntheticMetricRequest, DeleteKpiReferenceRequest, DeleteKpiRequest,
     DeleteMetricRequest, DeleteTagRequest, FAVICON_SVG, Form, FrontierPageQuery, FrontierStatus,
     IntoResponse, MergeMetricRequest, MergeTagRequest, MetricDisplayUnit, MetricUnit,
-    MoveKpiDirection, MoveKpiRequest, NavigatorScope, NavigatorState, NonEmptyText, Path,
-    ProjectMetricsQuery, ProjectRenderContext, RegistryLockMode, RegistryName, RenameMetricRequest,
-    RenameTagRequest, Response, Router, SetFrontierRegistryLockRequest, SetKpiReferenceRequest,
-    SetRegistryLockRequest, SetTagFamilyMandatoryRequest, SocketAddr, State, StatusCode,
-    StoreError, SyntheticMetricExpression, TagFamilyName, TagName, UpdateFrontierRequest, Uri,
-    frontier_href, frontier_status_mutation_response, get, io, metric_mutation_response,
-    metrics_frontier_href, open_store, optional_text_field, parse_metric_aggregation_ui,
-    parse_metric_dimension_ui, parse_optimization_objective_ui, parse_ui_lock_mode, post,
-    project_mutation_response, project_refresh_token_for, refresh_token_response, render_response,
-    resolve_project_context, tag_mutation_response, text_patch_field, update_frontier_status,
-    update_project_description,
+    MoveKpiDirection, MoveKpiRequest, NavigatorState, NonEmptyText, Path, ProjectMetricsQuery,
+    RegistryLockMode, RegistryName, RenameMetricRequest, RenameTagRequest, Response, Router,
+    SetFrontierRegistryLockRequest, SetKpiReferenceRequest, SetRegistryLockRequest,
+    SetTagFamilyMandatoryRequest, SocketAddr, State, StoreError, SyntheticMetricExpression,
+    TagFamilyName, TagName, UpdateFrontierRequest, Uri, frontier_href,
+    frontier_status_mutation_response, get, io, metric_mutation_response, metrics_frontier_href,
+    open_store, optional_text_field, parse_metric_aggregation_ui, parse_metric_dimension_ui,
+    parse_optimization_objective_ui, parse_ui_lock_mode, post, project_mutation_response,
+    project_refresh_token_for, refresh_token_response, render_response, resolve_project_context,
+    tag_mutation_response, text_patch_field, update_frontier_status, update_project_description,
 };
 use serde::Deserialize;
 
-pub(crate) fn serve(
-    scope: NavigatorScope,
-    bind: SocketAddr,
-    limit: Option<u32>,
-) -> Result<(), StoreError> {
+pub(crate) fn serve(bind: SocketAddr, limit: Option<u32>) -> Result<(), StoreError> {
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_io()
         .build()
         .map_err(StoreError::from)?;
     runtime.block_on(async move {
-        let state = NavigatorState { scope, limit };
+        let state = NavigatorState { limit };
         let app = Router::new()
             .route("/favicon.svg", get(favicon_svg))
             .route("/favicon.ico", get(favicon_svg))
             .route("/", get(root_page))
-            .route("/refresh-token", get(root_project_refresh_token))
             .route("/project/{project}", get(project_home))
             .route("/project/{project}/", get(project_home))
-            .route("/description", post(root_project_description))
             .route("/project/{project}/description", post(project_description))
             .route(
                 "/project/{project}/refresh-token",
@@ -131,22 +124,7 @@ async fn favicon_svg() -> impl IntoResponse {
 }
 
 async fn root_page(State(state): State<NavigatorState>) -> Response {
-    render_response(match &state.scope {
-        NavigatorScope::Single(project_root) => render_project_home(ProjectRenderContext::root(
-            project_root.clone(),
-            state.limit,
-        )),
-        NavigatorScope::Multi { .. } => render_project_index(state),
-    })
-}
-
-async fn root_project_refresh_token(State(state): State<NavigatorState>) -> Response {
-    match &state.scope {
-        NavigatorScope::Single(project_root) => refresh_token_response(project_refresh_token_for(
-            &ProjectRenderContext::root(project_root.clone(), state.limit),
-        )),
-        NavigatorScope::Multi { .. } => (StatusCode::NOT_FOUND, "not found").into_response(),
-    }
+    render_response(render_project_index(state))
 }
 
 async fn project_home(
@@ -159,21 +137,6 @@ async fn project_home(
 #[derive(Debug, Deserialize)]
 pub(super) struct ProjectDescriptionForm {
     pub(super) description: String,
-}
-
-async fn root_project_description(
-    State(state): State<NavigatorState>,
-    Form(form): Form<ProjectDescriptionForm>,
-) -> Response {
-    match &state.scope {
-        NavigatorScope::Single(project_root) => {
-            project_mutation_response(update_project_description(
-                ProjectRenderContext::root(project_root.clone(), state.limit),
-                form,
-            ))
-        }
-        NavigatorScope::Multi { .. } => (StatusCode::NOT_FOUND, "not found").into_response(),
-    }
 }
 
 async fn project_description(

@@ -10,7 +10,6 @@ LOCAL_BIN_DIR="${LOCAL_ROOT}/bin"
 SYSTEMD_USER_DIR="${HOME}/.config/systemd/user"
 UI_SERVICE_NAME="${FIDGET_SPINNER_UI_SERVICE_NAME:-fidget-spinner-ui.service}"
 LEGACY_UI_SERVICE_NAME="fidget-spinner-libgrid-ui.service"
-UI_PATH="${FIDGET_SPINNER_UI_PATH:-$HOME/programming/projects}"
 UI_BIND="${FIDGET_SPINNER_UI_BIND:-127.0.0.1:8913}"
 
 escape_sed_replacement() {
@@ -71,10 +70,6 @@ retire_legacy_ui_service() {
 }
 
 install_ui_service() {
-  if [[ ! -d "${UI_PATH}" ]]; then
-    printf 'navigator scan root does not exist; leaving user service untouched: %s\n' "${UI_PATH}" >&2
-    return 0
-  fi
   if ! command -v systemctl >/dev/null 2>&1; then
     printf 'systemctl unavailable; skipping navigator service install\n' >&2
     return 0
@@ -87,7 +82,6 @@ install_ui_service() {
   sed \
     -e "s|@HOME@|$(escape_sed_replacement "${HOME}")|g" \
     -e "s|@LOCAL_BIN_DIR@|$(escape_sed_replacement "${LOCAL_BIN_DIR}")|g" \
-    -e "s|@UI_PATH@|$(escape_sed_replacement "${UI_PATH}")|g" \
     -e "s|@UI_BIND@|$(escape_sed_replacement "${UI_BIND}")|g" \
     "${template_path}" > "${service_path}"
   chmod 0644 "${service_path}"

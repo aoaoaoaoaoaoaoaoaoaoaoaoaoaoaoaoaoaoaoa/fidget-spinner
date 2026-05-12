@@ -19,7 +19,7 @@ use fidget_spinner_core::{
     TagFamilyRecord, TagId, TagName, TagNameDisposition, TagNameHistoryRecord, TagRecord,
     TagRegistrySnapshot, VertexRef,
 };
-use rusqlite::{Connection, OptionalExtension, Transaction, params};
+use rusqlite::{Connection, OpenFlags, OptionalExtension, Transaction, params};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use thiserror::Error;
@@ -36,7 +36,7 @@ pub use query::{
 pub const STORE_DIR_NAME: &str = ".fidget_spinner";
 pub const GIT_DIR_NAME: &str = ".git";
 pub const STATE_DB_NAME: &str = "state.sqlite";
-pub const CURRENT_STORE_FORMAT_VERSION: u32 = 16;
+pub const CURRENT_STORE_FORMAT_VERSION: u32 = 17;
 pub const STATE_HOME_DIR_NAME: &str = "fidget-spinner";
 pub const PROJECT_STATE_DIR_NAME: &str = "projects";
 const LEGACY_PROJECT_CONFIG_NAME: &str = "project.json";
@@ -173,6 +173,7 @@ pub enum StoreError {
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct ProjectConfig {
+    pub project_root: Utf8PathBuf,
     pub display_name: NonEmptyText,
     pub description: Option<NonEmptyText>,
     pub created_at: OffsetDateTime,
@@ -180,13 +181,23 @@ pub struct ProjectConfig {
 
 impl ProjectConfig {
     #[must_use]
-    pub fn new(display_name: NonEmptyText) -> Self {
+    pub fn new(project_root: Utf8PathBuf, display_name: NonEmptyText) -> Self {
         Self {
+            project_root,
             display_name,
             description: None,
             created_at: OffsetDateTime::now_utc(),
         }
     }
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct ProjectManifest {
+    pub project_root: Utf8PathBuf,
+    pub state_root: Utf8PathBuf,
+    pub display_name: NonEmptyText,
+    pub description: Option<NonEmptyText>,
+    pub store_format_version: u32,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -784,6 +795,72 @@ pub struct ProjectStore {
     connection: Connection,
 }
 
+pub fn list_project_manifests() -> Result<Vec<ProjectManifest>, StoreError> {
+    let state_home = project_state_home()?;
+    let entries = match fs::read_dir(state_home.as_std_path()) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(StoreError::Io(error)),
+    };
+    let mut manifests = Vec::new();
+    for entry in entries {
+        let entry = entry?;
+        if !entry.file_type()?.is_dir() {
+            continue;
+        }
+        let state_root = utf8_path(entry.path());
+        let database_path = state_root.join(STATE_DB_NAME);
+        if let Some(manifest) = load_project_manifest(&state_root, &database_path)? {
+            manifests.push(manifest);
+        }
+    }
+    manifests.sort_by(|left, right| {
+        left.display_name
+            .cmp(&right.display_name)
+            .then_with(|| left.project_root.cmp(&right.project_root))
+    });
+    Ok(manifests)
+}
+
+fn load_project_manifest(
+    state_root: &Utf8Path,
+    database_path: &Utf8Path,
+) -> Result<Option<ProjectManifest>, StoreError> {
+    if !database_path.exists() {
+        return Ok(None);
+    }
+    let connection = Connection::open_with_flags(
+        database_path.as_std_path(),
+        OpenFlags::SQLITE_OPEN_READ_ONLY,
+    )?;
+    let store_format_version = load_store_user_version(&connection)?;
+    if store_format_version != CURRENT_STORE_FORMAT_VERSION
+        || !table_has_column(&connection, "project_metadata", "project_root")?
+    {
+        return Ok(None);
+    }
+    let config = load_project_metadata(&connection)?;
+    if !config.project_root.exists() {
+        return Ok(None);
+    }
+    let project_root = match canonical_project_root(&config.project_root) {
+        Ok(project_root) => project_root,
+        Err(StoreError::Io(error)) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    let expected_state_root = state_root_for_project_root(&project_root)?;
+    if expected_state_root != state_root {
+        return Ok(None);
+    }
+    Ok(Some(ProjectManifest {
+        project_root,
+        state_root: state_root.to_path_buf(),
+        display_name: config.display_name,
+        description: config.description,
+        store_format_version,
+    }))
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum FrontierVisibility {
     IncludeArchived,
@@ -804,7 +881,7 @@ impl ProjectStore {
         fs::create_dir_all(project_root.as_std_path())?;
         let state_root = state_root_for_project_root(&project_root)?;
         fs::create_dir_all(state_root.as_std_path())?;
-        let config = ProjectConfig::new(display_name);
+        let config = ProjectConfig::new(project_root.clone(), display_name);
 
         let database_path = state_root.join(STATE_DB_NAME);
         let connection = Connection::open(database_path.as_std_path())?;
@@ -836,7 +913,12 @@ impl ProjectStore {
         connection.pragma_update(None, "foreign_keys", 1_i64)?;
         let observed_version = load_store_user_version(&connection)?;
         if observed_version != CURRENT_STORE_FORMAT_VERSION {
-            migrate_store_to_current(&state_root, &mut connection, observed_version)?;
+            migrate_store_to_current(
+                &project_root,
+                &state_root,
+                &mut connection,
+                observed_version,
+            )?;
         }
         let observed_version = load_store_user_version(&connection)?;
         if observed_version != CURRENT_STORE_FORMAT_VERSION {
@@ -848,7 +930,11 @@ impl ProjectStore {
         if legacy_artifact_schema_present(&connection)? {
             purge_legacy_artifact_schema(&connection)?;
         }
-        let config = load_project_metadata(&connection)?;
+        let mut config = load_project_metadata(&connection)?;
+        if config.project_root != project_root {
+            config.project_root = project_root.clone();
+            replace_project_metadata(&connection, &config)?;
+        }
 
         Ok(Self {
             project_root,
@@ -5280,6 +5366,7 @@ fn install_schema(connection: &Connection) -> Result<(), StoreError> {
         "
         CREATE TABLE IF NOT EXISTS project_metadata (
             id INTEGER PRIMARY KEY CHECK (id = 1),
+            project_root TEXT NOT NULL,
             display_name TEXT NOT NULL,
             description TEXT,
             created_at TEXT NOT NULL
@@ -5553,9 +5640,10 @@ fn replace_project_metadata(
     config: &ProjectConfig,
 ) -> Result<(), StoreError> {
     let _ = connection.execute(
-        "INSERT OR REPLACE INTO project_metadata (id, display_name, description, created_at)
-         VALUES (1, ?1, ?2, ?3)",
+        "INSERT OR REPLACE INTO project_metadata (id, project_root, display_name, description, created_at)
+         VALUES (1, ?1, ?2, ?3, ?4)",
         params![
+            config.project_root.as_str(),
             config.display_name.as_str(),
             config.description.as_ref().map(NonEmptyText::as_str),
             encode_timestamp(config.created_at)?,
@@ -5567,13 +5655,14 @@ fn replace_project_metadata(
 fn load_project_metadata(connection: &Connection) -> Result<ProjectConfig, StoreError> {
     connection
         .query_row(
-            "SELECT display_name, description, created_at FROM project_metadata WHERE id = 1",
+            "SELECT project_root, display_name, description, created_at FROM project_metadata WHERE id = 1",
             [],
             |row| {
                 Ok(ProjectConfig {
-                    display_name: parse_non_empty_text(&row.get::<_, String>(0)?)?,
-                    description: parse_optional_non_empty_text(row.get::<_, Option<String>>(1)?)?,
-                    created_at: parse_timestamp_sql(&row.get::<_, String>(2)?)?,
+                    project_root: Utf8PathBuf::from(row.get::<_, String>(0)?),
+                    display_name: parse_non_empty_text(&row.get::<_, String>(1)?)?,
+                    description: parse_optional_non_empty_text(row.get::<_, Option<String>>(2)?)?,
+                    created_at: parse_timestamp_sql(&row.get::<_, String>(3)?)?,
                 })
             },
         )
@@ -5581,6 +5670,7 @@ fn load_project_metadata(connection: &Connection) -> Result<ProjectConfig, Store
 }
 
 fn migrate_store_to_current(
+    project_root: &Utf8Path,
     state_root: &Utf8Path,
     connection: &mut Connection,
     observed_version: u32,
@@ -5595,7 +5685,7 @@ fn migrate_store_to_current(
         version = 11;
     }
     if version == 11 {
-        migrate_store_v11_to_v12(state_root, connection)?;
+        migrate_store_v11_to_v12(project_root, state_root, connection)?;
         version = 12;
     }
     if version == 12 {
@@ -5613,6 +5703,10 @@ fn migrate_store_to_current(
     if version == 15 {
         migrate_store_v15_to_v16(connection)?;
         version = 16;
+    }
+    if version == 16 {
+        migrate_store_v16_to_v17(project_root, connection)?;
+        version = 17;
     }
     if version == CURRENT_STORE_FORMAT_VERSION {
         return Ok(());
@@ -5650,15 +5744,17 @@ fn migrate_store_v10_to_v11(connection: &mut Connection) -> Result<(), StoreErro
 }
 
 fn migrate_store_v11_to_v12(
+    project_root: &Utf8Path,
     state_root: &Utf8Path,
     connection: &mut Connection,
 ) -> Result<(), StoreError> {
-    let config = read_legacy_project_metadata(state_root)?;
+    let config = read_legacy_project_metadata(project_root, state_root)?;
     let transaction = connection.transaction()?;
     transaction.execute_batch(
         "
         CREATE TABLE IF NOT EXISTS project_metadata (
             id INTEGER PRIMARY KEY CHECK (id = 1),
+            project_root TEXT NOT NULL,
             display_name TEXT NOT NULL,
             description TEXT,
             created_at TEXT NOT NULL
@@ -5740,9 +5836,10 @@ fn migrate_store_v11_to_v12(
         ",
     )?;
     let _ = transaction.execute(
-        "INSERT OR REPLACE INTO project_metadata (id, display_name, description, created_at)
-         VALUES (1, ?1, ?2, ?3)",
+        "INSERT OR REPLACE INTO project_metadata (id, project_root, display_name, description, created_at)
+         VALUES (1, ?1, ?2, ?3, ?4)",
         params![
+            config.project_root.as_str(),
             config.display_name.as_str(),
             config.description.as_ref().map(NonEmptyText::as_str),
             encode_timestamp(config.created_at)?,
@@ -5949,13 +6046,58 @@ fn migrate_store_v15_to_v16(connection: &mut Connection) -> Result<(), StoreErro
     Ok(())
 }
 
-fn read_legacy_project_metadata(state_root: &Utf8Path) -> Result<ProjectConfig, StoreError> {
+fn migrate_store_v16_to_v17(
+    project_root: &Utf8Path,
+    connection: &mut Connection,
+) -> Result<(), StoreError> {
+    let transaction = connection.transaction()?;
+    if !table_has_column(&transaction, "project_metadata", "project_root")? {
+        transaction.execute_batch(
+            "
+            ALTER TABLE project_metadata
+            ADD COLUMN project_root TEXT;
+            ",
+        )?;
+    }
+    let _ = transaction.execute(
+        "UPDATE project_metadata
+         SET project_root = ?1
+         WHERE id = 1",
+        params![project_root.as_str()],
+    )?;
+    transaction.commit()?;
+    connection.pragma_update(None, "user_version", 17_i64)?;
+    Ok(())
+}
+
+#[derive(Deserialize)]
+struct LegacyProjectConfig {
+    display_name: NonEmptyText,
+    description: Option<NonEmptyText>,
+    created_at: OffsetDateTime,
+}
+
+fn read_legacy_project_metadata(
+    project_root: &Utf8Path,
+    state_root: &Utf8Path,
+) -> Result<ProjectConfig, StoreError> {
     let path = state_root.join(LEGACY_PROJECT_CONFIG_NAME);
     match read_json_file(&path) {
-        Ok(config) => Ok(config),
-        Err(StoreError::Io(error)) if error.kind() == io::ErrorKind::NotFound => Ok(
-            ProjectConfig::new(NonEmptyText::new("Fidget Spinner Project")?),
-        ),
+        Ok(config) => {
+            let config: LegacyProjectConfig = config;
+            Ok(ProjectConfig {
+                project_root: project_root.to_path_buf(),
+                display_name: config.display_name,
+                description: config.description,
+                created_at: config.created_at,
+            })
+        }
+        Err(StoreError::Io(error)) if error.kind() == io::ErrorKind::NotFound => {
+            Ok(ProjectConfig::new(
+                project_root.to_path_buf(),
+                NonEmptyText::new("Fidget Spinner Project")?,
+            ))
+        }
         Err(error) => Err(error),
     }
 }
@@ -8214,9 +8356,21 @@ pub fn state_root_for_project_root(project_root: &Utf8Path) -> Result<Utf8PathBu
 
 pub fn install_state_home_override(path: impl AsRef<Utf8Path>) -> Result<(), StoreError> {
     let state_home = canonicalize_utf8_path(path.as_ref())?;
+    if let Some(existing) = STATE_HOME_OVERRIDE.get() {
+        if existing == &state_home {
+            return Ok(());
+        }
+        return Err(StoreError::InvalidInput(
+            "state home override already installed".to_owned(),
+        ));
+    }
     STATE_HOME_OVERRIDE
         .set(state_home)
         .map_err(|_| StoreError::InvalidInput("state home override already installed".to_owned()))
+}
+
+pub fn project_state_home() -> Result<Utf8PathBuf, StoreError> {
+    spinner_state_home()
 }
 
 pub fn discover_project_root(
@@ -8435,8 +8589,27 @@ fn parse_timestamp_sql(raw: &str) -> Result<OffsetDateTime, rusqlite::Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::OnceLock;
+
+    static TEST_STATE_HOME: OnceLock<Result<Utf8PathBuf, String>> = OnceLock::new();
+
+    fn ensure_test_state_home() -> Result<(), StoreError> {
+        let state_home = TEST_STATE_HOME
+            .get_or_init(|| {
+                let root = std::env::temp_dir()
+                    .join(format!("fidget-spinner-store-state-{}", std::process::id()));
+                fs::create_dir_all(&root)
+                    .map_err(|error| error.to_string())
+                    .map(|()| utf8_path(root))
+            })
+            .as_ref()
+            .map_err(|error| StoreError::InvalidInput(error.clone()))?
+            .clone();
+        install_state_home_override(state_home)
+    }
 
     fn fresh_test_root(label: &str) -> Result<Utf8PathBuf, StoreError> {
+        ensure_test_state_home()?;
         let nanos = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |duration| duration.as_nanos());
@@ -8446,6 +8619,23 @@ mod tests {
         ));
         fs::create_dir_all(&root)?;
         Ok(utf8_path(root))
+    }
+
+    #[test]
+    fn project_manifest_index_reads_self_described_stores() -> Result<(), StoreError> {
+        let root = fresh_test_root("manifest-index")?;
+        let display_name = NonEmptyText::new("Manifest Index")?;
+        let store = ProjectStore::init(&root, display_name.clone())?;
+
+        let manifests = list_project_manifests()?;
+
+        assert!(manifests.iter().any(|manifest| {
+            manifest.project_root == root
+                && manifest.state_root == store.state_root
+                && manifest.display_name == display_name
+        }));
+        fs::remove_dir_all(root.as_std_path())?;
+        Ok(())
     }
 
     #[test]
