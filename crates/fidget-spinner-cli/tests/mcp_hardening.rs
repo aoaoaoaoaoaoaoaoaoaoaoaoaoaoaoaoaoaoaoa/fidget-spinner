@@ -1586,8 +1586,22 @@ fn mcp_rejects_hypothesis_lifecycle_state() -> TestResult {
             .contains("hypothesis lifecycle is derived from owned experiments")
     );
 
-    assert_tool_ok(&harness.call_tool(
+    let rejected = harness.call_tool(
         86,
+        "hypothesis.update",
+        json!({
+            "hypothesis": "stale-branch",
+            "lifecycle": "closed",
+        }),
+    )?;
+    assert_tool_error(&rejected);
+    assert!(
+        must_some(tool_error_message(&rejected), "hypothesis lifecycle error")?
+            .contains("hypothesis lifecycle is derived from owned experiments")
+    );
+
+    assert_tool_ok(&harness.call_tool(
+        87,
         "hypothesis.attention.set",
         json!({
             "hypothesis": "stale-branch",
@@ -1596,7 +1610,7 @@ fn mcp_rejects_hypothesis_lifecycle_state() -> TestResult {
     )?);
 
     let worklist = harness.call_tool_full(
-        87,
+        88,
         "hypothesis.list",
         json!({"frontier": "retire-frontier"}),
     )?;
@@ -1609,7 +1623,7 @@ fn mcp_rejects_hypothesis_lifecycle_state() -> TestResult {
     assert_eq!(worklist_hypotheses[0]["slug"].as_str(), Some("live-branch"));
 
     let shelved = harness.call_tool_full(
-        88,
+        89,
         "hypothesis.list",
         json!({"frontier": "retire-frontier", "attention": "shelved"}),
     )?;

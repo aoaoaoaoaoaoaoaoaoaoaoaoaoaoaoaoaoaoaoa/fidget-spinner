@@ -274,7 +274,7 @@ impl WorkerService {
             }
             "hypothesis.update" => {
                 let args = deserialize::<HypothesisUpdateArgs>(arguments)?;
-                if args.state.is_some() {
+                if args.state.is_some() || args.lifecycle.is_some() {
                     return Err(FaultRecord::new(
                         FaultKind::InvalidInput,
                         FaultStage::Worker,
@@ -799,6 +799,7 @@ struct HypothesisUpdateArgs {
     tags: Option<Vec<String>>,
     parents: Option<Vec<VertexSelector>>,
     state: Option<HypothesisLifecyclePatch>,
+    lifecycle: Option<Value>,
 }
 
 #[derive(Debug, Deserialize)]
