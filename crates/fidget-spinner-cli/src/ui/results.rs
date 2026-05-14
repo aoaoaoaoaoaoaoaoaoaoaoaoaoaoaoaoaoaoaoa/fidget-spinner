@@ -5,7 +5,7 @@ use super::detail::{
 };
 use super::{
     BLACK, BTreeMap, BTreeSet, ChartBuilder, Circle, Color, Cross, DashedLineSeries,
-    DimensionFacet, ExperimentStatus, ExperimentSummary, FrontierMetricSeries,
+    DimensionFacet, EmptyElement, ExperimentStatus, ExperimentSummary, FrontierMetricSeries,
     FrontierOpenProjection, FrontierPageQuery, FrontierTab, FrontierVerdict,
     HypothesisCurrentState, IntoDrawingArea, IntoFont, IntoLogRange, LabelAreaPosition, LineSeries,
     ListExperimentsQuery, ListHypothesesQuery, METRIC_TABLE_TITLE_MIN_BUDGET_CH,
@@ -24,6 +24,7 @@ use plotters::prelude::BindKeyPoints;
 
 const METRIC_CHART_ACCEPTED_MARKER_RADIUS: i32 = 2;
 const METRIC_CHART_REJECTED_MARKER_SIZE: i32 = 3;
+const METRIC_CHART_PARKED_MARKER_RADIUS: i32 = 4;
 const METRIC_CHART_LIGHT_LINE_LIMIT: usize = 5;
 const METRIC_CHART_X_MAJOR_STRIDE: i32 = 10;
 const METRIC_CHART_Y_LABEL_COUNT: usize = 6;
@@ -31,6 +32,21 @@ const METRIC_CHART_DOTTED_GRID_DASH: i32 = 1;
 const METRIC_CHART_DOTTED_GRID_GAP: i32 = 5;
 const METRIC_CHART_LOG_BUCKET_REFINEMENT_COUNT: usize = 4;
 const METRIC_CHART_SECONDARY_TICK_PX: i32 = 5;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum MetricChartPointMarker {
+    Circle,
+    HollowTriangle,
+    Cross,
+}
+
+pub(super) fn metric_chart_point_marker(verdict: FrontierVerdict) -> MetricChartPointMarker {
+    match verdict {
+        FrontierVerdict::Accepted | FrontierVerdict::Kept => MetricChartPointMarker::Circle,
+        FrontierVerdict::Parked => MetricChartPointMarker::HollowTriangle,
+        FrontierVerdict::Rejected => MetricChartPointMarker::Cross,
+    }
+}
 
 pub(super) fn render_frontier_tab_content(
     store: &fidget_spinner_store_sqlite::ProjectStore,
@@ -828,7 +844,9 @@ fn render_metric_chart_svg(
                     let accepted_points = series
                         .points
                         .iter()
-                        .filter(|(_, _, verdict)| *verdict != FrontierVerdict::Rejected)
+                        .filter(|(_, _, verdict)| {
+                            metric_chart_point_marker(*verdict) == MetricChartPointMarker::Circle
+                        })
                         .map(|(x, value, _)| {
                             Circle::new(
                                 (*x, *value),
@@ -840,10 +858,41 @@ fn render_metric_chart_svg(
                         return chart_error_markup("accepted marker draw failed");
                     }
 
+                    let parked_points = series
+                        .points
+                        .iter()
+                        .filter(|(_, _, verdict)| {
+                            metric_chart_point_marker(*verdict)
+                                == MetricChartPointMarker::HollowTriangle
+                        })
+                        .map(|(x, value, _)| {
+                            EmptyElement::at((*x, *value))
+                                + PathElement::new(
+                                    vec![
+                                        (0, -METRIC_CHART_PARKED_MARKER_RADIUS),
+                                        (
+                                            -METRIC_CHART_PARKED_MARKER_RADIUS,
+                                            METRIC_CHART_PARKED_MARKER_RADIUS,
+                                        ),
+                                        (
+                                            METRIC_CHART_PARKED_MARKER_RADIUS,
+                                            METRIC_CHART_PARKED_MARKER_RADIUS,
+                                        ),
+                                        (0, -METRIC_CHART_PARKED_MARKER_RADIUS),
+                                    ],
+                                    ShapeStyle::from(&series.color).stroke_width(2),
+                                )
+                        });
+                    if $chart.$method(parked_points).is_err() {
+                        return chart_error_markup("parked marker draw failed");
+                    }
+
                     let rejected_points = series
                         .points
                         .iter()
-                        .filter(|(_, _, verdict)| *verdict == FrontierVerdict::Rejected)
+                        .filter(|(_, _, verdict)| {
+                            metric_chart_point_marker(*verdict) == MetricChartPointMarker::Cross
+                        })
                         .map(|(x, value, _)| {
                             Cross::new(
                                 (*x, *value),

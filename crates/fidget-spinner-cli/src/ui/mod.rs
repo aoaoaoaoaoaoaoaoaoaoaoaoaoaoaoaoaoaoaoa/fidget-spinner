@@ -32,8 +32,9 @@ use fidget_spinner_store_sqlite::{
 use maud::{DOCTYPE, Markup, PreEscaped, html};
 use percent_encoding::{NON_ALPHANUMERIC, percent_decode_str, utf8_percent_encode};
 use plotters::prelude::{
-    BLACK, ChartBuilder, Circle, Cross, DashedLineSeries, IntoDrawingArea, IntoLogRange,
-    LabelAreaPosition, LineSeries, PathElement, SVGBackend, SeriesLabelPosition, ShapeStyle, Text,
+    BLACK, ChartBuilder, Circle, Cross, DashedLineSeries, EmptyElement, IntoDrawingArea,
+    IntoLogRange, LabelAreaPosition, LineSeries, PathElement, SVGBackend, SeriesLabelPosition,
+    ShapeStyle, Text,
 };
 use plotters::style::{Color, IntoFont, RGBColor};
 use time::OffsetDateTime;
@@ -1098,9 +1099,10 @@ mod tests {
         metric_registry_filter_text, render_kpi_registry, render_metric_registry_table,
     };
     use super::results::{
-        MetricChartAxis, best_metric_table_title_split, metric_chart_secondary_grid_values,
-        metric_chart_x_major_values, metric_chart_x_minor_values, render_metric_series_section,
-        resolve_selected_metric_keys, truncated_entry_count,
+        MetricChartAxis, MetricChartPointMarker, best_metric_table_title_split,
+        metric_chart_point_marker, metric_chart_secondary_grid_values, metric_chart_x_major_values,
+        metric_chart_x_minor_values, render_metric_series_section, resolve_selected_metric_keys,
+        truncated_entry_count,
     };
     use super::{
         FrontierPageQuery, FrontierTab, METRIC_TABLE_TITLE_MIN_BUDGET_CH, MetricAxisLogScales,
@@ -1508,6 +1510,26 @@ mod tests {
         assert_eq!(
             axis.normalize_value(1.5, &MetricDisplayUnit::Known(seconds)),
             Some(1500.0)
+        );
+    }
+
+    #[test]
+    fn metric_chart_marker_shape_respects_verdict_semantics() {
+        assert_eq!(
+            metric_chart_point_marker(FrontierVerdict::Accepted),
+            MetricChartPointMarker::Circle
+        );
+        assert_eq!(
+            metric_chart_point_marker(FrontierVerdict::Kept),
+            MetricChartPointMarker::Circle
+        );
+        assert_eq!(
+            metric_chart_point_marker(FrontierVerdict::Parked),
+            MetricChartPointMarker::HollowTriangle
+        );
+        assert_eq!(
+            metric_chart_point_marker(FrontierVerdict::Rejected),
+            MetricChartPointMarker::Cross
         );
     }
 
