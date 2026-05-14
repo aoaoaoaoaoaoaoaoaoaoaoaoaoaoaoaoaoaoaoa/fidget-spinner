@@ -23,7 +23,7 @@ pub(crate) struct FrontierSummaryProjection {
     pub(crate) label: String,
     pub(crate) objective: String,
     pub(crate) status: String,
-    pub(crate) active_hypothesis_count: u64,
+    pub(crate) worklist_hypothesis_count: u64,
     pub(crate) open_experiment_count: u64,
     pub(crate) updated_at: TimestampText,
 }
@@ -32,23 +32,7 @@ pub(crate) struct FrontierSummaryProjection {
 pub(crate) struct FrontierBriefProjection {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) situation: Option<String>,
-    pub(crate) roadmap: Vec<RoadmapItemProjection>,
     pub(crate) unknowns: Vec<String>,
-}
-
-#[derive(Clone, Serialize)]
-pub(crate) struct RoadmapItemProjection {
-    pub(crate) rank: u32,
-    pub(crate) hypothesis: Option<HypothesisRoadmapProjection>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) summary: Option<String>,
-}
-
-#[derive(Clone, Serialize)]
-pub(crate) struct HypothesisRoadmapProjection {
-    pub(crate) slug: String,
-    pub(crate) title: String,
-    pub(crate) summary: String,
 }
 
 #[derive(Clone, Serialize)]
@@ -83,7 +67,7 @@ pub(crate) struct FrontierOpenOutput {
     pub(crate) active_tags: Vec<String>,
     pub(crate) kpis: Vec<KpiSummaryProjection>,
     pub(crate) active_metric_keys: Vec<MetricKeySummaryProjection>,
-    pub(crate) active_hypotheses: Vec<HypothesisCurrentStateProjection>,
+    pub(crate) worklist_hypotheses: Vec<HypothesisCurrentStateProjection>,
     pub(crate) open_experiments: Vec<ExperimentSummaryProjection>,
 }
 
@@ -103,8 +87,13 @@ pub(crate) struct HypothesisSummaryProjection {
     pub(crate) summary: String,
     pub(crate) expected_yield: String,
     pub(crate) confidence: String,
+    pub(crate) attention: String,
+    pub(crate) lifecycle: String,
+    pub(crate) experiment_count: u64,
     pub(crate) tags: Vec<String>,
     pub(crate) open_experiment_count: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) worklist_ordinal: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) latest_verdict: Option<String>,
     pub(crate) updated_at: TimestampText,
@@ -118,7 +107,10 @@ pub(crate) struct HypothesisRecordProjection {
     pub(crate) body: String,
     pub(crate) expected_yield: String,
     pub(crate) confidence: String,
+    pub(crate) attention: String,
     pub(crate) tags: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) worklist_ordinal: Option<u32>,
     pub(crate) revision: u64,
     pub(crate) created_at: TimestampText,
     pub(crate) updated_at: TimestampText,
@@ -131,7 +123,11 @@ pub(crate) struct HypothesisReadRecordProjection {
     pub(crate) summary: String,
     pub(crate) expected_yield: String,
     pub(crate) confidence: String,
+    pub(crate) attention: String,
+    pub(crate) lifecycle: String,
     pub(crate) tags: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) worklist_ordinal: Option<u32>,
     pub(crate) revision: u64,
     pub(crate) updated_at: TimestampText,
 }
@@ -603,13 +599,13 @@ pub(crate) fn frontier_list(frontiers: &[FrontierSummary]) -> FrontierListOutput
 }
 
 pub(crate) fn frontier_record(
-    store: &ProjectStore,
+    _store: &ProjectStore,
     frontier: &FrontierRecord,
-    operation: &str,
-) -> Result<FrontierReadOutput, FaultRecord> {
-    Ok(FrontierReadOutput {
-        record: frontier_record_projection(store, frontier, operation)?,
-    })
+    _operation: &str,
+) -> FrontierReadOutput {
+    FrontierReadOutput {
+        record: frontier_record_projection(frontier),
+    }
 }
 
 pub(crate) fn frontier_open(projection: &FrontierOpenProjection) -> FrontierOpenOutput {
@@ -619,31 +615,7 @@ pub(crate) fn frontier_open(projection: &FrontierOpenProjection) -> FrontierOpen
             label: projection.frontier.label.to_string(),
             objective: projection.frontier.objective.to_string(),
             status: projection.frontier.status.as_str().to_owned(),
-            brief: frontier_brief_projection(
-                &projection.frontier.brief,
-                projection
-                    .frontier
-                    .brief
-                    .roadmap
-                    .iter()
-                    .map(|item| {
-                        let hypothesis = projection
-                            .active_hypotheses
-                            .iter()
-                            .find(|state| state.hypothesis.id == item.hypothesis_id)
-                            .map(|state| HypothesisRoadmapProjection {
-                                slug: state.hypothesis.slug.to_string(),
-                                title: state.hypothesis.title.to_string(),
-                                summary: state.hypothesis.summary.to_string(),
-                            });
-                        RoadmapItemProjection {
-                            rank: item.rank,
-                            hypothesis,
-                            summary: item.summary.as_ref().map(ToString::to_string),
-                        }
-                    })
-                    .collect(),
-            ),
+            brief: frontier_brief_projection(&projection.frontier.brief),
         },
         active_tags: projection
             .active_tags
@@ -656,8 +628,8 @@ pub(crate) fn frontier_open(projection: &FrontierOpenProjection) -> FrontierOpen
             .iter()
             .map(metric_key_summary)
             .collect(),
-        active_hypotheses: projection
-            .active_hypotheses
+        worklist_hypotheses: projection
+            .worklist_hypotheses
             .iter()
             .map(hypothesis_current_state)
             .collect(),
@@ -707,7 +679,10 @@ pub(crate) fn hypothesis_detail(
                 summary: detail.record.summary.to_string(),
                 expected_yield: detail.record.expected_yield.as_str().to_owned(),
                 confidence: detail.record.confidence.as_str().to_owned(),
+                attention: detail.record.attention.as_str().to_owned(),
+                lifecycle: hypothesis_detail_lifecycle(detail).to_owned(),
                 tags: detail.record.tags.iter().map(ToString::to_string).collect(),
+                worklist_ordinal: detail.record.worklist_ordinal,
                 revision: detail.record.revision,
                 updated_at: timestamp_value(detail.record.updated_at),
             },
@@ -927,37 +902,14 @@ fn frontier_summary(frontier: &FrontierSummary) -> FrontierSummaryProjection {
         label: frontier.label.to_string(),
         objective: frontier.objective.to_string(),
         status: frontier.status.as_str().to_owned(),
-        active_hypothesis_count: frontier.active_hypothesis_count,
+        worklist_hypothesis_count: frontier.worklist_hypothesis_count,
         open_experiment_count: frontier.open_experiment_count,
         updated_at: timestamp_value(frontier.updated_at),
     }
 }
 
-fn frontier_record_projection(
-    store: &ProjectStore,
-    frontier: &FrontierRecord,
-    operation: &str,
-) -> Result<FrontierRecordProjection, FaultRecord> {
-    let roadmap = frontier
-        .brief
-        .roadmap
-        .iter()
-        .map(|item| {
-            let hypothesis = store
-                .read_hypothesis(&item.hypothesis_id.to_string())
-                .map_err(store_fault(operation))?;
-            Ok(RoadmapItemProjection {
-                rank: item.rank,
-                hypothesis: Some(HypothesisRoadmapProjection {
-                    slug: hypothesis.record.slug.to_string(),
-                    title: hypothesis.record.title.to_string(),
-                    summary: hypothesis.record.summary.to_string(),
-                }),
-                summary: item.summary.as_ref().map(ToString::to_string),
-            })
-        })
-        .collect::<Result<Vec<_>, FaultRecord>>()?;
-    Ok(FrontierRecordProjection {
+fn frontier_record_projection(frontier: &FrontierRecord) -> FrontierRecordProjection {
+    FrontierRecordProjection {
         slug: frontier.slug.to_string(),
         label: frontier.label.to_string(),
         objective: frontier.objective.to_string(),
@@ -965,17 +917,13 @@ fn frontier_record_projection(
         revision: frontier.revision,
         created_at: timestamp_value(frontier.created_at),
         updated_at: timestamp_value(frontier.updated_at),
-        brief: frontier_brief_projection(&frontier.brief, roadmap),
-    })
+        brief: frontier_brief_projection(&frontier.brief),
+    }
 }
 
-fn frontier_brief_projection(
-    brief: &FrontierBrief,
-    roadmap: Vec<RoadmapItemProjection>,
-) -> FrontierBriefProjection {
+fn frontier_brief_projection(brief: &FrontierBrief) -> FrontierBriefProjection {
     FrontierBriefProjection {
         situation: brief.situation.as_ref().map(ToString::to_string),
-        roadmap,
         unknowns: brief.unknowns.iter().map(ToString::to_string).collect(),
     }
 }
@@ -989,8 +937,12 @@ fn hypothesis_summary(
         summary: hypothesis.summary.to_string(),
         expected_yield: hypothesis.expected_yield.as_str().to_owned(),
         confidence: hypothesis.confidence.as_str().to_owned(),
+        attention: hypothesis.attention.as_str().to_owned(),
+        lifecycle: hypothesis.lifecycle.as_str().to_owned(),
+        experiment_count: hypothesis.experiment_count,
         tags: hypothesis.tags.iter().map(ToString::to_string).collect(),
         open_experiment_count: hypothesis.open_experiment_count,
+        worklist_ordinal: hypothesis.worklist_ordinal,
         latest_verdict: hypothesis
             .latest_verdict
             .map(|verdict| verdict.as_str().to_owned()),
@@ -1008,7 +960,9 @@ fn hypothesis_record_projection(
         body: hypothesis.body.to_string(),
         expected_yield: hypothesis.expected_yield.as_str().to_owned(),
         confidence: hypothesis.confidence.as_str().to_owned(),
+        attention: hypothesis.attention.as_str().to_owned(),
         tags: hypothesis.tags.iter().map(ToString::to_string).collect(),
+        worklist_ordinal: hypothesis.worklist_ordinal,
         revision: hypothesis.revision,
         created_at: timestamp_value(hypothesis.created_at),
         updated_at: timestamp_value(hypothesis.updated_at),
@@ -1047,6 +1001,16 @@ fn experiment_record_projection(
         revision: experiment.revision,
         created_at: timestamp_value(experiment.created_at),
         updated_at: timestamp_value(experiment.updated_at),
+    }
+}
+
+fn hypothesis_detail_lifecycle(detail: &HypothesisDetail) -> &'static str {
+    if !detail.open_experiments.is_empty() {
+        "working"
+    } else if detail.closed_experiments.is_empty() {
+        "fresh"
+    } else {
+        "closed"
     }
 }
 

@@ -6,17 +6,19 @@ use super::{
     AssignTagFamilyRequest, CONTENT_TYPE, CreateKpiRequest, CreateTagFamilyRequest,
     DefineMetricRequest, DefineSyntheticMetricRequest, DeleteKpiReferenceRequest, DeleteKpiRequest,
     DeleteMetricRequest, DeleteTagRequest, FAVICON_SVG, Form, FrontierPageQuery, FrontierStatus,
-    IntoResponse, MergeMetricRequest, MergeTagRequest, MetricDisplayUnit, MetricUnit,
-    MoveKpiDirection, MoveKpiRequest, NavigatorState, NonEmptyText, Path, ProjectMetricsQuery,
-    RegistryLockMode, RegistryName, RenameMetricRequest, RenameTagRequest, Response, Router,
-    SetFrontierRegistryLockRequest, SetKpiReferenceRequest, SetRegistryLockRequest,
-    SetTagFamilyMandatoryRequest, SocketAddr, State, StoreError, SyntheticMetricExpression,
-    TagFamilyName, TagName, UpdateFrontierRequest, Uri, frontier_href,
-    frontier_status_mutation_response, get, io, metric_mutation_response, metrics_frontier_href,
-    open_store, optional_text_field, parse_metric_aggregation_ui, parse_metric_dimension_ui,
-    parse_optimization_objective_ui, parse_ui_lock_mode, post, project_mutation_response,
-    project_refresh_token_for, refresh_token_response, render_response, resolve_project_context,
-    tag_mutation_response, text_patch_field, update_frontier_status, update_project_description,
+    HypothesisAttention, IntoResponse, MergeMetricRequest, MergeTagRequest, MetricDisplayUnit,
+    MetricUnit, MoveKpiDirection, MoveKpiRequest, NavigatorState, NonEmptyText, Path,
+    ProjectMetricsQuery, RegistryLockMode, RegistryName, RenameMetricRequest, RenameTagRequest,
+    Response, Router, SetFrontierRegistryLockRequest, SetKpiReferenceRequest,
+    SetRegistryLockRequest, SetTagFamilyMandatoryRequest, SocketAddr, State, StoreError,
+    SyntheticMetricExpression, TagFamilyName, TagName, UpdateFrontierRequest,
+    UpdateHypothesisRequest, Uri, frontier_href, frontier_status_mutation_response, get,
+    hypothesis_href, hypothesis_mutation_response, io, metric_mutation_response,
+    metrics_frontier_href, open_store, optional_text_field, parse_metric_aggregation_ui,
+    parse_metric_dimension_ui, parse_optimization_objective_ui, parse_ui_lock_mode, post,
+    project_mutation_response, project_refresh_token_for, refresh_token_response, render_response,
+    resolve_project_context, tag_mutation_response, text_patch_field, update_frontier_status,
+    update_project_description,
 };
 use serde::Deserialize;
 
@@ -100,6 +102,10 @@ pub(crate) fn serve(bind: SocketAddr, limit: Option<u32>) -> Result<(), StoreErr
             .route(
                 "/project/{project}/hypothesis/{selector}",
                 get(hypothesis_detail),
+            )
+            .route(
+                "/project/{project}/hypothesis/{selector}/attention",
+                post(set_hypothesis_attention),
             )
             .route(
                 "/project/{project}/experiment/{selector}",
@@ -793,7 +799,6 @@ async fn update_frontier_summary(
                 objective: Some(NonEmptyText::new(form.objective)?),
                 status: None,
                 situation: None,
-                roadmap: None,
                 unknowns: None,
             })?;
             Ok(format!(
@@ -851,6 +856,40 @@ async fn hypothesis_detail(
     render_response(
         resolve_project_context(&state, &project)
             .and_then(|context| render_hypothesis_detail(context, selector)),
+    )
+}
+
+#[derive(Debug, Deserialize)]
+struct HypothesisAttentionForm {
+    attention: HypothesisAttention,
+}
+
+async fn set_hypothesis_attention(
+    State(state): State<NavigatorState>,
+    Path((project, selector)): Path<(String, String)>,
+    Form(form): Form<HypothesisAttentionForm>,
+) -> Response {
+    hypothesis_mutation_response(
+        resolve_project_context(&state, &project).and_then(|context| {
+            let mut store = open_store(context.project_root.as_std_path())?;
+            let updated = store.update_hypothesis(UpdateHypothesisRequest {
+                hypothesis: selector,
+                expected_revision: None,
+                title: None,
+                summary: None,
+                body: None,
+                expected_yield: None,
+                confidence: None,
+                attention: Some(form.attention),
+                tags: None,
+                parents: None,
+            })?;
+            Ok(format!(
+                "{}{}",
+                context.base_href,
+                hypothesis_href(&updated.slug)
+            ))
+        }),
     )
 }
 

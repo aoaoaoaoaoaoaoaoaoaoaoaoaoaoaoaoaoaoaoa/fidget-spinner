@@ -45,9 +45,9 @@ If you need more context, pull it from:
 - hypotheses and experiments are for KPI-directed scientific work; if a change
   is not meant to move or explain a frontier KPI, it usually does not belong in
   Spinner at all
-- stale hypotheses are cheap too; prune an obviously dead or superseded one
-  from the frontier roadmap worklist when you notice it rather than keeping
-  the active surface ceremonially tidy
+- stale hypotheses are cheap too; use `hypothesis.attention.set` to shelve an
+  obviously dead or superseded idle idea rather than keeping the worklist
+  ceremonially tidy
 - every experiment has one mandatory owning hypothesis
 - experiments and hypotheses may also cite other hypotheses or experiments as influence parents
 - the frontier brief is the one sanctioned freeform overview
@@ -60,15 +60,16 @@ If you need more context, pull it from:
 
 - `tag.add` when a new campaign or subsystem token is genuinely needed; every tag must carry a description, and supervisor locks may reject model-created tags
 - `tag.list` before inventing tags by memory; it also reports supervisor-defined families, mandatory-family rules, locks, and stale-name guidance
-- `frontier.update` when the objective, situation, roadmap worklist, or unknowns need to change; omitting a hypothesis from the replacement roadmap is how stale ideas leave the active worklist
+- `frontier.update` when the objective, situation, or unknowns need to change
 - `frontier.query.schema` when you need the stable SQL view contract for advanced frontier-local mining; it lists the public `q_*` views and columns
 - `frontier.query.sql` when the normal read tools are too narrow and you need a compact read-only SQL table over one frontier; query only `q_*` views, prefer small projections, and rely on the frontier envelope rather than adding frontier filters
 - `hypothesis.record` whenever you get a plausible KPI-moving idea, mechanism, suspicion, or branch; hypotheses are cheap idea-capture nodes, not a ritual preamble to one experiment, and every new hypothesis must set `expected_yield` and `confidence` as crude `low|medium|high` vibe checks
-- `hypothesis.update` when the title, summary, body, expected yield, confidence, tags, or influence parents need tightening; reprioritization should usually update `expected_yield` and/or `confidence` directly. This tool does not close, retire, or archive hypotheses
+- `hypothesis.update` when the title, summary, body, expected yield, confidence, tags, influence parents, or attention need tightening; reprioritization should usually update `expected_yield` and/or `confidence` directly. Hypothesis lifecycle is derived from experiments, while attention is the explicit `worklist|shelved` operator queue
+- `hypothesis.attention.set` to move a fresh or closed hypothesis onto or off the worklist. Fresh hypotheses start on the worklist. Working hypotheses with open experiments cannot be shelved
 - `experiment.open` once a hypothesis has a concrete KPI-relevant slice and is ready to be tested
 - `experiment.list` or `experiment.read` when resuming a session and you need to recover open or recently closed state
 - `experiment.update` while the experiment is still live and its summary, tags, or influence parents need refinement
-- `experiment.close` only for an already-open experiment and only when you have measured result, verdict, and rationale; this is the canonical way to put material hypothesis-driven evidence into the operator-visible record. It requires a clean git worktree and records `HEAD` automatically, anchoring to `command.working_directory` when provided, so make a fast commit in the actual implementation worktree first and attach `analysis` only when the result needs interpretation beyond the rationale
+- `experiment.close` only for an already-open experiment and only when you have measured result, verdict, and rationale; this is the canonical way to put material hypothesis-driven evidence into the operator-visible record. It requires a clean git worktree and records `HEAD` automatically, anchoring to `command.working_directory` when provided, so make a fast commit in the actual implementation worktree first and attach `analysis` only when the result needs interpretation beyond the rationale. If this is the last open experiment for the owning hypothesis, explicitly pass `keep_hypothesis_on_worklist=true` to keep pursuing it or `false` to shelve it
 - `experiment.nearest` when you need the nearest accepted, kept, rejected, or champion comparator for one structural slice
 - `metric.define` when a project-level observed metric key needs a dimension, objective, aggregation, or description; use `display_unit` only as presentation, and keep the key focused on the measured concept rather than the unit. Synthetic metrics are supervisor-defined only: you may query them through `metric.keys`, `metric.best`, `kpi.best`, Results, and frontier SQL, but you must report their observed leaf metrics rather than reporting the synthetic key itself
 - `kpi.create` before `hypothesis.record` on a new frontier, promoting one existing metric into a frontier KPI; supervisor locks may reject KPI creation, and there is intentionally no bulk KPI mutation tool
@@ -90,7 +91,7 @@ If you need more context, pull it from:
    a live experiment with `experiment.open`.
 4. Do the work.
 5. Make a fast commit for the recoverable implementation state before closing the experiment. Bypass heavyweight hooks when necessary; the bar here is recoverability, not release readiness.
-6. Close the experiment with `experiment.close`, including conditions, metrics, verdict, rationale, and optional analysis. Spinner will reject a dirty worktree and store the closing commit hash automatically.
+6. Close the experiment with `experiment.close`, including conditions, metrics, verdict, rationale, optional analysis, and `keep_hypothesis_on_worklist` when this closure leaves the owning hypothesis with no open experiments. Spinner will reject a dirty worktree and store the closing commit hash automatically.
 
 ## Discipline
 
@@ -131,10 +132,10 @@ If you need more context, pull it from:
 12. Spinner records the closing commit hash as a recoverability anchor, not as experiment identity.
 13. If you reprioritize a hypothesis, update `expected_yield` and/or
     `confidence` instead of trying to smuggle the new stance into prose alone.
-14. If you run into an obviously stale worklist hypothesis, remove it from the
-    frontier roadmap with `frontier.update`; stale cleanup is healthy and does
-    not invalidate the experiments it once organized. If it still owns open
-    experiments, close or park those experiments first.
+14. If you run into an obviously stale worklist hypothesis, shelve it with
+    `hypothesis.attention.set`; stale cleanup is healthy and does not invalidate
+    the experiments it once organized. If it still owns open experiments, close
+    or park those experiments first.
 15. Porcelain is the terse triage surface. Use `detail=full` only when concise
     output stops being decision-sufficient.
 16. Raw SQL is an escape hatch for trusted, advanced frontier-local inspection,

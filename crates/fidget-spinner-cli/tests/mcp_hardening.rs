@@ -358,6 +358,7 @@ fn seed_frontier_query_fixture(harness: &mut McpHarness) -> TestResult {
             "experiment.close",
             json!({
                 "experiment": format!("{frontier}-run"),
+                "keep_hypothesis_on_worklist": true,
                 "backend": "manual",
                 "command": {"argv": [format!("{frontier}-command")]},
                 "conditions": {"instance": frontier},
@@ -465,7 +466,6 @@ fn frontier_archive_hides_default_enumeration_without_breaking_direct_reads() ->
             objective: None,
             status: Some(FrontierStatus::Archived),
             situation: None,
-            roadmap: None,
             unknowns: None,
         }),
         "archive frontier",
@@ -612,6 +612,7 @@ fn archived_frontiers_are_absent_from_mcp_generic_surfaces() -> TestResult {
                 store.close_experiment(CloseExperimentRequest {
                     experiment: experiment.to_owned(),
                     expected_revision: None,
+                    keep_hypothesis_on_worklist: Some(true),
                     backend: ExecutionBackend::Manual,
                     command: CommandRecipe {
                         argv: vec![must(NonEmptyText::new(experiment), "command argv")?],
@@ -641,7 +642,6 @@ fn archived_frontiers_are_absent_from_mcp_generic_surfaces() -> TestResult {
                 objective: None,
                 status: Some(FrontierStatus::Archived),
                 situation: None,
-                roadmap: None,
                 unknowns: None,
             }),
             "archive frontier",
@@ -883,6 +883,7 @@ fn metric_rename_and_merge_operate_on_normalized_outcomes() -> TestResult {
             store.close_experiment(CloseExperimentRequest {
                 experiment: slug.to_owned(),
                 expected_revision: None,
+                keep_hypothesis_on_worklist: Some(true),
                 backend: ExecutionBackend::Manual,
                 command: CommandRecipe {
                     working_directory: None,
@@ -1582,20 +1583,43 @@ fn mcp_rejects_hypothesis_lifecycle_state() -> TestResult {
     assert_tool_error(&rejected);
     assert!(
         must_some(tool_error_message(&rejected), "hypothesis lifecycle error")?
-            .contains("hypothesis lifecycle state is not a mutable field")
+            .contains("hypothesis lifecycle is derived from owned experiments")
     );
 
-    let active = harness.call_tool_full(
+    assert_tool_ok(&harness.call_tool(
         86,
+        "hypothesis.attention.set",
+        json!({
+            "hypothesis": "stale-branch",
+            "attention": "shelved",
+        }),
+    )?);
+
+    let worklist = harness.call_tool_full(
+        87,
         "hypothesis.list",
         json!({"frontier": "retire-frontier"}),
     )?;
-    assert_tool_ok(&active);
-    let active_hypotheses = must_some(
-        tool_content(&active)["hypotheses"].as_array(),
+    assert_tool_ok(&worklist);
+    let worklist_hypotheses = must_some(
+        tool_content(&worklist)["hypotheses"].as_array(),
         "hypothesis list",
     )?;
-    assert_eq!(active_hypotheses.len(), 2);
+    assert_eq!(worklist_hypotheses.len(), 1);
+    assert_eq!(worklist_hypotheses[0]["slug"].as_str(), Some("live-branch"));
+
+    let shelved = harness.call_tool_full(
+        88,
+        "hypothesis.list",
+        json!({"frontier": "retire-frontier", "attention": "shelved"}),
+    )?;
+    assert_tool_ok(&shelved);
+    let shelved_hypotheses = must_some(
+        tool_content(&shelved)["hypotheses"].as_array(),
+        "hypothesis list",
+    )?;
+    assert_eq!(shelved_hypotheses.len(), 1);
+    assert_eq!(shelved_hypotheses[0]["slug"].as_str(), Some("stale-branch"));
     Ok(())
 }
 
@@ -1917,6 +1941,7 @@ fn frontier_open_is_the_grounding_surface_for_live_state() -> TestResult {
         "experiment.close",
         json!({
             "experiment": "baseline-20s",
+            "keep_hypothesis_on_worklist": true,
             "backend": "manual",
             "command": {"argv": ["baseline-20s"]},
             "conditions": {"instance": "4x5-braid"},
@@ -1959,18 +1984,18 @@ fn frontier_open_is_the_grounding_surface_for_live_state() -> TestResult {
         .iter()
         .any(|metric| metric["key"].as_str() == Some("nodes_solved"))
     );
-    let active_hypotheses = must_some(
-        content["active_hypotheses"].as_array(),
-        "active hypotheses array",
+    let worklist_hypotheses = must_some(
+        content["worklist_hypotheses"].as_array(),
+        "worklist hypotheses array",
     )?;
-    assert_eq!(active_hypotheses.len(), 1);
+    assert_eq!(worklist_hypotheses.len(), 1);
     assert_eq!(
-        active_hypotheses[0]["hypothesis"]["slug"].as_str(),
+        worklist_hypotheses[0]["hypothesis"]["slug"].as_str(),
         Some("node-local-loop")
     );
-    assert!(active_hypotheses[0]["hypothesis"].get("id").is_none());
+    assert!(worklist_hypotheses[0]["hypothesis"].get("id").is_none());
     assert_eq!(
-        active_hypotheses[0]["latest_closed_experiment"]["slug"].as_str(),
+        worklist_hypotheses[0]["latest_closed_experiment"]["slug"].as_str(),
         Some("baseline-20s")
     );
     assert_eq!(
@@ -1989,7 +2014,7 @@ fn frontier_open_is_the_grounding_surface_for_live_state() -> TestResult {
             .get("hypothesis_id")
             .is_none()
     );
-    assert!(active_hypotheses[0]["hypothesis"].get("body").is_none());
+    assert!(worklist_hypotheses[0]["hypothesis"].get("body").is_none());
     Ok(())
 }
 
@@ -2183,6 +2208,7 @@ fn experiment_nearest_finds_structural_buckets_and_champion() -> TestResult {
             "experiment.close",
             json!({
                 "experiment": slug,
+                "keep_hypothesis_on_worklist": true,
                 "backend": "manual",
                 "command": {"argv": [slug]},
                 "conditions": {
@@ -2459,6 +2485,7 @@ fn experiment_close_drives_metric_best_and_analysis() -> TestResult {
         "experiment.close",
         json!({
             "experiment": "trace-baseline",
+            "keep_hypothesis_on_worklist": true,
             "backend": "manual",
             "command": {"argv": ["trace-baseline"]},
             "conditions": {"instance": "4x5-braid"},
@@ -2483,6 +2510,7 @@ fn experiment_close_drives_metric_best_and_analysis() -> TestResult {
         "experiment.close",
         json!({
             "experiment": "trace-node-reopt",
+            "keep_hypothesis_on_worklist": true,
             "backend": "manual",
             "command": {"argv": ["matched-lp-site-traces"]},
             "conditions": {"instance": "4x5-braid"},
@@ -2679,6 +2707,7 @@ fn synthetic_kpi_ranks_from_reported_observed_leaves() -> TestResult {
         store.close_experiment_from_mcp(CloseExperimentRequest {
             experiment: "rate-baseline".to_owned(),
             expected_revision: None,
+            keep_hypothesis_on_worklist: Some(true),
             backend: ExecutionBackend::Manual,
             command: must(
                 CommandRecipe::new(
@@ -2953,6 +2982,7 @@ fn experiment_close_rejects_dirty_worktree() -> TestResult {
         "experiment.close",
         json!({
             "experiment": "dirty-run",
+            "keep_hypothesis_on_worklist": true,
             "backend": "manual",
             "command": {"argv": ["dirty-run"]},
             "conditions": {"instance": "4x5-braid"},
@@ -3073,6 +3103,7 @@ fn experiment_close_uses_command_worktree_when_present() -> TestResult {
         "experiment.close",
         json!({
             "experiment": "worktree-run",
+            "keep_hypothesis_on_worklist": true,
             "backend": "worktree_process",
             "command": {
                 "working_directory": worktree_root.as_str(),

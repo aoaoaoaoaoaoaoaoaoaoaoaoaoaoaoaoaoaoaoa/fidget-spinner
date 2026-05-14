@@ -97,7 +97,7 @@ const TOOL_SPECS: &[ToolSpec] = &[
     },
     ToolSpec {
         name: "frontier.update",
-        description: "Patch frontier objective and grounding state, including the roadmap worklist.",
+        description: "Patch frontier objective and grounding state.",
         dispatch: DispatchTarget::Worker,
         replay: ReplayContract::NeverReplay,
     },
@@ -127,7 +127,7 @@ const TOOL_SPECS: &[ToolSpec] = &[
     },
     ToolSpec {
         name: "hypothesis.list",
-        description: "List hypotheses, optionally narrowed by frontier or tag.",
+        description: "List hypotheses, defaulting to the frontier worklist; optionally filter by attention, lifecycle, frontier, or tag.",
         dispatch: DispatchTarget::Worker,
         replay: ReplayContract::Convergent,
     },
@@ -139,7 +139,13 @@ const TOOL_SPECS: &[ToolSpec] = &[
     },
     ToolSpec {
         name: "hypothesis.update",
-        description: "Patch hypothesis title, summary, body, expected yield, confidence, tags, or influence parents. It does not close, retire, or archive hypotheses.",
+        description: "Patch hypothesis title, summary, body, expected yield, confidence, attention, tags, or influence parents. It does not close or archive hypotheses.",
+        dispatch: DispatchTarget::Worker,
+        replay: ReplayContract::NeverReplay,
+    },
+    ToolSpec {
+        name: "hypothesis.attention.set",
+        description: "Move a hypothesis between the worklist and shelf. Working hypotheses with open experiments cannot be shelved.",
         dispatch: DispatchTarget::Worker,
         replay: ReplayContract::NeverReplay,
     },
@@ -175,7 +181,7 @@ const TOOL_SPECS: &[ToolSpec] = &[
     },
     ToolSpec {
         name: "experiment.close",
-        description: "Close one open experiment with typed conditions, structured metrics, verdict, rationale, and optional analysis. Requires a clean git worktree and records HEAD automatically from command.working_directory when provided, else from the bound project root.",
+        description: "Close one open experiment with typed conditions, structured metrics, verdict, rationale, optional analysis, and an explicit keep_hypothesis_on_worklist decision when this is the hypothesis's last open experiment. Requires a clean git worktree and records HEAD automatically from command.working_directory when provided, else from the bound project root.",
         dispatch: DispatchTarget::Worker,
         replay: ReplayContract::NeverReplay,
     },
@@ -425,7 +431,6 @@ fn tool_input_schema(name: &str) -> Value {
                     "situation",
                     nullable_string_schema("Optional frontier situation text."),
                 ),
-                ("roadmap", roadmap_schema()),
                 (
                     "unknowns",
                     string_array_schema("Ordered frontier unknowns."),
@@ -485,10 +490,34 @@ fn tool_input_schema(name: &str) -> Value {
                     "frontier",
                     selector_schema("Optional frontier UUID or slug."),
                 ),
+                (
+                    "attention",
+                    enum_string_schema(
+                        &["worklist", "shelved", "all"],
+                        "Attention filter. Defaults to worklist.",
+                    ),
+                ),
+                (
+                    "lifecycle",
+                    enum_string_schema(
+                        &["fresh", "working", "closed", "all"],
+                        "Derived lifecycle filter. Defaults to all.",
+                    ),
+                ),
                 ("tags", string_array_schema("Require all listed tags.")),
                 ("limit", integer_schema("Optional row cap.")),
             ],
             &[],
+        ),
+        "hypothesis.attention.set" => object_schema(
+            &[
+                ("hypothesis", selector_schema("Hypothesis UUID or slug.")),
+                (
+                    "attention",
+                    enum_string_schema(&["worklist", "shelved"], "Replacement attention state."),
+                ),
+            ],
+            &["hypothesis", "attention"],
         ),
         "hypothesis.read" | "hypothesis.history" => object_schema(
             &[("hypothesis", selector_schema("Hypothesis UUID or slug."))],
@@ -517,6 +546,10 @@ fn tool_input_schema(name: &str) -> Value {
                         &["low", "medium", "high"],
                         "Replacement confidence vibe check.",
                     ),
+                ),
+                (
+                    "attention",
+                    enum_string_schema(&["worklist", "shelved"], "Replacement attention state."),
                 ),
                 ("tags", string_array_schema("Replacement tag set.")),
                 ("parents", vertex_selector_array_schema()),
@@ -584,6 +617,12 @@ fn tool_input_schema(name: &str) -> Value {
                 (
                     "expected_revision",
                     integer_schema("Optimistic concurrency guard."),
+                ),
+                (
+                    "keep_hypothesis_on_worklist",
+                    boolean_schema(
+                        "Required when this close leaves the owning hypothesis with no open experiments.",
+                    ),
                 ),
                 (
                     "backend",
@@ -908,23 +947,6 @@ fn vertex_selector_schema() -> Value {
 
 fn vertex_selector_array_schema() -> Value {
     json!({ "type": "array", "items": vertex_selector_schema() })
-}
-
-fn roadmap_schema() -> Value {
-    json!({
-        "type": "array",
-        "description": "Replacement frontier roadmap worklist. A stale idea stops being worklist-active when omitted here; hypotheses themselves are not closed or archived.",
-        "items": {
-            "type": "object",
-            "properties": {
-                "rank": { "type": "integer", "minimum": 0 },
-                "hypothesis": { "type": "string" },
-                "summary": { "type": "string" }
-            },
-            "required": ["rank", "hypothesis"],
-            "additionalProperties": false
-        }
-    })
 }
 
 fn command_schema() -> Value {

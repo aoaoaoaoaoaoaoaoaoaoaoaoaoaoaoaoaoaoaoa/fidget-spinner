@@ -12,22 +12,23 @@ use axum::routing::{get, post};
 use camino::Utf8PathBuf;
 use fidget_spinner_core::{
     ExperimentAnalysis, ExperimentOutcome, ExperimentStatus, FrontierRecord, FrontierStatus,
-    FrontierVerdict, HypothesisAssessmentLevel, KnownMetricUnit, MetricAggregation,
-    MetricDimension, MetricDisplayUnit, MetricQuantity, MetricUnit, NonEmptyText,
-    OptimizationObjective, RegistryLockMode, RegistryName, RunDimensionValue, Slug,
+    FrontierVerdict, HypothesisAssessmentLevel, HypothesisAttention, KnownMetricUnit,
+    MetricAggregation, MetricDimension, MetricDisplayUnit, MetricQuantity, MetricUnit,
+    NonEmptyText, OptimizationObjective, RegistryLockMode, RegistryName, RunDimensionValue, Slug,
     SyntheticMetricExpression, TagFamilyName, TagName, VertexRef,
 };
 use fidget_spinner_store_sqlite::{
     AssignTagFamilyRequest, CreateKpiRequest, CreateTagFamilyRequest, DefineMetricRequest,
     DefineSyntheticMetricRequest, DeleteKpiReferenceRequest, DeleteKpiRequest, DeleteMetricRequest,
     DeleteTagRequest, ExperimentDetail, ExperimentSummary, FrontierMetricSeries,
-    FrontierOpenProjection, FrontierSummary, HypothesisCurrentState, HypothesisDetail, KpiSummary,
-    ListExperimentsQuery, ListFrontiersQuery, ListHypothesesQuery, MergeMetricRequest,
-    MergeTagRequest, MetricKeySummary, MetricKeysQuery, MetricScope, MoveKpiDirection,
-    MoveKpiRequest, ProjectStatus, RenameMetricRequest, RenameTagRequest, STATE_DB_NAME,
-    SetFrontierRegistryLockRequest, SetKpiReferenceRequest, SetRegistryLockRequest,
-    SetTagFamilyMandatoryRequest, StoreError, TextPatch, UpdateFrontierRequest,
-    UpdateProjectRequest, VertexSummary, list_project_manifests, project_state_home,
+    FrontierOpenProjection, FrontierSummary, HypothesisAttentionFilter, HypothesisCurrentState,
+    HypothesisDetail, HypothesisLifecycleFilter, KpiSummary, ListExperimentsQuery,
+    ListFrontiersQuery, ListHypothesesQuery, MergeMetricRequest, MergeTagRequest, MetricKeySummary,
+    MetricKeysQuery, MetricScope, MoveKpiDirection, MoveKpiRequest, ProjectStatus,
+    RenameMetricRequest, RenameTagRequest, STATE_DB_NAME, SetFrontierRegistryLockRequest,
+    SetKpiReferenceRequest, SetRegistryLockRequest, SetTagFamilyMandatoryRequest, StoreError,
+    TextPatch, UpdateFrontierRequest, UpdateHypothesisRequest, UpdateProjectRequest, VertexSummary,
+    list_project_manifests, project_state_home,
 };
 use maud::{DOCTYPE, Markup, PreEscaped, html};
 use percent_encoding::{NON_ALPHANUMERIC, percent_decode_str, utf8_percent_encode};
@@ -365,6 +366,25 @@ fn metric_mutation_response(result: Result<String, StoreError>) -> Response {
     }
 }
 
+fn hypothesis_mutation_response(result: Result<String, StoreError>) -> Response {
+    match result {
+        Ok(location) => Redirect::to(&location).into_response(),
+        Err(StoreError::UnknownHypothesisSelector(_)) => {
+            (StatusCode::NOT_FOUND, "not found".to_owned()).into_response()
+        }
+        Err(StoreError::WorkingHypothesisCannotBeShelved { hypothesis }) => (
+            StatusCode::CONFLICT,
+            format!("hypothesis `{hypothesis}` has open experiments and cannot be shelved"),
+        )
+            .into_response(),
+        Err(error) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("hypothesis worklist update failed: {error}"),
+        )
+            .into_response(),
+    }
+}
+
 fn parse_ui_lock_mode(raw: &str) -> Result<RegistryLockMode, StoreError> {
     match raw {
         "add" => Ok(RegistryLockMode::Definition),
@@ -499,7 +519,6 @@ fn update_frontier_status(
         objective: None,
         status: Some(status),
         situation: None,
-        roadmap: None,
         unknowns: None,
     })?;
     Ok(format!(
@@ -615,7 +634,7 @@ fn render_sidebar_frontier_item(
                 @if frontier.status == FrontierStatus::Archived {
                     "archived"
                 } @else {
-                    (frontier.active_hypothesis_count) " active · "
+                    (frontier.worklist_hypothesis_count) " worklist · "
                     (frontier.open_experiment_count) " open"
                 }
             }
@@ -1008,22 +1027,6 @@ fn hypothesis_href(slug: &Slug) -> String {
     format!("hypothesis/{}", encode_path_segment(slug.as_str()))
 }
 
-fn hypothesis_href_from_id(id: fidget_spinner_core::HypothesisId) -> String {
-    format!("hypothesis/{}", encode_path_segment(&id.to_string()))
-}
-
-fn hypothesis_title_for_roadmap_item(
-    projection: &FrontierOpenProjection,
-    hypothesis_id: fidget_spinner_core::HypothesisId,
-) -> String {
-    projection
-        .active_hypotheses
-        .iter()
-        .find(|state| state.hypothesis.id == hypothesis_id)
-        .map(|state| state.hypothesis.title.to_string())
-        .unwrap_or_else(|| hypothesis_id.to_string())
-}
-
 fn experiment_href(slug: &Slug) -> String {
     format!("experiment/{}", encode_path_segment(slug.as_str()))
 }
@@ -1099,7 +1102,7 @@ mod tests {
         metric_registry_filter_text, render_kpi_registry, render_metric_registry_table,
     };
     use super::results::{
-        MetricChartAxis, MetricChartPointMarker, best_metric_table_title_split, history_hypotheses,
+        MetricChartAxis, MetricChartPointMarker, best_metric_table_title_split,
         metric_chart_point_marker, metric_chart_secondary_grid_values, metric_chart_x_major_values,
         metric_chart_x_minor_values, render_metric_series_section, resolve_selected_metric_keys,
         truncated_entry_count,
@@ -1116,14 +1119,14 @@ mod tests {
 
     use fidget_spinner_core::{
         DefaultVisibility, ExperimentStatus, FrontierBrief, FrontierId, FrontierRecord,
-        FrontierStatus, FrontierVerdict, HypothesisAssessmentLevel, HypothesisId, KpiId,
-        KpiOrdinal, KpiReferenceId, KpiReferenceOrdinal, MetricAggregation, MetricDefinitionKind,
-        MetricDisplayUnit, MetricUnit, NonEmptyText, OptimizationObjective, Slug,
+        FrontierStatus, FrontierVerdict, HypothesisAssessmentLevel, HypothesisAttention,
+        HypothesisId, HypothesisLifecycle, KpiId, KpiOrdinal, KpiReferenceId, KpiReferenceOrdinal,
+        MetricAggregation, MetricDefinitionKind, MetricDisplayUnit, MetricUnit, NonEmptyText,
+        OptimizationObjective, Slug,
     };
     use fidget_spinner_store_sqlite::{
         ExperimentSummary, FrontierMetricPoint, FrontierMetricSeries, FrontierSummary,
-        HypothesisCurrentState, HypothesisSummary, KpiReferenceSummary, KpiSummary,
-        MetricKeySummary, ProjectStore,
+        HypothesisSummary, KpiReferenceSummary, KpiSummary, MetricKeySummary, ProjectStore,
     };
     use time::OffsetDateTime;
     use time::format_description::well_known::Rfc3339;
@@ -1328,7 +1331,7 @@ mod tests {
             label: frontier.label,
             objective: frontier.objective,
             status: frontier.status,
-            active_hypothesis_count: 0,
+            worklist_hypothesis_count: 0,
             open_experiment_count: 0,
             revision: frontier.revision,
             updated_at: frontier.updated_at,
@@ -1390,8 +1393,12 @@ mod tests {
             ),
             expected_yield: HypothesisAssessmentLevel::Medium,
             confidence: HypothesisAssessmentLevel::Medium,
+            attention: HypothesisAttention::Worklist,
+            lifecycle: HypothesisLifecycle::Fresh,
+            experiment_count: 0,
             tags: Vec::new(),
             open_experiment_count: 0,
+            worklist_ordinal: None,
             latest_verdict: None,
             updated_at: test_timestamp("2026-04-11T00:00:00Z"),
         }
@@ -1531,32 +1538,6 @@ mod tests {
         assert_eq!(
             metric_chart_point_marker(FrontierVerdict::Rejected),
             MetricChartPointMarker::Cross
-        );
-    }
-
-    #[test]
-    fn history_hypotheses_exclude_roadmap_worklist_items() {
-        let frontier_id = FrontierId::fresh();
-        let worklist = test_hypothesis(frontier_id, "worklist-idea", "Worklist idea");
-        let dormant = test_hypothesis(frontier_id, "dormant-idea", "Dormant idea");
-        let open = HypothesisSummary {
-            open_experiment_count: 1,
-            ..test_hypothesis(frontier_id, "open-idea", "Open idea")
-        };
-        let history = history_hypotheses(
-            vec![worklist.clone(), dormant.clone(), open],
-            &[HypothesisCurrentState {
-                hypothesis: worklist,
-                open_experiments: Vec::new(),
-                latest_closed_experiment: None,
-            }],
-        );
-        assert_eq!(
-            history
-                .iter()
-                .map(|hypothesis| hypothesis.slug.as_str())
-                .collect::<Vec<_>>(),
-            vec!["dormant-idea"]
         );
     }
 

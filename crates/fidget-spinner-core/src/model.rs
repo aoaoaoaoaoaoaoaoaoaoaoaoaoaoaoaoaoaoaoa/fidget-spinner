@@ -1346,6 +1346,42 @@ impl HypothesisAssessmentLevel {
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
+pub enum HypothesisAttention {
+    Worklist,
+    Shelved,
+}
+
+impl HypothesisAttention {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Worklist => "worklist",
+            Self::Shelved => "shelved",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HypothesisLifecycle {
+    Fresh,
+    Working,
+    Closed,
+}
+
+impl HypothesisLifecycle {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Fresh => "fresh",
+            Self::Working => "working",
+            Self::Closed => "closed",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum TagNameDisposition {
     Renamed,
     Merged,
@@ -1495,17 +1531,9 @@ impl CommandRecipe {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub struct FrontierRoadmapItem {
-    pub rank: u32,
-    pub hypothesis_id: HypothesisId,
-    pub summary: Option<NonEmptyText>,
-}
-
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub struct FrontierBrief {
     pub situation: Option<NonEmptyText>,
-    pub roadmap: Vec<FrontierRoadmapItem>,
     pub unknowns: Vec<NonEmptyText>,
 }
 
@@ -1532,6 +1560,8 @@ pub struct HypothesisRecord {
     pub body: NonEmptyText,
     pub expected_yield: HypothesisAssessmentLevel,
     pub confidence: HypothesisAssessmentLevel,
+    pub attention: HypothesisAttention,
+    pub worklist_ordinal: Option<u32>,
     pub tags: Vec<TagName>,
     pub revision: u64,
     pub created_at: OffsetDateTime,

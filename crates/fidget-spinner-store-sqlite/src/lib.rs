@@ -8,9 +8,9 @@ use camino::{Utf8Path, Utf8PathBuf};
 use fidget_spinner_core::{
     CommandRecipe, CoreError, DefaultVisibility, ExecutionBackend, ExperimentAnalysis,
     ExperimentId, ExperimentOutcome, ExperimentRecord, ExperimentStatus, FieldValueType,
-    FrontierBrief, FrontierId, FrontierKpiRecord, FrontierRecord, FrontierRoadmapItem,
-    FrontierStatus, FrontierVerdict, GitCommitHash, HiddenByDefaultReason,
-    HypothesisAssessmentLevel, HypothesisId, HypothesisRecord, KpiId, KpiOrdinal, KpiReferenceId,
+    FrontierBrief, FrontierId, FrontierKpiRecord, FrontierRecord, FrontierStatus, FrontierVerdict,
+    GitCommitHash, HiddenByDefaultReason, HypothesisAssessmentLevel, HypothesisAttention,
+    HypothesisId, HypothesisLifecycle, HypothesisRecord, KpiId, KpiOrdinal, KpiReferenceId,
     KpiReferenceOrdinal, KpiReferenceRecord, MetricAggregation, MetricDefinition,
     MetricDefinitionKind, MetricDimension, MetricDisplayUnit, MetricId, MetricQuantity, MetricUnit,
     MetricValue, NonEmptyText, OptimizationObjective, RegistryLockId, RegistryLockMode,
@@ -36,7 +36,7 @@ pub use query::{
 pub const STORE_DIR_NAME: &str = ".fidget_spinner";
 pub const GIT_DIR_NAME: &str = ".git";
 pub const STATE_DB_NAME: &str = "state.sqlite";
-pub const CURRENT_STORE_FORMAT_VERSION: u32 = 17;
+pub const CURRENT_STORE_FORMAT_VERSION: u32 = 18;
 pub const STATE_HOME_DIR_NAME: &str = "fidget-spinner";
 pub const PROJECT_STATE_DIR_NAME: &str = "projects";
 const LEGACY_PROJECT_CONFIG_NAME: &str = "project.json";
@@ -126,6 +126,14 @@ pub enum StoreError {
     #[error("experiment `{0}` is still open")]
     ExperimentStillOpen(ExperimentId),
     #[error(
+        "closing this experiment would leave hypothesis `{hypothesis}` with no open experiments; pass keep_hypothesis_on_worklist=true to keep it queued for more work, or false to shelve it"
+    )]
+    HypothesisAttentionAfterCloseRequired { hypothesis: Slug },
+    #[error(
+        "hypothesis `{hypothesis}` owns open experiments and must stay on the worklist; close or park those experiments before shelving it"
+    )]
+    WorkingHypothesisCannotBeShelved { hypothesis: Slug },
+    #[error(
         "closing an experiment requires a git worktree at `{0}` so Spinner can record a commit hash"
     )]
     GitWorktreeRequired(Utf8PathBuf),
@@ -157,8 +165,6 @@ pub enum StoreError {
     CrossFrontierInfluence,
     #[error("self edges are not allowed")]
     SelfEdge,
-    #[error("unknown roadmap hypothesis `{0}`")]
-    UnknownRoadmapHypothesis(String),
     #[error(
         "manual experiments may omit command context only by using an empty argv surrogate explicitly"
     )]
@@ -329,17 +335,10 @@ pub struct FrontierSummary {
     pub label: NonEmptyText,
     pub objective: NonEmptyText,
     pub status: FrontierStatus,
-    pub active_hypothesis_count: u64,
+    pub worklist_hypothesis_count: u64,
     pub open_experiment_count: u64,
     pub revision: u64,
     pub updated_at: OffsetDateTime,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub struct FrontierRoadmapItemDraft {
-    pub rank: u32,
-    pub hypothesis: String,
-    pub summary: Option<NonEmptyText>,
 }
 
 #[derive(Clone, Debug)]
@@ -356,7 +355,6 @@ pub struct UpdateFrontierRequest {
     pub objective: Option<NonEmptyText>,
     pub status: Option<FrontierStatus>,
     pub situation: Option<TextPatch<NonEmptyText>>,
-    pub roadmap: Option<Vec<FrontierRoadmapItemDraft>>,
     pub unknowns: Option<Vec<NonEmptyText>>,
 }
 
@@ -382,13 +380,58 @@ pub struct UpdateHypothesisRequest {
     pub body: Option<NonEmptyText>,
     pub expected_yield: Option<HypothesisAssessmentLevel>,
     pub confidence: Option<HypothesisAssessmentLevel>,
+    pub attention: Option<HypothesisAttention>,
     pub tags: Option<BTreeSet<TagName>>,
     pub parents: Option<Vec<VertexSelector>>,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HypothesisAttentionFilter {
+    #[default]
+    Worklist,
+    Shelved,
+    All,
+}
+
+impl HypothesisAttentionFilter {
+    #[must_use]
+    pub const fn matches(self, attention: HypothesisAttention) -> bool {
+        match self {
+            Self::Worklist => matches!(attention, HypothesisAttention::Worklist),
+            Self::Shelved => matches!(attention, HypothesisAttention::Shelved),
+            Self::All => true,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HypothesisLifecycleFilter {
+    Fresh,
+    Working,
+    Closed,
+    #[default]
+    All,
+}
+
+impl HypothesisLifecycleFilter {
+    #[must_use]
+    pub const fn matches(self, lifecycle: HypothesisLifecycle) -> bool {
+        match self {
+            Self::Fresh => matches!(lifecycle, HypothesisLifecycle::Fresh),
+            Self::Working => matches!(lifecycle, HypothesisLifecycle::Working),
+            Self::Closed => matches!(lifecycle, HypothesisLifecycle::Closed),
+            Self::All => true,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default)]
 pub struct ListHypothesesQuery {
     pub frontier: Option<String>,
+    pub attention: HypothesisAttentionFilter,
+    pub lifecycle: HypothesisLifecycleFilter,
     pub tags: BTreeSet<TagName>,
     pub limit: Option<u32>,
 }
@@ -412,6 +455,10 @@ pub struct HypothesisSummary {
     pub summary: NonEmptyText,
     pub expected_yield: HypothesisAssessmentLevel,
     pub confidence: HypothesisAssessmentLevel,
+    pub attention: HypothesisAttention,
+    pub lifecycle: HypothesisLifecycle,
+    pub worklist_ordinal: Option<u32>,
+    pub experiment_count: u64,
     pub tags: Vec<TagName>,
     pub open_experiment_count: u64,
     pub latest_verdict: Option<FrontierVerdict>,
@@ -465,6 +512,7 @@ pub struct ExperimentOutcomePatch {
 pub struct CloseExperimentRequest {
     pub experiment: String,
     pub expected_revision: Option<u64>,
+    pub keep_hypothesis_on_worklist: Option<bool>,
     pub backend: ExecutionBackend,
     pub command: CommandRecipe,
     pub dimensions: BTreeMap<NonEmptyText, RunDimensionValue>,
@@ -754,7 +802,7 @@ pub struct FrontierOpenProjection {
     pub active_tags: Vec<TagName>,
     pub kpis: Vec<KpiSummary>,
     pub active_metric_keys: Vec<MetricKeySummary>,
-    pub active_hypotheses: Vec<HypothesisCurrentState>,
+    pub worklist_hypotheses: Vec<HypothesisCurrentState>,
     pub open_experiments: Vec<ExperimentSummary>,
 }
 
@@ -2135,7 +2183,7 @@ impl ProjectStore {
         record: FrontierRecord,
     ) -> Result<FrontierSummary, StoreError> {
         Ok(FrontierSummary {
-            active_hypothesis_count: self.active_hypothesis_count(record.id)?,
+            worklist_hypothesis_count: self.worklist_hypothesis_count(record.id)?,
             open_experiment_count: self.open_experiment_count(Some(record.id))?,
             id: record.id,
             slug: record.slug,
@@ -2165,25 +2213,6 @@ impl ProjectStore {
             )
             .optional()?
             .flatten();
-        let roadmap = {
-            let mut statement = self.connection.prepare(
-                "SELECT ordinal, hypothesis_id, summary
-                 FROM frontier_roadmap_items
-                 WHERE frontier_id = ?1
-                 ORDER BY ordinal ASC",
-            )?;
-            let rows = statement.query_map(params![frontier_id.to_string()], |row| {
-                let ordinal = row.get::<_, u32>(0)?;
-                Ok(FrontierRoadmapItem {
-                    rank: ordinal.saturating_add(1),
-                    hypothesis_id: HypothesisId::from_uuid(parse_uuid_sql(
-                        &row.get::<_, String>(1)?,
-                    )?),
-                    summary: parse_optional_non_empty_text(row.get::<_, Option<String>>(2)?)?,
-                })
-            })?;
-            rows.collect::<Result<Vec<_>, _>>()?
-        };
         let unknowns = {
             let mut statement = self.connection.prepare(
                 "SELECT body
@@ -2198,7 +2227,6 @@ impl ProjectStore {
         };
         Ok(FrontierBrief {
             situation,
-            roadmap,
             unknowns,
         })
     }
@@ -2234,19 +2262,6 @@ impl ProjectStore {
                 request.situation,
                 frontier.brief.situation.clone(),
             ),
-            roadmap: match request.roadmap {
-                Some(items) => items
-                    .into_iter()
-                    .map(|item| {
-                        Ok(FrontierRoadmapItem {
-                            rank: item.rank,
-                            hypothesis_id: self.resolve_hypothesis(&item.hypothesis)?.id,
-                            summary: item.summary,
-                        })
-                    })
-                    .collect::<Result<Vec<_>, StoreError>>()?,
-                None => frontier.brief.roadmap.clone(),
-            },
             unknowns: request.unknowns.unwrap_or(frontier.brief.unknowns.clone()),
         };
         let updated = FrontierRecord {
@@ -2310,6 +2325,8 @@ impl ProjectStore {
             body: request.body,
             expected_yield: request.expected_yield,
             confidence: request.confidence,
+            attention: HypothesisAttention::Worklist,
+            worklist_ordinal: None,
             tags: request.tags.iter().cloned().collect(),
             revision: 1,
             created_at: now,
@@ -2400,6 +2417,13 @@ impl ProjectStore {
         if let Some(body) = request.body.as_ref() {
             validate_hypothesis_body(body)?;
         }
+        if request.attention == Some(HypothesisAttention::Shelved)
+            && self.hypothesis_open_experiment_count(record.id)? > 0
+        {
+            return Err(StoreError::WorkingHypothesisCannotBeShelved {
+                hypothesis: record.slug,
+            });
+        }
         let tag_ids = request
             .tags
             .as_ref()
@@ -2414,6 +2438,11 @@ impl ProjectStore {
             body: request.body.unwrap_or(record.body.clone()),
             expected_yield: request.expected_yield.unwrap_or(record.expected_yield),
             confidence: request.confidence.unwrap_or(record.confidence),
+            attention: request.attention.unwrap_or(record.attention),
+            worklist_ordinal: match request.attention {
+                Some(HypothesisAttention::Shelved) => None,
+                Some(HypothesisAttention::Worklist) | None => record.worklist_ordinal,
+            },
             tags: request
                 .tags
                 .clone()
@@ -2506,6 +2535,19 @@ impl ProjectStore {
         insert_experiment(&transaction, &record)?;
         replace_experiment_tags(&transaction, record.id, &tag_ids)?;
         replace_influence_parents(&transaction, VertexRef::Experiment(id), &parents)?;
+        let maybe_reactivated_hypothesis = if hypothesis.attention == HypothesisAttention::Shelved {
+            let reactivated = HypothesisRecord {
+                attention: HypothesisAttention::Worklist,
+                worklist_ordinal: None,
+                revision: hypothesis.revision.saturating_add(1),
+                updated_at: now,
+                ..hypothesis
+            };
+            update_hypothesis_row(&transaction, &reactivated)?;
+            Some(reactivated)
+        } else {
+            None
+        };
         record_event(
             &transaction,
             "experiment",
@@ -2514,6 +2556,16 @@ impl ProjectStore {
             "opened",
             &record,
         )?;
+        if let Some(reactivated) = maybe_reactivated_hypothesis.as_ref() {
+            record_event(
+                &transaction,
+                "hypothesis",
+                &reactivated.id.to_string(),
+                reactivated.revision,
+                "attention_updated",
+                reactivated,
+            )?;
+        }
         transaction.commit()?;
         Ok(record)
     }
@@ -2661,6 +2713,23 @@ impl ProjectStore {
         if record.status == ExperimentStatus::Closed {
             return Err(StoreError::ExperimentAlreadyClosed(record.id));
         }
+        let hypothesis = self.hypothesis_by_id(record.hypothesis_id)?;
+        let open_experiment_count = self.hypothesis_open_experiment_count(hypothesis.id)?;
+        let closes_last_open_experiment = open_experiment_count == 1;
+        let keep_hypothesis_on_worklist = if closes_last_open_experiment {
+            request.keep_hypothesis_on_worklist.ok_or_else(|| {
+                StoreError::HypothesisAttentionAfterCloseRequired {
+                    hypothesis: hypothesis.slug.clone(),
+                }
+            })?
+        } else {
+            if request.keep_hypothesis_on_worklist == Some(false) {
+                return Err(StoreError::WorkingHypothesisCannotBeShelved {
+                    hypothesis: hypothesis.slug,
+                });
+            }
+            true
+        };
         enforce_revision(
             "experiment",
             &request.experiment,
@@ -2693,6 +2762,29 @@ impl ProjectStore {
         update_experiment_row(&transaction, &updated)?;
         replace_experiment_dimensions(&transaction, updated.id, updated.outcome.as_ref())?;
         replace_experiment_metrics(&transaction, updated.id, updated.outcome.as_ref())?;
+        let attention = if keep_hypothesis_on_worklist {
+            HypothesisAttention::Worklist
+        } else {
+            HypothesisAttention::Shelved
+        };
+        let maybe_attention_update = if hypothesis.attention != attention
+            || (attention == HypothesisAttention::Shelved && hypothesis.worklist_ordinal.is_some())
+        {
+            let adjusted_hypothesis = HypothesisRecord {
+                attention,
+                worklist_ordinal: match attention {
+                    HypothesisAttention::Worklist => hypothesis.worklist_ordinal,
+                    HypothesisAttention::Shelved => None,
+                },
+                revision: hypothesis.revision.saturating_add(1),
+                updated_at: updated.updated_at,
+                ..hypothesis
+            };
+            update_hypothesis_row(&transaction, &adjusted_hypothesis)?;
+            Some(adjusted_hypothesis)
+        } else {
+            None
+        };
         record_event(
             &transaction,
             "experiment",
@@ -2701,14 +2793,24 @@ impl ProjectStore {
             "closed",
             &updated,
         )?;
+        if let Some(adjusted_hypothesis) = maybe_attention_update.as_ref() {
+            record_event(
+                &transaction,
+                "hypothesis",
+                &adjusted_hypothesis.id.to_string(),
+                adjusted_hypothesis.revision,
+                "attention_updated",
+                adjusted_hypothesis,
+            )?;
+        }
         transaction.commit()?;
         Ok(updated)
     }
 
     pub fn frontier_open(&self, selector: &str) -> Result<FrontierOpenProjection, StoreError> {
         let frontier = self.resolve_frontier(selector)?;
-        let active_hypothesis_ids = self.active_hypothesis_ids(frontier.id, &frontier.brief)?;
-        let active_hypotheses = active_hypothesis_ids
+        let worklist_hypothesis_ids = self.worklist_hypothesis_ids(frontier.id)?;
+        let worklist_hypotheses = worklist_hypothesis_ids
             .into_iter()
             .map(|hypothesis_id| {
                 let summary =
@@ -2741,16 +2843,16 @@ impl ProjectStore {
             limit: None,
             ..ListExperimentsQuery::default()
         })?;
-        let active_tags = derive_active_tags(&active_hypotheses, &open_experiments);
+        let active_tags = derive_active_tags(&worklist_hypotheses, &open_experiments);
         let active_metric_keys =
-            self.live_metric_keys(frontier.id, &active_hypotheses, &open_experiments)?;
+            self.live_metric_keys(frontier.id, &worklist_hypotheses, &open_experiments)?;
         let kpis = self.frontier_kpis(frontier.id)?;
         Ok(FrontierOpenProjection {
             frontier,
             active_tags,
             kpis,
             active_metric_keys,
-            active_hypotheses,
+            worklist_hypotheses,
             open_experiments,
         })
     }
@@ -3147,13 +3249,20 @@ impl ProjectStore {
             .map(|selector| self.resolve_frontier(selector).map(|frontier| frontier.id))
             .transpose()?;
         let records = self.load_hypothesis_records_with_visibility(frontier_id, visibility)?;
-        let filtered = records
+        let mut filtered = records
             .into_iter()
+            .map(|record| self.hypothesis_summary_from_record(record))
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
+            .filter(|summary| query.attention.matches(summary.attention))
+            .filter(|summary| query.lifecycle.matches(summary.lifecycle))
             .filter(|record| {
                 query.tags.is_empty() || query.tags.iter().all(|tag| record.tags.contains(tag))
             })
-            .map(|record| self.hypothesis_summary_from_record(record))
-            .collect::<Result<Vec<_>, _>>()?;
+            .collect::<Vec<_>>();
+        filtered.sort_by(|left, right| {
+            hypothesis_summary_order(left).cmp(&hypothesis_summary_order(right))
+        });
         Ok(apply_limit(filtered, query.limit))
     }
 
@@ -3635,7 +3744,7 @@ impl ProjectStore {
         self.connection
             .query_row(
                 "SELECT id, slug, frontier_id, title, summary, body, expected_yield, confidence,
-                        revision, created_at, updated_at
+                        attention, worklist_ordinal, revision, created_at, updated_at
                  FROM hypotheses WHERE id = ?1",
                 params![id.to_string()],
                 |row| self.decode_hypothesis_row(row),
@@ -3676,7 +3785,7 @@ impl ProjectStore {
                 .connection
                 .query_row(
                     "SELECT id, slug, frontier_id, title, summary, body, expected_yield, confidence,
-                            revision, created_at, updated_at
+                            attention, worklist_ordinal, revision, created_at, updated_at
                      FROM hypotheses WHERE id = ?1",
                     params![uuid.to_string()],
                     |row| self.decode_hypothesis_row(row),
@@ -3686,7 +3795,7 @@ impl ProjectStore {
                 .connection
                 .query_row(
                     "SELECT id, slug, frontier_id, title, summary, body, expected_yield, confidence,
-                            revision, created_at, updated_at
+                            attention, worklist_ordinal, revision, created_at, updated_at
                      FROM hypotheses WHERE slug = ?1",
                     params![slug.as_str()],
                     |row| self.decode_hypothesis_row(row),
@@ -3807,6 +3916,7 @@ impl ProjectStore {
         let base_sql = "SELECT hypotheses.id, hypotheses.slug, hypotheses.frontier_id,
                                hypotheses.title, hypotheses.summary, hypotheses.body,
                                hypotheses.expected_yield, hypotheses.confidence,
+                               hypotheses.attention, hypotheses.worklist_ordinal,
                                hypotheses.revision, hypotheses.created_at, hypotheses.updated_at
                         FROM hypotheses
                         JOIN frontiers ON frontiers.id = hypotheses.frontier_id";
@@ -3960,10 +4070,12 @@ impl ProjectStore {
             body: parse_non_empty_text(&row.get::<_, String>(5)?)?,
             expected_yield: parse_hypothesis_assessment_level(&row.get::<_, String>(6)?)?,
             confidence: parse_hypothesis_assessment_level(&row.get::<_, String>(7)?)?,
+            attention: parse_hypothesis_attention(&row.get::<_, String>(8)?)?,
+            worklist_ordinal: row.get::<_, Option<u32>>(9)?,
             tags: self.hypothesis_tags(id)?,
-            revision: row.get::<_, u64>(8)?,
-            created_at: parse_timestamp_sql(&row.get::<_, String>(9)?)?,
-            updated_at: parse_timestamp_sql(&row.get::<_, String>(10)?)?,
+            revision: row.get::<_, u64>(10)?,
+            created_at: parse_timestamp_sql(&row.get::<_, String>(11)?)?,
+            updated_at: parse_timestamp_sql(&row.get::<_, String>(12)?)?,
         })
     }
 
@@ -4270,6 +4382,13 @@ impl ProjectStore {
         let latest_verdict = self
             .latest_closed_experiment(record.id)?
             .and_then(|experiment| experiment.outcome.map(|outcome| outcome.verdict));
+        let (experiment_count, open_experiment_count) =
+            self.hypothesis_experiment_counts(record.id)?;
+        let lifecycle = match (experiment_count, open_experiment_count) {
+            (0, _) => HypothesisLifecycle::Fresh,
+            (_, 0) => HypothesisLifecycle::Closed,
+            (_, _) => HypothesisLifecycle::Working,
+        };
         Ok(HypothesisSummary {
             id: record.id,
             slug: record.slug,
@@ -4278,15 +4397,12 @@ impl ProjectStore {
             summary: record.summary,
             expected_yield: record.expected_yield,
             confidence: record.confidence,
+            attention: record.attention,
+            lifecycle,
+            worklist_ordinal: record.worklist_ordinal,
+            experiment_count,
             tags: record.tags,
-            open_experiment_count: self
-                .list_experiments(ListExperimentsQuery {
-                    hypothesis: Some(record.id.to_string()),
-                    status: Some(ExperimentStatus::Open),
-                    limit: None,
-                    ..ListExperimentsQuery::default()
-                })?
-                .len() as u64,
+            open_experiment_count,
             latest_verdict,
             updated_at: record.updated_at,
         })
@@ -4350,6 +4466,27 @@ impl ProjectStore {
                             .unwrap_or(record.updated_at)
                     })
             })
+    }
+
+    fn hypothesis_experiment_counts(
+        &self,
+        hypothesis_id: HypothesisId,
+    ) -> Result<(u64, u64), StoreError> {
+        let records = self.load_experiment_records(None, Some(hypothesis_id))?;
+        let experiment_count = records.len() as u64;
+        let open_experiment_count = records
+            .iter()
+            .filter(|record| record.status == ExperimentStatus::Open)
+            .count() as u64;
+        Ok((experiment_count, open_experiment_count))
+    }
+
+    fn hypothesis_open_experiment_count(
+        &self,
+        hypothesis_id: HypothesisId,
+    ) -> Result<u64, StoreError> {
+        self.hypothesis_experiment_counts(hypothesis_id)
+            .map(|(_, open_count)| open_count)
     }
 
     fn load_vertex_parents(&self, child: VertexRef) -> Result<Vec<VertexSummary>, StoreError> {
@@ -4417,32 +4554,27 @@ impl ProjectStore {
         }
     }
 
-    fn active_hypothesis_ids(
+    fn worklist_hypothesis_ids(
         &self,
         frontier_id: FrontierId,
-        brief: &FrontierBrief,
-    ) -> Result<BTreeSet<HypothesisId>, StoreError> {
-        let mut ids = brief
-            .roadmap
-            .iter()
-            .map(|item| item.hypothesis_id)
-            .collect::<BTreeSet<_>>();
-        for experiment in self.list_experiments(ListExperimentsQuery {
-            frontier: Some(frontier_id.to_string()),
-            status: Some(ExperimentStatus::Open),
-            limit: None,
-            ..ListExperimentsQuery::default()
-        })? {
-            let _ = ids.insert(experiment.hypothesis_id);
-        }
-        Ok(ids)
+    ) -> Result<Vec<HypothesisId>, StoreError> {
+        let mut statement = self.connection.prepare(
+            "SELECT id
+             FROM hypotheses
+             WHERE frontier_id = ?1 AND attention = 'worklist'
+             ORDER BY worklist_ordinal IS NULL, worklist_ordinal ASC, updated_at DESC, created_at DESC",
+        )?;
+        let rows = statement.query_map(params![frontier_id.to_string()], |row| {
+            Ok(HypothesisId::from_uuid(parse_uuid_sql(
+                &row.get::<_, String>(0)?,
+            )?))
+        })?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(StoreError::from)
     }
 
-    fn active_hypothesis_count(&self, frontier_id: FrontierId) -> Result<u64, StoreError> {
-        let frontier = self.read_frontier(&frontier_id.to_string())?;
-        Ok(self
-            .active_hypothesis_ids(frontier_id, &frontier.brief)?
-            .len() as u64)
+    fn worklist_hypothesis_count(&self, frontier_id: FrontierId) -> Result<u64, StoreError> {
+        Ok(self.worklist_hypothesis_ids(frontier_id)?.len() as u64)
     }
 
     fn open_experiment_count(&self, frontier_id: Option<FrontierId>) -> Result<u64, StoreError> {
@@ -4474,12 +4606,12 @@ impl ProjectStore {
     fn live_metric_keys(
         &self,
         frontier_id: FrontierId,
-        active_hypotheses: &[HypothesisCurrentState],
+        worklist_hypotheses: &[HypothesisCurrentState],
         open_experiments: &[ExperimentSummary],
     ) -> Result<Vec<MetricKeySummary>, StoreError> {
         let live_names = self.live_metric_key_names_with_context(
             frontier_id,
-            active_hypotheses,
+            worklist_hypotheses,
             open_experiments,
         )?;
         let mut keys = self
@@ -4516,9 +4648,8 @@ impl ProjectStore {
         &self,
         frontier_id: FrontierId,
     ) -> Result<BTreeSet<String>, StoreError> {
-        let frontier = self.read_frontier(&frontier_id.to_string())?;
-        let active_hypotheses = self
-            .active_hypothesis_ids(frontier_id, &frontier.brief)?
+        let worklist_hypotheses = self
+            .worklist_hypothesis_ids(frontier_id)?
             .into_iter()
             .map(|hypothesis_id| {
                 let summary =
@@ -4551,17 +4682,21 @@ impl ProjectStore {
             limit: None,
             ..ListExperimentsQuery::default()
         })?;
-        self.live_metric_key_names_with_context(frontier_id, &active_hypotheses, &open_experiments)
+        self.live_metric_key_names_with_context(
+            frontier_id,
+            &worklist_hypotheses,
+            &open_experiments,
+        )
     }
 
     fn live_metric_key_names_with_context(
         &self,
         _frontier_id: FrontierId,
-        active_hypotheses: &[HypothesisCurrentState],
+        worklist_hypotheses: &[HypothesisCurrentState],
         open_experiments: &[ExperimentSummary],
     ) -> Result<BTreeSet<String>, StoreError> {
         let mut keys = BTreeSet::new();
-        for state in active_hypotheses {
+        for state in worklist_hypotheses {
             if let Some(experiment) = state.latest_closed_experiment.as_ref() {
                 keys.extend(self.experiment_metric_key_names(experiment.id)?);
             }
@@ -5429,14 +5564,6 @@ fn install_schema(connection: &Connection) -> Result<(), StoreError> {
             situation TEXT
         );
 
-        CREATE TABLE IF NOT EXISTS frontier_roadmap_items (
-            frontier_id TEXT NOT NULL REFERENCES frontiers(id) ON DELETE CASCADE,
-            ordinal INTEGER NOT NULL,
-            hypothesis_id TEXT NOT NULL REFERENCES hypotheses(id) ON DELETE CASCADE,
-            summary TEXT,
-            PRIMARY KEY (frontier_id, ordinal)
-        );
-
         CREATE TABLE IF NOT EXISTS frontier_unknowns (
             frontier_id TEXT NOT NULL REFERENCES frontiers(id) ON DELETE CASCADE,
             ordinal INTEGER NOT NULL,
@@ -5453,6 +5580,8 @@ fn install_schema(connection: &Connection) -> Result<(), StoreError> {
             body TEXT NOT NULL,
             expected_yield TEXT NOT NULL,
             confidence TEXT NOT NULL,
+            attention TEXT NOT NULL,
+            worklist_ordinal INTEGER,
             revision INTEGER NOT NULL,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL
@@ -5707,6 +5836,10 @@ fn migrate_store_to_current(
     if version == 16 {
         migrate_store_v16_to_v17(project_root, connection)?;
         version = 17;
+    }
+    if version == 17 {
+        migrate_store_v17_to_v18(connection)?;
+        version = 18;
     }
     if version == CURRENT_STORE_FORMAT_VERSION {
         return Ok(());
@@ -6067,6 +6200,80 @@ fn migrate_store_v16_to_v17(
     )?;
     transaction.commit()?;
     connection.pragma_update(None, "user_version", 17_i64)?;
+    Ok(())
+}
+
+fn migrate_store_v17_to_v18(connection: &mut Connection) -> Result<(), StoreError> {
+    let transaction = connection.transaction()?;
+    if !table_has_column(&transaction, "hypotheses", "attention")? {
+        transaction.execute_batch(
+            "
+            ALTER TABLE hypotheses
+            ADD COLUMN attention TEXT NOT NULL DEFAULT 'worklist';
+            ",
+        )?;
+    }
+    if !table_has_column(&transaction, "hypotheses", "worklist_ordinal")? {
+        transaction.execute_batch(
+            "
+            ALTER TABLE hypotheses
+            ADD COLUMN worklist_ordinal INTEGER;
+            ",
+        )?;
+    }
+    transaction.execute_batch(
+        "
+        UPDATE hypotheses
+        SET attention = 'shelved',
+            worklist_ordinal = NULL
+        WHERE EXISTS (
+                SELECT 1
+                FROM experiments
+                WHERE experiments.hypothesis_id = hypotheses.id
+            )
+          AND NOT EXISTS (
+                SELECT 1
+                FROM experiments
+                LEFT JOIN experiment_outcomes
+                    ON experiment_outcomes.experiment_id = experiments.id
+                WHERE experiments.hypothesis_id = hypotheses.id
+                  AND experiment_outcomes.experiment_id IS NULL
+            )
+          AND NOT EXISTS (
+                SELECT 1
+                FROM frontier_roadmap_items
+                WHERE frontier_roadmap_items.hypothesis_id = hypotheses.id
+            );
+
+        UPDATE hypotheses
+        SET attention = 'worklist',
+            worklist_ordinal = (
+                SELECT MIN(frontier_roadmap_items.ordinal)
+                FROM frontier_roadmap_items
+                WHERE frontier_roadmap_items.hypothesis_id = hypotheses.id
+            )
+        WHERE EXISTS (
+                SELECT 1
+                FROM frontier_roadmap_items
+                WHERE frontier_roadmap_items.hypothesis_id = hypotheses.id
+            );
+
+        UPDATE hypotheses
+        SET attention = 'worklist'
+        WHERE EXISTS (
+                SELECT 1
+                FROM experiments
+                LEFT JOIN experiment_outcomes
+                    ON experiment_outcomes.experiment_id = experiments.id
+                WHERE experiments.hypothesis_id = hypotheses.id
+                  AND experiment_outcomes.experiment_id IS NULL
+            );
+
+        DROP TABLE IF EXISTS frontier_roadmap_items;
+        ",
+    )?;
+    transaction.commit()?;
+    connection.pragma_update(None, "user_version", 18_i64)?;
     Ok(())
 }
 
@@ -6649,10 +6856,6 @@ fn replace_frontier_brief(
         params![frontier_id.to_string()],
     )?;
     let _ = transaction.execute(
-        "DELETE FROM frontier_roadmap_items WHERE frontier_id = ?1",
-        params![frontier_id.to_string()],
-    )?;
-    let _ = transaction.execute(
         "DELETE FROM frontier_unknowns WHERE frontier_id = ?1",
         params![frontier_id.to_string()],
     )?;
@@ -6663,18 +6866,6 @@ fn replace_frontier_brief(
             brief.situation.as_ref().map(NonEmptyText::as_str),
         ],
     )?;
-    for (ordinal, item) in brief.roadmap.iter().enumerate() {
-        let _ = transaction.execute(
-            "INSERT INTO frontier_roadmap_items (frontier_id, ordinal, hypothesis_id, summary)
-             VALUES (?1, ?2, ?3, ?4)",
-            params![
-                frontier_id.to_string(),
-                i64::try_from(ordinal).unwrap_or(i64::MAX),
-                item.hypothesis_id.to_string(),
-                item.summary.as_ref().map(NonEmptyText::as_str),
-            ],
-        )?;
-    }
     for (ordinal, unknown) in brief.unknowns.iter().enumerate() {
         let _ = transaction.execute(
             "INSERT INTO frontier_unknowns (frontier_id, ordinal, body)
@@ -6718,9 +6909,9 @@ fn insert_hypothesis(
     let _ = transaction.execute(
         "INSERT INTO hypotheses (
             id, slug, frontier_id, title, summary, body, expected_yield, confidence,
-            revision, created_at, updated_at
+            attention, worklist_ordinal, revision, created_at, updated_at
          )
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
         params![
             hypothesis.id.to_string(),
             hypothesis.slug.as_str(),
@@ -6730,6 +6921,8 @@ fn insert_hypothesis(
             hypothesis.body.as_str(),
             hypothesis.expected_yield.as_str(),
             hypothesis.confidence.as_str(),
+            hypothesis.attention.as_str(),
+            hypothesis.worklist_ordinal,
             hypothesis.revision,
             encode_timestamp(hypothesis.created_at)?,
             encode_timestamp(hypothesis.updated_at)?,
@@ -6750,8 +6943,10 @@ fn update_hypothesis_row(
              body = ?5,
              expected_yield = ?6,
              confidence = ?7,
-             revision = ?8,
-             updated_at = ?9
+             attention = ?8,
+             worklist_ordinal = ?9,
+             revision = ?10,
+             updated_at = ?11
          WHERE id = ?1",
         params![
             hypothesis.id.to_string(),
@@ -6761,6 +6956,8 @@ fn update_hypothesis_row(
             hypothesis.body.as_str(),
             hypothesis.expected_yield.as_str(),
             hypothesis.confidence.as_str(),
+            hypothesis.attention.as_str(),
+            hypothesis.worklist_ordinal,
             hypothesis.revision,
             encode_timestamp(hypothesis.updated_at)?,
         ],
@@ -7863,6 +8060,19 @@ fn parse_hypothesis_assessment_level(
     }
 }
 
+fn parse_hypothesis_attention(raw: &str) -> Result<HypothesisAttention, rusqlite::Error> {
+    match raw {
+        "worklist" => Ok(HypothesisAttention::Worklist),
+        "shelved" => Ok(HypothesisAttention::Shelved),
+        _ => Err(to_sql_conversion_error(StoreError::Json(
+            serde_json::Error::io(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("invalid hypothesis attention `{raw}`"),
+            )),
+        ))),
+    }
+}
+
 fn parse_tag_name_disposition(raw: &str) -> Result<TagNameDisposition, rusqlite::Error> {
     match raw {
         "renamed" => Ok(TagNameDisposition::Renamed),
@@ -8040,11 +8250,11 @@ fn decode_vertex_ref(kind: &str, raw_id: &str) -> Result<VertexRef, rusqlite::Er
 }
 
 fn derive_active_tags(
-    active_hypotheses: &[HypothesisCurrentState],
+    worklist_hypotheses: &[HypothesisCurrentState],
     open_experiments: &[ExperimentSummary],
 ) -> Vec<TagName> {
     let mut tags = BTreeSet::new();
-    for state in active_hypotheses {
+    for state in worklist_hypotheses {
         tags.extend(state.hypothesis.tags.iter().cloned());
         for experiment in &state.open_experiments {
             tags.extend(experiment.tags.iter().cloned());
@@ -8313,6 +8523,17 @@ fn apply_limit<T>(items: Vec<T>, limit: Option<u32>) -> Vec<T> {
     } else {
         items
     }
+}
+
+fn hypothesis_summary_order(
+    summary: &HypothesisSummary,
+) -> (bool, Option<u32>, std::cmp::Reverse<OffsetDateTime>, String) {
+    (
+        summary.worklist_ordinal.is_none(),
+        summary.worklist_ordinal,
+        std::cmp::Reverse(summary.updated_at),
+        summary.slug.to_string(),
+    )
 }
 
 fn apply_optional_text_patch<T>(patch: Option<TextPatch<T>>, current: Option<T>) -> Option<T> {
@@ -8589,6 +8810,7 @@ fn parse_timestamp_sql(raw: &str) -> Result<OffsetDateTime, rusqlite::Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::process::Command;
     use std::sync::OnceLock;
 
     static TEST_STATE_HOME: OnceLock<Result<Utf8PathBuf, String>> = OnceLock::new();
@@ -8619,6 +8841,41 @@ mod tests {
         ));
         fs::create_dir_all(&root)?;
         Ok(utf8_path(root))
+    }
+
+    fn run_git(root: &Utf8Path, args: &[&str]) -> Result<String, StoreError> {
+        let output = Command::new("git")
+            .current_dir(root.as_std_path())
+            .args(args)
+            .output()?;
+        if !output.status.success() {
+            return Err(StoreError::InvalidInput(format!(
+                "git {} failed: {}",
+                args.join(" "),
+                String::from_utf8_lossy(&output.stderr)
+            )));
+        }
+        Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
+    }
+
+    fn seed_clean_git_repository(root: &Utf8Path) -> Result<(), StoreError> {
+        let _ = run_git(root, &["init", "-q"])?;
+        fs::write(root.join("README.md").as_std_path(), "test repo\n")?;
+        let _ = run_git(root, &["add", "README.md"])?;
+        let _ = run_git(
+            root,
+            &[
+                "-c",
+                "user.name=Fidget Spinner Store Tests",
+                "-c",
+                "user.email=fidget-spinner-store-tests@example.invalid",
+                "commit",
+                "-q",
+                "-m",
+                "initial test state",
+            ],
+        )?;
+        Ok(())
     }
 
     #[test]
@@ -8674,6 +8931,152 @@ mod tests {
         fs::create_dir_all(nested.as_std_path())?;
 
         assert_eq!(preferred_project_root(&nested)?, root);
+        fs::remove_dir_all(root.as_std_path())?;
+        Ok(())
+    }
+
+    fn close_request(
+        experiment: &str,
+        keep: Option<bool>,
+    ) -> Result<CloseExperimentRequest, StoreError> {
+        Ok(CloseExperimentRequest {
+            experiment: experiment.to_owned(),
+            expected_revision: None,
+            keep_hypothesis_on_worklist: keep,
+            backend: ExecutionBackend::Manual,
+            command: CommandRecipe {
+                argv: vec![NonEmptyText::new("unit-test-close")?],
+                working_directory: None,
+                env: BTreeMap::new(),
+            },
+            dimensions: BTreeMap::new(),
+            primary_metric: ReportedMetricValue {
+                key: NonEmptyText::new("score")?,
+                value: 1.0,
+                unit: Some(MetricUnit::Count),
+            },
+            supporting_metrics: Vec::new(),
+            verdict: FrontierVerdict::Accepted,
+            rationale: NonEmptyText::new("unit-test closure")?,
+            analysis: None,
+        })
+    }
+
+    fn seed_attention_frontier() -> Result<(Utf8PathBuf, ProjectStore, HypothesisRecord), StoreError>
+    {
+        let root = fresh_test_root("hypothesis-attention")?;
+        seed_clean_git_repository(&root)?;
+        let mut store = ProjectStore::init(&root, NonEmptyText::new("Hypothesis Attention")?)?;
+        let frontier = store.create_frontier(CreateFrontierRequest {
+            label: NonEmptyText::new("Attention Frontier")?,
+            objective: NonEmptyText::new("Exercise hypothesis attention")?,
+            slug: Some(Slug::new("attention-frontier")?),
+        })?;
+        let _ = store.define_metric(DefineMetricRequest {
+            key: NonEmptyText::new("score")?,
+            dimension: MetricDimension::Count,
+            display_unit: Some(MetricUnit::Count),
+            aggregation: MetricAggregation::Point,
+            objective: OptimizationObjective::Maximize,
+            description: None,
+        })?;
+        let hypothesis = store.create_hypothesis(CreateHypothesisRequest {
+            frontier: frontier.slug.to_string(),
+            slug: Some(Slug::new("attention-hypothesis")?),
+            title: NonEmptyText::new("Attention Hypothesis")?,
+            summary: NonEmptyText::new("Attention hypothesis summary")?,
+            body: NonEmptyText::new("Attention hypothesis body.")?,
+            expected_yield: HypothesisAssessmentLevel::Medium,
+            confidence: HypothesisAssessmentLevel::Medium,
+            tags: BTreeSet::new(),
+            parents: Vec::new(),
+        })?;
+        Ok((root, store, hypothesis))
+    }
+
+    #[test]
+    fn hypothesis_attention_is_explicit_and_lifecycle_is_derived() -> Result<(), StoreError> {
+        let (root, mut store, hypothesis) = seed_attention_frontier()?;
+        let _ = store.open_experiment(OpenExperimentRequest {
+            hypothesis: hypothesis.slug.to_string(),
+            slug: Some(Slug::new("attention-experiment")?),
+            title: NonEmptyText::new("Attention Experiment")?,
+            summary: None,
+            tags: BTreeSet::new(),
+            parents: Vec::new(),
+        })?;
+
+        let error = match store.update_hypothesis(UpdateHypothesisRequest {
+            hypothesis: hypothesis.slug.to_string(),
+            expected_revision: None,
+            title: None,
+            summary: None,
+            body: None,
+            expected_yield: None,
+            confidence: None,
+            attention: Some(HypothesisAttention::Shelved),
+            tags: None,
+            parents: None,
+        }) {
+            Ok(_) => {
+                return Err(StoreError::InvalidInput(
+                    "working hypothesis was shelved".to_owned(),
+                ));
+            }
+            Err(error) => error,
+        };
+        assert!(matches!(
+            error,
+            StoreError::WorkingHypothesisCannotBeShelved { .. }
+        ));
+
+        let error = match store.close_experiment(close_request("attention-experiment", None)?) {
+            Ok(_) => {
+                return Err(StoreError::InvalidInput(
+                    "last open experiment closed without attention decision".to_owned(),
+                ));
+            }
+            Err(error) => error,
+        };
+        assert!(matches!(
+            error,
+            StoreError::HypothesisAttentionAfterCloseRequired { .. }
+        ));
+
+        let _ = store.close_experiment(close_request("attention-experiment", Some(false))?)?;
+        assert!(
+            store
+                .list_hypotheses(ListHypothesesQuery {
+                    frontier: Some("attention-frontier".to_owned()),
+                    ..ListHypothesesQuery::default()
+                })?
+                .is_empty()
+        );
+        let shelved = store.list_hypotheses(ListHypothesesQuery {
+            frontier: Some("attention-frontier".to_owned()),
+            attention: HypothesisAttentionFilter::Shelved,
+            ..ListHypothesesQuery::default()
+        })?;
+        assert_eq!(shelved.len(), 1);
+        assert_eq!(shelved[0].attention, HypothesisAttention::Shelved);
+        assert_eq!(shelved[0].lifecycle, HypothesisLifecycle::Closed);
+
+        let _ = store.open_experiment(OpenExperimentRequest {
+            hypothesis: hypothesis.slug.to_string(),
+            slug: Some(Slug::new("reactivating-experiment")?),
+            title: NonEmptyText::new("Reactivating Experiment")?,
+            summary: None,
+            tags: BTreeSet::new(),
+            parents: Vec::new(),
+        })?;
+        let worklist = store.list_hypotheses(ListHypothesesQuery {
+            frontier: Some("attention-frontier".to_owned()),
+            ..ListHypothesesQuery::default()
+        })?;
+        assert_eq!(worklist.len(), 1);
+        assert_eq!(worklist[0].attention, HypothesisAttention::Worklist);
+        assert_eq!(worklist[0].lifecycle, HypothesisLifecycle::Working);
+
         fs::remove_dir_all(root.as_std_path())?;
         Ok(())
     }

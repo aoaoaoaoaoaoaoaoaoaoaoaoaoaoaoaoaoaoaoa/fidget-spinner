@@ -6,13 +6,13 @@ use super::results::{
 use super::{
     BTreeMap, DOCTYPE, ExperimentAnalysis, ExperimentDetail, ExperimentOutcome, ExperimentStatus,
     ExperimentSummary, FrontierOpenProjection, FrontierPageQuery, FrontierRecord, FrontierTab,
-    HypothesisDetail, Markup, MetricAxisLogScales, MetricKeysQuery, MetricScope, NonEmptyText,
-    PreEscaped, ProjectRenderContext, RunDimensionValue, ShellFrame, StoreError, VertexRef,
-    VertexSummary, experiment_href, experiment_status_class, format_metric_value, format_timestamp,
-    frontier_href, frontier_status_class, frontier_tab_href, html, hypothesis_href,
-    hypothesis_href_from_id, hypothesis_title_for_roadmap_item, limit_items, load_shell_frame,
-    open_store, pencil_icon, render_dimension_value, render_fact, render_hypothesis_meta_chips,
-    render_kv, render_sidebar, short_commit_hash, status_chip_classes, verdict_class,
+    HypothesisAttention, HypothesisDetail, Markup, MetricAxisLogScales, MetricKeysQuery,
+    MetricScope, NonEmptyText, PreEscaped, ProjectRenderContext, RunDimensionValue, ShellFrame,
+    StoreError, VertexRef, VertexSummary, experiment_href, experiment_status_class,
+    format_metric_value, format_timestamp, frontier_href, frontier_status_class, frontier_tab_href,
+    html, hypothesis_href, limit_items, load_shell_frame, open_store, pencil_icon,
+    render_dimension_value, render_fact, render_hypothesis_meta_chips, render_kv, render_sidebar,
+    short_commit_hash, status_chip_classes, verdict_class,
 };
 
 pub(super) fn render_frontier_detail(
@@ -165,36 +165,14 @@ pub(super) fn render_frontier_brief(projection: &FrontierOpenProjection) -> Mark
         } @else {
             p.muted { "No situation summary recorded." }
         }
-        div.split {
-            div.subcard {
-                h3 { "Roadmap" }
-                @if frontier.brief.roadmap.is_empty() {
-                    p.muted { "No roadmap ordering recorded." }
-                } @else {
-                    ol.roadmap-list {
-                                @for item in &frontier.brief.roadmap {
-                                    @let title = hypothesis_title_for_roadmap_item(projection, item.hypothesis_id);
-                                    li {
-                                        a href=(hypothesis_href_from_id(item.hypothesis_id)) {
-                                            (title)
-                                        }
-                                        @if let Some(summary) = item.summary.as_ref() {
-                                            span.muted { " · " (summary) }
-                                        }
-                            }
-                        }
-                    }
-                }
-            }
-            div.subcard {
-                h3 { "Unknowns" }
-                @if frontier.brief.unknowns.is_empty() {
-                    p.muted { "No explicit unknowns." }
-                } @else {
-                    ul.simple-list {
-                        @for unknown in &frontier.brief.unknowns {
-                            li { (unknown) }
-                        }
+        div.subcard {
+            h3 { "Unknowns" }
+            @if frontier.brief.unknowns.is_empty() {
+                p.muted { "No explicit unknowns." }
+            } @else {
+                ul.simple-list {
+                    @for unknown in &frontier.brief.unknowns {
+                        li { (unknown) }
                     }
                 }
             }
@@ -292,13 +270,34 @@ pub(super) fn render_frontier_active_sets(projection: &FrontierOpenProjection) -
 }
 
 fn render_hypothesis_header(detail: &HypothesisDetail, frontier: &FrontierRecord) -> Markup {
+    let (next_attention, label, title) = match detail.record.attention {
+        HypothesisAttention::Worklist => (
+            HypothesisAttention::Shelved,
+            "Shelve",
+            "Remove this idle hypothesis from the worklist",
+        ),
+        HypothesisAttention::Shelved => (
+            HypothesisAttention::Worklist,
+            "Restore",
+            "Return this hypothesis to the worklist",
+        ),
+    };
     html! {
     section.card {
-        h1 { (detail.record.title) }
+        div.frontier-title-row {
+            h1 { (detail.record.title) }
+            form.inline-action-form method="post" action=(format!("{}/attention", hypothesis_href(&detail.record.slug))) data-preserve-viewport="true" {
+                input type="hidden" name="attention" value=(next_attention.as_str());
+                button.form-button.compact-button type="submit" title=(title) {
+                    (label)
+                }
+            }
+        }
         p.prose { (detail.record.summary) }
         div.meta-row {
             span { "frontier " a href=(frontier_href(&frontier.slug)) { (frontier.label) } }
             span { "slug " code { (detail.record.slug) } }
+            span { "attention " (detail.record.attention.as_str()) }
             span.muted { "updated " (format_timestamp(detail.record.updated_at)) }
         }
         (render_hypothesis_meta_chips(

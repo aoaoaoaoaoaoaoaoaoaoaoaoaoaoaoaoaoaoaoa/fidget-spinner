@@ -7,15 +7,15 @@ use super::{
     BLACK, BTreeMap, BTreeSet, ChartBuilder, Circle, Color, Cross, DashedLineSeries,
     DimensionFacet, EmptyElement, ExperimentStatus, ExperimentSummary, FrontierMetricSeries,
     FrontierOpenProjection, FrontierPageQuery, FrontierTab, FrontierVerdict,
-    HypothesisCurrentState, IntoDrawingArea, IntoFont, IntoLogRange, LabelAreaPosition, LineSeries,
-    ListExperimentsQuery, ListHypothesesQuery, METRIC_TABLE_TITLE_MIN_BUDGET_CH,
-    METRIC_TABLE_TITLE_PERCENT_BUDGET, Markup, MetricAxisLogScales, MetricDisplayUnit,
-    MetricKeysQuery, MetricQuantity, MetricScope, NonEmptyText, PathElement, PreEscaped, RGBColor,
-    SVGBackend, SeriesLabelPosition, ShapeStyle, Slug, StoreError, Text, experiment_href,
-    format_metric_value, format_timestamp, frontier_href, frontier_tab_href_with_query, html,
-    hypothesis_href, limit_items, metric_choice_detail, project_metrics_frontier_href,
-    render_dimension_value, render_hypothesis_meta_chips, render_metric_kind_chip,
-    status_chip_classes, verdict_class,
+    HypothesisAttentionFilter, HypothesisCurrentState, HypothesisLifecycleFilter, IntoDrawingArea,
+    IntoFont, IntoLogRange, LabelAreaPosition, LineSeries, ListExperimentsQuery,
+    ListHypothesesQuery, METRIC_TABLE_TITLE_MIN_BUDGET_CH, METRIC_TABLE_TITLE_PERCENT_BUDGET,
+    Markup, MetricAxisLogScales, MetricDisplayUnit, MetricKeysQuery, MetricQuantity, MetricScope,
+    NonEmptyText, PathElement, PreEscaped, RGBColor, SVGBackend, SeriesLabelPosition, ShapeStyle,
+    Slug, StoreError, Text, experiment_href, format_metric_value, format_timestamp, frontier_href,
+    frontier_tab_href_with_query, html, hypothesis_href, limit_items, metric_choice_detail,
+    project_metrics_frontier_href, render_dimension_value, render_hypothesis_meta_chips,
+    render_metric_kind_chip, status_chip_classes, verdict_class,
 };
 use plotters::coord::combinators::LogCoord;
 use plotters::coord::ranged1d::{LightPoints, Ranged};
@@ -63,18 +63,17 @@ pub(super) fn render_frontier_tab_content(
         }),
         FrontierTab::Open => Ok(html! {
             (render_frontier_header(&projection.frontier))
-            (render_hypothesis_current_state_grid(&projection.active_hypotheses, limit))
+            (render_hypothesis_current_state_grid(&projection.worklist_hypotheses, limit))
             (render_open_experiment_grid(&projection.open_experiments, limit))
         }),
         FrontierTab::Closed => {
-            let historical_hypotheses = history_hypotheses(
-                store.list_hypotheses(ListHypothesesQuery {
-                    frontier: Some(projection.frontier.slug.to_string()),
-                    limit: None,
-                    ..ListHypothesesQuery::default()
-                })?,
-                &projection.active_hypotheses,
-            );
+            let historical_hypotheses = store.list_hypotheses(ListHypothesesQuery {
+                frontier: Some(projection.frontier.slug.to_string()),
+                attention: HypothesisAttentionFilter::Shelved,
+                lifecycle: HypothesisLifecycleFilter::All,
+                limit: None,
+                ..ListHypothesesQuery::default()
+            })?;
             let closed_experiments = store.list_experiments(ListExperimentsQuery {
                 frontier: Some(projection.frontier.slug.to_string()),
                 status: Some(ExperimentStatus::Closed),
@@ -247,30 +246,15 @@ pub(super) fn resolve_selected_metric_keys(
     }
 }
 
-pub(super) fn history_hypotheses(
-    hypotheses: Vec<fidget_spinner_store_sqlite::HypothesisSummary>,
-    active_hypotheses: &[HypothesisCurrentState],
-) -> Vec<fidget_spinner_store_sqlite::HypothesisSummary> {
-    let active_hypothesis_ids = active_hypotheses
-        .iter()
-        .map(|state| state.hypothesis.id)
-        .collect::<BTreeSet<_>>();
-    hypotheses
-        .into_iter()
-        .filter(|hypothesis| hypothesis.open_experiment_count == 0)
-        .filter(|hypothesis| !active_hypothesis_ids.contains(&hypothesis.id))
-        .collect()
-}
-
 fn render_history_hypothesis_grid(
     hypotheses: &[fidget_spinner_store_sqlite::HypothesisSummary],
     limit: Option<u32>,
 ) -> Markup {
     html! {
     section.card {
-        h2 { "Dormant Hypotheses" }
+        h2 { "Shelved Hypotheses" }
         @if hypotheses.is_empty() {
-            p.muted { "No dormant hypotheses." }
+            p.muted { "No shelved hypotheses." }
         } @else {
             div.card-grid {
                 @for hypothesis in limit_items(hypotheses, limit) {

@@ -11,18 +11,18 @@ use camino::{Utf8Path, Utf8PathBuf};
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use fidget_spinner_core::{
     CommandRecipe, ExecutionBackend, ExperimentAnalysis, ExperimentStatus, FieldValueType,
-    FrontierStatus, FrontierVerdict, HypothesisAssessmentLevel, MetricAggregation, MetricDimension,
-    MetricDisplayUnit, MetricUnit, NonEmptyText, OptimizationObjective, ReportedMetricValue,
-    RunDimensionValue, Slug, TagName,
+    FrontierStatus, FrontierVerdict, HypothesisAssessmentLevel, HypothesisAttention,
+    MetricAggregation, MetricDimension, MetricDisplayUnit, MetricUnit, NonEmptyText,
+    OptimizationObjective, ReportedMetricValue, RunDimensionValue, Slug, TagName,
 };
 use fidget_spinner_store_sqlite::{
     CloseExperimentRequest, CreateFrontierRequest, CreateHypothesisRequest, CreateKpiRequest,
     DefineMetricRequest, DefineRunDimensionRequest, DeleteKpiReferenceRequest, DeleteMetricRequest,
-    ExperimentOutcomePatch, FrontierRoadmapItemDraft, KpiBestQuery, KpiListQuery,
-    KpiReferenceListQuery, ListExperimentsQuery, ListFrontiersQuery, ListHypothesesQuery,
-    MergeMetricRequest, MetricBestQuery, MetricKeysQuery, MetricRankOrder, MetricScope,
-    OpenExperimentRequest, ProjectStore, RenameMetricRequest, SetKpiReferenceRequest, StoreError,
-    TextPatch, UpdateExperimentRequest, UpdateFrontierRequest, UpdateHypothesisRequest,
+    ExperimentOutcomePatch, HypothesisAttentionFilter, HypothesisLifecycleFilter, KpiBestQuery,
+    KpiListQuery, KpiReferenceListQuery, ListExperimentsQuery, ListFrontiersQuery,
+    ListHypothesesQuery, MergeMetricRequest, MetricBestQuery, MetricKeysQuery, MetricRankOrder,
+    MetricScope, OpenExperimentRequest, ProjectStore, RenameMetricRequest, SetKpiReferenceRequest,
+    StoreError, TextPatch, UpdateExperimentRequest, UpdateFrontierRequest, UpdateHypothesisRequest,
     VertexSelector,
 };
 #[cfg(test)]
@@ -273,8 +273,6 @@ struct FrontierUpdateArgs {
     situation: FrontierSituationPatchArgs,
     #[command(flatten)]
     unknowns: FrontierUnknownsPatchArgs,
-    #[command(flatten)]
-    roadmap: FrontierRoadmapPatchArgs,
 }
 
 #[derive(Args)]
@@ -291,14 +289,6 @@ struct FrontierUnknownsPatchArgs {
     unknowns: Vec<String>,
     #[arg(long = "clear-unknowns")]
     clear_unknowns: bool,
-}
-
-#[derive(Args)]
-struct FrontierRoadmapPatchArgs {
-    #[arg(long = "roadmap")]
-    roadmap: Vec<String>,
-    #[arg(long = "clear-roadmap")]
-    clear_roadmap: bool,
 }
 
 #[derive(Args)]
@@ -331,6 +321,10 @@ struct HypothesisListArgs {
     project: ProjectArg,
     #[arg(long)]
     frontier: Option<String>,
+    #[arg(long, value_enum)]
+    attention: Option<CliHypothesisAttentionFilter>,
+    #[arg(long, value_enum)]
+    lifecycle: Option<CliHypothesisLifecycleFilter>,
     #[arg(long = "tag")]
     tags: Vec<String>,
     #[arg(long)]
@@ -363,6 +357,8 @@ struct HypothesisUpdateArgs {
     expected_yield: Option<CliHypothesisAssessmentLevel>,
     #[arg(long, value_enum)]
     confidence: Option<CliHypothesisAssessmentLevel>,
+    #[arg(long, value_enum)]
+    attention: Option<CliHypothesisAttention>,
     #[arg(long = "tag")]
     tags: Vec<String>,
     #[arg(long = "replace-tags")]
@@ -451,6 +447,8 @@ struct ExperimentCloseArgs {
     experiment: String,
     #[arg(long)]
     expected_revision: Option<u64>,
+    #[arg(long)]
+    keep_hypothesis_on_worklist: Option<bool>,
     #[arg(long, value_enum)]
     backend: CliExecutionBackend,
     #[arg(long = "argv")]
@@ -766,6 +764,27 @@ enum CliHypothesisAssessmentLevel {
     High,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+enum CliHypothesisAttention {
+    Worklist,
+    Shelved,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+enum CliHypothesisAttentionFilter {
+    Worklist,
+    Shelved,
+    All,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+enum CliHypothesisLifecycleFilter {
+    Fresh,
+    Working,
+    Closed,
+    All,
+}
+
 impl From<CliFrontierStatus> for FrontierStatus {
     fn from(value: CliFrontierStatus) -> Self {
         match value {
@@ -782,6 +801,36 @@ impl From<CliHypothesisAssessmentLevel> for HypothesisAssessmentLevel {
             CliHypothesisAssessmentLevel::Low => Self::Low,
             CliHypothesisAssessmentLevel::Medium => Self::Medium,
             CliHypothesisAssessmentLevel::High => Self::High,
+        }
+    }
+}
+
+impl From<CliHypothesisAttention> for HypothesisAttention {
+    fn from(value: CliHypothesisAttention) -> Self {
+        match value {
+            CliHypothesisAttention::Worklist => Self::Worklist,
+            CliHypothesisAttention::Shelved => Self::Shelved,
+        }
+    }
+}
+
+impl From<CliHypothesisAttentionFilter> for HypothesisAttentionFilter {
+    fn from(value: CliHypothesisAttentionFilter) -> Self {
+        match value {
+            CliHypothesisAttentionFilter::Worklist => Self::Worklist,
+            CliHypothesisAttentionFilter::Shelved => Self::Shelved,
+            CliHypothesisAttentionFilter::All => Self::All,
+        }
+    }
+}
+
+impl From<CliHypothesisLifecycleFilter> for HypothesisLifecycleFilter {
+    fn from(value: CliHypothesisLifecycleFilter) -> Self {
+        match value {
+            CliHypothesisLifecycleFilter::Fresh => Self::Fresh,
+            CliHypothesisLifecycleFilter::Working => Self::Working,
+            CliHypothesisLifecycleFilter::Closed => Self::Closed,
+            CliHypothesisLifecycleFilter::All => Self::All,
         }
     }
 }
@@ -918,19 +967,6 @@ fn run_frontier_create(args: FrontierCreateArgs) -> Result<(), StoreError> {
 
 fn run_frontier_update(args: FrontierUpdateArgs) -> Result<(), StoreError> {
     let mut store = open_store(&args.project.project)?;
-    let roadmap = if args.roadmap.clear_roadmap {
-        Some(Vec::new())
-    } else if args.roadmap.roadmap.is_empty() {
-        None
-    } else {
-        Some(
-            args.roadmap
-                .roadmap
-                .into_iter()
-                .map(parse_roadmap_item)
-                .collect::<Result<Vec<_>, _>>()?,
-        )
-    };
     let unknowns = if args.unknowns.clear_unknowns {
         Some(Vec::new())
     } else if args.unknowns.unknowns.is_empty() {
@@ -945,7 +981,6 @@ fn run_frontier_update(args: FrontierUpdateArgs) -> Result<(), StoreError> {
         objective: args.objective.map(NonEmptyText::new).transpose()?,
         status: args.status.map(FrontierStatus::from),
         situation: cli_text_patch(args.situation.situation, args.situation.clear_situation)?,
-        roadmap,
         unknowns,
     })?)
 }
@@ -969,6 +1004,8 @@ fn run_hypothesis_list(args: HypothesisListArgs) -> Result<(), StoreError> {
     let store = open_store(&args.project.project)?;
     print_json(&store.list_hypotheses(ListHypothesesQuery {
         frontier: args.frontier,
+        attention: args.attention.map(Into::into).unwrap_or_default(),
+        lifecycle: args.lifecycle.map(Into::into).unwrap_or_default(),
         tags: parse_tag_set(args.tags)?,
         limit: args.limit,
     })?)
@@ -994,6 +1031,7 @@ fn run_hypothesis_update(args: HypothesisUpdateArgs) -> Result<(), StoreError> {
         body: args.body.map(NonEmptyText::new).transpose()?,
         expected_yield: args.expected_yield.map(Into::into),
         confidence: args.confidence.map(Into::into),
+        attention: args.attention.map(Into::into),
         tags,
         parents,
     })?)
@@ -1063,6 +1101,7 @@ fn run_experiment_close(args: ExperimentCloseArgs) -> Result<(), StoreError> {
         &store.close_experiment(CloseExperimentRequest {
             experiment: args.experiment,
             expected_revision: args.expected_revision,
+            keep_hypothesis_on_worklist: args.keep_hypothesis_on_worklist,
             backend: args.backend.into(),
             command: CommandRecipe::new(
                 args.working_directory.map(utf8_path),
@@ -1331,29 +1370,6 @@ pub(crate) fn parse_vertex_selectors(
             }
         })
         .collect()
-}
-
-fn parse_roadmap_item(raw: String) -> Result<FrontierRoadmapItemDraft, StoreError> {
-    let mut parts = raw.splitn(3, ':');
-    let rank = parts
-        .next()
-        .ok_or_else(|| invalid_input("roadmap items must look like `rank:hypothesis[:summary]`"))?
-        .parse::<u32>()
-        .map_err(|error| invalid_input(format!("invalid roadmap rank: {error}")))?;
-    let hypothesis = parts
-        .next()
-        .ok_or_else(|| invalid_input("roadmap items must include a hypothesis selector"))?
-        .to_owned();
-    let summary = parts
-        .next()
-        .map(NonEmptyText::new)
-        .transpose()
-        .map_err(StoreError::from)?;
-    Ok(FrontierRoadmapItemDraft {
-        rank,
-        hypothesis,
-        summary,
-    })
 }
 
 pub(crate) fn parse_env(values: Vec<String>) -> BTreeMap<String, String> {

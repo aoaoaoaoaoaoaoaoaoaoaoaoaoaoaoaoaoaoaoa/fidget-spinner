@@ -671,7 +671,7 @@ pub(super) fn styles() -> &'static str {
         --shadow: rgba(83, 61, 33, 0.055);
     }
     *, *::before, *::after { box-sizing: border-box; }
-    :where(.shell, .main-column, .sidebar, .card, .subcard, .mini-card, .card-header, .block, .split, .card-grid, .chip-row, .link-list, .meta-row, .roadmap-list, .simple-list) {
+    :where(.shell, .main-column, .sidebar, .card, .subcard, .mini-card, .card-header, .block, .split, .card-grid, .chip-row, .link-list, .meta-row, .simple-list) {
         min-width: 0;
     }
     :where(.card, .subcard, .mini-card) {
@@ -680,7 +680,7 @@ pub(super) fn styles() -> &'static str {
     :where(.card, .subcard, .mini-card) > * {
         min-width: 0;
     }
-    :where(.title-link, .prose, .sidebar-copy, .frontier-nav-title, .frontier-nav-meta, .roadmap-list, .simple-list, .roadmap-list a, .simple-list a, .link-chip-title, .link-chip-summary, .meta-row > *, .kv-value) {
+    :where(.title-link, .prose, .sidebar-copy, .frontier-nav-title, .frontier-nav-meta, .simple-list, .simple-list a, .link-chip-title, .link-chip-summary, .meta-row > *, .kv-value) {
         overflow-wrap: anywhere;
         word-break: break-word;
     }
@@ -2068,13 +2068,13 @@ pub(super) fn styles() -> &'static str {
         color: var(--rejected);
         font-size: 13px;
     }
-    .roadmap-list, .simple-list {
+    .simple-list {
         margin: 0;
         padding-left: 18px;
         display: grid;
         gap: 6px;
     }
-    .roadmap-list li, .simple-list li {
+    .simple-list li {
         min-width: 0;
         max-width: 100%;
         overflow-wrap: anywhere;

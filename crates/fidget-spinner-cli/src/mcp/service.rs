@@ -8,17 +8,17 @@ use std::time::UNIX_EPOCH;
 use camino::{Utf8Path, Utf8PathBuf};
 use fidget_spinner_core::{
     CommandRecipe, ExecutionBackend, ExperimentAnalysis, ExperimentStatus, FieldValueType,
-    FrontierRecord, FrontierStatus, FrontierVerdict, HypothesisAssessmentLevel, MetricAggregation,
-    MetricDimension, MetricDisplayUnit, MetricUnit, NonEmptyText, OptimizationObjective,
-    ReportedMetricValue, RunDimensionValue, Slug, TagName,
+    FrontierRecord, FrontierStatus, FrontierVerdict, HypothesisAssessmentLevel,
+    HypothesisAttention, MetricAggregation, MetricDimension, MetricDisplayUnit, MetricUnit,
+    NonEmptyText, OptimizationObjective, ReportedMetricValue, RunDimensionValue, Slug, TagName,
 };
 use fidget_spinner_store_sqlite::{
     CloseExperimentRequest, CreateFrontierRequest, CreateHypothesisRequest, CreateKpiRequest,
     DefineMetricRequest, DefineRunDimensionRequest, DeleteKpiReferenceRequest, EntityHistoryEntry,
     ExperimentDetail, ExperimentNearestQuery, ExperimentOutcomePatch, ExperimentSummary,
-    FrontierOpenProjection, FrontierRoadmapItemDraft, FrontierSqlQuery, FrontierSummary,
-    HypothesisDetail, HypothesisSummary, KpiBestEntry, KpiBestQuery, KpiListQuery,
-    KpiReferenceListQuery, KpiReferenceSummary, KpiSummary, ListExperimentsQuery,
+    FrontierOpenProjection, FrontierSqlQuery, FrontierSummary, HypothesisAttentionFilter,
+    HypothesisDetail, HypothesisLifecycleFilter, HypothesisSummary, KpiBestEntry, KpiBestQuery,
+    KpiListQuery, KpiReferenceListQuery, KpiReferenceSummary, KpiSummary, ListExperimentsQuery,
     ListFrontiersQuery, ListHypothesesQuery, MetricBestEntry, MetricBestQuery, MetricKeySummary,
     MetricKeysQuery, MetricRankOrder, MetricScope, OpenExperimentRequest, ProjectStatus,
     ProjectStore, SetKpiReferenceRequest, StoreError, TagRegistryQuery, TextPatch,
@@ -178,25 +178,6 @@ impl WorkerService {
                             .map_err(store_fault(&operation))?,
                         status: args.status,
                         situation: nullable_text_patch_from_wire(args.situation, &operation)?,
-                        roadmap: args
-                            .roadmap
-                            .map(|items| {
-                                items
-                                    .into_iter()
-                                    .map(|item| {
-                                        Ok(FrontierRoadmapItemDraft {
-                                            rank: item.rank,
-                                            hypothesis: item.hypothesis,
-                                            summary: item
-                                                .summary
-                                                .map(NonEmptyText::new)
-                                                .transpose()
-                                                .map_err(store_fault(&operation))?,
-                                        })
-                                    })
-                                    .collect::<Result<Vec<_>, FaultRecord>>()
-                            })
-                            .transpose()?,
                         unknowns: args
                             .unknowns
                             .map(|items| {
@@ -276,6 +257,8 @@ impl WorkerService {
                 let hypotheses = lift!(
                     self.store.list_hypotheses_from_mcp(ListHypothesesQuery {
                         frontier: args.frontier,
+                        attention: args.attention.unwrap_or_default(),
+                        lifecycle: args.lifecycle.unwrap_or_default(),
                         tags: tags_to_set(args.tags.unwrap_or_default())
                             .map_err(store_fault(&operation))?,
                         limit: args.limit,
@@ -296,7 +279,7 @@ impl WorkerService {
                         FaultKind::InvalidInput,
                         FaultStage::Worker,
                         &operation,
-                        "hypothesis lifecycle state is not a mutable field; hypotheses are visible graph vertices, not closed or archived entities. To prune a stale worklist idea, remove it from the frontier roadmap with frontier.update and close or park any open experiments it owns.",
+                        "hypothesis lifecycle is derived from owned experiments and is not directly mutable; use hypothesis.attention.set or hypothesis.update attention=worklist|shelved to move fresh or closed hypotheses on or off the worklist. Working hypotheses with open experiments cannot be shelved.",
                     ));
                 }
                 let detail = lift!(self.store.read_hypothesis(&args.hypothesis));
@@ -323,6 +306,7 @@ impl WorkerService {
                                 .map_err(store_fault(&operation))?,
                             expected_yield: args.expected_yield,
                             confidence: args.confidence,
+                            attention: args.attention,
                             tags: args
                                 .tags
                                 .map(tags_to_set)
@@ -331,6 +315,26 @@ impl WorkerService {
                             parents: args.parents,
                         })
                 );
+                hypothesis_record_output(&hypothesis, &operation)?
+            }
+            "hypothesis.attention.set" => {
+                let args = deserialize::<HypothesisAttentionSetArgs>(arguments)?;
+                let detail = lift!(self.store.read_hypothesis(&args.hypothesis));
+                reject_hidden_hypothesis_detail_for_mcp(&self.store, &detail, &operation)?;
+                let hypothesis = lift!(self.store.update_hypothesis_from_mcp(
+                    UpdateHypothesisRequest {
+                        hypothesis: args.hypothesis,
+                        expected_revision: None,
+                        title: None,
+                        summary: None,
+                        body: None,
+                        expected_yield: None,
+                        confidence: None,
+                        attention: Some(args.attention),
+                        tags: None,
+                        parents: None,
+                    }
+                ));
                 hypothesis_record_output(&hypothesis, &operation)?
             }
             "hypothesis.history" => {
@@ -435,6 +439,7 @@ impl WorkerService {
                         .close_experiment_from_mcp(CloseExperimentRequest {
                             experiment: args.experiment,
                             expected_revision: args.expected_revision,
+                            keep_hypothesis_on_worklist: args.keep_hypothesis_on_worklist,
                             backend: args.backend,
                             command: args.command,
                             dimensions: condition_map_from_wire(args.conditions)?,
@@ -751,15 +756,7 @@ struct FrontierUpdateArgs {
     objective: Option<String>,
     status: Option<FrontierStatus>,
     situation: Option<NullableStringArg>,
-    roadmap: Option<Vec<FrontierRoadmapItemWire>>,
     unknowns: Option<Vec<String>>,
-}
-
-#[derive(Debug, Deserialize)]
-struct FrontierRoadmapItemWire {
-    rank: u32,
-    hypothesis: String,
-    summary: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -778,6 +775,8 @@ struct HypothesisRecordArgs {
 #[derive(Debug, Deserialize)]
 struct HypothesisListArgs {
     frontier: Option<String>,
+    attention: Option<HypothesisAttentionFilter>,
+    lifecycle: Option<HypothesisLifecycleFilter>,
     tags: Option<Vec<String>>,
     limit: Option<u32>,
 }
@@ -796,9 +795,16 @@ struct HypothesisUpdateArgs {
     body: Option<String>,
     expected_yield: Option<HypothesisAssessmentLevel>,
     confidence: Option<HypothesisAssessmentLevel>,
+    attention: Option<HypothesisAttention>,
     tags: Option<Vec<String>>,
     parents: Option<Vec<VertexSelector>>,
     state: Option<HypothesisLifecyclePatch>,
+}
+
+#[derive(Debug, Deserialize)]
+struct HypothesisAttentionSetArgs {
+    hypothesis: String,
+    attention: HypothesisAttention,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize)]
@@ -847,6 +853,7 @@ struct ExperimentUpdateArgs {
 struct ExperimentCloseArgs {
     experiment: String,
     expected_revision: Option<u64>,
+    keep_hypothesis_on_worklist: Option<bool>,
     backend: ExecutionBackend,
     command: CommandRecipe,
     conditions: Option<Map<String, Value>>,
@@ -1024,7 +1031,6 @@ where
             | StoreError::ExperimentStillOpen(_)
             | StoreError::CrossFrontierInfluence
             | StoreError::SelfEdge
-            | StoreError::UnknownRoadmapHypothesis(_)
             | StoreError::ManualExperimentRequiresCommand
             | StoreError::MetricOrderRequired { .. }
             | StoreError::MetricScopeRequiresFrontier { .. }
@@ -1037,6 +1043,8 @@ where
             | StoreError::GitWorktreeRequired(_)
             | StoreError::GitHeadRequired(_)
             | StoreError::DirtyGitWorktree { .. }
+            | StoreError::HypothesisAttentionAfterCloseRequired { .. }
+            | StoreError::WorkingHypothesisCannotBeShelved { .. }
             | StoreError::InvalidInput(_) => FaultKind::InvalidInput,
             StoreError::PolicyViolation(_)
             | StoreError::MissingMandatoryKpi { .. }
@@ -1420,7 +1428,7 @@ fn frontier_list_output(
                         "{} — {} | worklist hypotheses {} | open experiments {}",
                         frontier.slug,
                         frontier.objective,
-                        frontier.active_hypothesis_count,
+                        frontier.worklist_hypothesis_count,
                         frontier.open_experiment_count
                     )
                 })
@@ -1438,7 +1446,7 @@ fn frontier_record_output(
     frontier: &FrontierRecord,
     operation: &str,
 ) -> Result<ToolOutput, FaultRecord> {
-    let projection = projection::frontier_record(store, frontier, operation)?;
+    let projection = projection::frontier_record(store, frontier, operation);
     let mut lines = vec![format!(
         "frontier {} — {}",
         frontier.slug, frontier.objective
@@ -1446,19 +1454,6 @@ fn frontier_record_output(
     lines.push(format!("status: {}", frontier.status.as_str()));
     if let Some(situation) = frontier.brief.situation.as_ref() {
         lines.push(format!("situation: {}", situation));
-    }
-    if !frontier.brief.roadmap.is_empty() {
-        lines.push("roadmap:".to_owned());
-        for item in &frontier.brief.roadmap {
-            lines.push(format!(
-                "  {}. {}{}",
-                item.rank,
-                item.hypothesis_id,
-                item.summary
-                    .as_ref()
-                    .map_or_else(String::new, |summary| format!(" — {summary}"))
-            ));
-        }
     }
     if !frontier.brief.unknowns.is_empty() {
         lines.push(format!(
@@ -1526,9 +1521,9 @@ fn frontier_open_output(
                 .join(", ")
         ));
     }
-    if !projection.active_hypotheses.is_empty() {
+    if !projection.worklist_hypotheses.is_empty() {
         lines.push("worklist hypotheses:".to_owned());
-        for state in &projection.active_hypotheses {
+        for state in &projection.worklist_hypotheses {
             let status = state
                 .latest_closed_experiment
                 .as_ref()
@@ -2131,37 +2126,18 @@ mod legacy_projection_values {
             "label": frontier.label,
             "objective": frontier.objective,
             "status": frontier.status,
-            "active_hypothesis_count": frontier.active_hypothesis_count,
+            "worklist_hypothesis_count": frontier.worklist_hypothesis_count,
             "open_experiment_count": frontier.open_experiment_count,
             "updated_at": timestamp_value(frontier.updated_at),
         })
     }
 
     fn frontier_record_value(
-        store: &ProjectStore,
+        _store: &ProjectStore,
         frontier: &FrontierRecord,
-        operation: &str,
-    ) -> Result<Value, FaultRecord> {
-        let roadmap = frontier
-            .brief
-            .roadmap
-            .iter()
-            .map(|item| {
-                let hypothesis = store
-                    .read_hypothesis(&item.hypothesis_id.to_string())
-                    .map_err(store_fault(operation))?;
-                Ok(json!({
-                    "rank": item.rank,
-                    "hypothesis": {
-                        "slug": hypothesis.record.slug,
-                        "title": hypothesis.record.title,
-                        "summary": hypothesis.record.summary,
-                    },
-                    "summary": item.summary,
-                }))
-            })
-            .collect::<Result<Vec<_>, FaultRecord>>()?;
-        Ok(json!({
+        _operation: &str,
+    ) -> Value {
+        json!({
             "record": {
                 "slug": frontier.slug,
                 "label": frontier.label,
@@ -2172,38 +2148,13 @@ mod legacy_projection_values {
                 "updated_at": timestamp_value(frontier.updated_at),
                 "brief": {
                     "situation": frontier.brief.situation,
-                    "roadmap": roadmap,
                     "unknowns": frontier.brief.unknowns,
                 },
             }
-        }))
+        })
     }
 
     fn frontier_open_value(projection: &FrontierOpenProjection) -> Value {
-        let roadmap = projection
-            .frontier
-            .brief
-            .roadmap
-            .iter()
-            .map(|item| {
-                let hypothesis = projection
-                    .active_hypotheses
-                    .iter()
-                    .find(|state| state.hypothesis.id == item.hypothesis_id)
-                    .map(|state| {
-                        json!({
-                            "slug": state.hypothesis.slug,
-                            "title": state.hypothesis.title,
-                            "summary": state.hypothesis.summary,
-                        })
-                    });
-                json!({
-                    "rank": item.rank,
-                    "hypothesis": hypothesis,
-                    "summary": item.summary,
-                })
-            })
-            .collect::<Vec<_>>();
         json!({
             "frontier": {
                 "slug": projection.frontier.slug,
@@ -2215,7 +2166,6 @@ mod legacy_projection_values {
                 "updated_at": timestamp_value(projection.frontier.updated_at),
                 "brief": {
                     "situation": projection.frontier.brief.situation,
-                    "roadmap": roadmap,
                     "unknowns": projection.frontier.brief.unknowns,
                 },
             },
@@ -2226,8 +2176,8 @@ mod legacy_projection_values {
                 .iter()
                 .map(metric_key_summary_value)
                 .collect::<Vec<_>>(),
-            "active_hypotheses": projection
-                .active_hypotheses
+            "worklist_hypotheses": projection
+                .worklist_hypotheses
                 .iter()
                 .map(hypothesis_current_state_value)
                 .collect::<Vec<_>>(),
@@ -2244,8 +2194,14 @@ mod legacy_projection_values {
             "slug": hypothesis.slug,
             "title": hypothesis.title,
             "summary": hypothesis.summary,
+            "expected_yield": hypothesis.expected_yield,
+            "confidence": hypothesis.confidence,
+            "attention": hypothesis.attention,
+            "lifecycle": hypothesis.lifecycle,
+            "experiment_count": hypothesis.experiment_count,
             "tags": hypothesis.tags,
             "open_experiment_count": hypothesis.open_experiment_count,
+            "worklist_ordinal": hypothesis.worklist_ordinal,
             "latest_verdict": hypothesis.latest_verdict,
             "updated_at": timestamp_value(hypothesis.updated_at),
         })
@@ -2257,7 +2213,11 @@ mod legacy_projection_values {
             "title": hypothesis.title,
             "summary": hypothesis.summary,
             "body": hypothesis.body,
+            "expected_yield": hypothesis.expected_yield,
+            "confidence": hypothesis.confidence,
+            "attention": hypothesis.attention,
             "tags": hypothesis.tags,
+            "worklist_ordinal": hypothesis.worklist_ordinal,
             "revision": hypothesis.revision,
             "created_at": timestamp_value(hypothesis.created_at),
             "updated_at": timestamp_value(hypothesis.updated_at),

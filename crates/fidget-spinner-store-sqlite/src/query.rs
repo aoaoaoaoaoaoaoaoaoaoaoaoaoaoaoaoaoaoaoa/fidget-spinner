@@ -406,6 +406,35 @@ const CREATE_QUERY_VIEWS_SQL: &str = concat!(
         hypotheses.body AS body,
         hypotheses.expected_yield AS expected_yield,
         hypotheses.confidence AS confidence,
+        hypotheses.attention AS attention,
+        CASE
+            WHEN NOT EXISTS (
+                SELECT 1 FROM experiments
+                WHERE experiments.hypothesis_id = hypotheses.id
+            ) THEN 'fresh'
+            WHEN EXISTS (
+                SELECT 1
+                FROM experiments
+                LEFT JOIN experiment_outcomes
+                    ON experiment_outcomes.experiment_id = experiments.id
+                WHERE experiments.hypothesis_id = hypotheses.id
+                  AND experiment_outcomes.experiment_id IS NULL
+            ) THEN 'working'
+            ELSE 'closed'
+        END AS lifecycle,
+        (
+            SELECT COUNT(*)
+            FROM experiments
+            WHERE experiments.hypothesis_id = hypotheses.id
+        ) AS experiment_count,
+        (
+            SELECT COUNT(*)
+            FROM experiments
+            LEFT JOIN experiment_outcomes
+                ON experiment_outcomes.experiment_id = experiments.id
+            WHERE experiments.hypothesis_id = hypotheses.id
+              AND experiment_outcomes.experiment_id IS NULL
+        ) AS open_experiment_count,
         hypotheses.revision AS revision,
         hypotheses.created_at AS created_at,
         hypotheses.updated_at AS updated_at
@@ -850,6 +879,14 @@ const QUERY_VIEWS: &[FrontierSqlView] = &[
                 "confidence",
                 "text",
                 "Qualitative confidence in the hypothesis: low, medium, or high.",
+            ),
+            col("attention", "text", "worklist or shelved."),
+            col("lifecycle", "text", "fresh, working, or closed."),
+            col("experiment_count", "integer", "Total owned experiments."),
+            col(
+                "open_experiment_count",
+                "integer",
+                "Currently open owned experiments.",
             ),
             col("revision", "integer", "Optimistic concurrency revision."),
             col("created_at", "text", "RFC3339 creation timestamp."),
