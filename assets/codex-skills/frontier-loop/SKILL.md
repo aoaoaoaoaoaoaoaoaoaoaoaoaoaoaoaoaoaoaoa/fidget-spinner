@@ -115,8 +115,9 @@ When a line becomes a real measured experiment, close it through the proper
 `experiment.close`.
 
 Hypotheses are not scarce. If you notice an obviously stale or superseded
-hypothesis while walking the graph, retire it through `hypothesis.update`
-rather than leaving it active forever.
+worklist hypothesis while walking the graph, remove it from the frontier
+roadmap with `frontier.update` rather than leaving it active forever. If it
+owns open experiments, close or park those experiments first.
 
 ## Resume Discipline
 

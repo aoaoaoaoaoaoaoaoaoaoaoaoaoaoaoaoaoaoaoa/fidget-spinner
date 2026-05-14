@@ -28,7 +28,7 @@ Then read:
 - `frontier.open` for the active frontier
 
 `frontier.open` is the only sanctioned overview surface. It is allowed to give
-you the frontier brief, active tags, live metrics, active hypotheses, and open
+you the frontier brief, active tags, live metrics, worklist hypotheses, and open
 experiments in one call.
 
 If you need more context, pull it from:
@@ -45,8 +45,9 @@ If you need more context, pull it from:
 - hypotheses and experiments are for KPI-directed scientific work; if a change
   is not meant to move or explain a frontier KPI, it usually does not belong in
   Spinner at all
-- stale hypotheses are cheap too; retire an obviously dead or superseded one
-  when you notice it rather than keeping the active surface ceremonially tidy
+- stale hypotheses are cheap too; prune an obviously dead or superseded one
+  from the frontier roadmap worklist when you notice it rather than keeping
+  the active surface ceremonially tidy
 - every experiment has one mandatory owning hypothesis
 - experiments and hypotheses may also cite other hypotheses or experiments as influence parents
 - the frontier brief is the one sanctioned freeform overview
@@ -59,11 +60,11 @@ If you need more context, pull it from:
 
 - `tag.add` when a new campaign or subsystem token is genuinely needed; every tag must carry a description, and supervisor locks may reject model-created tags
 - `tag.list` before inventing tags by memory; it also reports supervisor-defined families, mandatory-family rules, locks, and stale-name guidance
-- `frontier.update` when the objective, situation, roadmap, or unknowns need to change
+- `frontier.update` when the objective, situation, roadmap worklist, or unknowns need to change; omitting a hypothesis from the replacement roadmap is how stale ideas leave the active worklist
 - `frontier.query.schema` when you need the stable SQL view contract for advanced frontier-local mining; it lists the public `q_*` views and columns
 - `frontier.query.sql` when the normal read tools are too narrow and you need a compact read-only SQL table over one frontier; query only `q_*` views, prefer small projections, and rely on the frontier envelope rather than adding frontier filters
 - `hypothesis.record` whenever you get a plausible KPI-moving idea, mechanism, suspicion, or branch; hypotheses are cheap idea-capture nodes, not a ritual preamble to one experiment, and every new hypothesis must set `expected_yield` and `confidence` as crude `low|medium|high` vibe checks
-- `hypothesis.update` when the title, summary, body, expected yield, confidence, tags, or influence parents need tightening; reprioritization should usually update `expected_yield` and/or `confidence` directly, and hypotheses are not archived, so clean stale wording/tags/parents in place and leave non-frontier visibility policy to the supervisor UI
+- `hypothesis.update` when the title, summary, body, expected yield, confidence, tags, or influence parents need tightening; reprioritization should usually update `expected_yield` and/or `confidence` directly. This tool does not close, retire, or archive hypotheses
 - `experiment.open` once a hypothesis has a concrete KPI-relevant slice and is ready to be tested
 - `experiment.list` or `experiment.read` when resuming a session and you need to recover open or recently closed state
 - `experiment.update` while the experiment is still live and its summary, tags, or influence parents need refinement
@@ -130,8 +131,10 @@ If you need more context, pull it from:
 12. Spinner records the closing commit hash as a recoverability anchor, not as experiment identity.
 13. If you reprioritize a hypothesis, update `expected_yield` and/or
     `confidence` instead of trying to smuggle the new stance into prose alone.
-14. If you run into an obviously stale hypothesis, retire it; stale cleanup is
-    healthy and does not invalidate the experiments it once organized.
+14. If you run into an obviously stale worklist hypothesis, remove it from the
+    frontier roadmap with `frontier.update`; stale cleanup is healthy and does
+    not invalidate the experiments it once organized. If it still owns open
+    experiments, close or park those experiments first.
 15. Porcelain is the terse triage surface. Use `detail=full` only when concise
     output stops being decision-sufficient.
 16. Raw SQL is an escape hatch for trusted, advanced frontier-local inspection,

@@ -67,15 +67,14 @@ pub(super) fn render_frontier_tab_content(
             (render_open_experiment_grid(&projection.open_experiments, limit))
         }),
         FrontierTab::Closed => {
-            let closed_hypotheses = store
-                .list_hypotheses(ListHypothesesQuery {
+            let historical_hypotheses = history_hypotheses(
+                store.list_hypotheses(ListHypothesesQuery {
                     frontier: Some(projection.frontier.slug.to_string()),
                     limit: None,
                     ..ListHypothesesQuery::default()
-                })?
-                .into_iter()
-                .filter(|hypothesis| hypothesis.open_experiment_count == 0)
-                .collect::<Vec<_>>();
+                })?,
+                &projection.active_hypotheses,
+            );
             let closed_experiments = store.list_experiments(ListExperimentsQuery {
                 frontier: Some(projection.frontier.slug.to_string()),
                 status: Some(ExperimentStatus::Closed),
@@ -84,7 +83,7 @@ pub(super) fn render_frontier_tab_content(
             })?;
             Ok(html! {
                 (render_frontier_header(&projection.frontier))
-                (render_closed_hypothesis_grid(&closed_hypotheses, limit))
+                (render_history_hypothesis_grid(&historical_hypotheses, limit))
                 (render_experiment_section("Closed Experiments", &closed_experiments, limit))
             })
         }
@@ -248,15 +247,30 @@ pub(super) fn resolve_selected_metric_keys(
     }
 }
 
-fn render_closed_hypothesis_grid(
+pub(super) fn history_hypotheses(
+    hypotheses: Vec<fidget_spinner_store_sqlite::HypothesisSummary>,
+    active_hypotheses: &[HypothesisCurrentState],
+) -> Vec<fidget_spinner_store_sqlite::HypothesisSummary> {
+    let active_hypothesis_ids = active_hypotheses
+        .iter()
+        .map(|state| state.hypothesis.id)
+        .collect::<BTreeSet<_>>();
+    hypotheses
+        .into_iter()
+        .filter(|hypothesis| hypothesis.open_experiment_count == 0)
+        .filter(|hypothesis| !active_hypothesis_ids.contains(&hypothesis.id))
+        .collect()
+}
+
+fn render_history_hypothesis_grid(
     hypotheses: &[fidget_spinner_store_sqlite::HypothesisSummary],
     limit: Option<u32>,
 ) -> Markup {
     html! {
     section.card {
-        h2 { "Closed Hypotheses" }
+        h2 { "Dormant Hypotheses" }
         @if hypotheses.is_empty() {
-            p.muted { "No dormant hypotheses yet." }
+            p.muted { "No dormant hypotheses." }
         } @else {
             div.card-grid {
                 @for hypothesis in limit_items(hypotheses, limit) {
@@ -1317,9 +1331,9 @@ fn render_hypothesis_current_state_grid(
 ) -> Markup {
     html! {
     section.card {
-        h2 { "Active Hypotheses" }
+        h2 { "Worklist Hypotheses" }
         @if states.is_empty() {
-            p.muted { "No active hypotheses." }
+            p.muted { "No worklist hypotheses." }
         } @else {
             div.card-grid {
                 @for state in limit_items(states, limit) {

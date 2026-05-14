@@ -163,8 +163,8 @@ impl FrontierTab {
     const fn label(self) -> &'static str {
         match self {
             Self::Brief => "Brief",
-            Self::Open => "Open",
-            Self::Closed => "Closed",
+            Self::Open => "Worklist",
+            Self::Closed => "History",
             Self::Results => "Results",
         }
     }
@@ -1099,7 +1099,7 @@ mod tests {
         metric_registry_filter_text, render_kpi_registry, render_metric_registry_table,
     };
     use super::results::{
-        MetricChartAxis, MetricChartPointMarker, best_metric_table_title_split,
+        MetricChartAxis, MetricChartPointMarker, best_metric_table_title_split, history_hypotheses,
         metric_chart_point_marker, metric_chart_secondary_grid_values, metric_chart_x_major_values,
         metric_chart_x_minor_values, render_metric_series_section, resolve_selected_metric_keys,
         truncated_entry_count,
@@ -1122,7 +1122,8 @@ mod tests {
     };
     use fidget_spinner_store_sqlite::{
         ExperimentSummary, FrontierMetricPoint, FrontierMetricSeries, FrontierSummary,
-        HypothesisSummary, KpiReferenceSummary, KpiSummary, MetricKeySummary, ProjectStore,
+        HypothesisCurrentState, HypothesisSummary, KpiReferenceSummary, KpiSummary,
+        MetricKeySummary, ProjectStore,
     };
     use time::OffsetDateTime;
     use time::format_description::well_known::Rfc3339;
@@ -1534,6 +1535,32 @@ mod tests {
     }
 
     #[test]
+    fn history_hypotheses_exclude_roadmap_worklist_items() {
+        let frontier_id = FrontierId::fresh();
+        let worklist = test_hypothesis(frontier_id, "worklist-idea", "Worklist idea");
+        let dormant = test_hypothesis(frontier_id, "dormant-idea", "Dormant idea");
+        let open = HypothesisSummary {
+            open_experiment_count: 1,
+            ..test_hypothesis(frontier_id, "open-idea", "Open idea")
+        };
+        let history = history_hypotheses(
+            vec![worklist.clone(), dormant.clone(), open],
+            &[HypothesisCurrentState {
+                hypothesis: worklist,
+                open_experiments: Vec::new(),
+                latest_closed_experiment: None,
+            }],
+        );
+        assert_eq!(
+            history
+                .iter()
+                .map(|hypothesis| hypothesis.slug.as_str())
+                .collect::<Vec<_>>(),
+            vec!["dormant-idea"]
+        );
+    }
+
+    #[test]
     fn secondary_metric_grid_uses_coarse_interior_gradations() {
         let linear_values = metric_chart_secondary_grid_values(0.0, 100.0, false);
         assert!(linear_values.len() > 4);
@@ -1608,6 +1635,8 @@ mod tests {
             FrontierTab::Results
         );
         assert_eq!(FrontierTab::from_query(Some("brief")), FrontierTab::Brief);
+        assert_eq!(FrontierTab::Open.label(), "Worklist");
+        assert_eq!(FrontierTab::Closed.label(), "History");
     }
 
     #[test]

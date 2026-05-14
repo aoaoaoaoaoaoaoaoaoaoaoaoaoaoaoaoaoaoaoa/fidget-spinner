@@ -296,7 +296,7 @@ impl WorkerService {
                         FaultKind::InvalidInput,
                         FaultStage::Worker,
                         &operation,
-                        "hypothesis lifecycle state is no longer mutable; hypotheses are visible graph vertices, not archived entities",
+                        "hypothesis lifecycle state is not a mutable field; hypotheses are visible graph vertices, not closed or archived entities. To prune a stale worklist idea, remove it from the frontier roadmap with frontier.update and close or park any open experiments it owns.",
                     ));
                 }
                 let detail = lift!(self.store.read_hypothesis(&args.hypothesis));
@@ -1417,7 +1417,7 @@ fn frontier_list_output(
                 .iter()
                 .map(|frontier| {
                     format!(
-                        "{} — {} | active hypotheses {} | open experiments {}",
+                        "{} — {} | worklist hypotheses {} | open experiments {}",
                         frontier.slug,
                         frontier.objective,
                         frontier.active_hypothesis_count,
@@ -1527,7 +1527,7 @@ fn frontier_open_output(
         ));
     }
     if !projection.active_hypotheses.is_empty() {
-        lines.push("active hypotheses:".to_owned());
+        lines.push("worklist hypotheses:".to_owned());
         for state in &projection.active_hypotheses {
             let status = state
                 .latest_closed_experiment

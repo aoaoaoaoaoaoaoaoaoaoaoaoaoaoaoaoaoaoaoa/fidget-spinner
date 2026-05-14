@@ -1582,7 +1582,7 @@ fn mcp_rejects_hypothesis_lifecycle_state() -> TestResult {
     assert_tool_error(&rejected);
     assert!(
         must_some(tool_error_message(&rejected), "hypothesis lifecycle error")?
-            .contains("hypothesis lifecycle state is no longer mutable")
+            .contains("hypothesis lifecycle state is not a mutable field")
     );
 
     let active = harness.call_tool_full(

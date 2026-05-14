@@ -232,7 +232,7 @@ impl HostRuntime {
                     "name": SERVER_NAME,
                     "version": env!("CARGO_PKG_VERSION")
                 },
-                "instructions": "Bind the session with project.bind before project-local work when the MCP is unbound. Use frontier.open as the only overview surface, then walk hypotheses and experiments deliberately by selector. Hypotheses are cheap idea-capture nodes: record them eagerly when a plausible KPI-moving branch appears, always setting expected_yield and confidence as crude low/medium/high vibe checks, and use hypothesis.update to reprioritize those fields or tidy stale wording/tags/parents rather than archiving hypothesis vertices."
+                "instructions": "Bind the session with project.bind before project-local work when the MCP is unbound. Use frontier.open as the only overview surface, then walk hypotheses and experiments deliberately by selector. Hypotheses are cheap idea-capture nodes: record them eagerly when a plausible KPI-moving branch appears, always setting expected_yield and confidence as crude low/medium/high vibe checks. Use hypothesis.update to reprioritize fields or tidy wording/tags/parents. Hypotheses are not closed or archived; stale worklist ideas leave the worklist when removed from the frontier roadmap with frontier.update and when their open experiments are closed or parked."
             }))),
             "notifications/initialized" => {
                 if !self.seed_captured() {

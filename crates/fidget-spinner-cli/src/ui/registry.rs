@@ -981,7 +981,7 @@ fn render_frontier_grid(frontiers: &[FrontierSummary], limit: Option<u32>) -> Ma
                         }
                         p.frontier-card-objective title=(frontier.objective.as_str()) { (frontier.objective) }
                         div.meta-row {
-                            span { (format!("{} active hypotheses", frontier.active_hypothesis_count)) }
+                            span { (format!("{} worklist hypotheses", frontier.active_hypothesis_count)) }
                             span { (format!("{} open experiments", frontier.open_experiment_count)) }
                         }
                         div.meta-row.muted {

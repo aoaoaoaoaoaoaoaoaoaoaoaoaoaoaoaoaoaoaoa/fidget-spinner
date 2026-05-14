@@ -91,13 +91,13 @@ const TOOL_SPECS: &[ToolSpec] = &[
     },
     ToolSpec {
         name: "frontier.open",
-        description: "Open the bounded frontier overview: brief, active tags, live metrics, active hypotheses, and open experiments.",
+        description: "Open the bounded frontier overview: brief, active tags, live metrics, worklist hypotheses, and open experiments.",
         dispatch: DispatchTarget::Worker,
         replay: ReplayContract::Convergent,
     },
     ToolSpec {
         name: "frontier.update",
-        description: "Patch frontier objective and grounding state.",
+        description: "Patch frontier objective and grounding state, including the roadmap worklist.",
         dispatch: DispatchTarget::Worker,
         replay: ReplayContract::NeverReplay,
     },
@@ -139,7 +139,7 @@ const TOOL_SPECS: &[ToolSpec] = &[
     },
     ToolSpec {
         name: "hypothesis.update",
-        description: "Patch hypothesis title, summary, body, expected yield, confidence, tags, or influence parents.",
+        description: "Patch hypothesis title, summary, body, expected yield, confidence, tags, or influence parents. It does not close, retire, or archive hypotheses.",
         dispatch: DispatchTarget::Worker,
         replay: ReplayContract::NeverReplay,
     },
@@ -913,6 +913,7 @@ fn vertex_selector_array_schema() -> Value {
 fn roadmap_schema() -> Value {
     json!({
         "type": "array",
+        "description": "Replacement frontier roadmap worklist. A stale idea stops being worklist-active when omitted here; hypotheses themselves are not closed or archived.",
         "items": {
             "type": "object",
             "properties": {
