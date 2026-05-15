@@ -1439,6 +1439,51 @@ pub(super) fn styles() -> &'static str {
         overflow-wrap: anywhere;
         word-break: break-word;
     }
+    .markdown-prose {
+        white-space: normal;
+    }
+    .markdown-prose > :first-child {
+        margin-top: 0;
+    }
+    .markdown-prose > :last-child {
+        margin-bottom: 0;
+    }
+    .markdown-prose :where(p, ul, ol, blockquote, pre, table) {
+        margin: 0 0 8px;
+    }
+    .markdown-prose :where(ul, ol) {
+        padding-left: 20px;
+    }
+    .markdown-prose :where(code) {
+        font: inherit;
+        background: var(--panel);
+        border: 1px solid var(--line);
+        padding: 0 3px;
+    }
+    .markdown-prose :where(pre) {
+        overflow-x: auto;
+        background: var(--panel);
+        border: 1px solid var(--line);
+        padding: 8px;
+    }
+    .markdown-prose :where(pre code) {
+        background: transparent;
+        border: 0;
+        padding: 0;
+    }
+    .markdown-prose :where(blockquote) {
+        border-left: 3px solid var(--line-strong);
+        padding-left: 10px;
+        color: var(--muted);
+    }
+    .markdown-prose :where(table) {
+        border-collapse: collapse;
+        max-width: 100%;
+    }
+    .markdown-prose :where(th, td) {
+        border: 1px solid var(--line);
+        padding: 3px 6px;
+    }
     .muted { color: var(--muted); }
     .meta-row {
         display: flex;

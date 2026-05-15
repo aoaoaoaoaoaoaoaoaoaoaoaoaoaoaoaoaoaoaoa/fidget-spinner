@@ -5,20 +5,21 @@ use super::registry::{
 use super::{
     AssignTagFamilyRequest, CONTENT_TYPE, CreateKpiRequest, CreateTagFamilyRequest,
     DefineMetricRequest, DefineSyntheticMetricRequest, DeleteKpiReferenceRequest, DeleteKpiRequest,
-    DeleteMetricRequest, DeleteTagRequest, FAVICON_SVG, Form, FrontierPageQuery, FrontierStatus,
-    HypothesisAttention, IntoResponse, MergeMetricRequest, MergeTagRequest, MetricDisplayUnit,
-    MetricUnit, MoveKpiDirection, MoveKpiRequest, NavigatorState, NonEmptyText, Path,
-    ProjectMetricsQuery, RegistryLockMode, RegistryName, RenameMetricRequest, RenameTagRequest,
-    Response, Router, SetFrontierRegistryLockRequest, SetKpiReferenceRequest,
-    SetRegistryLockRequest, SetTagFamilyMandatoryRequest, SocketAddr, State, StoreError,
-    SyntheticMetricExpression, TagFamilyName, TagName, UpdateFrontierRequest,
-    UpdateHypothesisRequest, Uri, frontier_href, frontier_status_mutation_response, get,
-    hypothesis_href, hypothesis_mutation_response, io, metric_mutation_response,
-    metrics_frontier_href, open_store, optional_text_field, parse_metric_aggregation_ui,
-    parse_metric_dimension_ui, parse_optimization_objective_ui, parse_ui_lock_mode, post,
-    project_mutation_response, project_refresh_token_for, refresh_token_response, render_response,
-    resolve_project_context, tag_mutation_response, text_patch_field, update_frontier_status,
-    update_project_description,
+    DeleteMetricRequest, DeleteTagRequest, ExperimentAnalysis, ExperimentOutcomePatch, FAVICON_SVG,
+    Form, FrontierPageQuery, FrontierStatus, HypothesisAttention, IntoResponse, MergeMetricRequest,
+    MergeTagRequest, MetricDisplayUnit, MetricUnit, MoveKpiDirection, MoveKpiRequest,
+    NavigatorState, NonEmptyText, Path, ProjectMetricsQuery, RegistryLockMode, RegistryName,
+    RenameMetricRequest, RenameTagRequest, ReportedMetricValue, Response, Router,
+    SetFrontierRegistryLockRequest, SetKpiReferenceRequest, SetRegistryLockRequest,
+    SetTagFamilyMandatoryRequest, SocketAddr, State, StoreError, SyntheticMetricExpression,
+    TagFamilyName, TagName, UpdateExperimentRequest, UpdateFrontierRequest,
+    UpdateHypothesisRequest, Uri, experiment_href, experiment_mutation_response, frontier_href,
+    frontier_status_mutation_response, get, hypothesis_href, hypothesis_mutation_response, io,
+    metric_mutation_response, metrics_frontier_href, open_store, optional_text_field,
+    parse_metric_aggregation_ui, parse_metric_dimension_ui, parse_optimization_objective_ui,
+    parse_ui_lock_mode, post, project_mutation_response, project_refresh_token_for,
+    refresh_token_response, render_response, resolve_project_context, tag_mutation_response,
+    text_patch_field, update_frontier_status, update_project_description,
 };
 use serde::Deserialize;
 
@@ -92,6 +93,10 @@ pub(crate) fn serve(bind: SocketAddr, limit: Option<u32>) -> Result<(), StoreErr
                 post(update_frontier_summary),
             )
             .route(
+                "/project/{project}/frontier/{selector}/brief",
+                post(update_frontier_brief),
+            )
+            .route(
                 "/project/{project}/frontier/{selector}/archive",
                 post(archive_frontier),
             )
@@ -108,8 +113,16 @@ pub(crate) fn serve(bind: SocketAddr, limit: Option<u32>) -> Result<(), StoreErr
                 post(set_hypothesis_attention),
             )
             .route(
+                "/project/{project}/hypothesis/{selector}/body",
+                post(update_hypothesis_body),
+            )
+            .route(
                 "/project/{project}/experiment/{selector}",
                 get(experiment_detail),
+            )
+            .route(
+                "/project/{project}/experiment/{selector}/outcome-prose",
+                post(update_experiment_outcome_prose),
             )
             .with_state(state.clone());
         let listener = tokio::net::TcpListener::bind(bind)
@@ -811,6 +824,38 @@ async fn update_frontier_summary(
 }
 
 #[derive(Debug, Deserialize)]
+struct FrontierBriefForm {
+    expected_revision: Option<u64>,
+    situation: String,
+}
+
+async fn update_frontier_brief(
+    State(state): State<NavigatorState>,
+    Path((project, selector)): Path<(String, String)>,
+    Form(form): Form<FrontierBriefForm>,
+) -> Response {
+    frontier_status_mutation_response(resolve_project_context(&state, &project).and_then(
+        |context| {
+            let mut store = open_store(context.project_root.as_std_path())?;
+            let updated = store.update_frontier(UpdateFrontierRequest {
+                frontier: selector,
+                expected_revision: form.expected_revision,
+                label: None,
+                objective: None,
+                status: None,
+                situation: Some(text_patch_field(form.situation)?),
+                unknowns: None,
+            })?;
+            Ok(format!(
+                "{}{}?tab=brief",
+                context.base_href,
+                frontier_href(&updated.slug)
+            ))
+        },
+    ))
+}
+
+#[derive(Debug, Deserialize)]
 struct FrontierArchiveForm {
     expected_revision: Option<u64>,
 }
@@ -893,6 +938,41 @@ async fn set_hypothesis_attention(
     )
 }
 
+#[derive(Debug, Deserialize)]
+struct HypothesisBodyForm {
+    expected_revision: Option<u64>,
+    body: String,
+}
+
+async fn update_hypothesis_body(
+    State(state): State<NavigatorState>,
+    Path((project, selector)): Path<(String, String)>,
+    Form(form): Form<HypothesisBodyForm>,
+) -> Response {
+    hypothesis_mutation_response(
+        resolve_project_context(&state, &project).and_then(|context| {
+            let mut store = open_store(context.project_root.as_std_path())?;
+            let updated = store.update_hypothesis(UpdateHypothesisRequest {
+                hypothesis: selector,
+                expected_revision: form.expected_revision,
+                title: None,
+                summary: None,
+                body: Some(NonEmptyText::new(form.body)?),
+                expected_yield: None,
+                confidence: None,
+                attention: None,
+                tags: None,
+                parents: None,
+            })?;
+            Ok(format!(
+                "{}{}",
+                context.base_href,
+                hypothesis_href(&updated.slug)
+            ))
+        }),
+    )
+}
+
 async fn experiment_detail(
     State(state): State<NavigatorState>,
     Path((project, selector)): Path<(String, String)>,
@@ -901,4 +981,83 @@ async fn experiment_detail(
         resolve_project_context(&state, &project)
             .and_then(|context| render_experiment_detail(context, selector)),
     )
+}
+
+#[derive(Debug, Deserialize)]
+struct ExperimentOutcomeProseForm {
+    expected_revision: Option<u64>,
+    rationale: String,
+    analysis_summary: String,
+    analysis_body: String,
+}
+
+async fn update_experiment_outcome_prose(
+    State(state): State<NavigatorState>,
+    Path((project, selector)): Path<(String, String)>,
+    Form(form): Form<ExperimentOutcomeProseForm>,
+) -> Response {
+    experiment_mutation_response(
+        resolve_project_context(&state, &project).and_then(|context| {
+            let mut store = open_store(context.project_root.as_std_path())?;
+            let detail = store.read_experiment(&selector)?;
+            let outcome = detail.record.outcome.as_ref().ok_or_else(|| {
+                StoreError::InvalidInput(
+                    "open experiments have no outcome prose to edit".to_owned(),
+                )
+            })?;
+            let analysis =
+                experiment_analysis_from_form(form.analysis_summary, form.analysis_body)?;
+            let updated = store.update_experiment(UpdateExperimentRequest {
+                experiment: selector,
+                expected_revision: form.expected_revision,
+                title: None,
+                summary: None,
+                tags: None,
+                parents: None,
+                outcome: Some(ExperimentOutcomePatch {
+                    backend: outcome.backend,
+                    command: outcome.command.clone(),
+                    dimensions: outcome.dimensions.clone(),
+                    primary_metric: reported_metric_value(&outcome.primary_metric),
+                    supporting_metrics: outcome
+                        .supporting_metrics
+                        .iter()
+                        .map(reported_metric_value)
+                        .collect(),
+                    verdict: outcome.verdict,
+                    rationale: NonEmptyText::new(form.rationale)?,
+                    analysis,
+                }),
+            })?;
+            Ok(format!(
+                "{}{}",
+                context.base_href,
+                experiment_href(&updated.slug)
+            ))
+        }),
+    )
+}
+
+fn experiment_analysis_from_form(
+    summary: String,
+    body: String,
+) -> Result<Option<ExperimentAnalysis>, StoreError> {
+    match (optional_text_field(summary)?, optional_text_field(body)?) {
+        (None, None) => Ok(None),
+        (Some(summary), Some(body)) => Ok(Some(ExperimentAnalysis { summary, body })),
+        (None, Some(_)) => Err(StoreError::InvalidInput(
+            "analysis summary is required when analysis body is present".to_owned(),
+        )),
+        (Some(_), None) => Err(StoreError::InvalidInput(
+            "analysis body is required when analysis summary is present".to_owned(),
+        )),
+    }
+}
+
+fn reported_metric_value(metric: &fidget_spinner_core::MetricValue) -> ReportedMetricValue {
+    ReportedMetricValue {
+        key: metric.key.clone(),
+        value: metric.value,
+        unit: Some(metric.unit),
+    }
 }

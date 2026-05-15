@@ -22,6 +22,7 @@ libmcp = { git = "https://git.swarm.moe/libmcp.git", rev = "e325cd23f19378f54398
 maud.workspace = true
 percent-encoding.workspace = true
 plotters.workspace = true
+pulldown-cmark.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 time.workspace = true

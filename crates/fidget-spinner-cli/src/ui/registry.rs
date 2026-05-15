@@ -9,7 +9,8 @@ use super::{
     frontier_href, frontier_results_href, frontier_status_class, html, limit_items,
     list_project_manifests, load_shell_frame, metric_choice_detail, open_store, pencil_icon,
     plus_icon, project_root_href, project_state_home, render_fact, render_kv,
-    render_metric_choice_option, render_metric_kind_chip, status_chip_classes, trash_icon,
+    render_markdown_prose, render_metric_choice_option, render_metric_kind_chip,
+    status_chip_classes, trash_icon,
 };
 
 pub(super) fn render_project_index(state: NavigatorState) -> Result<Markup, StoreError> {
@@ -1026,7 +1027,7 @@ fn render_project_status(status: &ProjectStatus, base_href: &str) -> Markup {
             }
         }
         @if let Some(description) = status.description.as_ref() {
-            p.prose { (description) }
+            (render_markdown_prose(description.as_str()))
         } @else {
             p.muted { "No project description recorded." }
         }

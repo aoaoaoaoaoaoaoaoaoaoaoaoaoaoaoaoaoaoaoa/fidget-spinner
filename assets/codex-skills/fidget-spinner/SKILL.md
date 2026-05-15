@@ -54,6 +54,11 @@ If you need more context, pull it from:
 - the operator’s main view of progress is the closed-experiment record; material
   hypothesis-driven observations must be preserved by closing experiments, not
   by updating references, briefs, or other ambient surfaces
+- do not keep a parallel Markdown log beside Spinner. The UI renders Markdown
+  in the project description, frontier description/situation, experiment
+  rationale, and experiment analysis body; it also renders inline Markdown in
+  the single-paragraph hypothesis body. Put durable narrative in Spinner, not
+  in sidecar notes
 - token austerity matters more than convenience dumps
 
 ## Choose The Cheapest Tool

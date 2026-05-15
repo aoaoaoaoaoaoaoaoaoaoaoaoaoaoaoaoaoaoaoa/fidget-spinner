@@ -121,7 +121,7 @@ const TOOL_SPECS: &[ToolSpec] = &[
     },
     ToolSpec {
         name: "hypothesis.record",
-        description: "Record an idea eagerly as a cheap hypothesis node, including expected yield and confidence. The body must stay a single paragraph.",
+        description: "Record an idea eagerly as a cheap hypothesis node, including expected yield and confidence. The body must stay a single paragraph; inline Markdown renders in the UI.",
         dispatch: DispatchTarget::Worker,
         replay: ReplayContract::NeverReplay,
     },
@@ -454,7 +454,7 @@ fn tool_input_schema(name: &str) -> Value {
                 (
                     "body",
                     string_schema(
-                        "Single-paragraph hypothesis body. Capture the thought now; refine later.",
+                        "Single-paragraph hypothesis body. Inline Markdown renders in the UI. Capture the thought now; refine later.",
                     ),
                 ),
                 (
@@ -532,7 +532,12 @@ fn tool_input_schema(name: &str) -> Value {
                 ),
                 ("title", string_schema("Replacement title.")),
                 ("summary", string_schema("Replacement summary.")),
-                ("body", string_schema("Replacement single-paragraph body.")),
+                (
+                    "body",
+                    string_schema(
+                        "Replacement single-paragraph body. Inline Markdown renders in the UI.",
+                    ),
+                ),
                 (
                     "expected_yield",
                     enum_string_schema(

@@ -14,20 +14,21 @@ use fidget_spinner_core::{
     ExperimentAnalysis, ExperimentOutcome, ExperimentStatus, FrontierRecord, FrontierStatus,
     FrontierVerdict, HypothesisAssessmentLevel, HypothesisAttention, KnownMetricUnit,
     MetricAggregation, MetricDimension, MetricDisplayUnit, MetricQuantity, MetricUnit,
-    NonEmptyText, OptimizationObjective, RegistryLockMode, RegistryName, RunDimensionValue, Slug,
-    SyntheticMetricExpression, TagFamilyName, TagName, VertexRef,
+    NonEmptyText, OptimizationObjective, RegistryLockMode, RegistryName, ReportedMetricValue,
+    RunDimensionValue, Slug, SyntheticMetricExpression, TagFamilyName, TagName, VertexRef,
 };
 use fidget_spinner_store_sqlite::{
     AssignTagFamilyRequest, CreateKpiRequest, CreateTagFamilyRequest, DefineMetricRequest,
     DefineSyntheticMetricRequest, DeleteKpiReferenceRequest, DeleteKpiRequest, DeleteMetricRequest,
-    DeleteTagRequest, ExperimentDetail, ExperimentSummary, FrontierMetricSeries,
-    FrontierOpenProjection, FrontierSummary, HypothesisAttentionFilter, HypothesisCurrentState,
-    HypothesisDetail, HypothesisLifecycleFilter, KpiSummary, ListExperimentsQuery,
-    ListFrontiersQuery, ListHypothesesQuery, MergeMetricRequest, MergeTagRequest, MetricKeySummary,
-    MetricKeysQuery, MetricScope, MoveKpiDirection, MoveKpiRequest, ProjectStatus,
-    RenameMetricRequest, RenameTagRequest, STATE_DB_NAME, SetFrontierRegistryLockRequest,
-    SetKpiReferenceRequest, SetRegistryLockRequest, SetTagFamilyMandatoryRequest, StoreError,
-    TextPatch, UpdateFrontierRequest, UpdateHypothesisRequest, UpdateProjectRequest, VertexSummary,
+    DeleteTagRequest, ExperimentDetail, ExperimentOutcomePatch, ExperimentSummary,
+    FrontierMetricSeries, FrontierOpenProjection, FrontierSummary, HypothesisAttentionFilter,
+    HypothesisCurrentState, HypothesisDetail, HypothesisLifecycleFilter, KpiSummary,
+    ListExperimentsQuery, ListFrontiersQuery, ListHypothesesQuery, MergeMetricRequest,
+    MergeTagRequest, MetricKeySummary, MetricKeysQuery, MetricScope, MoveKpiDirection,
+    MoveKpiRequest, ProjectStatus, RenameMetricRequest, RenameTagRequest, STATE_DB_NAME,
+    SetFrontierRegistryLockRequest, SetKpiReferenceRequest, SetRegistryLockRequest,
+    SetTagFamilyMandatoryRequest, StoreError, TextPatch, UpdateExperimentRequest,
+    UpdateFrontierRequest, UpdateHypothesisRequest, UpdateProjectRequest, VertexSummary,
     list_project_manifests, project_state_home,
 };
 use maud::{DOCTYPE, Markup, PreEscaped, html};
@@ -38,6 +39,8 @@ use plotters::prelude::{
     ShapeStyle, Text,
 };
 use plotters::style::{Color, IntoFont, RGBColor};
+use pulldown_cmark::html::push_html;
+use pulldown_cmark::{Event, Options, Parser};
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
 use time::macros::format_description;
@@ -295,15 +298,18 @@ fn frontier_status_mutation_response(result: Result<String, StoreError>) -> Resp
         Ok(location) => Redirect::to(&location).into_response(),
         Err(StoreError::RevisionMismatch { .. }) => (
             StatusCode::CONFLICT,
-            "frontier changed before the archive request landed; reload and retry".to_owned(),
+            "frontier changed before the update landed; reload and retry".to_owned(),
         )
             .into_response(),
         Err(StoreError::UnknownFrontierSelector(_)) => {
             (StatusCode::NOT_FOUND, "not found".to_owned()).into_response()
         }
+        Err(StoreError::InvalidInput(message)) => {
+            (StatusCode::BAD_REQUEST, message).into_response()
+        }
         Err(error) => (
             StatusCode::INTERNAL_SERVER_ERROR,
-            format!("frontier archive update failed: {error}"),
+            format!("frontier update failed: {error}"),
         )
             .into_response(),
     }
@@ -372,14 +378,49 @@ fn hypothesis_mutation_response(result: Result<String, StoreError>) -> Response 
         Err(StoreError::UnknownHypothesisSelector(_)) => {
             (StatusCode::NOT_FOUND, "not found".to_owned()).into_response()
         }
+        Err(StoreError::RevisionMismatch { .. }) => (
+            StatusCode::CONFLICT,
+            "hypothesis changed before the edit landed; reload and retry".to_owned(),
+        )
+            .into_response(),
         Err(StoreError::WorkingHypothesisCannotBeShelved { hypothesis }) => (
             StatusCode::CONFLICT,
             format!("hypothesis `{hypothesis}` has open experiments and cannot be shelved"),
         )
             .into_response(),
+        Err(StoreError::HypothesisBodyMustBeSingleParagraph) => (
+            StatusCode::BAD_REQUEST,
+            "hypothesis body must stay a single paragraph".to_owned(),
+        )
+            .into_response(),
+        Err(StoreError::InvalidInput(message)) => {
+            (StatusCode::BAD_REQUEST, message).into_response()
+        }
         Err(error) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             format!("hypothesis worklist update failed: {error}"),
+        )
+            .into_response(),
+    }
+}
+
+fn experiment_mutation_response(result: Result<String, StoreError>) -> Response {
+    match result {
+        Ok(location) => Redirect::to(&location).into_response(),
+        Err(StoreError::UnknownExperimentSelector(_)) => {
+            (StatusCode::NOT_FOUND, "not found".to_owned()).into_response()
+        }
+        Err(StoreError::RevisionMismatch { .. }) => (
+            StatusCode::CONFLICT,
+            "experiment changed before the edit landed; reload and retry".to_owned(),
+        )
+            .into_response(),
+        Err(StoreError::InvalidInput(message)) => {
+            (StatusCode::BAD_REQUEST, message).into_response()
+        }
+        Err(error) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("experiment prose update failed: {error}"),
         )
             .into_response(),
     }
@@ -1084,6 +1125,32 @@ fn render_hypothesis_meta_chips(
     }
 }
 
+fn render_markdown_prose(source: &str) -> Markup {
+    html! {
+        div.prose.markdown-prose {
+            (PreEscaped(markdown_html(source)))
+        }
+    }
+}
+
+fn markdown_html(source: &str) -> String {
+    let parser = Parser::new_ext(source, markdown_options()).map(|event| match event {
+        Event::Html(raw_html) | Event::InlineHtml(raw_html) => Event::Text(raw_html),
+        event => event,
+    });
+    let mut html = String::new();
+    push_html(&mut html, parser);
+    html
+}
+
+fn markdown_options() -> Options {
+    Options::ENABLE_TABLES
+        | Options::ENABLE_FOOTNOTES
+        | Options::ENABLE_STRIKETHROUGH
+        | Options::ENABLE_TASKLISTS
+        | Options::ENABLE_SMART_PUNCTUATION
+}
+
 fn limit_items<T>(items: &[T], limit: Option<u32>) -> &[T] {
     let Some(limit) = limit else {
         return items;
@@ -1109,7 +1176,7 @@ mod tests {
     };
     use super::{
         FrontierPageQuery, FrontierTab, METRIC_TABLE_TITLE_MIN_BUDGET_CH, MetricAxisLogScales,
-        NavigatorState, Utf8PathBuf, encode_path_segment, resolve_project_context,
+        NavigatorState, Utf8PathBuf, encode_path_segment, markdown_html, resolve_project_context,
     };
     use std::collections::BTreeMap;
     use std::error::Error;
@@ -1244,6 +1311,16 @@ mod tests {
                 .count(),
             3
         );
+    }
+
+    #[test]
+    fn markdown_prose_renders_commonmark_and_escapes_raw_html() {
+        let rendered = markdown_html("A **bold** point.\n\n- `code`\n\n<script>alert(1)</script>");
+
+        assert!(rendered.contains("<strong>bold</strong>"));
+        assert!(rendered.contains("<li><code>code</code></li>"));
+        assert!(rendered.contains("&lt;script&gt;alert(1)&lt;/script&gt;"));
+        assert!(!rendered.contains("<script>"));
     }
 
     #[test]

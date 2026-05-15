@@ -8,11 +8,11 @@ use super::{
     ExperimentSummary, FrontierOpenProjection, FrontierPageQuery, FrontierRecord, FrontierTab,
     HypothesisAttention, HypothesisDetail, Markup, MetricAxisLogScales, MetricKeysQuery,
     MetricScope, NonEmptyText, PreEscaped, ProjectRenderContext, RunDimensionValue, ShellFrame,
-    StoreError, VertexRef, VertexSummary, experiment_href, experiment_status_class,
+    Slug, StoreError, VertexRef, VertexSummary, experiment_href, experiment_status_class,
     format_metric_value, format_timestamp, frontier_href, frontier_status_class, frontier_tab_href,
     html, hypothesis_href, limit_items, load_shell_frame, open_store, pencil_icon,
-    render_dimension_value, render_fact, render_hypothesis_meta_chips, render_kv, render_sidebar,
-    short_commit_hash, status_chip_classes, verdict_class,
+    render_dimension_value, render_fact, render_hypothesis_meta_chips, render_kv,
+    render_markdown_prose, render_sidebar, short_commit_hash, status_chip_classes, verdict_class,
 };
 
 pub(super) fn render_frontier_detail(
@@ -65,7 +65,7 @@ pub(super) fn render_hypothesis_detail(
     let title = format!("{} · hypothesis", detail.record.title);
     let content = html! {
         (render_hypothesis_header(&detail, &frontier))
-        (render_prose_block("Body", detail.record.body.as_str()))
+        (render_hypothesis_body(&detail))
         (render_vertex_relation_sections(&detail.parents, &detail.children, context.limit))
         (render_experiment_section(
             "Open Experiments",
@@ -93,7 +93,7 @@ pub(super) fn render_experiment_detail(
     let content = html! {
         (render_experiment_header(&detail, &frontier))
         @if let Some(outcome) = detail.record.outcome.as_ref() {
-            (render_experiment_outcome(outcome))
+            (render_experiment_outcome(&detail.record.slug, detail.record.revision, outcome))
         } @else {
             (render_open_experiment_outcome())
         }
@@ -154,16 +154,27 @@ pub(super) fn render_frontier_brief(projection: &FrontierOpenProjection) -> Mark
     section.card {
         h2 { "Brief" }
         div.block {
-            h3 { "Description" }
-            p.prose { (frontier.objective) }
+            div.card-header {
+                h3 { "Description" }
+            }
+            (render_markdown_prose(frontier.objective.as_str()))
         }
         @if let Some(situation) = frontier.brief.situation.as_ref() {
             div.block {
-                h3 { "Situation" }
-                p.prose { (situation) }
+                div.card-header {
+                    h3 { "Situation" }
+                    (render_frontier_situation_editor(frontier))
+                }
+                (render_markdown_prose(situation.as_str()))
             }
         } @else {
-            p.muted { "No situation summary recorded." }
+            div.block {
+                div.card-header {
+                    h3 { "Situation" }
+                    (render_frontier_situation_editor(frontier))
+                }
+                p.muted { "No situation summary recorded." }
+            }
         }
         div.subcard {
             h3 { "Unknowns" }
@@ -178,6 +189,36 @@ pub(super) fn render_frontier_brief(projection: &FrontierOpenProjection) -> Mark
             }
         }
     }
+    }
+}
+
+fn render_frontier_situation_editor(frontier: &FrontierRecord) -> Markup {
+    html! {
+        details.control-popout.frontier-summary-editor {
+            summary.inline-icon-button.frontier-edit-toggle aria-label="Edit frontier situation" title="Edit situation" {
+                (pencil_icon())
+            }
+            div.control-popout-panel.frontier-summary-panel {
+                form.frontier-summary-form method="post" action=(format!("{}/brief", frontier_href(&frontier.slug))) data-preserve-viewport="true" {
+                    input type="hidden" name="expected_revision" value=(frontier.revision);
+                    label.filter-control {
+                        span.filter-label { "Situation" }
+                        textarea.compact-textarea.frontier-description-input
+                            name="situation"
+                            rows="8"
+                            placeholder="Current frontier state; Markdown supported."
+                        {
+                            @if let Some(situation) = frontier.brief.situation.as_ref() {
+                                (situation.as_str())
+                            }
+                        }
+                    }
+                    div.filter-actions {
+                        button.form-button type="submit" { "Save" }
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -309,6 +350,39 @@ fn render_hypothesis_header(detail: &HypothesisDetail, frontier: &FrontierRecord
     }
 }
 
+fn render_hypothesis_body(detail: &HypothesisDetail) -> Markup {
+    html! {
+    section.card {
+        div.card-header {
+            h2 { "Body" }
+            details.control-popout.frontier-summary-editor {
+                summary.inline-icon-button.frontier-edit-toggle aria-label="Edit hypothesis body" title="Edit body" {
+                    (pencil_icon())
+                }
+                div.control-popout-panel.frontier-summary-panel {
+                    form.frontier-summary-form method="post" action=(format!("{}/body", hypothesis_href(&detail.record.slug))) data-preserve-viewport="true" {
+                        input type="hidden" name="expected_revision" value=(detail.record.revision);
+                        label.filter-control {
+                            span.filter-label { "Body" }
+                            textarea.compact-textarea.frontier-description-input
+                                name="body"
+                                rows="12"
+                                required
+                                placeholder="Single-paragraph hypothesis notes; inline Markdown supported."
+                            { (detail.record.body.as_str()) }
+                        }
+                        div.filter-actions {
+                            button.form-button type="submit" { "Save" }
+                        }
+                    }
+                }
+            }
+        }
+        (render_markdown_prose(detail.record.body.as_str()))
+    }
+    }
+}
+
 fn render_experiment_header(detail: &ExperimentDetail, frontier: &FrontierRecord) -> Markup {
     html! {
     section.card {
@@ -351,11 +425,16 @@ fn render_experiment_header(detail: &ExperimentDetail, frontier: &FrontierRecord
     }
 }
 
-fn render_experiment_outcome(outcome: &ExperimentOutcome) -> Markup {
+fn render_experiment_outcome(
+    experiment_slug: &Slug,
+    experiment_revision: u64,
+    outcome: &ExperimentOutcome,
+) -> Markup {
     html! {
     section.card.experiment-outcome {
         div.card-header.outcome-header {
             h2 { "Outcome" }
+            (render_experiment_outcome_prose_editor(experiment_slug, experiment_revision, outcome))
             div.fact-strip.outcome-verdict-strip {
                 span.fact {
                     span.fact-label { "verdict" }
@@ -367,7 +446,7 @@ fn render_experiment_outcome(outcome: &ExperimentOutcome) -> Markup {
         }
         section.subcard.narrative-block {
             h3 { "Rationale" }
-            p.prose { (outcome.rationale) }
+            (render_markdown_prose(outcome.rationale.as_str()))
         }
         @if let Some(analysis) = outcome.analysis.as_ref() {
             (render_experiment_analysis(analysis))
@@ -378,6 +457,57 @@ fn render_experiment_outcome(outcome: &ExperimentOutcome) -> Markup {
         }
         (render_experiment_provenance(outcome))
     }
+    }
+}
+
+fn render_experiment_outcome_prose_editor(
+    experiment_slug: &Slug,
+    experiment_revision: u64,
+    outcome: &ExperimentOutcome,
+) -> Markup {
+    html! {
+        details.control-popout.frontier-summary-editor {
+            summary.inline-icon-button.frontier-edit-toggle aria-label="Edit outcome prose" title="Edit rationale and analysis" {
+                (pencil_icon())
+            }
+            div.control-popout-panel.frontier-summary-panel {
+                form.frontier-summary-form method="post" action=(format!("{}/outcome-prose", experiment_href(experiment_slug))) data-preserve-viewport="true" {
+                    input type="hidden" name="expected_revision" value=(experiment_revision);
+                    label.filter-control {
+                        span.filter-label { "Rationale" }
+                        textarea.compact-textarea.frontier-description-input
+                            name="rationale"
+                            rows="6"
+                            required
+                            placeholder="Decision rationale; Markdown supported."
+                        { (outcome.rationale.as_str()) }
+                    }
+                    label.filter-control {
+                        span.filter-label { "Analysis Summary" }
+                        input.compact-input
+                            type="text"
+                            name="analysis_summary"
+                            value=(outcome.analysis.as_ref().map_or("", |analysis| analysis.summary.as_str()))
+                            placeholder="Optional analysis one-liner";
+                    }
+                    label.filter-control {
+                        span.filter-label { "Analysis Body" }
+                        textarea.compact-textarea.frontier-description-input
+                            name="analysis_body"
+                            rows="10"
+                            placeholder="Optional analysis body; Markdown supported."
+                        {
+                            @if let Some(analysis) = outcome.analysis.as_ref() {
+                                (analysis.body.as_str())
+                            }
+                        }
+                    }
+                    div.filter-actions {
+                        button.form-button type="submit" { "Save" }
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -405,9 +535,7 @@ fn render_experiment_analysis(analysis: &ExperimentAnalysis) -> Markup {
     section.subcard.narrative-block {
         h3 { "Analysis" }
         p.prose { (analysis.summary) }
-        div.code-block {
-            (analysis.body)
-        }
+        (render_markdown_prose(analysis.body.as_str()))
     }
     }
 }
@@ -677,15 +805,6 @@ fn render_vertex_chip(summary: &VertexSummary) -> Markup {
                 span.link-chip-summary { (summary_text) }
             }
         }
-    }
-}
-
-fn render_prose_block(title: &str, body: &str) -> Markup {
-    html! {
-    section.card {
-        h2 { (title) }
-        p.prose { (body) }
-    }
     }
 }
 
