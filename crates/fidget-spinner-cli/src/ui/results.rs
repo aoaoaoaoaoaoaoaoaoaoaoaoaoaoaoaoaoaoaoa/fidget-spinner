@@ -66,6 +66,17 @@ pub(super) fn render_frontier_tab_content(
             (render_hypothesis_current_state_grid(&projection.worklist_hypotheses, limit))
             (render_open_experiment_grid(&projection.open_experiments, limit))
         }),
+        FrontierTab::Experiments => {
+            let experiments = store.list_experiments(ListExperimentsQuery {
+                frontier: Some(projection.frontier.slug.to_string()),
+                limit: None,
+                ..ListExperimentsQuery::default()
+            })?;
+            Ok(html! {
+                (render_frontier_header(&projection.frontier))
+                (render_frontier_experiment_pane(&experiments, limit))
+            })
+        }
         FrontierTab::Closed => {
             let historical_hypotheses = store.list_hypotheses(ListHypothesesQuery {
                 frontier: Some(projection.frontier.slug.to_string()),
@@ -133,8 +144,9 @@ pub(super) fn render_frontier_tab_bar(
     dimension_filters: &BTreeMap<String, String>,
     table_metric: Option<&str>,
 ) -> Markup {
-    const TABS: [FrontierTab; 4] = [
+    const TABS: [FrontierTab; 5] = [
         FrontierTab::Results,
+        FrontierTab::Experiments,
         FrontierTab::Brief,
         FrontierTab::Open,
         FrontierTab::Closed,
@@ -252,9 +264,9 @@ fn render_history_hypothesis_grid(
 ) -> Markup {
     html! {
     section.card {
-        h2 { "Shelved Hypotheses" }
+        h2 { "Closed Hypotheses" }
         @if hypotheses.is_empty() {
-            p.muted { "No shelved hypotheses." }
+            p.muted { "No closed hypotheses." }
         } @else {
             div.card-grid {
                 @for hypothesis in limit_items(hypotheses, limit) {
@@ -279,6 +291,29 @@ fn render_history_hypothesis_grid(
                             span { "updated " (format_timestamp(hypothesis.updated_at)) }
                         }
                     }
+                }
+            }
+        }
+    }
+    }
+}
+
+fn render_frontier_experiment_pane(
+    experiments: &[ExperimentSummary],
+    limit: Option<u32>,
+) -> Markup {
+    html! {
+    section.card {
+        div.card-header {
+            h2 { "Experiments" }
+            span.kind-chip { (experiments.len()) " total" }
+        }
+        @if experiments.is_empty() {
+            p.muted { "No experiments." }
+        } @else {
+            div.card-grid {
+                @for experiment in limit_items(experiments, limit) {
+                    (render_experiment_card(experiment))
                 }
             }
         }

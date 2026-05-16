@@ -10,8 +10,8 @@ use super::{
     MetricScope, NonEmptyText, PreEscaped, ProjectRenderContext, RunDimensionValue, ShellFrame,
     Slug, StoreError, VertexRef, VertexSummary, experiment_href, experiment_status_class,
     format_metric_value, format_timestamp, frontier_href, frontier_status_class, frontier_tab_href,
-    html, hypothesis_href, limit_items, load_shell_frame, open_store, pencil_icon,
-    render_dimension_value, render_fact, render_hypothesis_meta_chips, render_kv,
+    html, hypothesis_attention_label, hypothesis_href, limit_items, load_shell_frame, open_store,
+    pencil_icon, render_dimension_value, render_fact, render_hypothesis_meta_chips, render_kv,
     render_markdown_prose, render_sidebar, short_commit_hash, status_chip_classes, verdict_class,
 };
 
@@ -314,13 +314,13 @@ fn render_hypothesis_header(detail: &HypothesisDetail, frontier: &FrontierRecord
     let (next_attention, label, title) = match detail.record.attention {
         HypothesisAttention::Worklist => (
             HypothesisAttention::Shelved,
-            "Shelve",
-            "Remove this idle hypothesis from the worklist",
+            "Close",
+            "Close this idle hypothesis",
         ),
         HypothesisAttention::Shelved => (
             HypothesisAttention::Worklist,
-            "Restore",
-            "Return this hypothesis to the worklist",
+            "Reopen",
+            "Return this hypothesis to the active worklist",
         ),
     };
     html! {
@@ -338,7 +338,7 @@ fn render_hypothesis_header(detail: &HypothesisDetail, frontier: &FrontierRecord
         div.meta-row {
             span { "frontier " a href=(frontier_href(&frontier.slug)) { (frontier.label) } }
             span { "slug " code { (detail.record.slug) } }
-            span { "attention " (detail.record.attention.as_str()) }
+            span { "state " (hypothesis_attention_label(detail.record.attention)) }
             span.muted { "updated " (format_timestamp(detail.record.updated_at)) }
         }
         (render_hypothesis_meta_chips(

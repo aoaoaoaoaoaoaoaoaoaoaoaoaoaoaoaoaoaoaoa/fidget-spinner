@@ -115,6 +115,7 @@ struct TagUsage {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum FrontierTab {
     Brief,
+    Experiments,
     Open,
     Closed,
     Results,
@@ -149,6 +150,7 @@ impl FrontierTab {
     fn from_query(raw: Option<&str>) -> Self {
         match raw {
             Some("brief") => Self::Brief,
+            Some("experiments") => Self::Experiments,
             Some("open") => Self::Open,
             Some("closed") => Self::Closed,
             _ => Self::Results,
@@ -158,6 +160,7 @@ impl FrontierTab {
     const fn as_query(self) -> &'static str {
         match self {
             Self::Brief => "brief",
+            Self::Experiments => "experiments",
             Self::Open => "open",
             Self::Closed => "closed",
             Self::Results => "results",
@@ -167,8 +170,9 @@ impl FrontierTab {
     const fn label(self) -> &'static str {
         match self {
             Self::Brief => "Brief",
+            Self::Experiments => "Experiments",
             Self::Open => "Worklist",
-            Self::Closed => "History",
+            Self::Closed => "Closed",
             Self::Results => "Results",
         }
     }
@@ -385,7 +389,7 @@ fn hypothesis_mutation_response(result: Result<String, StoreError>) -> Response 
             .into_response(),
         Err(StoreError::WorkingHypothesisCannotBeShelved { hypothesis }) => (
             StatusCode::CONFLICT,
-            format!("hypothesis `{hypothesis}` has open experiments and cannot be shelved"),
+            format!("hypothesis `{hypothesis}` has open experiments and cannot be closed"),
         )
             .into_response(),
         Err(StoreError::HypothesisBodyMustBeSingleParagraph) => (
@@ -398,7 +402,7 @@ fn hypothesis_mutation_response(result: Result<String, StoreError>) -> Response 
         }
         Err(error) => (
             StatusCode::INTERNAL_SERVER_ERROR,
-            format!("hypothesis worklist update failed: {error}"),
+            format!("hypothesis state update failed: {error}"),
         )
             .into_response(),
     }
@@ -1092,6 +1096,13 @@ fn experiment_status_class(status: ExperimentStatus) -> &'static str {
     }
 }
 
+fn hypothesis_attention_label(attention: HypothesisAttention) -> &'static str {
+    match attention {
+        HypothesisAttention::Worklist => "active",
+        HypothesisAttention::Shelved => "closed",
+    }
+}
+
 fn status_chip_classes(extra_class: &str) -> String {
     format!("status-chip {extra_class}")
 }
@@ -1693,8 +1704,13 @@ mod tests {
             FrontierTab::Results
         );
         assert_eq!(FrontierTab::from_query(Some("brief")), FrontierTab::Brief);
+        assert_eq!(
+            FrontierTab::from_query(Some("experiments")),
+            FrontierTab::Experiments
+        );
         assert_eq!(FrontierTab::Open.label(), "Worklist");
-        assert_eq!(FrontierTab::Closed.label(), "History");
+        assert_eq!(FrontierTab::Experiments.label(), "Experiments");
+        assert_eq!(FrontierTab::Closed.label(), "Closed");
     }
 
     #[test]
