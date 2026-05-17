@@ -21,9 +21,9 @@ use fidget_spinner_store_sqlite::{
     KpiListQuery, KpiReferenceListQuery, KpiReferenceSummary, KpiSummary, ListExperimentsQuery,
     ListFrontiersQuery, ListHypothesesQuery, MetricBestEntry, MetricBestQuery, MetricKeySummary,
     MetricKeysQuery, MetricRankOrder, MetricScope, OpenExperimentRequest, ProjectStatus,
-    ProjectStore, SetKpiReferenceRequest, StoreError, TagRegistryQuery, TextPatch,
-    UpdateExperimentRequest, UpdateFrontierRequest, UpdateHypothesisRequest, VertexSelector,
-    VertexSummary,
+    ProjectStore, ScuffExperimentRequest, SetKpiReferenceRequest, StoreError, TagRegistryQuery,
+    TextPatch, UpdateExperimentRequest, UpdateFrontierRequest, UpdateHypothesisRequest,
+    VertexSelector, VertexSummary,
 };
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
@@ -443,10 +443,10 @@ impl WorkerService {
                             backend: args.backend,
                             command: args.command,
                             dimensions: condition_map_from_wire(args.conditions)?,
-                            primary_metric: metric_value_from_wire(
-                                args.primary_metric,
-                                &operation
-                            )?,
+                            primary_metric: args
+                                .primary_metric
+                                .map(|metric| metric_value_from_wire(metric, &operation))
+                                .transpose()?,
                             supporting_metrics: args
                                 .supporting_metrics
                                 .unwrap_or_default()
@@ -461,6 +461,27 @@ impl WorkerService {
                                 .map(|analysis| experiment_analysis_from_wire(analysis, &operation))
                                 .transpose()?,
                         })
+                );
+                experiment_record_output(&experiment, &operation)?
+            }
+            "experiment.scuff" => {
+                let args = deserialize::<ExperimentScuffArgs>(arguments)?;
+                let detail = lift!(self.store.read_experiment(&args.experiment));
+                reject_hidden_experiment_detail_for_mcp(&self.store, &detail, &operation)?;
+                let experiment = lift!(
+                    self.store.scuff_experiment(ScuffExperimentRequest {
+                        experiment: args.experiment,
+                        expected_revision: args.expected_revision,
+                        rationale: args
+                            .rationale
+                            .map(NonEmptyText::new)
+                            .transpose()
+                            .map_err(store_fault(&operation))?,
+                        analysis: args
+                            .analysis
+                            .map(|analysis| experiment_analysis_from_wire(analysis, &operation))
+                            .transpose()?,
+                    })
                 );
                 experiment_record_output(&experiment, &operation)?
             }
@@ -858,10 +879,18 @@ struct ExperimentCloseArgs {
     backend: ExecutionBackend,
     command: CommandRecipe,
     conditions: Option<Map<String, Value>>,
-    primary_metric: MetricValueWire,
+    primary_metric: Option<MetricValueWire>,
     supporting_metrics: Option<Vec<MetricValueWire>>,
     verdict: FrontierVerdict,
     rationale: String,
+    analysis: Option<ExperimentAnalysisWire>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ExperimentScuffArgs {
+    experiment: String,
+    expected_revision: Option<u64>,
+    rationale: Option<String>,
     analysis: Option<ExperimentAnalysisWire>,
 }
 
@@ -881,7 +910,7 @@ struct ExperimentOutcomeWire {
     backend: ExecutionBackend,
     command: CommandRecipe,
     conditions: Option<Map<String, Value>>,
-    primary_metric: MetricValueWire,
+    primary_metric: Option<MetricValueWire>,
     supporting_metrics: Option<Vec<MetricValueWire>>,
     verdict: FrontierVerdict,
     rationale: String,
@@ -1234,7 +1263,10 @@ fn experiment_outcome_patch_from_wire(
         backend: wire.backend,
         command: wire.command,
         dimensions: condition_map_from_wire(wire.conditions)?,
-        primary_metric: metric_value_from_wire(wire.primary_metric, operation)?,
+        primary_metric: wire
+            .primary_metric
+            .map(|metric| metric_value_from_wire(metric, operation))
+            .transpose()?,
         supporting_metrics: wire
             .supporting_metrics
             .unwrap_or_default()
@@ -1660,13 +1692,10 @@ fn experiment_record_output(
     let projection = projection::experiment_record(experiment);
     let mut line = format!("experiment {} — {}", experiment.slug, experiment.title);
     if let Some(outcome) = experiment.outcome.as_ref() {
-        let _ = write!(
-            line,
-            " | {} {}={}",
-            outcome.verdict.as_str(),
-            outcome.primary_metric.key,
-            outcome.primary_metric.value
-        );
+        let _ = write!(line, " | {}", outcome.verdict.as_str());
+        if let Some(metric) = outcome.primary_metric.as_ref() {
+            let _ = write!(line, " {}={}", metric.key, metric.value);
+        }
         if let Some(commit_hash) = outcome.commit_hash.as_ref() {
             let _ = write!(
                 line,
@@ -1736,10 +1765,9 @@ fn experiment_detail_output(
         )
     ));
     if let Some(outcome) = detail.record.outcome.as_ref() {
-        lines.push(format!(
-            "primary metric: {}={}",
-            outcome.primary_metric.key, outcome.primary_metric.value
-        ));
+        if let Some(metric) = outcome.primary_metric.as_ref() {
+            lines.push(format!("primary metric: {}={}", metric.key, metric.value));
+        }
         if let Some(commit_hash) = outcome.commit_hash.as_ref() {
             lines.push(format!("commit: {commit_hash}"));
         }
@@ -2458,7 +2486,7 @@ mod legacy_projection_values {
             "backend": outcome.backend,
             "command": command_recipe_value(&outcome.command),
             "conditions": condition_map_value(&outcome.dimensions),
-            "primary_metric": metric_value_value(&outcome.primary_metric),
+            "primary_metric": outcome.primary_metric.as_ref().map(metric_value_value),
             "supporting_metrics": outcome
                 .supporting_metrics
                 .iter()

@@ -36,7 +36,7 @@ pub use query::{
 pub const STORE_DIR_NAME: &str = ".fidget_spinner";
 pub const GIT_DIR_NAME: &str = ".git";
 pub const STATE_DB_NAME: &str = "state.sqlite";
-pub const CURRENT_STORE_FORMAT_VERSION: u32 = 18;
+pub const CURRENT_STORE_FORMAT_VERSION: u32 = 19;
 pub const STATE_HOME_DIR_NAME: &str = "fidget-spinner";
 pub const PROJECT_STATE_DIR_NAME: &str = "projects";
 const LEGACY_PROJECT_CONFIG_NAME: &str = "project.json";
@@ -501,7 +501,7 @@ pub struct ExperimentOutcomePatch {
     pub command: CommandRecipe,
     #[serde(rename = "conditions")]
     pub dimensions: BTreeMap<NonEmptyText, RunDimensionValue>,
-    pub primary_metric: ReportedMetricValue,
+    pub primary_metric: Option<ReportedMetricValue>,
     pub supporting_metrics: Vec<ReportedMetricValue>,
     pub verdict: FrontierVerdict,
     pub rationale: NonEmptyText,
@@ -516,10 +516,18 @@ pub struct CloseExperimentRequest {
     pub backend: ExecutionBackend,
     pub command: CommandRecipe,
     pub dimensions: BTreeMap<NonEmptyText, RunDimensionValue>,
-    pub primary_metric: ReportedMetricValue,
+    pub primary_metric: Option<ReportedMetricValue>,
     pub supporting_metrics: Vec<ReportedMetricValue>,
     pub verdict: FrontierVerdict,
     pub rationale: NonEmptyText,
+    pub analysis: Option<ExperimentAnalysis>,
+}
+
+#[derive(Clone, Debug)]
+pub struct ScuffExperimentRequest {
+    pub experiment: String,
+    pub expected_revision: Option<u64>,
+    pub rationale: Option<NonEmptyText>,
     pub analysis: Option<ExperimentAnalysis>,
 }
 
@@ -2029,6 +2037,12 @@ impl ProjectStore {
                         .as_ref()
                         .is_some_and(|outcome| outcome.verdict != FrontierVerdict::Rejected)
             })
+            .filter(|record| {
+                record
+                    .outcome
+                    .as_ref()
+                    .is_some_and(|outcome| !outcome.verdict.is_scuffed())
+            })
             .collect::<Vec<_>>();
         let mut entries = experiments
             .into_iter()
@@ -2807,6 +2821,48 @@ impl ProjectStore {
         Ok(updated)
     }
 
+    pub fn scuff_experiment(
+        &mut self,
+        request: ScuffExperimentRequest,
+    ) -> Result<ExperimentRecord, StoreError> {
+        let record = self.resolve_experiment(&request.experiment)?;
+        let Some(mut outcome) = record.outcome.clone() else {
+            return Err(StoreError::ExperimentStillOpen(record.id));
+        };
+        enforce_revision(
+            "experiment",
+            &request.experiment,
+            request.expected_revision,
+            record.revision,
+        )?;
+        outcome.verdict = FrontierVerdict::Scuffed;
+        if let Some(rationale) = request.rationale {
+            outcome.rationale = rationale;
+        }
+        if request.analysis.is_some() {
+            outcome.analysis = request.analysis;
+        }
+        let updated = ExperimentRecord {
+            outcome: Some(outcome),
+            revision: record.revision.saturating_add(1),
+            updated_at: OffsetDateTime::now_utc(),
+            ..record
+        };
+        let transaction = self.connection.transaction()?;
+        update_experiment_row(&transaction, &updated)?;
+        replace_experiment_outcome(&transaction, updated.id, updated.outcome.as_ref())?;
+        record_event(
+            &transaction,
+            "experiment",
+            &updated.id.to_string(),
+            updated.revision,
+            "scuffed",
+            &updated,
+        )?;
+        transaction.commit()?;
+        Ok(updated)
+    }
+
     pub fn frontier_open(&self, selector: &str) -> Result<FrontierOpenProjection, StoreError> {
         let frontier = self.resolve_frontier(selector)?;
         let worklist_hypothesis_ids = self.worklist_hypothesis_ids(frontier.id)?;
@@ -3005,6 +3061,12 @@ impl ProjectStore {
                         .as_ref()
                         .is_some_and(|outcome| outcome.verdict != FrontierVerdict::Rejected)
             })
+            .filter(|record| {
+                record
+                    .outcome
+                    .as_ref()
+                    .is_some_and(|outcome| !outcome.verdict.is_scuffed())
+            })
             .collect::<Vec<_>>();
         let mut entries = experiments
             .into_iter()
@@ -3012,6 +3074,9 @@ impl ProjectStore {
                 let Some(outcome) = record.outcome.clone() else {
                     return Ok(None);
                 };
+                if outcome.verdict.is_scuffed() {
+                    return Ok(None);
+                }
                 if !dimension_subset_matches(&query.dimensions, &outcome.dimensions) {
                     return Ok(None);
                 }
@@ -3148,6 +3213,9 @@ impl ProjectStore {
                 let Some(outcome) = record.outcome.clone() else {
                     return Ok(None);
                 };
+                if outcome.verdict.is_scuffed() {
+                    return Ok(None);
+                }
                 let hypothesis_record = self.hypothesis_by_id(record.hypothesis_id)?;
                 if !query.tags.is_empty() {
                     let candidate_tags = record
@@ -4174,13 +4242,19 @@ impl ProjectStore {
         };
         let (primary_metric, supporting_metrics) =
             self.experiment_outcome_metrics(experiment_id)?;
+        let verdict = parse_frontier_verdict(&verdict).map_err(StoreError::from)?;
+        if primary_metric.is_none() && !verdict.is_scuffed() {
+            return Err(StoreError::InvalidInput(format!(
+                "non-scuffed experiment `{experiment_id}` has an outcome without a primary metric row"
+            )));
+        }
         Ok(Some(ExperimentOutcome {
             backend: parse_execution_backend(&backend).map_err(StoreError::from)?,
             command: self.experiment_command(experiment_id, working_directory)?,
             dimensions: self.experiment_dimensions(experiment_id)?,
             primary_metric,
             supporting_metrics,
-            verdict: parse_frontier_verdict(&verdict).map_err(StoreError::from)?,
+            verdict,
             rationale: NonEmptyText::new(rationale)?,
             analysis,
             commit_hash: commit_hash.map(GitCommitHash::new).transpose()?,
@@ -4333,7 +4407,7 @@ impl ProjectStore {
     fn experiment_outcome_metrics(
         &self,
         experiment_id: ExperimentId,
-    ) -> Result<(MetricValue, Vec<MetricValue>), StoreError> {
+    ) -> Result<(Option<MetricValue>, Vec<MetricValue>), StoreError> {
         let mut statement = self.connection.prepare(
             "SELECT experiment_metrics.is_primary, experiment_metrics.value,
                     metric_definitions.key, metric_definitions.display_unit
@@ -4367,11 +4441,6 @@ impl ProjectStore {
                 supporting_metrics.push(metric);
             }
         }
-        let Some(primary_metric) = primary_metric else {
-            return Err(StoreError::InvalidInput(format!(
-                "experiment `{experiment_id}` has an outcome without a primary metric row"
-            )));
-        };
         Ok((primary_metric, supporting_metrics))
     }
 
@@ -4425,7 +4494,8 @@ impl ProjectStore {
             primary_metric: record
                 .outcome
                 .as_ref()
-                .map(|outcome| self.metric_observation_summary(&outcome.primary_metric))
+                .and_then(|outcome| outcome.primary_metric.as_ref())
+                .map(|metric| self.metric_observation_summary(metric))
                 .transpose()?,
             updated_at: record.updated_at,
             closed_at: record.outcome.as_ref().map(|outcome| outcome.closed_at),
@@ -4983,17 +5053,32 @@ impl ProjectStore {
                 return Err(StoreError::UnknownDimensionFilter(key.to_string()));
             }
         }
-        let primary_metric = self.resolve_reported_metric_value(&patch.primary_metric)?;
+        let primary_metric = patch
+            .primary_metric
+            .as_ref()
+            .map(|metric| self.resolve_reported_metric_value(metric))
+            .transpose()?;
+        if primary_metric.is_none() && !patch.verdict.is_scuffed() {
+            return Err(StoreError::InvalidInput(
+                "non-scuffed experiment outcomes require a primary metric".to_owned(),
+            ));
+        }
         let mut supporting_metrics = Vec::with_capacity(patch.supporting_metrics.len());
         for metric in &patch.supporting_metrics {
             supporting_metrics.push(self.resolve_reported_metric_value(metric)?);
         }
-        if origin.is_mcp() {
-            self.assert_frontier_kpis_satisfied(frontier_id, &primary_metric, &supporting_metrics)?;
+        if origin.is_mcp() && !patch.verdict.is_scuffed() {
+            let Some(primary_metric) = primary_metric.as_ref() else {
+                return Err(StoreError::InvalidInput(
+                    "non-scuffed experiment outcomes require a primary metric".to_owned(),
+                ));
+            };
+            self.assert_frontier_kpis_satisfied(frontier_id, primary_metric, &supporting_metrics)?;
         }
         let git_capture_root = experiment_git_capture_root(&self.project_root, &patch.command);
         let (commit_hash, closed_at) = match existing {
             Some(outcome) => (outcome.commit_hash.clone(), outcome.closed_at),
+            None if patch.verdict.is_scuffed() => (None, OffsetDateTime::now_utc()),
             None => (
                 Some(capture_clean_git_commit(&git_capture_root)?),
                 OffsetDateTime::now_utc(),
@@ -5841,6 +5926,10 @@ fn migrate_store_to_current(
         migrate_store_v17_to_v18(connection)?;
         version = 18;
     }
+    if version == 18 {
+        migrate_store_v18_to_v19(connection)?;
+        version = 19;
+    }
     if version == CURRENT_STORE_FORMAT_VERSION {
         return Ok(());
     }
@@ -5853,6 +5942,11 @@ fn migrate_store_to_current(
 fn migrate_store_v9_to_v10(connection: &mut Connection) -> Result<(), StoreError> {
     purge_legacy_artifact_schema(connection)?;
     connection.pragma_update(None, "user_version", 10_i64)?;
+    Ok(())
+}
+
+fn migrate_store_v18_to_v19(connection: &mut Connection) -> Result<(), StoreError> {
+    connection.pragma_update(None, "user_version", 19_i64)?;
     Ok(())
 }
 
@@ -7377,8 +7471,14 @@ fn rewrite_legacy_outcome_metric_key(
     for (experiment_id, raw_outcome) in rows {
         let mut outcome = decode_json::<ExperimentOutcome>(&raw_outcome)?;
         let mut changed = false;
-        if outcome.primary_metric.key == *source {
-            outcome.primary_metric.key = target.clone();
+        if outcome
+            .primary_metric
+            .as_ref()
+            .is_some_and(|metric| metric.key == *source)
+        {
+            if let Some(metric) = outcome.primary_metric.as_mut() {
+                metric.key = target.clone();
+            }
             changed = true;
         }
         for metric in &mut outcome.supporting_metrics {
@@ -8035,6 +8135,7 @@ fn parse_frontier_verdict(raw: &str) -> Result<FrontierVerdict, rusqlite::Error>
         "kept" => Ok(FrontierVerdict::Kept),
         "parked" => Ok(FrontierVerdict::Parked),
         "rejected" => Ok(FrontierVerdict::Rejected),
+        "scuffed" => Ok(FrontierVerdict::Scuffed),
         _ => Err(to_sql_conversion_error(StoreError::Json(
             serde_json::Error::io(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -8301,7 +8402,10 @@ fn compare_metric_values(left: f64, right: f64, order: MetricRankOrder) -> std::
 }
 
 fn all_metrics(outcome: &ExperimentOutcome) -> Vec<MetricValue> {
-    std::iter::once(outcome.primary_metric.clone())
+    outcome
+        .primary_metric
+        .clone()
+        .into_iter()
         .chain(outcome.supporting_metrics.clone())
         .collect()
 }
@@ -8950,11 +9054,11 @@ mod tests {
                 env: BTreeMap::new(),
             },
             dimensions: BTreeMap::new(),
-            primary_metric: ReportedMetricValue {
+            primary_metric: Some(ReportedMetricValue {
                 key: NonEmptyText::new("score")?,
                 value: 1.0,
                 unit: Some(MetricUnit::Count),
-            },
+            }),
             supporting_metrics: Vec::new(),
             verdict: FrontierVerdict::Accepted,
             rationale: NonEmptyText::new("unit-test closure")?,
@@ -9077,6 +9181,90 @@ mod tests {
         assert_eq!(worklist[0].attention, HypothesisAttention::Worklist);
         assert_eq!(worklist[0].lifecycle, HypothesisLifecycle::Working);
 
+        fs::remove_dir_all(root.as_std_path())?;
+        Ok(())
+    }
+
+    #[test]
+    fn scuffed_close_can_omit_metrics_and_dirty_commit_capture() -> Result<(), StoreError> {
+        let (root, mut store, hypothesis) = seed_attention_frontier()?;
+        fs::write(root.join("dirty.txt").as_std_path(), "dirty\n")?;
+        let _ = store.open_experiment(OpenExperimentRequest {
+            hypothesis: hypothesis.slug.to_string(),
+            slug: Some(Slug::new("scuffed-open")?),
+            title: NonEmptyText::new("Scuffed Open")?,
+            summary: None,
+            tags: BTreeSet::new(),
+            parents: Vec::new(),
+        })?;
+
+        let mut request = close_request("scuffed-open", Some(false))?;
+        request.primary_metric = None;
+        request.verdict = FrontierVerdict::Scuffed;
+        request.rationale = NonEmptyText::new(
+            "The experiment setup was incoherent, so no meaningful KPI could be obtained.",
+        )?;
+        let closed = store.close_experiment_from_mcp(request)?;
+
+        let outcome = closed.outcome.ok_or_else(|| {
+            StoreError::InvalidInput("scuffed experiment did not close".to_owned())
+        })?;
+        assert_eq!(outcome.verdict, FrontierVerdict::Scuffed);
+        assert!(outcome.primary_metric.is_none());
+        assert!(outcome.commit_hash.is_none());
+        fs::remove_dir_all(root.as_std_path())?;
+        Ok(())
+    }
+
+    #[test]
+    fn retroactive_scuff_preserves_metric_rows_but_removes_rankings() -> Result<(), StoreError> {
+        let (root, mut store, hypothesis) = seed_attention_frontier()?;
+        let _ = store.open_experiment(OpenExperimentRequest {
+            hypothesis: hypothesis.slug.to_string(),
+            slug: Some(Slug::new("retro-scuff")?),
+            title: NonEmptyText::new("Retro Scuff")?,
+            summary: None,
+            tags: BTreeSet::new(),
+            parents: Vec::new(),
+        })?;
+        let _ = store.close_experiment(close_request("retro-scuff", Some(false))?)?;
+        assert_eq!(
+            store
+                .frontier_metric_series("attention-frontier", &NonEmptyText::new("score")?, true)?
+                .points
+                .len(),
+            1
+        );
+
+        let scuffed = store.scuff_experiment(ScuffExperimentRequest {
+            experiment: "retro-scuff".to_owned(),
+            expected_revision: None,
+            rationale: Some(NonEmptyText::new(
+                "Retrospective operator correction: the recorded point was not valid evidence.",
+            )?),
+            analysis: None,
+        })?;
+        assert_eq!(
+            scuffed.outcome.as_ref().map(|outcome| outcome.verdict),
+            Some(FrontierVerdict::Scuffed)
+        );
+        let series = store.frontier_metric_series(
+            "attention-frontier",
+            &NonEmptyText::new("score")?,
+            true,
+        )?;
+        assert_eq!(series.points.len(), 1);
+        assert_eq!(series.points[0].verdict, FrontierVerdict::Scuffed);
+        let best = store.metric_best(MetricBestQuery {
+            frontier: Some("attention-frontier".to_owned()),
+            hypothesis: None,
+            key: NonEmptyText::new("score")?,
+            dimensions: BTreeMap::new(),
+            include_rejected: true,
+            limit: None,
+            order: None,
+        })?;
+        assert!(best.is_empty());
         fs::remove_dir_all(root.as_std_path())?;
         Ok(())
     }

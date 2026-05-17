@@ -6,13 +6,14 @@ use super::results::{
 use super::{
     BTreeMap, DOCTYPE, ExperimentAnalysis, ExperimentDetail, ExperimentOutcome, ExperimentStatus,
     ExperimentSummary, FrontierOpenProjection, FrontierPageQuery, FrontierRecord, FrontierTab,
-    HypothesisAttention, HypothesisDetail, Markup, MetricAxisLogScales, MetricKeysQuery,
-    MetricScope, NonEmptyText, PreEscaped, ProjectRenderContext, RunDimensionValue, ShellFrame,
-    Slug, StoreError, VertexRef, VertexSummary, experiment_href, experiment_status_class,
-    format_metric_value, format_timestamp, frontier_href, frontier_status_class, frontier_tab_href,
-    html, hypothesis_attention_label, hypothesis_href, limit_items, load_shell_frame, open_store,
-    pencil_icon, render_dimension_value, render_fact, render_hypothesis_meta_chips, render_kv,
-    render_markdown_prose, render_sidebar, short_commit_hash, status_chip_classes, verdict_class,
+    FrontierVerdict, HypothesisAttention, HypothesisDetail, Markup, MetricAxisLogScales,
+    MetricKeysQuery, MetricScope, NonEmptyText, PreEscaped, ProjectRenderContext,
+    RunDimensionValue, ShellFrame, Slug, StoreError, VertexRef, VertexSummary, experiment_href,
+    experiment_status_class, format_metric_value, format_timestamp, frontier_href,
+    frontier_status_class, frontier_tab_href, html, hypothesis_attention_label, hypothesis_href,
+    limit_items, load_shell_frame, open_store, pencil_icon, render_dimension_value, render_fact,
+    render_hypothesis_meta_chips, render_kv, render_markdown_prose, render_sidebar,
+    short_commit_hash, status_chip_classes, verdict_class,
 };
 
 pub(super) fn render_frontier_detail(
@@ -451,7 +452,11 @@ fn render_experiment_outcome(
         @if let Some(analysis) = outcome.analysis.as_ref() {
             (render_experiment_analysis(analysis))
         }
-        (render_metric_panel("Primary metric", std::slice::from_ref(&outcome.primary_metric), outcome))
+        @if let Some(primary_metric) = outcome.primary_metric.as_ref() {
+            (render_metric_panel("Primary metric", std::slice::from_ref(primary_metric), outcome))
+        } @else if outcome.verdict == FrontierVerdict::Scuffed {
+            p.muted { "No metric recorded; this scuffed experiment is kept for audit only." }
+        }
         @if !outcome.supporting_metrics.is_empty() {
             (render_metric_panel("Supporting metrics", &outcome.supporting_metrics, outcome))
         }

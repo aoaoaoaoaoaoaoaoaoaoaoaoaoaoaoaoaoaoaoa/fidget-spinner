@@ -398,7 +398,8 @@ pub(crate) struct ExperimentOutcomeProjection {
     pub(crate) backend: String,
     pub(crate) command: CommandRecipeProjection,
     pub(crate) conditions: BTreeMap<String, Value>,
-    pub(crate) primary_metric: MetricValueProjection,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) primary_metric: Option<MetricValueProjection>,
     pub(crate) supporting_metrics: Vec<MetricValueProjection>,
     pub(crate) verdict: String,
     pub(crate) rationale: String,
@@ -1182,7 +1183,7 @@ fn experiment_outcome(outcome: &ExperimentOutcome) -> ExperimentOutcomeProjectio
         backend: outcome.backend.as_str().to_owned(),
         command: command_recipe(&outcome.command),
         conditions: condition_map(&outcome.dimensions),
-        primary_metric: metric_value(&outcome.primary_metric),
+        primary_metric: outcome.primary_metric.as_ref().map(metric_value),
         supporting_metrics: outcome
             .supporting_metrics
             .iter()

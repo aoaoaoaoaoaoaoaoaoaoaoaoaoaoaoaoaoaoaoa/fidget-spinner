@@ -1311,6 +1311,7 @@ pub enum FrontierVerdict {
     Kept,
     Parked,
     Rejected,
+    Scuffed,
 }
 
 impl FrontierVerdict {
@@ -1321,7 +1322,13 @@ impl FrontierVerdict {
             Self::Kept => "kept",
             Self::Parked => "parked",
             Self::Rejected => "rejected",
+            Self::Scuffed => "scuffed",
         }
+    }
+
+    #[must_use]
+    pub const fn is_scuffed(self) -> bool {
+        matches!(self, Self::Scuffed)
     }
 }
 
@@ -1597,7 +1604,8 @@ pub struct ExperimentOutcome {
     pub command: CommandRecipe,
     #[serde(rename = "conditions")]
     pub dimensions: BTreeMap<NonEmptyText, RunDimensionValue>,
-    pub primary_metric: MetricValue,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub primary_metric: Option<MetricValue>,
     pub supporting_metrics: Vec<MetricValue>,
     pub verdict: FrontierVerdict,
     pub rationale: NonEmptyText,

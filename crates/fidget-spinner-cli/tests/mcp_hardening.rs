@@ -411,6 +411,7 @@ fn cold_start_exposes_bound_surface_and_new_toolset() -> TestResult {
     assert!(tool_names.contains(&"frontier.query.sql"));
     assert!(tool_names.contains(&"hypothesis.record"));
     assert!(tool_names.contains(&"experiment.close"));
+    assert!(tool_names.contains(&"experiment.scuff"));
     assert!(tool_names.contains(&"experiment.nearest"));
     assert!(tool_names.contains(&"kpi.reference.set"));
     assert!(tool_names.contains(&"kpi.reference.list"));
@@ -621,11 +622,11 @@ fn archived_frontiers_are_absent_from_mcp_generic_surfaces() -> TestResult {
                         env: BTreeMap::new(),
                     },
                     dimensions: BTreeMap::new(),
-                    primary_metric: ReportedMetricValue {
+                    primary_metric: Some(ReportedMetricValue {
                         key: must(NonEmptyText::new("nodes_solved"), "metric key")?,
                         value,
                         unit: Some(must(MetricUnit::new("count"), "metric unit")?),
-                    },
+                    }),
                     supporting_metrics: Vec::new(),
                     verdict,
                     rationale: must(NonEmptyText::new(rationale), "rationale")?,
@@ -892,11 +893,11 @@ fn metric_rename_and_merge_operate_on_normalized_outcomes() -> TestResult {
                     env: BTreeMap::new(),
                 },
                 dimensions: BTreeMap::new(),
-                primary_metric: ReportedMetricValue {
+                primary_metric: Some(ReportedMetricValue {
                     key: must(NonEmptyText::new(metric), "reported metric")?,
                     value,
                     unit: Some(must(MetricUnit::new("ms"), "reported unit")?),
-                },
+                }),
                 supporting_metrics: Vec::new(),
                 verdict: FrontierVerdict::Accepted,
                 rationale: must(
@@ -924,7 +925,7 @@ fn metric_rename_and_merge_operate_on_normalized_outcomes() -> TestResult {
         )?
         .record
         .outcome
-        .map(|outcome| outcome.primary_metric.key)
+        .and_then(|outcome| outcome.primary_metric.map(|metric| metric.key))
         .as_ref()
         .map(NonEmptyText::as_str),
         Some("root_wallclock")
@@ -2736,11 +2737,11 @@ fn synthetic_kpi_ranks_from_reported_observed_leaves() -> TestResult {
                 must(NonEmptyText::new("instance"), "condition key")?,
                 RunDimensionValue::String(must(NonEmptyText::new("toy"), "condition value")?),
             )]),
-            primary_metric: ReportedMetricValue {
+            primary_metric: Some(ReportedMetricValue {
                 key: must(NonEmptyText::new("work_done"), "primary metric")?,
                 value: 240.0,
                 unit: None,
-            },
+            }),
             supporting_metrics: vec![ReportedMetricValue {
                 key: must(NonEmptyText::new("elapsed_time"), "supporting metric")?,
                 value: 120.0,
@@ -3010,6 +3011,89 @@ fn experiment_close_rejects_dirty_worktree() -> TestResult {
     let message = must_some(tool_error_message(&response), "dirty close error message")?;
     assert!(message.contains("clean git worktree"));
     assert!(message.contains("dirty.txt"));
+    Ok(())
+}
+
+#[test]
+fn experiment_scuffed_close_can_omit_kpi_and_dirty_commit() -> TestResult {
+    let project_root = temp_project_root("scuffed_close")?;
+    init_project(&project_root)?;
+    let _ = seed_clean_git_repository(&project_root)?;
+
+    let mut harness = McpHarness::spawn(Some(&project_root))?;
+    let _ = harness.initialize()?;
+    harness.notify_initialized()?;
+
+    assert_tool_ok(&harness.call_tool(
+        3050,
+        "metric.define",
+        json!({
+            "key": "nodes_solved",
+            "dimension": "count",
+            "display_unit": "count",
+            "objective": "maximize",
+        }),
+    )?);
+    assert_tool_ok(&harness.call_tool(
+        3051,
+        "condition.define",
+        json!({"key": "instance", "value_type": "string"}),
+    )?);
+    assert_tool_ok(&harness.call_tool(
+        3052,
+        "frontier.create",
+        json!({
+            "label": "Scuffed frontier",
+            "objective": "Exercise invalid experiment closures.",
+            "slug": "scuffed-frontier",
+        }),
+    )?);
+    create_nodes_kpi(&mut harness, 3053, "scuffed-frontier")?;
+    assert_tool_ok(&harness.call_tool(
+        3054,
+        "hypothesis.record",
+        json!({
+            "frontier": "scuffed-frontier",
+            "slug": "scuffed-hypothesis",
+            "title": "Scuffed hypothesis",
+            "summary": "An accidentally opened experiment can be closed without fake KPI values.",
+            "body": "The model opened an experiment for support work, then realized no meaningful KPI can be obtained from the setup.",
+            "expected_yield": "low",
+            "confidence": "high",
+        }),
+    )?);
+    assert_tool_ok(&harness.call_tool(
+        3055,
+        "experiment.open",
+        json!({
+            "hypothesis": "scuffed-hypothesis",
+            "slug": "scuffed-run",
+            "title": "Scuffed run",
+        }),
+    )?);
+    must(
+        fs::write(project_root.join("dirty.txt"), "uncommitted\n"),
+        "write dirty worktree file",
+    )?;
+
+    let closed = harness.call_tool_full(
+        3056,
+        "experiment.close",
+        json!({
+            "experiment": "scuffed-run",
+            "keep_hypothesis_on_worklist": false,
+            "backend": "manual",
+            "command": {"argv": ["scuffed-run"]},
+            "conditions": {"instance": "4x5-braid"},
+            "verdict": "scuffed",
+            "rationale": "The setup was invalid, so recording a KPI value would be dummy data.",
+        }),
+    )?;
+    assert_tool_ok(&closed);
+    let outcome = &tool_content(&closed)["record"]["outcome"];
+    assert_eq!(outcome["verdict"].as_str(), Some("scuffed"));
+    assert!(outcome["primary_metric"].is_null());
+    assert!(outcome["commit_hash"].is_null());
     Ok(())
 }
 

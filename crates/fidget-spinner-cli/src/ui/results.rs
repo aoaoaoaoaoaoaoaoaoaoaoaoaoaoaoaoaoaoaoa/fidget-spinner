@@ -44,7 +44,7 @@ pub(super) fn metric_chart_point_marker(verdict: FrontierVerdict) -> MetricChart
     match verdict {
         FrontierVerdict::Accepted | FrontierVerdict::Kept => MetricChartPointMarker::Circle,
         FrontierVerdict::Parked => MetricChartPointMarker::HollowTriangle,
-        FrontierVerdict::Rejected => MetricChartPointMarker::Cross,
+        FrontierVerdict::Rejected | FrontierVerdict::Scuffed => MetricChartPointMarker::Cross,
     }
 }
 
@@ -353,7 +353,8 @@ pub(super) fn render_metric_series_section(
 ) -> Markup {
     let facets = collect_dimension_facets_from_series(series);
     let filtered_series = filter_metric_series(series, dimension_filters);
-    let plotted_series = filtered_series
+    let plottable_series = plottable_metric_series(&filtered_series);
+    let plotted_series = plottable_series
         .iter()
         .filter(|series| !series.points.is_empty())
         .collect::<Vec<_>>();
@@ -364,8 +365,10 @@ pub(super) fn render_metric_series_section(
         .map(|axes| metric_chart_log_support(axes, &plotted_series))
         .unwrap_or_default();
     let effective_log_scales = log_support.clamp(requested_log_scales);
-    let no_metric_history =
-        selected_metrics.is_empty() || series.iter().all(|series| series.points.is_empty());
+    let no_metric_history = selected_metrics.is_empty()
+        || filtered_series
+            .iter()
+            .all(|series| series.points.is_empty());
     let table_series = filtered_series
         .iter()
         .find(|series| {
@@ -404,7 +407,7 @@ pub(super) fn render_metric_series_section(
         } @else if no_metric_history {
             p.muted { "No closed experiments for the current metric selection yet." }
         } @else if plotted_series.is_empty() {
-            p.muted { "No closed experiments match the current filters." }
+            p.muted { "No plottable non-scuffed points match the current filters." }
         } @else if let Some(axes) = chart_axes.as_ref() {
             div.chart-frame {
                 div.chart-action-row {
@@ -414,93 +417,96 @@ pub(super) fn render_metric_series_section(
                 }
                 (PreEscaped(render_metric_chart_svg(axes, &plotted_series, effective_log_scales)))
             }
-            @if let Some(table_series) = table_series {
-                section.subcard.metric-table-section {
-                    div.metric-table-header {
-                        h3 { "Experiments" }
-                        @if filtered_series.len() > 1 {
-                            nav.metric-table-tabs aria-label="Experiment table metric" {
-                                @for metric_series in &filtered_series {
-                                    @let href = frontier_tab_href_with_query(
-                                        frontier_slug,
-                                        FrontierTab::Results,
-                                        selected_metrics,
-                                        effective_log_scales,
-                                        dimension_filters,
-                                        Some(metric_series.metric.key.as_str()),
-                                    );
-                                    a
-                                        href=(href)
-                                        data-preserve-viewport="true"
-                                        class={(if metric_series.metric.key == table_series.metric.key {
-                                            "metric-table-tab active"
-                                        } else {
-                                            "metric-table-tab"
-                                        })}
-                                    {
-                                        (&metric_series.metric.key)
-                                    }
+        }
+        @if !no_metric_history {
+        @if let Some(table_series) = table_series {
+            section.subcard.metric-table-section {
+                div.metric-table-header {
+                    h3 { "Experiments" }
+                    @if filtered_series.len() > 1 {
+                        nav.metric-table-tabs aria-label="Experiment table metric" {
+                            @for metric_series in &filtered_series {
+                                @let href = frontier_tab_href_with_query(
+                                    frontier_slug,
+                                    FrontierTab::Results,
+                                    selected_metrics,
+                                    effective_log_scales,
+                                    dimension_filters,
+                                    Some(metric_series.metric.key.as_str()),
+                                );
+                                a
+                                    href=(href)
+                                    data-preserve-viewport="true"
+                                    class={(if metric_series.metric.key == table_series.metric.key {
+                                        "metric-table-tab active"
+                                    } else {
+                                        "metric-table-tab"
+                                    })}
+                                {
+                                    (&metric_series.metric.key)
                                 }
                             }
                         }
                     }
-                    p.muted.metric-table-caption {
-                        (&table_series.metric.key) " · " (table_series.points.len()) " rows"
-                    }
-                    @if table_series.points.is_empty() {
-                        p.muted { "No closed experiments match the current filters for this metric." }
-                    } @else {
-                        @let table_points = recent_first_metric_points(&table_series.points);
-                        @let visible_points = limit_items(&table_points, limit);
-                        @let table_layout = MetricTableLayout::for_points(visible_points);
-                        div.table-scroll {
-                            table.metric-table {
-                                colgroup {
-                                    col.metric-table-fit-col;
-                                    col.metric-table-title-col style=(table_layout.experiment_width_style());
-                                    col.metric-table-title-col style=(table_layout.hypothesis_width_style());
-                                    col.metric-table-fit-col;
-                                    col.metric-table-fit-col;
-                                    col.metric-table-fit-col;
+                }
+                p.muted.metric-table-caption {
+                    (&table_series.metric.key) " · " (table_series.points.len()) " rows"
+                }
+                @if table_series.points.is_empty() {
+                    p.muted { "No closed experiments match the current filters for this metric." }
+                } @else {
+                    @let table_points = recent_first_metric_points(&table_series.points);
+                    @let visible_points = limit_items(&table_points, limit);
+                    @let table_layout = MetricTableLayout::for_points(visible_points);
+                    div.table-scroll {
+                        table.metric-table {
+                            colgroup {
+                                col.metric-table-fit-col;
+                                col.metric-table-title-col style=(table_layout.experiment_width_style());
+                                col.metric-table-title-col style=(table_layout.hypothesis_width_style());
+                                col.metric-table-fit-col;
+                                col.metric-table-fit-col;
+                                col.metric-table-fit-col;
+                            }
+                            thead {
+                                tr {
+                                    th.metric-table-fit-heading { "#" }
+                                    th.metric-table-title-heading { "Experiment" }
+                                    th.metric-table-title-heading { "Hypothesis" }
+                                    th.metric-table-fit-heading { "Closed" }
+                                    th.metric-table-fit-heading { "Verdict" }
+                                    th.metric-table-fit-heading { "Value" }
                                 }
-                                thead {
-                                    tr {
-                                        th.metric-table-fit-heading { "#" }
-                                        th.metric-table-title-heading { "Experiment" }
-                                        th.metric-table-title-heading { "Hypothesis" }
-                                        th.metric-table-fit-heading { "Closed" }
-                                        th.metric-table-fit-heading { "Verdict" }
-                                        th.metric-table-fit-heading { "Value" }
-                                    }
-                                }
-                                tbody {
-                                        @for (index, point) in visible_points.iter().copied().enumerate() {
-                                            @let display_index = experiment_positions
-                                                .get(point.experiment.slug.as_str())
-                                                .copied()
-                                                .unwrap_or(index);
-                                            tr {
-                                                td.metric-table-rank-cell {
-                                                    span.metric-table-fixed-text { (display_index.to_string()) }
+                            }
+                            tbody {
+                                    @for point in visible_points.iter().copied() {
+                                        @let display_index = experiment_positions
+                                            .get(point.experiment.slug.as_str())
+                                            .map(ToString::to_string)
+                                            .unwrap_or_else(|| "—".to_owned());
+                                        tr {
+                                            td.metric-table-rank-cell {
+                                                span.metric-table-fixed-text { (display_index) }
+                                        }
+                                        td.metric-table-title-cell {
+                                            (render_metric_table_title_link(
+                                                &point.experiment.title,
+                                                &experiment_href(&point.experiment.slug),
+                                            ))
+                                        }
+                                        td.metric-table-title-cell {
+                                            (render_metric_table_title_link(
+                                                &point.hypothesis.title,
+                                                &hypothesis_href(&point.hypothesis.slug),
+                                            ))
+                                        }
+                                        td.metric-table-closed-cell.nowrap {
+                                            span.metric-table-fixed-text {
+                                                (format_timestamp(point.closed_at))
                                             }
-                                            td.metric-table-title-cell {
-                                                (render_metric_table_title_link(
-                                                    &point.experiment.title,
-                                                    &experiment_href(&point.experiment.slug),
-                                                ))
-                                            }
-                                            td.metric-table-title-cell {
-                                                (render_metric_table_title_link(
-                                                    &point.hypothesis.title,
-                                                    &hypothesis_href(&point.hypothesis.slug),
-                                                ))
-                                            }
-                                            td.metric-table-closed-cell.nowrap {
-                                                span.metric-table-fixed-text {
-                                                    (format_timestamp(point.closed_at))
-                                                }
-                                            }
-                                            td.metric-table-verdict-cell {
+                                        }
+                                        td.metric-table-verdict-cell {
+                                            div.metric-table-verdict-actions {
                                                 span
                                                     class=(format!(
                                                         "{} metric-table-verdict-chip",
@@ -509,11 +515,19 @@ pub(super) fn render_metric_series_section(
                                                 {
                                                     (point.verdict.as_str())
                                                 }
-                                            }
-                                            td.metric-table-value-cell.nowrap {
-                                                span.metric-table-fixed-text {
-                                                    (format_metric_value(point.value, &table_series.metric.display_unit))
+                                                @if point.verdict != FrontierVerdict::Scuffed {
+                                                    form.inline-action-form method="post" action=(format!("{}/scuff", experiment_href(&point.experiment.slug))) data-preserve-viewport="true" {
+                                                        input type="hidden" name="rationale" value="Operator marked this experiment scuffed: the setup or recorded value was invalid, so the result is preserved for audit but excluded from plots and KPI rankings.";
+                                                        button.inline-icon-button type="submit" title="Mark this experiment scuffed" aria-label="Mark experiment scuffed" {
+                                                            "scuff"
+                                                        }
+                                                    }
                                                 }
+                                            }
+                                        }
+                                        td.metric-table-value-cell.nowrap {
+                                            span.metric-table-fixed-text {
+                                                (format_metric_value(point.value, &table_series.metric.display_unit))
                                             }
                                         }
                                     }
@@ -523,6 +537,7 @@ pub(super) fn render_metric_series_section(
                     }
                 }
             }
+        }
         }
     }
     }
@@ -1570,6 +1585,24 @@ fn filter_metric_series<'a>(
                 .as_ref()
                 .map_or(&[][..], |kpi| kpi.references.as_slice()),
             points: filter_metric_points(&series.points, dimension_filters),
+        })
+        .collect()
+}
+
+fn plottable_metric_series<'a>(
+    series: &[FilteredMetricSeries<'a>],
+) -> Vec<FilteredMetricSeries<'a>> {
+    series
+        .iter()
+        .map(|series| FilteredMetricSeries {
+            metric: series.metric,
+            references: series.references,
+            points: series
+                .points
+                .iter()
+                .copied()
+                .filter(|point| point.verdict != FrontierVerdict::Scuffed)
+                .collect(),
         })
         .collect()
 }

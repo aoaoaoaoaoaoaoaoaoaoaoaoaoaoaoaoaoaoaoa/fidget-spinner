@@ -2025,6 +2025,20 @@ pub(super) fn styles() -> &'static str {
     .metric-table-verdict-chip {
         max-width: none;
     }
+    .metric-table-verdict-actions {
+        display: flex;
+        align-items: center;
+        gap: 4px;
+        white-space: nowrap;
+    }
+    .metric-table-verdict-actions .inline-icon-button {
+        width: auto;
+        min-width: 24px;
+        padding: 0 4px;
+        font-size: 0.65rem;
+        text-transform: uppercase;
+        letter-spacing: 0.03em;
+    }
     .related-block {
         display: grid;
         gap: 8px;

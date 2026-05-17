@@ -26,10 +26,10 @@ use fidget_spinner_store_sqlite::{
     ListExperimentsQuery, ListFrontiersQuery, ListHypothesesQuery, MergeMetricRequest,
     MergeTagRequest, MetricKeySummary, MetricKeysQuery, MetricScope, MoveKpiDirection,
     MoveKpiRequest, ProjectStatus, RenameMetricRequest, RenameTagRequest, STATE_DB_NAME,
-    SetFrontierRegistryLockRequest, SetKpiReferenceRequest, SetRegistryLockRequest,
-    SetTagFamilyMandatoryRequest, StoreError, TextPatch, UpdateExperimentRequest,
-    UpdateFrontierRequest, UpdateHypothesisRequest, UpdateProjectRequest, VertexSummary,
-    list_project_manifests, project_state_home,
+    ScuffExperimentRequest, SetFrontierRegistryLockRequest, SetKpiReferenceRequest,
+    SetRegistryLockRequest, SetTagFamilyMandatoryRequest, StoreError, TextPatch,
+    UpdateExperimentRequest, UpdateFrontierRequest, UpdateHypothesisRequest, UpdateProjectRequest,
+    VertexSummary, list_project_manifests, project_state_home,
 };
 use maud::{DOCTYPE, Markup, PreEscaped, html};
 use percent_encoding::{NON_ALPHANUMERIC, percent_decode_str, utf8_percent_encode};
@@ -417,6 +417,11 @@ fn experiment_mutation_response(result: Result<String, StoreError>) -> Response 
         Err(StoreError::RevisionMismatch { .. }) => (
             StatusCode::CONFLICT,
             "experiment changed before the edit landed; reload and retry".to_owned(),
+        )
+            .into_response(),
+        Err(StoreError::ExperimentStillOpen(_)) => (
+            StatusCode::CONFLICT,
+            "open experiments must be closed before they can be retroactively scuffed".to_owned(),
         )
             .into_response(),
         Err(StoreError::InvalidInput(message)) => {
@@ -1113,6 +1118,7 @@ fn verdict_class(verdict: FrontierVerdict) -> &'static str {
         FrontierVerdict::Kept => "status-kept",
         FrontierVerdict::Parked => "status-parked",
         FrontierVerdict::Rejected => "status-rejected",
+        FrontierVerdict::Scuffed => "status-archived",
     }
 }
 
@@ -1523,12 +1529,34 @@ mod tests {
         value: f64,
         closed_at: OffsetDateTime,
     ) -> FrontierMetricPoint {
+        test_metric_point_with_verdict(
+            frontier_id,
+            hypothesis,
+            slug,
+            title,
+            value,
+            closed_at,
+            FrontierVerdict::Accepted,
+        )
+    }
+
+    fn test_metric_point_with_verdict(
+        frontier_id: FrontierId,
+        hypothesis: &HypothesisSummary,
+        slug: &str,
+        title: &str,
+        value: f64,
+        closed_at: OffsetDateTime,
+        verdict: FrontierVerdict,
+    ) -> FrontierMetricPoint {
+        let mut experiment = test_experiment(frontier_id, hypothesis.id, slug, title, closed_at);
+        experiment.verdict = Some(verdict);
         FrontierMetricPoint {
-            experiment: test_experiment(frontier_id, hypothesis.id, slug, title, closed_at),
+            experiment,
             hypothesis: hypothesis.clone(),
             metric_key: must(NonEmptyText::new("test_metric"), "metric key"),
             value,
-            verdict: FrontierVerdict::Accepted,
+            verdict,
             closed_at,
             dimensions: BTreeMap::new(),
         }
@@ -1625,6 +1653,10 @@ mod tests {
         );
         assert_eq!(
             metric_chart_point_marker(FrontierVerdict::Rejected),
+            MetricChartPointMarker::Cross
+        );
+        assert_eq!(
+            metric_chart_point_marker(FrontierVerdict::Scuffed),
             MetricChartPointMarker::Cross
         );
     }
@@ -1836,6 +1868,45 @@ mod tests {
         assert!(
             matches!((rank_two_offset, rank_zero_offset), (Some(left), Some(right)) if left < right)
         );
+    }
+
+    #[test]
+    fn scuffed_metric_points_render_in_table_but_not_chart() {
+        let frontier = test_frontier();
+        let hypothesis = test_hypothesis(frontier.id, "hyp-one", "Hypothesis One");
+        let metric = test_metric("scenario_wallclock", "milliseconds");
+        let series = vec![FrontierMetricSeries {
+            frontier: frontier.clone(),
+            metric: metric.clone(),
+            kpi: None,
+            points: vec![test_metric_point_with_verdict(
+                frontier.id,
+                &hypothesis,
+                "scuffed-exp",
+                "Scuffed Experiment",
+                99_999.0,
+                test_timestamp("2026-04-11T01:00:00Z"),
+                FrontierVerdict::Scuffed,
+            )],
+        }];
+        let markup = render_metric_series_section(
+            &frontier.slug,
+            std::slice::from_ref(&metric),
+            &[],
+            std::slice::from_ref(&metric),
+            &series,
+            &BTreeMap::new(),
+            MetricAxisLogScales::default(),
+            None,
+            None,
+        )
+        .into_string();
+
+        assert!(markup.contains("No plottable non-scuffed points"));
+        assert!(markup.contains("Scuffed Experiment"));
+        assert!(markup.contains("scuffed"));
+        assert!(markup.contains("<span class=\"metric-table-fixed-text\">—</span>"));
+        assert!(!markup.contains("<svg"));
     }
 
     #[test]

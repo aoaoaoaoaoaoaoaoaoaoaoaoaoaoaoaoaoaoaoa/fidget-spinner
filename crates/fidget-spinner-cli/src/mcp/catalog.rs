@@ -181,7 +181,13 @@ const TOOL_SPECS: &[ToolSpec] = &[
     },
     ToolSpec {
         name: "experiment.close",
-        description: "Close one open experiment with typed conditions, structured metrics, verdict, rationale, optional analysis, and an explicit keep_hypothesis_on_worklist decision when this is the hypothesis's last open experiment. Requires a clean git worktree and records HEAD automatically from command.working_directory when provided, else from the bound project root.",
+        description: "Close one open experiment with typed conditions, verdict, rationale, optional analysis, and an explicit keep_hypothesis_on_worklist decision when this is the hypothesis's last open experiment. Non-scuffed closes require a primary KPI metric, a clean git worktree, and record HEAD automatically from command.working_directory when provided, else from the bound project root. Scuffed closes are break-glass invalid-procedure records and may omit metrics.",
+        dispatch: DispatchTarget::Worker,
+        replay: ReplayContract::NeverReplay,
+    },
+    ToolSpec {
+        name: "experiment.scuff",
+        description: "Break-glass correction: mark a closed experiment scuffed without changing its metrics. Scuffed means the setup itself was invalid or incoherent; it is kept for audit but excluded from plots and KPI rankings.",
         dispatch: DispatchTarget::Worker,
         replay: ReplayContract::NeverReplay,
     },
@@ -643,8 +649,8 @@ fn tool_input_schema(name: &str) -> Value {
                 (
                     "verdict",
                     enum_string_schema(
-                        &["accepted", "kept", "parked", "rejected"],
-                        "Closed verdict.",
+                        &["accepted", "kept", "parked", "rejected", "scuffed"],
+                        "Closed verdict. Rejected is valid negative evidence; scuffed is invalid experimental procedure preserved for audit.",
                     ),
                 ),
                 ("rationale", string_schema("Decision rationale.")),
@@ -655,10 +661,26 @@ fn tool_input_schema(name: &str) -> Value {
                 "backend",
                 "command",
                 "conditions",
-                "primary_metric",
                 "verdict",
                 "rationale",
             ],
+        ),
+        "experiment.scuff" => object_schema(
+            &[
+                ("experiment", selector_schema("Experiment UUID or slug.")),
+                (
+                    "expected_revision",
+                    integer_schema("Optimistic concurrency guard."),
+                ),
+                (
+                    "rationale",
+                    string_schema(
+                        "Optional replacement rationale explaining why the experiment itself was scuffed.",
+                    ),
+                ),
+                ("analysis", experiment_analysis_schema()),
+            ],
+            &["experiment"],
         ),
         "experiment.nearest" => object_schema(
             &[
@@ -1019,11 +1041,11 @@ fn experiment_outcome_schema() -> Value {
             "conditions": conditions_schema(),
             "primary_metric": metric_value_schema(),
             "supporting_metrics": metric_value_array_schema(),
-            "verdict": { "type": "string", "enum": ["accepted", "kept", "parked", "rejected"] },
+            "verdict": { "type": "string", "enum": ["accepted", "kept", "parked", "rejected", "scuffed"] },
             "rationale": { "type": "string" },
             "analysis": experiment_analysis_schema()
         },
-        "required": ["backend", "command", "conditions", "primary_metric", "verdict", "rationale"],
+        "required": ["backend", "command", "conditions", "verdict", "rationale"],
         "additionalProperties": false
     })
 }

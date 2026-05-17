@@ -21,9 +21,9 @@ use fidget_spinner_store_sqlite::{
     ExperimentOutcomePatch, HypothesisAttentionFilter, HypothesisLifecycleFilter, KpiBestQuery,
     KpiListQuery, KpiReferenceListQuery, ListExperimentsQuery, ListFrontiersQuery,
     ListHypothesesQuery, MergeMetricRequest, MetricBestQuery, MetricKeysQuery, MetricRankOrder,
-    MetricScope, OpenExperimentRequest, ProjectStore, RenameMetricRequest, SetKpiReferenceRequest,
-    StoreError, TextPatch, UpdateExperimentRequest, UpdateFrontierRequest, UpdateHypothesisRequest,
-    VertexSelector,
+    MetricScope, OpenExperimentRequest, ProjectStore, RenameMetricRequest, ScuffExperimentRequest,
+    SetKpiReferenceRequest, StoreError, TextPatch, UpdateExperimentRequest, UpdateFrontierRequest,
+    UpdateHypothesisRequest, VertexSelector,
 };
 #[cfg(test)]
 use libmcp_testkit as _;
@@ -147,6 +147,7 @@ enum ExperimentCommand {
     Read(ExperimentSelectorArgs),
     Update(ExperimentUpdateArgs),
     Close(ExperimentCloseArgs),
+    Scuff(ExperimentScuffArgs),
     Nearest(ExperimentNearestArgs),
     History(ExperimentSelectorArgs),
 }
@@ -460,7 +461,7 @@ struct ExperimentCloseArgs {
     #[arg(long = "condition")]
     conditions: Vec<String>,
     #[arg(long = "primary-metric")]
-    primary_metric: String,
+    primary_metric: Option<String>,
     #[arg(long = "metric")]
     supporting_metrics: Vec<String>,
     #[arg(long, value_enum)]
@@ -491,6 +492,22 @@ struct ExperimentNearestArgs {
     tags: Vec<String>,
     #[arg(long, value_enum)]
     order: Option<CliMetricRankOrder>,
+}
+
+#[derive(Args)]
+struct ExperimentScuffArgs {
+    #[command(flatten)]
+    project: ProjectArg,
+    #[arg(long)]
+    experiment: String,
+    #[arg(long)]
+    expected_revision: Option<u64>,
+    #[arg(long)]
+    rationale: Option<String>,
+    #[arg(long)]
+    analysis_summary: Option<String>,
+    #[arg(long)]
+    analysis_body: Option<String>,
 }
 
 #[derive(Args)]
@@ -742,6 +759,7 @@ enum CliFrontierVerdict {
     Kept,
     Parked,
     Rejected,
+    Scuffed,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
@@ -889,6 +907,7 @@ fn main() -> Result<(), StoreError> {
             }
             ExperimentCommand::Update(args) => run_experiment_update(args),
             ExperimentCommand::Close(args) => run_experiment_close(args),
+            ExperimentCommand::Scuff(args) => run_experiment_scuff(args),
             ExperimentCommand::Nearest(args) => run_experiment_nearest(args),
             ExperimentCommand::History(args) => print_json(
                 &open_store(&args.project.project)?.experiment_history(&args.experiment)?,
@@ -1085,18 +1104,7 @@ fn run_experiment_update(args: ExperimentUpdateArgs) -> Result<(), StoreError> {
 
 fn run_experiment_close(args: ExperimentCloseArgs) -> Result<(), StoreError> {
     let mut store = open_store(&args.project.project)?;
-    let analysis = match (args.analysis_summary, args.analysis_body) {
-        (Some(summary), Some(body)) => Some(ExperimentAnalysis {
-            summary: NonEmptyText::new(summary)?,
-            body: NonEmptyText::new(body)?,
-        }),
-        (None, None) => None,
-        _ => {
-            return Err(invalid_input(
-                "analysis requires both --analysis-summary and --analysis-body",
-            ));
-        }
-    };
+    let analysis = parse_cli_analysis(args.analysis_summary, args.analysis_body)?;
     print_json(
         &store.close_experiment(CloseExperimentRequest {
             experiment: args.experiment,
@@ -1109,7 +1117,11 @@ fn run_experiment_close(args: ExperimentCloseArgs) -> Result<(), StoreError> {
                 parse_env(args.env),
             )?,
             dimensions: parse_condition_assignments(args.conditions)?,
-            primary_metric: parse_metric_value_assignment(&args.primary_metric)?,
+            primary_metric: args
+                .primary_metric
+                .as_deref()
+                .map(parse_metric_value_assignment)
+                .transpose()?,
             supporting_metrics: args
                 .supporting_metrics
                 .into_iter()
@@ -1120,6 +1132,34 @@ fn run_experiment_close(args: ExperimentCloseArgs) -> Result<(), StoreError> {
             analysis,
         })?,
     )
+}
+
+fn parse_cli_analysis(
+    analysis_summary: Option<String>,
+    analysis_body: Option<String>,
+) -> Result<Option<ExperimentAnalysis>, StoreError> {
+    Ok(match (analysis_summary, analysis_body) {
+        (Some(summary), Some(body)) => Some(ExperimentAnalysis {
+            summary: NonEmptyText::new(summary)?,
+            body: NonEmptyText::new(body)?,
+        }),
+        (None, None) => None,
+        _ => {
+            return Err(invalid_input(
+                "analysis requires both --analysis-summary and --analysis-body",
+            ));
+        }
+    })
+}
+
+fn run_experiment_scuff(args: ExperimentScuffArgs) -> Result<(), StoreError> {
+    let mut store = open_store(&args.project.project)?;
+    print_json(&store.scuff_experiment(ScuffExperimentRequest {
+        experiment: args.experiment,
+        expected_revision: args.expected_revision,
+        rationale: args.rationale.map(NonEmptyText::new).transpose()?,
+        analysis: parse_cli_analysis(args.analysis_summary, args.analysis_body)?,
+    })?)
 }
 
 fn run_experiment_nearest(args: ExperimentNearestArgs) -> Result<(), StoreError> {
@@ -1581,6 +1621,7 @@ impl From<CliFrontierVerdict> for FrontierVerdict {
             CliFrontierVerdict::Kept => Self::Kept,
             CliFrontierVerdict::Parked => Self::Parked,
             CliFrontierVerdict::Rejected => Self::Rejected,
+            CliFrontierVerdict::Scuffed => Self::Scuffed,
         }
     }
 }

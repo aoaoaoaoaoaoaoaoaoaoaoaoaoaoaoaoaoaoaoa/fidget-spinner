@@ -10,16 +10,17 @@ use super::{
     MergeTagRequest, MetricDisplayUnit, MetricUnit, MoveKpiDirection, MoveKpiRequest,
     NavigatorState, NonEmptyText, Path, ProjectMetricsQuery, RegistryLockMode, RegistryName,
     RenameMetricRequest, RenameTagRequest, ReportedMetricValue, Response, Router,
-    SetFrontierRegistryLockRequest, SetKpiReferenceRequest, SetRegistryLockRequest,
-    SetTagFamilyMandatoryRequest, SocketAddr, State, StoreError, SyntheticMetricExpression,
-    TagFamilyName, TagName, UpdateExperimentRequest, UpdateFrontierRequest,
-    UpdateHypothesisRequest, Uri, experiment_href, experiment_mutation_response, frontier_href,
-    frontier_status_mutation_response, get, hypothesis_href, hypothesis_mutation_response, io,
-    metric_mutation_response, metrics_frontier_href, open_store, optional_text_field,
-    parse_metric_aggregation_ui, parse_metric_dimension_ui, parse_optimization_objective_ui,
-    parse_ui_lock_mode, post, project_mutation_response, project_refresh_token_for,
-    refresh_token_response, render_response, resolve_project_context, tag_mutation_response,
-    text_patch_field, update_frontier_status, update_project_description,
+    ScuffExperimentRequest, SetFrontierRegistryLockRequest, SetKpiReferenceRequest,
+    SetRegistryLockRequest, SetTagFamilyMandatoryRequest, SocketAddr, State, StoreError,
+    SyntheticMetricExpression, TagFamilyName, TagName, UpdateExperimentRequest,
+    UpdateFrontierRequest, UpdateHypothesisRequest, Uri, experiment_href,
+    experiment_mutation_response, frontier_href, frontier_status_mutation_response, get,
+    hypothesis_href, hypothesis_mutation_response, io, metric_mutation_response,
+    metrics_frontier_href, open_store, optional_text_field, parse_metric_aggregation_ui,
+    parse_metric_dimension_ui, parse_optimization_objective_ui, parse_ui_lock_mode, post,
+    project_mutation_response, project_refresh_token_for, refresh_token_response, render_response,
+    resolve_project_context, tag_mutation_response, text_patch_field, update_frontier_status,
+    update_project_description,
 };
 use serde::Deserialize;
 
@@ -123,6 +124,10 @@ pub(crate) fn serve(bind: SocketAddr, limit: Option<u32>) -> Result<(), StoreErr
             .route(
                 "/project/{project}/experiment/{selector}/outcome-prose",
                 post(update_experiment_outcome_prose),
+            )
+            .route(
+                "/project/{project}/experiment/{selector}/scuff",
+                post(scuff_experiment),
             )
             .with_state(state.clone());
         let listener = tokio::net::TcpListener::bind(bind)
@@ -1018,7 +1023,7 @@ async fn update_experiment_outcome_prose(
                     backend: outcome.backend,
                     command: outcome.command.clone(),
                     dimensions: outcome.dimensions.clone(),
-                    primary_metric: reported_metric_value(&outcome.primary_metric),
+                    primary_metric: outcome.primary_metric.as_ref().map(reported_metric_value),
                     supporting_metrics: outcome
                         .supporting_metrics
                         .iter()
@@ -1028,6 +1033,35 @@ async fn update_experiment_outcome_prose(
                     rationale: NonEmptyText::new(form.rationale)?,
                     analysis,
                 }),
+            })?;
+            Ok(format!(
+                "{}{}",
+                context.base_href,
+                experiment_href(&updated.slug)
+            ))
+        }),
+    )
+}
+
+#[derive(Debug, Deserialize)]
+struct ExperimentScuffForm {
+    expected_revision: Option<u64>,
+    rationale: Option<String>,
+}
+
+async fn scuff_experiment(
+    State(state): State<NavigatorState>,
+    Path((project, selector)): Path<(String, String)>,
+    Form(form): Form<ExperimentScuffForm>,
+) -> Response {
+    experiment_mutation_response(
+        resolve_project_context(&state, &project).and_then(|context| {
+            let mut store = open_store(context.project_root.as_std_path())?;
+            let updated = store.scuff_experiment(ScuffExperimentRequest {
+                experiment: selector,
+                expected_revision: form.expected_revision,
+                rationale: form.rationale.map(NonEmptyText::new).transpose()?,
+                analysis: None,
             })?;
             Ok(format!(
                 "{}{}",
