@@ -1047,6 +1047,7 @@ async fn update_experiment_outcome_prose(
 struct ExperimentScuffForm {
     expected_revision: Option<u64>,
     rationale: Option<String>,
+    return_to: Option<String>,
 }
 
 async fn scuff_experiment(
@@ -1063,11 +1064,13 @@ async fn scuff_experiment(
                 rationale: form.rationale.map(NonEmptyText::new).transpose()?,
                 analysis: None,
             })?;
-            Ok(format!(
-                "{}{}",
-                context.base_href,
-                experiment_href(&updated.slug)
-            ))
+            let fallback = format!("{}{}", context.base_href, experiment_href(&updated.slug));
+            Ok(form
+                .return_to
+                .filter(|location| {
+                    location.starts_with("frontier/") || location.starts_with(&context.base_href)
+                })
+                .unwrap_or(fallback))
         }),
     )
 }

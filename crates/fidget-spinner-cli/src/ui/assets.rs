@@ -1997,6 +1997,7 @@ pub(super) fn styles() -> &'static str {
         letter-spacing: normal;
     }
     .metric-table-fit-heading,
+    .metric-table-action-cell,
     .metric-table-rank-cell,
     .metric-table-closed-cell,
     .metric-table-verdict-cell,
@@ -2031,13 +2032,18 @@ pub(super) fn styles() -> &'static str {
         gap: 4px;
         white-space: nowrap;
     }
-    .metric-table-verdict-actions .inline-icon-button {
-        width: auto;
-        min-width: 24px;
-        padding: 0 4px;
-        font-size: 0.65rem;
-        text-transform: uppercase;
-        letter-spacing: 0.03em;
+    .metric-table-action-cell {
+        padding-left: 6px;
+        padding-right: 2px;
+    }
+    .metric-table-action-cell .inline-action-form {
+        display: inline-flex;
+    }
+    .metric-table-scuff-button {
+        opacity: 0.72;
+    }
+    .metric-table-scuff-button:hover {
+        opacity: 1;
     }
     .related-block {
         display: grid;

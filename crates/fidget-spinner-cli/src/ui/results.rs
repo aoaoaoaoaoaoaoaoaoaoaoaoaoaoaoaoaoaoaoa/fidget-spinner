@@ -15,7 +15,7 @@ use super::{
     Slug, StoreError, Text, experiment_href, format_metric_value, format_timestamp, frontier_href,
     frontier_tab_href_with_query, html, hypothesis_href, limit_items, metric_choice_detail,
     project_metrics_frontier_href, render_dimension_value, render_hypothesis_meta_chips,
-    render_metric_kind_chip, status_chip_classes, verdict_class,
+    render_metric_kind_chip, scuff_icon, status_chip_classes, verdict_class,
 };
 use plotters::coord::combinators::LogCoord;
 use plotters::coord::ranged1d::{LightPoints, Ranged};
@@ -117,6 +117,12 @@ pub(super) fn render_frontier_tab_content(
                     )
                 })
                 .collect::<Result<Vec<_>, StoreError>>()?;
+            let closed_experiments = store.list_experiments(ListExperimentsQuery {
+                frontier: Some(projection.frontier.slug.to_string()),
+                status: Some(ExperimentStatus::Closed),
+                limit: None,
+                ..ListExperimentsQuery::default()
+            })?;
             let dimension_filters = query.condition_filters();
             Ok(html! {
                 (render_frontier_header(&projection.frontier))
@@ -126,6 +132,7 @@ pub(super) fn render_frontier_tab_content(
                     &other_metric_keys,
                     &selected_metrics,
                     &series,
+                    &closed_experiments,
                     &dimension_filters,
                     query.requested_log_scales(),
                     query.table_metric.as_deref(),
@@ -340,12 +347,64 @@ struct MetricChartSeries {
     references: Vec<MetricChartReference>,
 }
 
+#[derive(Clone, Debug, Default)]
+struct ExperimentOrdinalIndex {
+    positions: BTreeMap<String, usize>,
+}
+
+impl ExperimentOrdinalIndex {
+    fn from_closed_experiments(experiments: &[ExperimentSummary]) -> Self {
+        let mut closed_experiments = experiments
+            .iter()
+            .filter_map(|experiment| {
+                experiment.closed_at.map(|closed_at| {
+                    (
+                        closed_at,
+                        experiment.id,
+                        experiment.slug.as_str().to_owned(),
+                    )
+                })
+            })
+            .collect::<Vec<_>>();
+        closed_experiments.sort_by_key(|(closed_at, id, _)| (*closed_at, *id));
+
+        let positions = closed_experiments
+            .into_iter()
+            .enumerate()
+            .map(|(index, (_, _, slug))| (slug, index))
+            .collect();
+        Self { positions }
+    }
+
+    fn label_for(&self, slug: &Slug) -> String {
+        self.positions
+            .get(slug.as_str())
+            .map(ToString::to_string)
+            .unwrap_or_else(|| "—".to_owned())
+    }
+
+    fn chart_x_for(&self, slug: &Slug) -> Option<i32> {
+        self.positions
+            .get(slug.as_str())
+            .and_then(|position| i32::try_from(*position).ok())
+    }
+
+    fn max_chart_x(&self) -> i32 {
+        self.positions
+            .len()
+            .checked_sub(1)
+            .and_then(|position| i32::try_from(position).ok())
+            .unwrap_or(0)
+    }
+}
+
 pub(super) fn render_metric_series_section(
     frontier_slug: &Slug,
     kpi_metric_keys: &[fidget_spinner_store_sqlite::MetricKeySummary],
     other_metric_keys: &[fidget_spinner_store_sqlite::MetricKeySummary],
     selected_metrics: &[fidget_spinner_store_sqlite::MetricKeySummary],
     series: &[FrontierMetricSeries],
+    closed_experiments: &[ExperimentSummary],
     dimension_filters: &BTreeMap<String, String>,
     requested_log_scales: MetricAxisLogScales,
     requested_table_metric: Option<&str>,
@@ -353,12 +412,12 @@ pub(super) fn render_metric_series_section(
 ) -> Markup {
     let facets = collect_dimension_facets_from_series(series);
     let filtered_series = filter_metric_series(series, dimension_filters);
+    let experiment_positions = ExperimentOrdinalIndex::from_closed_experiments(closed_experiments);
     let plottable_series = plottable_metric_series(&filtered_series);
     let plotted_series = plottable_series
         .iter()
         .filter(|series| !series.points.is_empty())
         .collect::<Vec<_>>();
-    let experiment_positions = collect_metric_experiment_positions(&plotted_series);
     let chart_axes = MetricAxisSet::from_series(&plotted_series);
     let log_support = chart_axes
         .as_ref()
@@ -415,7 +474,12 @@ pub(super) fn render_metric_series_section(
                         "Copy PNG"
                     }
                 }
-                (PreEscaped(render_metric_chart_svg(axes, &plotted_series, effective_log_scales)))
+                (PreEscaped(render_metric_chart_svg(
+                    axes,
+                    &plotted_series,
+                    effective_log_scales,
+                    &experiment_positions,
+                )))
             }
         }
         @if !no_metric_history {
@@ -462,6 +526,7 @@ pub(super) fn render_metric_series_section(
                         table.metric-table {
                             colgroup {
                                 col.metric-table-fit-col;
+                                col.metric-table-fit-col;
                                 col.metric-table-title-col style=(table_layout.experiment_width_style());
                                 col.metric-table-title-col style=(table_layout.hypothesis_width_style());
                                 col.metric-table-fit-col;
@@ -470,6 +535,7 @@ pub(super) fn render_metric_series_section(
                             }
                             thead {
                                 tr {
+                                    th.metric-table-fit-heading aria-label="Row actions" { "" }
                                     th.metric-table-fit-heading { "#" }
                                     th.metric-table-title-heading { "Experiment" }
                                     th.metric-table-title-heading { "Hypothesis" }
@@ -480,11 +546,27 @@ pub(super) fn render_metric_series_section(
                             }
                             tbody {
                                     @for point in visible_points.iter().copied() {
-                                        @let display_index = experiment_positions
-                                            .get(point.experiment.slug.as_str())
-                                            .map(ToString::to_string)
-                                            .unwrap_or_else(|| "—".to_owned());
+                                        @let display_index = experiment_positions.label_for(&point.experiment.slug);
+                                        @let return_to = frontier_tab_href_with_query(
+                                            frontier_slug,
+                                            FrontierTab::Results,
+                                            selected_metrics,
+                                            effective_log_scales,
+                                            dimension_filters,
+                                            Some(table_series.metric.key.as_str()),
+                                        );
                                         tr {
+                                            td.metric-table-action-cell {
+                                                @if point.verdict != FrontierVerdict::Scuffed {
+                                                    form.inline-action-form method="post" action=(format!("{}/scuff", experiment_href(&point.experiment.slug))) data-preserve-viewport="true" {
+                                                        input type="hidden" name="rationale" value="Operator marked this experiment scuffed: the setup or recorded value was invalid, so the result is preserved for audit but excluded from plots and KPI rankings.";
+                                                        input type="hidden" name="return_to" value=(return_to);
+                                                        button.inline-icon-button.danger-icon-button.metric-table-scuff-button type="submit" title="Mark this experiment scuffed" aria-label="Mark experiment scuffed" {
+                                                            (scuff_icon())
+                                                        }
+                                                    }
+                                                }
+                                            }
                                             td.metric-table-rank-cell {
                                                 span.metric-table-fixed-text { (display_index) }
                                         }
@@ -514,14 +596,6 @@ pub(super) fn render_metric_series_section(
                                                     ))
                                                 {
                                                     (point.verdict.as_str())
-                                                }
-                                                @if point.verdict != FrontierVerdict::Scuffed {
-                                                    form.inline-action-form method="post" action=(format!("{}/scuff", experiment_href(&point.experiment.slug))) data-preserve-viewport="true" {
-                                                        input type="hidden" name="rationale" value="Operator marked this experiment scuffed: the setup or recorded value was invalid, so the result is preserved for audit but excluded from plots and KPI rankings.";
-                                                        button.inline-icon-button type="submit" title="Mark this experiment scuffed" aria-label="Mark experiment scuffed" {
-                                                            "scuff"
-                                                        }
-                                                    }
                                                 }
                                             }
                                         }
@@ -783,6 +857,7 @@ fn render_metric_chart_svg(
     axes: &MetricAxisSet,
     series: &[&FilteredMetricSeries<'_>],
     log_scales: MetricAxisLogScales,
+    experiment_positions: &ExperimentOrdinalIndex,
 ) -> String {
     let mut svg = String::new();
     {
@@ -790,7 +865,7 @@ fn render_metric_chart_svg(
         if root.fill(&RGBColor(255, 250, 242)).is_err() {
             return chart_error_markup("chart fill failed");
         }
-        let chart_series = match build_metric_chart_series(axes, series) {
+        let chart_series = match build_metric_chart_series(axes, series, experiment_positions) {
             Some(series) if !series.is_empty() => series,
             _ => return chart_error_markup("no plottable metric points"),
         };
@@ -833,6 +908,7 @@ fn render_metric_chart_svg(
             .iter()
             .flat_map(|series| series.points.iter().map(|(x, _, _)| *x))
             .max()
+            .max(Some(experiment_positions.max_chart_x()))
             .unwrap_or(0);
         let x_end = max_close_order.max(1);
         let x_major_points = metric_chart_x_major_values(max_close_order);
@@ -1757,27 +1833,6 @@ fn metric_chart_log_support(
     support
 }
 
-fn collect_metric_experiment_positions(
-    series: &[&FilteredMetricSeries<'_>],
-) -> BTreeMap<String, usize> {
-    let mut experiment_positions = BTreeMap::new();
-    let mut ordered_experiments = series
-        .iter()
-        .flat_map(|series| {
-            series
-                .points
-                .iter()
-                .map(|point| (point.closed_at, point.experiment.slug.as_str().to_owned()))
-        })
-        .collect::<Vec<_>>();
-    ordered_experiments.sort_by_key(|(closed_at, _)| *closed_at);
-    for (_, slug) in ordered_experiments {
-        let next_index = experiment_positions.len();
-        let _ = experiment_positions.entry(slug).or_insert(next_index);
-    }
-    experiment_positions
-}
-
 fn recent_first_metric_points<'a>(
     points: &[&'a fidget_spinner_store_sqlite::FrontierMetricPoint],
 ) -> Vec<&'a fidget_spinner_store_sqlite::FrontierMetricPoint> {
@@ -1796,12 +1851,8 @@ fn recent_first_metric_points<'a>(
 fn build_metric_chart_series(
     axes: &MetricAxisSet,
     series: &[&FilteredMetricSeries<'_>],
+    experiment_positions: &ExperimentOrdinalIndex,
 ) -> Option<Vec<MetricChartSeries>> {
-    let experiment_positions = collect_metric_experiment_positions(series)
-        .into_iter()
-        .map(|(slug, index)| Some((slug, i32::try_from(index).ok()?)))
-        .collect::<Option<BTreeMap<_, _>>>()?;
-
     series
         .iter()
         .enumerate()
@@ -1811,7 +1862,7 @@ fn build_metric_chart_series(
                 .points
                 .iter()
                 .filter_map(|point| {
-                    let x = *experiment_positions.get(point.experiment.slug.as_str())?;
+                    let x = experiment_positions.chart_x_for(&point.experiment.slug)?;
                     let value = axis.normalize_value(point.value, &series.metric.display_unit)?;
                     Some((x, value, point.verdict))
                 })

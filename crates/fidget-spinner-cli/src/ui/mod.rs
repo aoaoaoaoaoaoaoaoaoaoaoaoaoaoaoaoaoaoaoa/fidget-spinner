@@ -762,6 +762,15 @@ fn trash_icon() -> Markup {
     }
 }
 
+fn scuff_icon() -> Markup {
+    html! {
+        svg.inline-action-icon aria-hidden="true" viewBox="0 0 24 24" fill="none" {
+            circle cx="12" cy="12" r="7.5" {}
+            path d="M7 17 17 7" {}
+        }
+    }
+}
+
 fn chevron_up_icon() -> Markup {
     html! {
         svg.inline-action-icon aria-hidden="true" viewBox="0 0 24 24" fill="none" {
@@ -1562,6 +1571,16 @@ mod tests {
         }
     }
 
+    fn closed_experiments_from_series(series: &[FrontierMetricSeries]) -> Vec<ExperimentSummary> {
+        let mut experiments = BTreeMap::new();
+        for point in series.iter().flat_map(|series| &series.points) {
+            let _ = experiments
+                .entry(point.experiment.slug.as_str().to_owned())
+                .or_insert_with(|| point.experiment.clone());
+        }
+        experiments.into_values().collect()
+    }
+
     #[test]
     fn best_metric_table_title_split_favors_the_more_constrained_column() {
         let experiment_lengths = [58, 56, 54, 52];
@@ -1829,12 +1848,14 @@ mod tests {
             },
         ];
         let selected_metrics = vec![metric_a.clone(), metric_b];
+        let closed_experiments = closed_experiments_from_series(&series);
         let markup = render_metric_series_section(
             &frontier.slug,
             &selected_metrics,
             &[],
             &selected_metrics,
             &series,
+            &closed_experiments,
             &BTreeMap::new(),
             MetricAxisLogScales::default(),
             Some(metric_a.key.as_str()),
@@ -1889,12 +1910,14 @@ mod tests {
                 FrontierVerdict::Scuffed,
             )],
         }];
+        let closed_experiments = closed_experiments_from_series(&series);
         let markup = render_metric_series_section(
             &frontier.slug,
             std::slice::from_ref(&metric),
             &[],
             std::slice::from_ref(&metric),
             &series,
+            &closed_experiments,
             &BTreeMap::new(),
             MetricAxisLogScales::default(),
             None,
@@ -1905,8 +1928,84 @@ mod tests {
         assert!(markup.contains("No plottable non-scuffed points"));
         assert!(markup.contains("Scuffed Experiment"));
         assert!(markup.contains("scuffed"));
-        assert!(markup.contains("<span class=\"metric-table-fixed-text\">—</span>"));
+        assert!(markup.contains("<span class=\"metric-table-fixed-text\">0</span>"));
         assert!(!markup.contains("<svg"));
+    }
+
+    #[test]
+    fn scuffed_metric_points_do_not_renumber_later_experiments() {
+        let frontier = test_frontier();
+        let hypothesis = test_hypothesis(frontier.id, "hyp-one", "Hypothesis One");
+        let metric = test_metric("scenario_wallclock", "milliseconds");
+        let series = vec![FrontierMetricSeries {
+            frontier: frontier.clone(),
+            metric: metric.clone(),
+            kpi: None,
+            points: vec![
+                test_metric_point(
+                    frontier.id,
+                    &hypothesis,
+                    "exp-a",
+                    "Experiment A",
+                    10.0,
+                    test_timestamp("2026-04-11T01:00:00Z"),
+                ),
+                test_metric_point_with_verdict(
+                    frontier.id,
+                    &hypothesis,
+                    "exp-b",
+                    "Experiment B",
+                    99_999.0,
+                    test_timestamp("2026-04-11T02:00:00Z"),
+                    FrontierVerdict::Scuffed,
+                ),
+                test_metric_point(
+                    frontier.id,
+                    &hypothesis,
+                    "exp-c",
+                    "Experiment C",
+                    9.0,
+                    test_timestamp("2026-04-11T03:00:00Z"),
+                ),
+            ],
+        }];
+        let closed_experiments = closed_experiments_from_series(&series);
+        let markup = render_metric_series_section(
+            &frontier.slug,
+            std::slice::from_ref(&metric),
+            &[],
+            std::slice::from_ref(&metric),
+            &series,
+            &closed_experiments,
+            &BTreeMap::new(),
+            MetricAxisLogScales::default(),
+            None,
+            None,
+        )
+        .into_string();
+
+        let rank_zero = "<td class=\"metric-table-rank-cell\"><span class=\"metric-table-fixed-text\">0</span></td>";
+        let rank_one = "<td class=\"metric-table-rank-cell\"><span class=\"metric-table-fixed-text\">1</span></td>";
+        let rank_two = "<td class=\"metric-table-rank-cell\"><span class=\"metric-table-fixed-text\">2</span></td>";
+        assert!(markup.contains(rank_zero));
+        assert!(markup.contains(rank_one));
+        assert!(markup.contains(rank_two));
+        assert!(!markup.contains("<span class=\"metric-table-fixed-text\">—</span>"));
+        assert!(!markup.contains(">scuff</button>"));
+        let action_offset = must(
+            markup
+                .find("metric-table-action-cell")
+                .ok_or("action cell should exist"),
+            "action cell should exist",
+        );
+        let rank_offset = must(
+            markup
+                .find("metric-table-rank-cell")
+                .ok_or("rank cell should exist"),
+            "rank cell should exist",
+        );
+        assert!(action_offset < rank_offset);
+        assert!(markup.contains("<circle cx=\"12\" cy=\"12\" r=\"7.5\"></circle>"));
     }
 
     #[test]
@@ -1944,12 +2043,14 @@ mod tests {
                 timestamp,
             )],
         }];
+        let closed_experiments = closed_experiments_from_series(&series);
         let markup = render_metric_series_section(
             &frontier.slug,
             std::slice::from_ref(&metric),
             &[],
             std::slice::from_ref(&metric),
             &series,
+            &closed_experiments,
             &BTreeMap::new(),
             MetricAxisLogScales::default(),
             None,
@@ -1995,12 +2096,14 @@ mod tests {
             },
         ];
         let selected_metrics = vec![time_metric, count_metric];
+        let closed_experiments = closed_experiments_from_series(&series);
         let markup = render_metric_series_section(
             &frontier.slug,
             &selected_metrics,
             &[],
             &selected_metrics,
             &series,
+            &closed_experiments,
             &BTreeMap::new(),
             MetricAxisLogScales {
                 primary: true,
@@ -2078,12 +2181,14 @@ mod tests {
             },
         ];
         let selected_metrics = vec![time_metric, count_metric];
+        let closed_experiments = closed_experiments_from_series(&series);
         let markup = render_metric_series_section(
             &frontier.slug,
             &selected_metrics,
             &[],
             &selected_metrics,
             &series,
+            &closed_experiments,
             &BTreeMap::new(),
             MetricAxisLogScales {
                 primary: true,
