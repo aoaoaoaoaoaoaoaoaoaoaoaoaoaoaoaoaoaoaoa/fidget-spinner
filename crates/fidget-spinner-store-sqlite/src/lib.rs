@@ -92,8 +92,8 @@ pub enum StoreError {
     DuplicateMetricDefinition(NonEmptyText),
     #[error("metric `{0}` is already a KPI metric")]
     DuplicateKpi(NonEmptyText),
-    #[error("mandatory KPI metric `{kpi}` is missing; report `{metrics}`")]
-    MissingMandatoryKpi { kpi: NonEmptyText, metrics: String },
+    #[error("primary metric `{metric}` is not a frontier KPI; choose one of: {kpis}")]
+    PrimaryMetricNotKpi { metric: NonEmptyText, kpis: String },
     #[error(
         "frontier `{frontier}` has no KPI metrics; promote at least one metric before MCP frontier work such as hypothesis.record, experiment.open, or experiment.close"
     )]
@@ -5073,7 +5073,7 @@ impl ProjectStore {
                     "non-scuffed experiment outcomes require a primary metric".to_owned(),
                 ));
             };
-            self.assert_frontier_kpis_satisfied(frontier_id, primary_metric, &supporting_metrics)?;
+            self.assert_primary_metric_is_frontier_kpi(frontier_id, primary_metric)?;
         }
         let git_capture_root = experiment_git_capture_root(&self.project_root, &patch.command);
         let (commit_hash, closed_at) = match existing {
@@ -5237,46 +5237,23 @@ impl ProjectStore {
         Ok(())
     }
 
-    fn assert_frontier_kpis_satisfied(
+    fn assert_primary_metric_is_frontier_kpi(
         &self,
         frontier_id: FrontierId,
         primary_metric: &MetricValue,
-        supporting_metrics: &[MetricValue],
     ) -> Result<(), StoreError> {
-        let reported = std::iter::once(primary_metric)
-            .chain(supporting_metrics.iter())
-            .map(|metric| metric.key.clone())
-            .collect::<BTreeSet<_>>();
         let kpis = self.require_frontier_kpis(frontier_id)?;
-        for kpi in kpis {
-            let required = if kpi.metric.kind == MetricDefinitionKind::Synthetic {
-                self.synthetic_observed_leaf_ids(
-                    self.metric_definition(&kpi.metric.key)?
-                        .ok_or_else(|| StoreError::UnknownMetricDefinition(kpi.metric.key.clone()))?
-                        .id,
-                )?
-                .into_iter()
-                .map(|metric_id| {
-                    self.metric_definition_by_id(metric_id)
-                        .map(|metric| metric.key)
-                })
-                .collect::<Result<BTreeSet<_>, _>>()?
-            } else {
-                BTreeSet::from([kpi.metric.key.clone()])
-            };
-            if required.iter().all(|metric| reported.contains(metric)) {
-                continue;
-            }
-            return Err(StoreError::MissingMandatoryKpi {
-                kpi: kpi.metric.key.clone(),
-                metrics: required
-                    .iter()
-                    .map(ToString::to_string)
-                    .collect::<Vec<_>>()
-                    .join(", "),
-            });
+        if kpis.iter().any(|kpi| kpi.metric.key == primary_metric.key) {
+            return Ok(());
         }
-        Ok(())
+        Err(StoreError::PrimaryMetricNotKpi {
+            metric: primary_metric.key.clone(),
+            kpis: kpis
+                .iter()
+                .map(|kpi| kpi.metric.key.to_string())
+                .collect::<Vec<_>>()
+                .join(", "),
+        })
     }
 
     fn assert_frontier_has_kpis(&self, frontier_id: FrontierId) -> Result<(), StoreError> {

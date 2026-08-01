@@ -2384,8 +2384,28 @@ fn metric_define_accepts_builtin_and_custom_unit_tokens() -> TestResult {
         Some("mebibytes")
     );
 
-    let placeholder = harness.call_tool(
+    let ratio = harness.call_tool_full(
         25,
+        "metric.define",
+        json!({
+            "key": "treatment_control_ratio",
+            "dimension": "ratio",
+            "display_unit": "ratio",
+            "objective": "minimize",
+        }),
+    )?;
+    assert_tool_ok(&ratio);
+    assert_eq!(
+        tool_content(&ratio)["record"]["dimension"].as_str(),
+        Some("dimensionless")
+    );
+    assert_eq!(
+        tool_content(&ratio)["record"]["display_unit"].as_str(),
+        Some("dimensionless")
+    );
+
+    let placeholder = harness.call_tool(
+        26,
         "metric.define",
         json!({
             "key": "bad_custom_placeholder",
@@ -2677,7 +2697,23 @@ fn synthetic_kpi_ranks_from_reported_observed_leaves() -> TestResult {
         "{premature_message}"
     );
 
-    for metric in ["work_done", "elapsed_time", "work_rate"] {
+    let _ = must(
+        store.define_metric(DefineMetricRequest {
+            key: must(NonEmptyText::new("unrelated_quality"), "unrelated metric")?,
+            dimension: MetricDimension::Dimensionless,
+            display_unit: Some(MetricUnit::Dimensionless),
+            aggregation: MetricAggregation::Point,
+            objective: OptimizationObjective::Maximize,
+            description: None,
+        }),
+        "define unrelated metric",
+    )?;
+    for metric in [
+        "work_done",
+        "elapsed_time",
+        "work_rate",
+        "unrelated_quality",
+    ] {
         let _ = must(
             store.create_kpi(CreateKpiRequest {
                 frontier: "synthetic-kpi-frontier".to_owned(),

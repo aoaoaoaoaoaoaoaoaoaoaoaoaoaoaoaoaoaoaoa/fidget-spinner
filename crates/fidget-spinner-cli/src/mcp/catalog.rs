@@ -229,7 +229,7 @@ const TOOL_SPECS: &[ToolSpec] = &[
     },
     ToolSpec {
         name: "kpi.list",
-        description: "List mandatory KPI metrics for one frontier in supervisor-defined canonical order.",
+        description: "List KPI metrics for one frontier in supervisor-defined canonical order.",
         dispatch: DispatchTarget::Worker,
         replay: ReplayContract::Convergent,
     },

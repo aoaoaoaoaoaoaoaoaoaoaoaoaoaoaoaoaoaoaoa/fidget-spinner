@@ -299,6 +299,7 @@ pub enum MetricDimension {
     Time,
     Count,
     Bytes,
+    #[serde(alias = "ratio", alias = "scalar")]
     Dimensionless,
 }
 

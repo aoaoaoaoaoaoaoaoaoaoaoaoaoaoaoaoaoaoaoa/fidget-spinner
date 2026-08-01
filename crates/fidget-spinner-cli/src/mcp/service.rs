@@ -1077,7 +1077,7 @@ where
             | StoreError::WorkingHypothesisCannotBeShelved { .. }
             | StoreError::InvalidInput(_) => FaultKind::InvalidInput,
             StoreError::PolicyViolation(_)
-            | StoreError::MissingMandatoryKpi { .. }
+            | StoreError::PrimaryMetricNotKpi { .. }
             | StoreError::MissingFrontierKpiContract { .. } => FaultKind::PolicyViolation,
             StoreError::IncompatibleStoreFormatVersion { .. } => FaultKind::Unavailable,
             StoreError::Io(_)
