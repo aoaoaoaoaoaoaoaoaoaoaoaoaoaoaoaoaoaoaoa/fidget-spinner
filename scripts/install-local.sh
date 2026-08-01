@@ -12,6 +12,16 @@ UI_SERVICE_NAME="${FIDGET_SPINNER_UI_SERVICE_NAME:-fidget-spinner-ui.service}"
 LEGACY_UI_SERVICE_NAME="fidget-spinner-libgrid-ui.service"
 UI_BIND="${FIDGET_SPINNER_UI_BIND:-127.0.0.1:8913}"
 
+command -v jq >/dev/null || {
+  printf 'jq is required to resolve the configured Cargo target directory\n' >&2
+  exit 1
+}
+
+CARGO_TARGET_DIR="$(
+  cargo metadata --format-version 1 --no-deps --manifest-path "${ROOT_DIR}/Cargo.toml" |
+    jq -er '.target_directory'
+)"
+
 escape_sed_replacement() {
   printf '%s' "$1" | sed -e 's/[\\/&]/\\&/g'
 }
@@ -109,7 +119,7 @@ mkdir -p "${LOCAL_BIN_DIR}"
 
 cargo build --release -p fidget-spinner-cli --manifest-path "${ROOT_DIR}/Cargo.toml"
 install -m 0755 \
-  "${ROOT_DIR}/target/release/fidget-spinner-cli" \
+  "${CARGO_TARGET_DIR}/release/fidget-spinner-cli" \
   "${LOCAL_BIN_DIR}/fidget-spinner-cli"
 
 printf 'installed binary: %s\n' "${LOCAL_BIN_DIR}/fidget-spinner-cli"
