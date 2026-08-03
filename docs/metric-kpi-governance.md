@@ -92,6 +92,13 @@ A KPI reference is a named `(frontier, KPI)` value. Results plots render it as a
 horizontal comparison line, with its name and value in the reference legend
 below the plot.
 
+Plot geometry consumes canonical metric values. Presentation chooses a unit
+from the visible magnitude, including minutes and hours for time and binary
+multiples for bytes; those presentation units never enter the store contract.
+The Results legend can suppress a selected series without changing KPI
+membership. Horizontal windows are identified by endpoint experiment slugs, so
+links remain stable as display geometry changes.
+
 Use it for baselines, rivals, targets, or theoretical bounds.
 
 Do not use references as experiment observations, running bests, or a scratchpad

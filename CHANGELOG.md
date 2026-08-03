@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+- Replaces Plotters with a dependency-free semantic SVG chart planned and
+  rendered in Rust.
+- Adds direct series toggles, linked datum tooltips, horizontal drag zoom,
+  dynamic time and byte units, and fragment-speed Results transitions while
+  preserving PNG clipboard export.
+- Replaces per-series store walks with one canonical, set-oriented chart scene
+  cached by database refresh token.
+- Bounds initial experiment tables to 250 matching rows and extends the real
+  browser gate across chart interaction, clipboard export, hostile geometry,
+  and the largest non-archived frontier in a supplied ledger.
+
 ## 1.0.0 - 2026-08-02
 
 First supported release.

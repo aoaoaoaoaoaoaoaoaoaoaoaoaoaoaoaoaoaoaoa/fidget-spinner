@@ -3,6 +3,7 @@ use super::detail::{render_experiment_detail, render_frontier_detail, render_hyp
 use super::registry::{
     render_project_home, render_project_index, render_project_metrics, render_project_tags,
 };
+use super::results::render_frontier_chart_fragment;
 use super::{
     AssignTagFamilyRequest, CONTENT_TYPE, CreateKpiRequest, CreateTagFamilyRequest,
     DefineMetricRequest, DefineSyntheticMetricRequest, DeleteKpiReferenceRequest, DeleteKpiRequest,
@@ -53,7 +54,10 @@ pub(crate) fn serve(
             .await
             .map_err(StoreError::from)?;
         let address = listener.local_addr().map_err(StoreError::from)?;
-        let state = NavigatorState { limit };
+        let state = NavigatorState {
+            limit,
+            chart_cache: super::chart::SharedChartSceneCache::default(),
+        };
         let boundary = BrowserBoundary {
             loopback_port: address.ip().is_loopback().then_some(address.port()),
         };
@@ -116,6 +120,10 @@ pub(crate) fn serve(
             .route(
                 "/project/{project}/frontier/{selector}",
                 get(frontier_detail),
+            )
+            .route(
+                "/project/{project}/frontier/{selector}/chart",
+                get(frontier_chart),
             )
             .route(
                 "/project/{project}/frontier/{selector}/summary",
@@ -892,6 +900,19 @@ async fn frontier_detail(
         resolve_project_context(&state, &project).and_then(|context| {
             FrontierPageQuery::parse(uri.query())
                 .and_then(|query| render_frontier_detail(context, selector, query))
+        }),
+    )
+}
+
+async fn frontier_chart(
+    State(state): State<NavigatorState>,
+    Path((project, selector)): Path<(String, String)>,
+    uri: Uri,
+) -> Response {
+    render_response(
+        resolve_project_context(&state, &project).and_then(|context| {
+            FrontierPageQuery::parse(uri.query())
+                .and_then(|query| render_frontier_chart_fragment(&context, &selector, &query))
         }),
     )
 }

@@ -101,7 +101,11 @@ do not pay that cost. Use `frontier.query.schema` as the column authority.
 `scripts/ui-e2e.mjs` launches the real release binary and Chromium against a
 reflink copy of a supplied database. Cold budgets are 1.0 s for the project and
 tag pages, 2.0 s for the metric registry, and 2.5 s for a frontier; warm budgets
-are stricter. The metric page is capped at 1.5 MB. The same run checks desktop
-and phone geometry, visible control names, duplicate IDs, browser mutation,
-client filtering, and keyboard dismissal. Source databases are opened only by
-the copying process and are never mutated.
+are stricter. The metric page is capped at 1.5 MB; the frontier and Results
+fragment are capped at 1.1 MB, and a cached large-ledger Results transition at
+1 s. The same run checks desktop and phone geometry, visible control names,
+duplicate IDs, browser mutation, chart toggles, linked hover inspection,
+horizontal zoom, PNG clipboard export, client filtering, and keyboard
+dismissal. By default, initial Results tables render at most 250 matching rows;
+zoom or filters select another subset. Source databases are opened only by the
+copying process and are never mutated.

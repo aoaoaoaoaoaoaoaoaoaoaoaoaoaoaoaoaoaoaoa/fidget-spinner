@@ -13,32 +13,24 @@ use camino::Utf8PathBuf;
 use fidget_spinner_core::{
     ExperimentAnalysis, ExperimentOutcome, ExperimentStatus, FrontierRecord, FrontierStatus,
     FrontierVerdict, HypothesisAssessmentLevel, HypothesisAttention, KnownMetricUnit,
-    MetricAggregation, MetricDimension, MetricDisplayUnit, MetricQuantity, MetricUnit,
-    NonEmptyText, OptimizationObjective, RegistryLockMode, RegistryName, ReportedMetricValue,
-    RunDimensionValue, Slug, SyntheticMetricExpression, TagFamilyName, TagName, VertexRef,
+    MetricAggregation, MetricDimension, MetricDisplayUnit, MetricUnit, NonEmptyText,
+    OptimizationObjective, RegistryLockMode, RegistryName, ReportedMetricValue, RunDimensionValue,
+    Slug, SyntheticMetricExpression, TagFamilyName, TagName, VertexRef,
 };
 use fidget_spinner_store_sqlite::{
     AssignTagFamilyRequest, CreateKpiRequest, CreateTagFamilyRequest, DefineMetricRequest,
     DefineSyntheticMetricRequest, DeleteKpiReferenceRequest, DeleteKpiRequest, DeleteMetricRequest,
     DeleteTagRequest, ExperimentDetail, ExperimentOutcomePatch, ExperimentSummary,
-    FrontierMetricSeries, FrontierOpenProjection, FrontierSummary, HypothesisAttentionFilter,
-    HypothesisCurrentState, HypothesisDetail, HypothesisLifecycleFilter, KpiSummary,
-    ListExperimentsQuery, ListFrontiersQuery, ListHypothesesQuery, MergeMetricRequest,
-    MergeTagRequest, MetricKeySummary, MetricKeysQuery, MetricScope, MoveKpiDirection,
-    MoveKpiRequest, ProjectStatus, RenameMetricRequest, RenameTagRequest, STATE_DB_NAME,
-    ScuffExperimentRequest, SetFrontierRegistryLockRequest, SetKpiReferenceRequest,
+    FrontierOpenProjection, FrontierSummary, HypothesisDetail, KpiSummary, ListFrontiersQuery,
+    MergeMetricRequest, MergeTagRequest, MetricKeySummary, MetricKeysQuery, MetricScope,
+    MoveKpiDirection, MoveKpiRequest, ProjectStatus, RenameMetricRequest, RenameTagRequest,
+    STATE_DB_NAME, ScuffExperimentRequest, SetFrontierRegistryLockRequest, SetKpiReferenceRequest,
     SetRegistryLockRequest, SetTagFamilyMandatoryRequest, StoreError, TextPatch,
     UpdateExperimentRequest, UpdateFrontierRequest, UpdateHypothesisRequest, UpdateProjectRequest,
     VertexSummary, list_project_manifests, project_state_home,
 };
 use maud::{DOCTYPE, Markup, PreEscaped, html};
 use percent_encoding::{NON_ALPHANUMERIC, percent_decode_str, utf8_percent_encode};
-use plotters::prelude::{
-    BLACK, ChartBuilder, Circle, Cross, DashedLineSeries, EmptyElement, IntoDrawingArea,
-    IntoLogRange, LabelAreaPosition, LineSeries, PathElement, SVGBackend, SeriesLabelPosition,
-    ShapeStyle,
-};
-use plotters::style::{Color, IntoFont, RGBColor};
 use pulldown_cmark::html::push_html;
 use pulldown_cmark::{Event, Options, Parser};
 use time::OffsetDateTime;
@@ -47,6 +39,7 @@ use time::macros::format_description;
 
 use crate::open_store;
 mod assets;
+mod chart;
 mod detail;
 mod registry;
 mod results;
@@ -59,12 +52,11 @@ pub(crate) use routes::serve;
 
 const FAVICON_SVG: &str = include_str!("../../../../assets/ui/favicon.svg");
 const UI_NAV_STATE_KEY: &str = "fidget-spinner-ui-nav-state";
-const METRIC_TABLE_TITLE_PERCENT_BUDGET: usize = 96;
-const METRIC_TABLE_TITLE_MIN_BUDGET_CH: usize = 22;
 
 #[derive(Clone)]
 struct NavigatorState {
     limit: Option<u32>,
+    chart_cache: chart::SharedChartSceneCache,
 }
 
 #[derive(Clone)]
@@ -76,6 +68,7 @@ struct ShellFrame {
     base_href: String,
     project_home_href: String,
     refresh_token_href: String,
+    refresh_token: String,
 }
 
 #[derive(Clone)]
@@ -84,15 +77,24 @@ struct ProjectRenderContext {
     base_href: String,
     project_home_href: String,
     refresh_token_href: String,
+    refresh_token: String,
+    chart_cache: chart::SharedChartSceneCache,
     limit: Option<u32>,
 }
 
 impl ProjectRenderContext {
-    fn nested(project_root: Utf8PathBuf, limit: Option<u32>) -> Self {
+    fn nested(
+        project_root: Utf8PathBuf,
+        refresh_token: String,
+        chart_cache: chart::SharedChartSceneCache,
+        limit: Option<u32>,
+    ) -> Self {
         let base_href = project_base_href(&project_root);
         Self {
             project_root,
             refresh_token_href: format!("{base_href}refresh-token"),
+            refresh_token,
+            chart_cache,
             base_href,
             project_home_href: ".".to_owned(),
             limit,
@@ -118,7 +120,11 @@ enum FrontierTab {
 #[derive(Clone, Debug, Default)]
 struct FrontierPageQuery {
     metric: Vec<String>,
+    hidden_metric: Vec<String>,
+    metric_selection_explicit: bool,
     table_metric: Option<String>,
+    plot_from: Option<String>,
+    plot_to: Option<String>,
     tab: Option<String>,
     extra: BTreeMap<String, String>,
 }
@@ -226,10 +232,31 @@ impl FrontierPageQuery {
                         query.metric.push(trimmed.to_owned());
                     }
                 }
+                "hidden_metric" => {
+                    let trimmed = value.trim();
+                    if !trimmed.is_empty() {
+                        query.hidden_metric.push(trimmed.to_owned());
+                    }
+                }
+                "metric_mode" => {
+                    query.metric_selection_explicit = value.trim() == "explicit";
+                }
                 "table_metric" => {
                     let trimmed = value.trim();
                     if !trimmed.is_empty() {
                         query.table_metric = Some(trimmed.to_owned());
+                    }
+                }
+                "plot_from" => {
+                    let trimmed = value.trim();
+                    if !trimmed.is_empty() {
+                        query.plot_from = Some(trimmed.to_owned());
+                    }
+                }
+                "plot_to" => {
+                    let trimmed = value.trim();
+                    if !trimmed.is_empty() {
+                        query.plot_to = Some(trimmed.to_owned());
                     }
                 }
                 "tab" => {
@@ -266,6 +293,19 @@ impl FrontierPageQuery {
                     .flatten()
             })
             .collect()
+    }
+
+    fn chart_selection(&self) -> chart::ChartSelection {
+        chart::ChartSelection {
+            metric_selection_explicit: self.metric_selection_explicit,
+            hidden_metrics: self.hidden_metric.iter().cloned().collect(),
+            conditions: self.condition_filters(),
+            window: chart::ChartWindowRequest {
+                from: self.plot_from.clone(),
+                to: self.plot_to.clone(),
+            },
+            logarithmic: self.requested_log_scales(),
+        }
     }
 }
 
@@ -524,8 +564,12 @@ fn resolve_project_context(
 ) -> Result<ProjectRenderContext, StoreError> {
     let project_root = decode_project_root(encoded_project_root)?;
     let store = open_store(project_root.as_std_path())?;
+    let project_root = store.status()?.project_root;
+    let refresh_token = refresh_file_token(&store.state_root().join(STATE_DB_NAME))?;
     Ok(ProjectRenderContext::nested(
-        store.status()?.project_root,
+        project_root,
+        refresh_token,
+        state.chart_cache.clone(),
         state.limit,
     ))
 }
@@ -610,6 +654,7 @@ fn load_shell_frame(
         project_home_href: context.project_home_href.clone(),
         project_status: store.status()?,
         refresh_token_href: context.refresh_token_href.clone(),
+        refresh_token: context.refresh_token.clone(),
     })
 }
 
@@ -1018,6 +1063,7 @@ fn frontier_tab_href(
         log_scales,
         &BTreeMap::new(),
         table_metric,
+        None,
     )
 }
 
@@ -1028,6 +1074,7 @@ fn frontier_tab_href_with_query(
     log_scales: MetricAxisLogScales,
     condition_filters: &BTreeMap<String, String>,
     table_metric: Option<&str>,
+    chart_selection: Option<&chart::ChartSelection>,
 ) -> String {
     let mut href = format!(
         "frontier/{}?tab={}",
@@ -1054,6 +1101,33 @@ fn frontier_tab_href_with_query(
         href.push_str(&encode_path_segment(key));
         href.push('=');
         href.push_str(&encode_path_segment(value));
+    }
+    if let Some(selection) = chart_selection {
+        if selection.metric_selection_explicit {
+            href.push_str("&metric_mode=explicit");
+        }
+        for metric in &selection.hidden_metrics {
+            href.push_str("&hidden_metric=");
+            href.push_str(&encode_path_segment(metric));
+        }
+        if let Some(from) = selection
+            .window
+            .from
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+        {
+            href.push_str("&plot_from=");
+            href.push_str(&encode_path_segment(from));
+        }
+        if let Some(to) = selection
+            .window
+            .to
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+        {
+            href.push_str("&plot_to=");
+            href.push_str(&encode_path_segment(to));
+        }
     }
     href
 }
@@ -1170,16 +1244,10 @@ mod tests {
     use super::registry::{
         metric_registry_filter_text, render_kpi_registry, render_metric_registry_table,
     };
-    use super::results::{
-        MetricChartAxis, MetricChartPointMarker, best_metric_table_title_split,
-        metric_chart_point_marker, metric_chart_secondary_grid_values, metric_chart_x_major_values,
-        metric_chart_x_minor_values, render_metric_series_section, resolve_selected_metric_keys,
-        truncated_entry_count,
-    };
+    use super::results::resolve_selected_metric_keys;
     use super::{
-        FrontierPageQuery, FrontierTab, METRIC_TABLE_TITLE_MIN_BUDGET_CH, MetricAxisLogScales,
-        NavigatorState, ProjectMetricsQuery, StoreError, Utf8PathBuf, encode_path_segment,
-        markdown_html, resolve_project_context,
+        FrontierPageQuery, FrontierTab, NavigatorState, ProjectMetricsQuery, StoreError,
+        Utf8PathBuf, encode_path_segment, markdown_html, resolve_project_context,
     };
     use std::collections::BTreeMap;
     use std::error::Error;
@@ -1188,15 +1256,13 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use fidget_spinner_core::{
-        DefaultVisibility, ExperimentStatus, FrontierBrief, FrontierId, FrontierRecord,
-        FrontierStatus, FrontierVerdict, HypothesisAssessmentLevel, HypothesisAttention,
-        HypothesisId, HypothesisLifecycle, KpiId, KpiOrdinal, KpiReferenceId, KpiReferenceOrdinal,
-        MetricAggregation, MetricDefinitionKind, MetricDisplayUnit, MetricUnit, NonEmptyText,
-        OptimizationObjective, Slug,
+        DefaultVisibility, FrontierBrief, FrontierId, FrontierRecord, FrontierStatus,
+        FrontierVerdict, KpiId, KpiOrdinal, KpiReferenceId, KpiReferenceOrdinal, MetricAggregation,
+        MetricDefinitionKind, MetricDisplayUnit, MetricUnit, NonEmptyText, OptimizationObjective,
+        Slug,
     };
     use fidget_spinner_store_sqlite::{
-        ExperimentSummary, FrontierMetricPoint, FrontierMetricSeries, FrontierSummary,
-        HypothesisSummary, KpiReferenceSummary, KpiSummary, MetricKeySummary, ProjectStore,
+        FrontierSummary, KpiReferenceSummary, KpiSummary, MetricKeySummary, ProjectStore,
     };
     use time::OffsetDateTime;
     use time::format_description::well_known::Rfc3339;
@@ -1262,7 +1328,10 @@ mod tests {
             &project_root,
             NonEmptyText::new("Outside".to_owned())?,
         )?);
-        let state = NavigatorState { limit: None };
+        let state = NavigatorState {
+            limit: None,
+            chart_cache: super::chart::SharedChartSceneCache::default(),
+        };
 
         let context = resolve_project_context(&state, &encode_path_segment(project_root.as_str()))?;
 
@@ -1484,267 +1553,82 @@ mod tests {
         assert!(!markup.contains("<th>Reference Lines</th>"));
     }
 
-    fn test_hypothesis(frontier_id: FrontierId, slug: &str, title: &str) -> HypothesisSummary {
-        HypothesisSummary {
-            id: HypothesisId::fresh(),
-            slug: must(Slug::new(slug), "hypothesis slug"),
-            frontier_id,
-            title: must(NonEmptyText::new(title), "hypothesis title"),
-            summary: must(
-                NonEmptyText::new(format!("{title} summary")),
-                "hypothesis summary",
-            ),
-            expected_yield: HypothesisAssessmentLevel::Medium,
-            confidence: HypothesisAssessmentLevel::Medium,
-            attention: HypothesisAttention::Worklist,
-            lifecycle: HypothesisLifecycle::Fresh,
-            experiment_count: 0,
-            tags: Vec::new(),
-            open_experiment_count: 0,
-            worklist_ordinal: None,
-            latest_verdict: None,
-            updated_at: test_timestamp("2026-04-11T00:00:00Z"),
-        }
-    }
-
-    fn test_experiment(
-        frontier_id: FrontierId,
-        hypothesis_id: HypothesisId,
+    fn chart_experiment(
         slug: &str,
         title: &str,
-        closed_at: OffsetDateTime,
-    ) -> ExperimentSummary {
-        ExperimentSummary {
+        verdict: FrontierVerdict,
+    ) -> fidget_spinner_store_sqlite::FrontierChartExperiment {
+        fidget_spinner_store_sqlite::FrontierChartExperiment {
             id: fidget_spinner_core::ExperimentId::fresh(),
             slug: must(Slug::new(slug), "experiment slug"),
-            frontier_id,
-            hypothesis_id,
             title: must(NonEmptyText::new(title), "experiment title"),
-            summary: None,
-            tags: Vec::new(),
-            status: ExperimentStatus::Closed,
-            verdict: Some(FrontierVerdict::Accepted),
-            primary_metric: None,
-            updated_at: closed_at,
-            closed_at: Some(closed_at),
-        }
-    }
-
-    fn test_metric_point(
-        frontier_id: FrontierId,
-        hypothesis: &HypothesisSummary,
-        slug: &str,
-        title: &str,
-        value: f64,
-        closed_at: OffsetDateTime,
-    ) -> FrontierMetricPoint {
-        test_metric_point_with_verdict(
-            frontier_id,
-            hypothesis,
-            slug,
-            title,
-            value,
-            closed_at,
-            FrontierVerdict::Accepted,
-        )
-    }
-
-    fn test_metric_point_with_verdict(
-        frontier_id: FrontierId,
-        hypothesis: &HypothesisSummary,
-        slug: &str,
-        title: &str,
-        value: f64,
-        closed_at: OffsetDateTime,
-        verdict: FrontierVerdict,
-    ) -> FrontierMetricPoint {
-        let mut experiment = test_experiment(frontier_id, hypothesis.id, slug, title, closed_at);
-        experiment.verdict = Some(verdict);
-        FrontierMetricPoint {
-            experiment,
-            hypothesis: hypothesis.clone(),
-            metric_key: must(NonEmptyText::new("test_metric"), "metric key"),
-            value,
+            hypothesis_slug: must(Slug::new(format!("{slug}-hypothesis")), "hypothesis slug"),
+            hypothesis_title: must(
+                NonEmptyText::new(format!("{title} hypothesis")),
+                "hypothesis title",
+            ),
             verdict,
-            closed_at,
+            closed_at: test_timestamp("2026-04-11T01:00:00Z"),
             dimensions: BTreeMap::new(),
         }
     }
 
-    fn closed_experiments_from_series(series: &[FrontierMetricSeries]) -> Vec<ExperimentSummary> {
-        let mut experiments = BTreeMap::new();
-        for point in series.iter().flat_map(|series| &series.points) {
-            let _ = experiments
-                .entry(point.experiment.slug.as_str().to_owned())
-                .or_insert_with(|| point.experiment.clone());
+    fn chart_scene(
+        metric: MetricKeySummary,
+        experiments: Vec<fidget_spinner_store_sqlite::FrontierChartExperiment>,
+        canonical_values: Vec<Option<f64>>,
+    ) -> fidget_spinner_store_sqlite::FrontierChartScene {
+        let frontier = test_frontier();
+        fidget_spinner_store_sqlite::FrontierChartScene {
+            frontier_id: frontier.id,
+            frontier_slug: frontier.slug,
+            experiments,
+            series: vec![fidget_spinner_store_sqlite::FrontierChartSeries {
+                metric,
+                kpi: None,
+                canonical_values,
+            }],
         }
-        experiments.into_values().collect()
     }
 
     #[test]
-    fn best_metric_table_title_split_favors_the_more_constrained_column() {
-        let experiment_lengths = [58, 56, 54, 52];
-        let hypothesis_lengths = [18, 16, 14, 12];
-        let (experiment_chars, hypothesis_chars) =
-            best_metric_table_title_split(&experiment_lengths, &hypothesis_lengths, 52);
-        assert!(experiment_chars > hypothesis_chars);
-        assert!(hypothesis_chars >= METRIC_TABLE_TITLE_MIN_BUDGET_CH);
-        let truncated_entries = truncated_entry_count(&experiment_lengths, experiment_chars)
-            + truncated_entry_count(&hypothesis_lengths, hypothesis_chars);
-        assert_eq!(truncated_entries, 4);
-    }
-
-    #[test]
-    fn best_metric_table_title_split_preserves_minimum_widths() {
-        let (experiment_chars, hypothesis_chars) =
-            best_metric_table_title_split(&[120, 100], &[120, 100], 24);
-        assert_eq!(experiment_chars + hypothesis_chars, 24);
-        assert_eq!(experiment_chars, 12);
-        assert_eq!(hypothesis_chars, 12);
-    }
-
-    #[test]
-    fn best_metric_table_title_split_penalizes_one_sided_starvation() {
-        let experiment_lengths = [62, 60, 58, 56, 54, 52];
-        let hypothesis_lengths = [34, 33, 32, 31, 30, 29];
-        let (experiment_chars, hypothesis_chars) =
-            best_metric_table_title_split(&experiment_lengths, &hypothesis_lengths, 74);
-        assert!(experiment_chars <= 45);
-        assert!(hypothesis_chars >= 29);
-    }
-
-    #[test]
-    fn resolve_selected_metric_keys_allows_two_unit_families() {
-        let visible_metrics = vec![
-            test_metric("presolve_ms", "ms"),
-            test_metric("presolve_nz", "count"),
-            test_metric("report_bytes", "bytes"),
-            test_metric("presolve_ms_gmean", "ms"),
-            test_metric("presolve_rows", "count"),
+    fn resolve_selected_metrics_admits_only_two_quantities_without_substitution() {
+        let time = test_metric("elapsed", "milliseconds");
+        let count = test_metric("nodes", "count");
+        let bytes = test_metric("memory", "bytes");
+        let requested = vec![
+            "elapsed".to_owned(),
+            "nodes".to_owned(),
+            "memory".to_owned(),
+            "missing".to_owned(),
         ];
-        let selected = resolve_selected_metric_keys(
-            &[
-                "presolve_ms".to_owned(),
-                "presolve_nz".to_owned(),
-                "report_bytes".to_owned(),
-                "presolve_ms_gmean".to_owned(),
-                "presolve_rows".to_owned(),
-            ],
-            &visible_metrics,
-        );
-        assert_eq!(
-            selected
-                .iter()
-                .map(|metric| metric.key.as_str())
-                .collect::<Vec<_>>(),
-            vec![
-                "presolve_ms",
-                "presolve_nz",
-                "presolve_ms_gmean",
-                "presolve_rows"
-            ]
-        );
+        let selected =
+            resolve_selected_metric_keys(&requested, &[time.clone(), count.clone(), bytes]);
+        assert_eq!(selected, vec![time, count]);
+        assert!(resolve_selected_metric_keys(&[], &selected).is_empty());
     }
 
     #[test]
-    fn metric_chart_axis_normalizes_time_units_into_primary_unit() {
-        let axis = MetricChartAxis::from_metric(&test_metric("presolve_ms", "ms"));
-        let seconds = must(MetricUnit::new("seconds"), "seconds unit");
-        assert_eq!(
-            axis.normalize_value(1.5, &MetricDisplayUnit::Known(seconds)),
-            Some(1500.0)
-        );
-    }
-
-    #[test]
-    fn metric_chart_marker_shape_respects_verdict_semantics() {
-        assert_eq!(
-            metric_chart_point_marker(FrontierVerdict::Accepted),
-            MetricChartPointMarker::Circle
-        );
-        assert_eq!(
-            metric_chart_point_marker(FrontierVerdict::Kept),
-            MetricChartPointMarker::Circle
-        );
-        assert_eq!(
-            metric_chart_point_marker(FrontierVerdict::Parked),
-            MetricChartPointMarker::HollowTriangle
-        );
-        assert_eq!(
-            metric_chart_point_marker(FrontierVerdict::Rejected),
-            MetricChartPointMarker::Cross
-        );
-        assert_eq!(
-            metric_chart_point_marker(FrontierVerdict::Scuffed),
-            MetricChartPointMarker::Cross
-        );
-    }
-
-    #[test]
-    fn secondary_metric_grid_uses_coarse_interior_gradations() {
-        let linear_values = metric_chart_secondary_grid_values(0.0, 100.0, false);
-        assert!(linear_values.len() > 4);
-        assert!(
-            linear_values
-                .iter()
-                .all(|value| *value > 0.0 && *value < 100.0)
-        );
-
-        let log_values = metric_chart_secondary_grid_values(10.0, 1000.0, true);
-        assert!(log_values.len() > 4);
-        assert!(
-            log_values
-                .iter()
-                .all(|value| *value > 10.0 && *value < 1000.0)
-        );
-        for expected in [20.0, 30.0, 100.0, 900.0] {
-            assert!(
-                log_values
-                    .iter()
-                    .any(|value| (*value - expected).abs() <= expected * 1e-12),
-                "missing canonical log tick {expected}: {log_values:?}"
-            );
-        }
-        let log_gaps = log_values
-            .windows(2)
-            .map(|pair| pair[1].log10() - pair[0].log10())
-            .collect::<Vec<_>>();
-        assert!(
-            log_gaps
-                .windows(2)
-                .any(|pair| (pair[0] - pair[1]).abs() > 1e-9),
-            "log grid should use canonical decade subdivisions, not equal log slices: {log_values:?}"
-        );
-    }
-
-    #[test]
-    fn log_grid_refines_truncated_upper_decade_bucket() {
-        let values = metric_chart_secondary_grid_values(0.91, 1000.0, true);
-        assert!(values.iter().any(|value| *value > 0.91 && *value < 1.0));
-    }
-
-    #[test]
-    fn close_order_axis_uses_zero_based_decades_with_unit_subdivisions() {
-        assert_eq!(metric_chart_x_major_values(4), vec![0, 1, 2, 3, 4]);
-        assert!(metric_chart_x_minor_values(4).is_empty());
-
-        assert_eq!(metric_chart_x_major_values(23), vec![0, 10, 20]);
-        assert_eq!(
-            metric_chart_x_minor_values(23),
-            vec![
-                1, 2, 3, 4, 5, 6, 7, 8, 9, 11, 12, 13, 14, 15, 16, 17, 18, 19, 21, 22, 23,
-            ]
-        );
-    }
-
-    #[test]
-    fn frontier_page_query_accepts_result_metric_selector() {
+    fn frontier_page_query_preserves_explicit_empty_hidden_and_window_state() {
         let query = must(
-            FrontierPageQuery::parse(Some("tab=results&metric=presolve_ms_gmean")),
+            FrontierPageQuery::parse(Some(
+                "tab=results&metric_mode=explicit&hidden_metric=elapsed&hidden_metric=nodes&plot_from=exp-a&plot_to=exp-z&condition.compiler=clang&log_y_primary=1",
+            )),
             "query should parse",
         );
-        assert_eq!(query.tab.as_deref(), Some("results"));
-        assert_eq!(query.metric, vec!["presolve_ms_gmean".to_owned()]);
+        assert!(query.metric_selection_explicit);
+        assert!(query.metric.is_empty());
+        assert_eq!(query.hidden_metric, vec!["elapsed", "nodes"]);
+        assert_eq!(query.plot_from.as_deref(), Some("exp-a"));
+        assert_eq!(query.plot_to.as_deref(), Some("exp-z"));
+        assert_eq!(
+            query
+                .condition_filters()
+                .get("compiler")
+                .map(String::as_str),
+            Some("clang")
+        );
+        assert!(query.requested_log_scales().primary);
     }
 
     #[test]
@@ -1755,453 +1639,122 @@ mod tests {
             FrontierTab::Results
         );
         assert_eq!(FrontierTab::from_query(Some("brief")), FrontierTab::Brief);
-        assert_eq!(
-            FrontierTab::from_query(Some("experiments")),
-            FrontierTab::Experiments
-        );
         assert_eq!(FrontierTab::Open.label(), "Worklist");
-        assert_eq!(FrontierTab::Experiments.label(), "Experiments");
-        assert_eq!(FrontierTab::Closed.label(), "Closed");
     }
 
     #[test]
-    fn frontier_page_query_accepts_repeated_metric_selectors() {
-        let query = FrontierPageQuery::parse(Some(
-            "metric=presolve_ms&metric=ingress_ms_gmean&table_metric=ingress_ms_gmean&log_y_primary=1&log_y_secondary=1",
-        ));
-        let query = must(query, "query should parse");
+    fn chart_marker_shape_respects_verdict_semantics() {
+        use super::chart::{ChartPointMarker, point_marker};
+
         assert_eq!(
-            query.metric,
-            vec!["presolve_ms".to_owned(), "ingress_ms_gmean".to_owned()]
+            point_marker(FrontierVerdict::Accepted),
+            ChartPointMarker::Circle
         );
-        assert_eq!(query.table_metric.as_deref(), Some("ingress_ms_gmean"));
         assert_eq!(
-            query.requested_log_scales(),
-            MetricAxisLogScales {
-                primary: true,
-                secondary: true,
-            }
+            point_marker(FrontierVerdict::Kept),
+            ChartPointMarker::Circle
+        );
+        assert_eq!(
+            point_marker(FrontierVerdict::Parked),
+            ChartPointMarker::Triangle
+        );
+        assert_eq!(
+            point_marker(FrontierVerdict::Rejected),
+            ChartPointMarker::Cross
+        );
+        assert_eq!(
+            point_marker(FrontierVerdict::Scuffed),
+            ChartPointMarker::Cross
         );
     }
 
     #[test]
-    fn metric_table_indices_follow_chart_close_order_with_gaps() {
-        let frontier = test_frontier();
-        let hypothesis_one = test_hypothesis(frontier.id, "hyp-one", "Hypothesis One");
-        let hypothesis_two = test_hypothesis(frontier.id, "hyp-two", "Hypothesis Two");
-        let metric_a = test_metric("presolve_ms", "ms");
-        let metric_b = test_metric("presolve_nz", "count");
-        let series = vec![
-            FrontierMetricSeries {
-                frontier: frontier.clone(),
-                metric: metric_a.clone(),
-                kpi: None,
-                points: vec![
-                    test_metric_point(
-                        frontier.id,
-                        &hypothesis_one,
-                        "exp-a",
-                        "Experiment A",
-                        10.0,
-                        test_timestamp("2026-04-11T01:00:00Z"),
-                    ),
-                    test_metric_point(
-                        frontier.id,
-                        &hypothesis_one,
-                        "exp-c",
-                        "Experiment C With A Long Full Title Kept In The DOM",
-                        30.0,
-                        test_timestamp("2026-04-11T03:00:00Z"),
-                    ),
-                ],
-            },
-            FrontierMetricSeries {
-                frontier: frontier.clone(),
-                metric: metric_b.clone(),
-                kpi: None,
-                points: vec![
-                    test_metric_point(
-                        frontier.id,
-                        &hypothesis_one,
-                        "exp-a",
-                        "Experiment A",
-                        100.0,
-                        test_timestamp("2026-04-11T01:00:00Z"),
-                    ),
-                    test_metric_point(
-                        frontier.id,
-                        &hypothesis_two,
-                        "exp-b",
-                        "Experiment B",
-                        200.0,
-                        test_timestamp("2026-04-11T02:00:00Z"),
-                    ),
-                    test_metric_point(
-                        frontier.id,
-                        &hypothesis_one,
-                        "exp-c",
-                        "Experiment C With A Long Full Title Kept In The DOM",
-                        300.0,
-                        test_timestamp("2026-04-11T03:00:00Z"),
-                    ),
-                ],
-            },
-        ];
-        let selected_metrics = vec![metric_a.clone(), metric_b];
-        let closed_experiments = closed_experiments_from_series(&series);
-        let markup = render_metric_series_section(
-            &frontier.slug,
-            &selected_metrics,
-            &[],
-            &selected_metrics,
-            &series,
-            &closed_experiments,
-            &BTreeMap::new(),
-            MetricAxisLogScales::default(),
-            Some(metric_a.key.as_str()),
-            None,
-        )
-        .into_string();
-        let rank_cell_zero = "<td class=\"metric-table-rank-cell\"><span class=\"metric-table-fixed-text\">0</span></td>";
-        let rank_cell_one = "<td class=\"metric-table-rank-cell\"><span class=\"metric-table-fixed-text\">1</span></td>";
-        let rank_cell_two = "<td class=\"metric-table-rank-cell\"><span class=\"metric-table-fixed-text\">2</span></td>";
-        let rank_cell_three = "<td class=\"metric-table-rank-cell\"><span class=\"metric-table-fixed-text\">3</span></td>";
-        assert!(markup.contains(rank_cell_zero));
-        assert!(markup.contains(rank_cell_two));
-        assert!(!markup.contains(rank_cell_one));
-        assert!(!markup.contains(rank_cell_three));
-        assert!(markup.contains("id=\"metric-selection-popout\""));
-        assert!(markup.contains("id=\"metric-filter-popout\""));
-        assert!(markup.contains("data-preserve-viewport=\"true\""));
-        assert!(markup.contains("data-copy-plot-png=\"true\""));
-        assert!(!markup.contains("plot-copy-status"));
-        assert!(markup.contains("metric-table-fit-col"));
-        assert!(markup.contains("metric-table-title-col"));
-        assert!(markup.contains("presolve_nz"));
-        assert!(markup.contains("count"));
-        assert!(!markup.contains("chart render failed"));
-        assert!(markup.contains("Experiment C With A Long Full Title Kept In The DOM"));
-        assert!(!markup.contains("Experiment C With A Long Full Title..."));
-        assert!(markup.contains("table_metric=presolve%5Fms"));
-        assert!(markup.contains("class=\"metric-table-tab active\""));
-        let rank_two_offset = markup.find(rank_cell_two);
-        let rank_zero_offset = markup.find(rank_cell_zero);
-        assert!(
-            matches!((rank_two_offset, rank_zero_offset), (Some(left), Some(right)) if left < right)
-        );
-    }
+    fn chart_plan_omits_scuffed_points_without_renumbering_ordinals() {
+        use super::chart::{ChartPlan, ChartSelection};
 
-    #[test]
-    fn scuffed_metric_points_render_in_table_but_not_chart() {
-        let frontier = test_frontier();
-        let hypothesis = test_hypothesis(frontier.id, "hyp-one", "Hypothesis One");
-        let metric = test_metric("scenario_wallclock", "milliseconds");
-        let series = vec![FrontierMetricSeries {
-            frontier: frontier.clone(),
-            metric: metric.clone(),
-            kpi: None,
-            points: vec![test_metric_point_with_verdict(
-                frontier.id,
-                &hypothesis,
-                "scuffed-exp",
-                "Scuffed Experiment",
-                99_999.0,
-                test_timestamp("2026-04-11T01:00:00Z"),
-                FrontierVerdict::Scuffed,
-            )],
-        }];
-        let closed_experiments = closed_experiments_from_series(&series);
-        let markup = render_metric_series_section(
-            &frontier.slug,
-            std::slice::from_ref(&metric),
-            &[],
-            std::slice::from_ref(&metric),
-            &series,
-            &closed_experiments,
-            &BTreeMap::new(),
-            MetricAxisLogScales::default(),
-            None,
-            None,
-        )
-        .into_string();
-
-        assert!(markup.contains("No plottable non-scuffed points"));
-        assert!(markup.contains("Scuffed Experiment"));
-        assert!(markup.contains("scuffed"));
-        assert!(markup.contains("<span class=\"metric-table-fixed-text\">0</span>"));
-        assert!(!markup.contains("<svg"));
-    }
-
-    #[test]
-    fn scuffed_metric_points_do_not_renumber_later_experiments() {
-        let frontier = test_frontier();
-        let hypothesis = test_hypothesis(frontier.id, "hyp-one", "Hypothesis One");
-        let metric = test_metric("scenario_wallclock", "milliseconds");
-        let series = vec![FrontierMetricSeries {
-            frontier: frontier.clone(),
-            metric: metric.clone(),
-            kpi: None,
-            points: vec![
-                test_metric_point(
-                    frontier.id,
-                    &hypothesis,
-                    "exp-a",
-                    "Experiment A",
-                    10.0,
-                    test_timestamp("2026-04-11T01:00:00Z"),
-                ),
-                test_metric_point_with_verdict(
-                    frontier.id,
-                    &hypothesis,
-                    "exp-b",
-                    "Experiment B",
-                    99_999.0,
-                    test_timestamp("2026-04-11T02:00:00Z"),
-                    FrontierVerdict::Scuffed,
-                ),
-                test_metric_point(
-                    frontier.id,
-                    &hypothesis,
-                    "exp-c",
-                    "Experiment C",
-                    9.0,
-                    test_timestamp("2026-04-11T03:00:00Z"),
-                ),
+        let metric = test_metric("elapsed", "milliseconds");
+        let scene = chart_scene(
+            metric.clone(),
+            vec![
+                chart_experiment("exp-a", "A", FrontierVerdict::Accepted),
+                chart_experiment("exp-b", "B", FrontierVerdict::Scuffed),
+                chart_experiment("exp-c", "C", FrontierVerdict::Rejected),
             ],
-        }];
-        let closed_experiments = closed_experiments_from_series(&series);
-        let markup = render_metric_series_section(
-            &frontier.slug,
-            std::slice::from_ref(&metric),
-            &[],
-            std::slice::from_ref(&metric),
-            &series,
-            &closed_experiments,
-            &BTreeMap::new(),
-            MetricAxisLogScales::default(),
-            None,
-            None,
-        )
-        .into_string();
-
-        let rank_zero = "<td class=\"metric-table-rank-cell\"><span class=\"metric-table-fixed-text\">0</span></td>";
-        let rank_one = "<td class=\"metric-table-rank-cell\"><span class=\"metric-table-fixed-text\">1</span></td>";
-        let rank_two = "<td class=\"metric-table-rank-cell\"><span class=\"metric-table-fixed-text\">2</span></td>";
-        assert!(markup.contains(rank_zero));
-        assert!(markup.contains(rank_one));
-        assert!(markup.contains(rank_two));
-        assert!(!markup.contains("<span class=\"metric-table-fixed-text\">—</span>"));
-        assert!(!markup.contains(">scuff</button>"));
-        let action_offset = must(
-            markup
-                .find("metric-table-action-cell")
-                .ok_or("action cell should exist"),
-            "action cell should exist",
+            vec![Some(1_000_000.0), Some(2_000_000.0), Some(3_000_000.0)],
         );
-        let rank_offset = must(
-            markup
-                .find("metric-table-rank-cell")
-                .ok_or("rank cell should exist"),
-            "rank cell should exist",
+        let plan = ChartPlan::build(&scene, &[metric], &ChartSelection::default());
+        assert_eq!(plan.hit_ordinals, vec![0, 2]);
+        assert_eq!(
+            plan.series[0]
+                .points
+                .iter()
+                .map(|point| point.ordinal)
+                .collect::<Vec<_>>(),
+            vec![0, 2]
         );
-        assert!(action_offset < rank_offset);
-        assert!(markup.contains("<circle cx=\"12\" cy=\"12\" r=\"7.5\"></circle>"));
     }
 
     #[test]
-    fn metric_chart_renders_kpi_reference_lines() {
-        let frontier = test_frontier();
-        let hypothesis = test_hypothesis(frontier.id, "hyp-one", "Hypothesis One");
-        let metric = test_metric("presolve_ms", "milliseconds");
-        let timestamp = test_timestamp("2026-04-11T01:00:00Z");
-        let reference = KpiReferenceSummary {
-            id: KpiReferenceId::fresh(),
-            ordinal: KpiReferenceOrdinal::FIRST,
-            label: must(NonEmptyText::new("rival baseline"), "reference label"),
-            value: 42.0,
-            canonical_value: 42_000_000.0,
-            display_unit: metric.display_unit.clone(),
-            created_at: timestamp,
-            updated_at: timestamp,
+    fn chart_plan_honors_hidden_series_and_slug_window() {
+        use super::chart::{ChartPlan, ChartSelection, ChartWindowRequest};
+
+        let metric = test_metric("elapsed", "milliseconds");
+        let scene = chart_scene(
+            metric.clone(),
+            vec![
+                chart_experiment("exp-a", "A", FrontierVerdict::Accepted),
+                chart_experiment("exp-b", "B", FrontierVerdict::Accepted),
+                chart_experiment("exp-c", "C", FrontierVerdict::Accepted),
+            ],
+            vec![Some(1_000_000.0), Some(2_000_000.0), Some(3_000_000.0)],
+        );
+        let selection = ChartSelection {
+            window: ChartWindowRequest {
+                from: Some("exp-b".to_owned()),
+                to: Some("exp-c".to_owned()),
+            },
+            ..ChartSelection::default()
         };
-        let kpi = KpiSummary {
-            id: KpiId::fresh(),
-            ordinal: KpiOrdinal::FIRST,
-            metric: metric.clone(),
-            references: vec![reference],
-        };
-        let series = vec![FrontierMetricSeries {
-            frontier: frontier.clone(),
-            metric: metric.clone(),
-            kpi: Some(kpi),
-            points: vec![test_metric_point(
-                frontier.id,
-                &hypothesis,
+        let plan = ChartPlan::build(&scene, std::slice::from_ref(&metric), &selection);
+        assert_eq!((plan.x.first, plan.x.last), (1, 2));
+        assert_eq!(plan.hit_ordinals, vec![1, 2]);
+
+        let mut hidden = selection;
+        let _ = hidden.hidden_metrics.insert("elapsed".to_owned());
+        assert!(
+            !ChartPlan::build(&scene, std::slice::from_ref(&metric), &hidden).has_visible_data()
+        );
+    }
+
+    #[test]
+    fn semantic_svg_is_style_closed_linked_and_xml_escaped() {
+        use super::chart::{ChartPlan, ChartSelection, render_chart_svg};
+
+        let metric = test_metric("elapsed", "milliseconds");
+        let scene = chart_scene(
+            metric.clone(),
+            vec![chart_experiment(
                 "exp-a",
-                "Experiment A",
-                50.0,
-                timestamp,
+                "Hostile <title> & datum",
+                FrontierVerdict::Accepted,
             )],
-        }];
-        let closed_experiments = closed_experiments_from_series(&series);
-        let markup = render_metric_series_section(
-            &frontier.slug,
-            std::slice::from_ref(&metric),
-            &[],
-            std::slice::from_ref(&metric),
-            &series,
-            &closed_experiments,
-            &BTreeMap::new(),
-            MetricAxisLogScales::default(),
-            None,
-            None,
-        )
-        .into_string();
-        assert!(markup.contains("rival baseline"));
-        assert!(!markup.contains("chart render failed"));
-    }
+            vec![Some(30_000_000.0)],
+        );
+        let plan = ChartPlan::build(&scene, &[metric], &ChartSelection::default());
+        let svg = render_chart_svg(&plan, &scene);
 
-    #[test]
-    fn metric_series_section_clamps_log_scales_per_axis() {
-        let frontier = test_frontier();
-        let hypothesis = test_hypothesis(frontier.id, "hyp-one", "Hypothesis One");
-        let time_metric = test_metric("presolve_ms", "ms");
-        let count_metric = test_metric("presolve_nz", "count");
-        let series = vec![
-            FrontierMetricSeries {
-                frontier: frontier.clone(),
-                metric: time_metric.clone(),
-                kpi: None,
-                points: vec![test_metric_point(
-                    frontier.id,
-                    &hypothesis,
-                    "exp-a",
-                    "Experiment A",
-                    10.0,
-                    test_timestamp("2026-04-11T01:00:00Z"),
-                )],
-            },
-            FrontierMetricSeries {
-                frontier: frontier.clone(),
-                metric: count_metric.clone(),
-                kpi: None,
-                points: vec![test_metric_point(
-                    frontier.id,
-                    &hypothesis,
-                    "exp-b",
-                    "Experiment B",
-                    0.0,
-                    test_timestamp("2026-04-11T02:00:00Z"),
-                )],
-            },
-        ];
-        let selected_metrics = vec![time_metric, count_metric];
-        let closed_experiments = closed_experiments_from_series(&series);
-        let markup = render_metric_series_section(
-            &frontier.slug,
-            &selected_metrics,
-            &[],
-            &selected_metrics,
-            &series,
-            &closed_experiments,
-            &BTreeMap::new(),
-            MetricAxisLogScales {
-                primary: true,
-                secondary: true,
-            },
-            None,
-            None,
-        )
-        .into_string();
-        assert!(markup.contains("Metrics 2 · log L"));
-        assert!(markup.contains("log_y_primary=1"));
-        assert!(!markup.contains("log_y_secondary=1"));
-        let (_, primary_input) = must(
-            markup
-                .split_once("name=\"log_y_primary\"")
-                .ok_or("log_y_primary input should be rendered"),
-            "log_y_primary input should be rendered",
-        );
-        let (primary_input, _) = must(
-            primary_input
-                .split_once('>')
-                .ok_or("log_y_primary input tag should be bounded"),
-            "log_y_primary input tag should be bounded",
-        );
-        assert!(primary_input.contains("checked"));
-        assert!(!primary_input.contains("disabled"));
-        let (_, secondary_input) = must(
-            markup
-                .split_once("name=\"log_y_secondary\"")
-                .ok_or("log_y_secondary input should be rendered"),
-            "log_y_secondary input should be rendered",
-        );
-        let (secondary_input, _) = must(
-            secondary_input
-                .split_once('>')
-                .ok_or("log_y_secondary input tag should be bounded"),
-            "log_y_secondary input tag should be bounded",
-        );
-        assert!(secondary_input.contains("disabled"));
-        assert!(!secondary_input.contains("checked"));
-    }
-
-    #[test]
-    fn metric_series_section_renders_independent_dual_axis_log_controls() {
-        let frontier = test_frontier();
-        let hypothesis = test_hypothesis(frontier.id, "hyp-one", "Hypothesis One");
-        let time_metric = test_metric("presolve_ms", "ms");
-        let count_metric = test_metric("presolve_nz", "count");
-        let series = vec![
-            FrontierMetricSeries {
-                frontier: frontier.clone(),
-                metric: time_metric.clone(),
-                kpi: None,
-                points: vec![test_metric_point(
-                    frontier.id,
-                    &hypothesis,
-                    "exp-a",
-                    "Experiment A",
-                    10.0,
-                    test_timestamp("2026-04-11T01:00:00Z"),
-                )],
-            },
-            FrontierMetricSeries {
-                frontier: frontier.clone(),
-                metric: count_metric.clone(),
-                kpi: None,
-                points: vec![test_metric_point(
-                    frontier.id,
-                    &hypothesis,
-                    "exp-b",
-                    "Experiment B",
-                    100.0,
-                    test_timestamp("2026-04-11T02:00:00Z"),
-                )],
-            },
-        ];
-        let selected_metrics = vec![time_metric, count_metric];
-        let closed_experiments = closed_experiments_from_series(&series);
-        let markup = render_metric_series_section(
-            &frontier.slug,
-            &selected_metrics,
-            &[],
-            &selected_metrics,
-            &series,
-            &closed_experiments,
-            &BTreeMap::new(),
-            MetricAxisLogScales {
-                primary: true,
-                secondary: true,
-            },
-            None,
-            None,
-        )
-        .into_string();
-        assert!(markup.contains("Metrics 2 · log L+R"));
-        assert!(markup.contains("Left Log"));
-        assert!(markup.contains("Right Log"));
-        assert!(markup.contains("log_y_primary=1"));
-        assert!(markup.contains("log_y_secondary=1"));
+        assert!(svg.starts_with("<svg "));
+        assert!(svg.contains(r#"xmlns="http://www.w3.org/2000/svg""#));
+        assert!(svg.contains(r#"width="1100" height="420""#));
+        assert!(svg.contains(r#"viewBox="0 0 1100 420""#));
+        assert!(svg.contains(r#"data-chart-hit="true""#));
+        assert!(svg.contains(r#"href="experiment/exp%2Da""#));
+        assert!(svg.contains("Hostile &lt;title&gt; &amp; datum"));
+        assert!(svg.contains("stroke-dasharray"));
+        assert!(!svg.contains("class="));
+        assert!(!svg.contains("style="));
+        assert!(!svg.contains("<style"));
+        assert!(!svg.contains("foreignObject"));
+        assert!(!svg.contains("plotters"));
     }
 }

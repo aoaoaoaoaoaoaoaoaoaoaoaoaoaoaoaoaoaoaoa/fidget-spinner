@@ -57,16 +57,24 @@ function seedMockStore(executable, stateHome, projectRoot) {
     cli("metric", "define", "--project", projectRoot, "--key", "wallclock_milliseconds_with_an_intentionally_long_key", "--dimension", "time", "--display-unit", "milliseconds", "--objective", "minimize", "--description", "Cold wall-clock latency across the complete experimental loop.");
     cli("metric", "define", "--project", projectRoot, "--key", "proof_obligations", "--dimension", "count", "--display-unit", "count", "--objective", "minimize", "--description", "Count of outstanding semantic proof obligations.");
     cli("kpi", "create", "--project", projectRoot, "--frontier", "squeaky-clean", "--metric", "wallclock_milliseconds_with_an_intentionally_long_key");
+    cli("kpi", "create", "--project", projectRoot, "--frontier", "squeaky-clean", "--metric", "proof_obligations");
     cli("hypothesis", "record", "--project", projectRoot, "--frontier", "squeaky-clean", "--slug", "containment-under-hostile-prose", "--title", "Containment Survives Hostile Prose And Unbroken Identifiers", "--summary", "Every visible box remains intact at narrow and wide viewports.", "--body", "Render deliberatelylongunbrokenidentifiersegmentswithoutallowingthemtopuncturethecard while preserving ordinary prose rhythm.", "--expected-yield", "high", "--confidence", "medium", "--tag", "correctness");
     cli("hypothesis", "record", "--project", projectRoot, "--frontier", "squeaky-clean", "--slug", "transition-latency", "--title", "Transitions Stay Immediate", "--summary", "Static navigation and client interactions remain brisk.", "--body", "Measure cold and warm navigation before accepting the release.", "--expected-yield", "high", "--confidence", "high", "--tag", "latency");
     cli("experiment", "open", "--project", projectRoot, "--hypothesis", "containment-under-hostile-prose", "--slug", "narrow-viewport-assault", "--title", "Narrow Viewport Assault With A Long Experimental Title", "--summary", "Probe tables, popouts, forms, chips, and prose at phone width.", "--tag", "correctness");
     cli("experiment", "open", "--project", projectRoot, "--hypothesis", "transition-latency", "--slug", "measured-transition", "--title", "Measured Browser Transition", "--summary", "Produce a closed result, plot, and editable outcome for browser traversal.", "--tag", "latency");
     cli("experiment", "close", "--project", projectRoot, "--experiment", "measured-transition", "--keep-hypothesis-on-worklist", "false", "--backend", "manual", "--argv", "browser-e2e", "--primary-metric", "wallclock_milliseconds_with_an_intentionally_long_key=37@milliseconds", "--metric", "proof_obligations=0@count", "--verdict", "accepted", "--rationale", "The assembled browser journey completed within its fixture budget.", "--analysis-summary", "Transitions are immediate", "--analysis-body", "The closed fixture exercises result plots and outcome prose without touching operator data.");
+    const durations = [18, 24, 31, 45, 63, 88, 125, 190, 280, 420, 680, 5_400_000];
+    for (const [index, duration] of durations.entries()) {
+        const ordinal = String(index + 1).padStart(2, "0");
+        const slug = "bundle-" + ordinal;
+        cli("experiment", "open", "--project", projectRoot, "--hypothesis", "containment-under-hostile-prose", "--slug", slug, "--title", "Experimental Bundle " + ordinal, "--summary", "A closed datum for chart interaction, unit selection, and horizontal windowing.", "--tag", "latency");
+        cli("experiment", "close", "--project", projectRoot, "--experiment", slug, "--keep-hypothesis-on-worklist", "true", "--backend", "manual", "--argv", "browser-e2e", "--primary-metric", "wallclock_milliseconds_with_an_intentionally_long_key=" + duration + "@milliseconds", "--metric", "proof_obligations=" + (durations.length - index) + "@count", "--verdict", index % 4 === 3 ? "parked" : "accepted", "--rationale", "Synthetic browser fixture measurement.", "--analysis-summary", "Chart fixture datum", "--analysis-body", "This datum exists to exercise the complete semantic SVG interaction contract.");
+    }
 }
 
 function cloneLargeStore(source, stateHome) {
     const projectRoot = run("sqlite3", [source, "SELECT project_root FROM project_metadata WHERE id = 1;"]);
-    const frontier = run("sqlite3", [source, "SELECT slug FROM frontiers WHERE status != 'archived' ORDER BY updated_at DESC LIMIT 1;"]);
+    const frontier = run("sqlite3", [source, "SELECT frontiers.slug FROM frontiers LEFT JOIN hypotheses ON hypotheses.frontier_id = frontiers.id LEFT JOIN experiments ON experiments.hypothesis_id = hypotheses.id LEFT JOIN experiment_outcomes ON experiment_outcomes.experiment_id = experiments.id WHERE frontiers.status != 'archived' GROUP BY frontiers.id ORDER BY COUNT(experiment_outcomes.experiment_id) DESC, frontiers.updated_at DESC LIMIT 1;"]);
     const destination = join(stateHome, "fidget-spinner", "projects", basename(dirname(source)), "state.sqlite");
     mkdirSync(dirname(destination), { recursive: true });
     run("cp", ["--reflink=auto", source, destination]);
@@ -318,6 +326,63 @@ async function screenshot(client, name) {
     return path;
 }
 
+
+async function waitForBrowser(client, expression, description, timeoutMs = 15_000) {
+    return waitFor(() => client.evaluate(expression), description, timeoutMs);
+}
+
+async function exerciseChart(client, resultsUrl, origin) {
+    await client.navigate(resultsUrl);
+    const initial = await client.evaluate("(() => ({ toggles: document.querySelectorAll('[data-chart-series-toggle]').length, hits: document.querySelectorAll('[data-chart-hit=true]').length, axis: Array.from(document.querySelectorAll('svg[data-chart-navigator] text')).map((node) => node.textContent) }))()");
+    if (initial.toggles !== 2) fail("chart did not expose both KPI display toggles");
+    if (initial.hits < 10) fail("chart fixture did not expose enough linked data points");
+    if (!initial.axis.includes("hours")) fail("full chart did not choose hours for its visible magnitude");
+
+    const hoverPoint = await client.evaluate("(() => { const hit = document.querySelector('[data-chart-hit=true]'); const box = hit.getBoundingClientRect(); return { x: (box.left + box.right) / 2, y: (box.top + box.bottom) / 2 }; })()");
+    await client.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: hoverPoint.x, y: hoverPoint.y });
+    await waitForBrowser(client, "Boolean(document.querySelector('[data-chart-tooltip=true]:not([hidden]) a[href*=\"experiment/\"]'))", "linked chart tooltip");
+    const tooltip = await client.evaluate("(() => ({ title: document.querySelector('[data-chart-tooltip=true] a')?.textContent, values: document.querySelector('[data-chart-tooltip=true] dl')?.textContent, href: document.querySelector('[data-chart-tooltip=true] a')?.href }))()");
+    if (!tooltip.title || !tooltip.values || !tooltip.href.includes("/experiment/")) fail("chart tooltip omitted experiment identity, values, or link");
+
+    const firstMetric = await client.evaluate("document.querySelector('[data-chart-series-toggle]')?.value");
+    const toggleStarted = performance.now();
+    await client.evaluate("document.querySelector('[data-chart-series-toggle]').click()");
+    await waitForBrowser(client, "location.search.includes('hidden_metric=') && document.getElementById('metric-plot-card')?.getAttribute('aria-busy') === 'false'", "KPI toggle fragment");
+    const toggleMs = performance.now() - toggleStarted;
+    const hiddenState = await client.evaluate("(() => ({ checked: document.querySelector('[data-chart-series-toggle]')?.checked, seriesPresent: Array.from(document.querySelectorAll('[data-chart-series]')).some((node) => node.dataset.chartSeries === " + JSON.stringify(firstMetric) + "), error: document.getElementById('metric-plot-card')?.dataset.chartError }))()");
+    if (hiddenState.checked || hiddenState.seriesPresent || hiddenState.error) fail("KPI toggle did not reconcile the authoritative chart");
+    await client.evaluate("document.querySelector('[data-chart-series-toggle]').click()");
+    await waitForBrowser(client, "!location.search.includes('hidden_metric=') && document.querySelector('[data-chart-series-toggle]')?.checked === true", "KPI toggle restoration");
+
+    const drag = await client.evaluate("(() => { const hits = Array.from(document.querySelectorAll('[data-chart-hit=true]')); const first = hits[1].getBoundingClientRect(); const last = hits[6].getBoundingClientRect(); return { startX: (first.left + first.right) / 2, endX: (last.left + last.right) / 2, y: (first.top + first.bottom) / 2 }; })()");
+    const zoomStarted = performance.now();
+    await client.send("Input.dispatchMouseEvent", { type: "mousePressed", x: drag.startX, y: drag.y, button: "left", clickCount: 1 });
+    await client.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: drag.endX, y: drag.y, button: "left" });
+    await client.send("Input.dispatchMouseEvent", { type: "mouseReleased", x: drag.endX, y: drag.y, button: "left", clickCount: 1 });
+    await waitForBrowser(client, "location.search.includes('plot_from=') && Boolean(document.querySelector('[data-chart-reset-window=true]'))", "drag zoom fragment");
+    const zoomMs = performance.now() - zoomStarted;
+    const zoomed = await client.evaluate("(() => ({ hits: document.querySelectorAll('[data-chart-hit=true]').length, axis: Array.from(document.querySelectorAll('svg[data-chart-navigator] text')).map((node) => node.textContent), error: document.getElementById('metric-plot-card')?.dataset.chartError }))()");
+    if (zoomed.hits >= initial.hits || !zoomed.axis.includes("milliseconds") || zoomed.error) fail("horizontal zoom did not narrow data and recompute units");
+
+    await client.evaluate("document.querySelector('[data-chart-reset-window=true]').click()");
+    await waitForBrowser(client, "!location.search.includes('plot_from=') && Array.from(document.querySelectorAll('svg[data-chart-navigator] text')).some((node) => node.textContent === 'hours')", "chart zoom reset");
+
+    await client.send("Browser.grantPermissions", {
+        origin,
+        permissions: ["clipboardReadWrite", "clipboardSanitizedWrite"],
+    });
+    await client.evaluate("document.querySelector('[data-copy-plot-png=true]').click()");
+    await waitForBrowser(client, "document.querySelector('[data-copy-plot-png=true]')?.textContent.trim() === 'Copied'", "PNG clipboard export");
+    await client.evaluate("(() => { const form = document.querySelector('#metric-selection-popout form'); for (const input of form.querySelectorAll('input[name=metric]')) input.checked = false; form.requestSubmit(); })()");
+    await waitForBrowser(client, "new URL(location.href).searchParams.get('metric_mode') === 'explicit' && new URL(location.href).searchParams.getAll('metric').length === 0 && document.getElementById('metric-plot-card')?.textContent.includes('No metrics selected')", "explicit empty metric selection");
+    const emptySelectionPreserved = await client.evaluate("(() => { const url = new URL(document.querySelector('.tab-row a')?.href); return url.searchParams.get('metric_mode') === 'explicit' && url.searchParams.getAll('metric').length === 0; })()");
+    if (!emptySelectionPreserved) fail("fragment refresh did not reconcile tab navigation state");
+    await client.evaluate("history.back()");
+    await waitForBrowser(client, "document.querySelectorAll('[data-chart-series-toggle]').length === 2", "metric selection history restoration");
+    assertPageIntegrity(await client.evaluate(containmentProbe()));
+    return { toggleMs, zoomMs, tooltip };
+}
+
 function assertPageIntegrity(probe) {
     if (probe.documentOverflow > 1
         || probe.leaks.length
@@ -365,6 +430,11 @@ async function exerciseMock(executable) {
             assertPageIntegrity(await client.evaluate(containmentProbe()));
             desktopScreenshots[name] = await screenshot(client, `mock-desktop-${name}`);
         }
+        const chartJourney = await exerciseChart(
+            client,
+            `${projectHref}frontier/squeaky-clean?tab=results`,
+            server.origin,
+        );
         await client.navigate(`${projectHref}frontier/squeaky-clean?tab=open`);
         const hypothesisHref = await client.evaluate("document.querySelector('a[href*=" + JSON.stringify("hypothesis/containment") + "]')?.href");
         if (!hypothesisHref) fail("frontier page did not expose a hypothesis link");
@@ -456,7 +526,7 @@ async function exerciseMock(executable) {
         assertPageIntegrity(await client.evaluate(containmentProbe()));
         await client.navigate(experimentHref);
         assertPageIntegrity(await client.evaluate(containmentProbe()));
-        return { timings, desktopScreenshots, mobileScreenshots };
+        return { timings, chartJourney, desktopScreenshots, mobileScreenshots };
     } finally {
         browser.stop();
         server.stop();
@@ -492,6 +562,7 @@ async function exerciseLarge(executable, source) {
             if (timings[name].completeMs > budget) fail(`${name} cold navigation ${timings[name].completeMs.toFixed(1)} ms exceeds ${budget} ms`);
         }
         if (timings.metrics.decodedBytes > 1_500_000) fail(`metrics response ${timings.metrics.decodedBytes} bytes exceeds 1.5 MB`);
+        if (timings.frontier.decodedBytes > 1_100_000) fail(`frontier response ${timings.frontier.decodedBytes} bytes exceeds 1.1 MB`);
         const warmTimings = {};
         for (const [name, url] of Object.entries(pages)) {
             warmTimings[name] = await client.navigate(url);
@@ -501,6 +572,16 @@ async function exerciseLarge(executable, source) {
         for (const [name, budget] of Object.entries(warmBudgets)) {
             if (warmTimings[name].completeMs > budget) fail(`${name} warm navigation ${warmTimings[name].completeMs.toFixed(1)} ms exceeds ${budget} ms`);
         }
+        const largeToggleStarted = performance.now();
+        const largeToggleAvailable = await client.evaluate("Boolean(document.querySelector('[data-chart-series-toggle]'))");
+        if (!largeToggleAvailable) fail("large frontier did not expose a KPI toggle");
+        await client.evaluate("document.querySelector('[data-chart-series-toggle]').click()");
+        await waitForBrowser(client, "location.search.includes('hidden_metric=') && document.getElementById('metric-plot-card')?.getAttribute('aria-busy') === 'false'", "large chart fragment");
+        const chartFragmentMs = performance.now() - largeToggleStarted;
+        const chartFragmentBytes = await client.evaluate("(() => { const entries = performance.getEntriesByType('resource').filter((entry) => entry.name.includes('/chart?')); return entries.at(-1)?.decodedBodySize ?? 0; })()");
+        if (chartFragmentMs > 1_000) fail("large chart fragment exceeded 1000 ms");
+        if (chartFragmentBytes > 1_100_000) fail("large chart fragment exceeded 1.1 MB");
+
         await client.send("Emulation.setDeviceMetricsOverride", { width: 360, height: 800, deviceScaleFactor: 1, mobile: true });
         const mobileScreenshots = {};
         for (const name of ["tags", "metrics", "frontier"]) {
@@ -508,7 +589,14 @@ async function exerciseLarge(executable, source) {
             assertPageIntegrity(await client.evaluate(containmentProbe()));
             mobileScreenshots[name] = await screenshot(client, `large-mobile-${name}`);
         }
-        return { fixture, timings, warmTimings, desktopScreenshots, mobileScreenshots };
+        return {
+            fixture,
+            timings,
+            warmTimings,
+            chartFragment: { completeMs: chartFragmentMs, decodedBytes: chartFragmentBytes },
+            desktopScreenshots,
+            mobileScreenshots,
+        };
     } finally {
         browser.stop();
         server.stop();

@@ -25,7 +25,6 @@ dirs = "6"
 maud = { version = "0.27", features = ["axum"] }
 num-rational = { version = "0.4", features = ["serde"] }
 percent-encoding = "2"
-plotters = { version = "0.3.7", default-features = false, features = ["line_series", "svg_backend"] }
 pulldown-cmark = "0.13"
 rusqlite = { version = "0.40.1", features = ["bundled", "hooks", "limits", "time"] }
 serde = { version = "1.0", features = ["derive"] }

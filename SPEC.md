@@ -7,6 +7,20 @@ already knows the domain. It should read like a dense lab notebook: terse,
 forensic, and structurally navigable. It is not a marketing surface, a general
 dashboard, or a scrapbook.
 
+## Results Plot
+
+The plot is a Rust-planned, server-rendered semantic SVG. It must remain useful
+without client scripting: datum hit targets are experiment links, SVG text and
+marks are self-contained, and numeric dimensions preserve PNG export. Client
+scripting may accelerate state changes through an abortable HTML fragment, but
+the URL remains the state authority.
+
+Selected metrics and displayed series are distinct. Metric selection chooses
+at most two quantities; direct legend toggles suppress series without changing
+selection. Horizontal windows persist as experiment-slug endpoints. Axis units
+derive from the visible canonical values. Scuffed records keep their close
+ordinals and table audit trail but never enter plot geometry.
+
 The UI optimizes for answer density per viewport. A page should make it cheap to
 answer, in order: what happened, why it happened, what changed, where the
 evidence lives, and what should be inspected next. Space spent on scaffolding,

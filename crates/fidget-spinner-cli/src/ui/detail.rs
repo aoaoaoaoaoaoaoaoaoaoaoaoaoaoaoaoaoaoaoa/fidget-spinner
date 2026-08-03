@@ -6,13 +6,12 @@ use super::{
     BTreeMap, DOCTYPE, ExperimentAnalysis, ExperimentDetail, ExperimentOutcome, ExperimentStatus,
     ExperimentSummary, FrontierOpenProjection, FrontierPageQuery, FrontierRecord, FrontierTab,
     FrontierVerdict, HypothesisAttention, HypothesisDetail, Markup, MetricAxisLogScales,
-    MetricKeysQuery, MetricScope, NonEmptyText, ProjectRenderContext, RunDimensionValue,
-    ShellFrame, Slug, StoreError, VertexRef, VertexSummary, experiment_href,
-    experiment_status_class, format_metric_value, format_timestamp, frontier_href,
-    frontier_status_class, frontier_tab_href, html, hypothesis_attention_label, hypothesis_href,
-    limit_items, load_shell_frame, open_store, pencil_icon, render_dimension_value, render_fact,
-    render_hypothesis_meta_chips, render_kv, render_markdown_prose, render_sidebar,
-    short_commit_hash, status_chip_classes, verdict_class,
+    NonEmptyText, ProjectRenderContext, RunDimensionValue, ShellFrame, Slug, StoreError, VertexRef,
+    VertexSummary, experiment_href, experiment_status_class, format_metric_value, format_timestamp,
+    frontier_href, frontier_status_class, frontier_tab_href, html, hypothesis_attention_label,
+    hypothesis_href, limit_items, load_shell_frame, open_store, pencil_icon,
+    render_dimension_value, render_fact, render_hypothesis_meta_chips, render_kv,
+    render_markdown_prose, render_sidebar, short_commit_hash, status_chip_classes, verdict_class,
 };
 
 pub(super) fn render_frontier_detail(
@@ -23,16 +22,21 @@ pub(super) fn render_frontier_detail(
     let store = open_store(context.project_root.as_std_path())?;
     let projection = store.frontier_open(&selector)?;
     let shell = load_shell_frame(&store, Some(projection.frontier.slug.clone()), &context)?;
-    let kpi_metric_keys_for_tab_bar = store.metric_keys(MetricKeysQuery {
-        frontier: Some(projection.frontier.slug.to_string()),
-        scope: MetricScope::Kpi,
-    })?;
+    let kpi_metric_keys_for_tab_bar = projection
+        .kpis
+        .iter()
+        .map(|kpi| kpi.metric.clone())
+        .collect::<Vec<_>>();
     let other_metric_keys_for_tab_bar = load_other_metric_keys(&store, &projection)?;
-    let requested_metrics_for_tab_bar =
-        requested_or_kpi_metric_keys(&query.metric, &kpi_metric_keys_for_tab_bar);
+    let requested_metrics_for_tab_bar = requested_or_kpi_metric_keys(
+        &query.metric,
+        &kpi_metric_keys_for_tab_bar,
+        query.metric_selection_explicit,
+    );
     let tab = FrontierTab::from_query(query.tab.as_deref());
     let title = format!("{} · frontier", projection.frontier.label);
-    let content = render_frontier_tab_content(&store, &projection, tab, &query, context.limit)?;
+    let content = render_frontier_tab_content(&store, &projection, tab, &query, &context)?;
+    let selection = query.chart_selection();
     Ok(render_shell(
         &title,
         &shell,
@@ -46,8 +50,7 @@ pub(super) fn render_frontier_detail(
                     &other_metric_keys_for_tab_bar,
                 ),
             ),
-            query.requested_log_scales(),
-            &query.condition_filters(),
+            &selection,
             query.table_metric.as_deref(),
         )),
         content,
@@ -760,36 +763,6 @@ pub(super) fn render_experiment_card(experiment: &ExperimentSummary) -> Markup {
     }
 }
 
-pub(super) fn render_experiment_summary_line(experiment: &ExperimentSummary) -> Markup {
-    html! {
-    div.link-list {
-        (render_experiment_link_chip(experiment))
-        @if let Some(metric) = experiment.primary_metric.as_ref() {
-            span.metric-pill {
-                (metric.key) ": "
-                (format_metric_value(metric.value, &metric.display_unit))
-            }
-        }
-    }
-    }
-}
-
-pub(super) fn render_experiment_link_chip(experiment: &ExperimentSummary) -> Markup {
-    html! {
-        a.link-chip href=(experiment_href(&experiment.slug)) {
-            span.link-chip-main {
-                span.link-chip-title { (experiment.title) }
-                @if let Some(verdict) = experiment.verdict {
-                    span class=(status_chip_classes(verdict_class(verdict))) { (verdict.as_str()) }
-                }
-            }
-            @if experiment.verdict.is_none() && experiment.status == ExperimentStatus::Open {
-                span.link-chip-summary { "open experiment" }
-            }
-        }
-    }
-}
-
 fn render_vertex_chip(summary: &VertexSummary) -> Markup {
     let href = match summary.vertex {
         VertexRef::Hypothesis(_) => hypothesis_href(&summary.slug),
@@ -830,7 +803,10 @@ pub(super) fn render_shell(
                 link rel="stylesheet" href="/navigator.css";
             }
             body {
-                main.shell data-refresh-token-url=(&shell.refresh_token_href) {
+                main.shell
+                    data-refresh-token-url=(&shell.refresh_token_href)
+                    data-refresh-token=(&shell.refresh_token)
+                {
                     aside.sidebar {
                         (render_sidebar(shell))
                     }

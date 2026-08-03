@@ -843,6 +843,34 @@ pub struct FrontierMetricSeries {
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct FrontierChartExperiment {
+    pub id: ExperimentId,
+    pub slug: Slug,
+    pub title: NonEmptyText,
+    pub hypothesis_slug: Slug,
+    pub hypothesis_title: NonEmptyText,
+    pub verdict: FrontierVerdict,
+    pub closed_at: OffsetDateTime,
+    #[serde(rename = "conditions")]
+    pub dimensions: BTreeMap<NonEmptyText, RunDimensionValue>,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct FrontierChartSeries {
+    pub metric: MetricKeySummary,
+    pub kpi: Option<KpiSummary>,
+    pub canonical_values: Vec<Option<f64>>,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct FrontierChartScene {
+    pub frontier_id: FrontierId,
+    pub frontier_slug: Slug,
+    pub experiments: Vec<FrontierChartExperiment>,
+    pub series: Vec<FrontierChartSeries>,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct KpiBestEntry {
     pub experiment: ExperimentSummary,
     pub hypothesis: HypothesisSummary,
@@ -3030,6 +3058,230 @@ impl ProjectStore {
             frontier,
             points,
         })
+    }
+
+    pub fn frontier_chart_scene(
+        &self,
+        frontier: &str,
+        metrics: &[MetricKeySummary],
+        kpis: &[KpiSummary],
+    ) -> Result<FrontierChartScene, StoreError> {
+        let frontier = self.resolve_frontier(frontier)?;
+        let mut experiments = self.frontier_chart_experiments(frontier.id)?;
+        self.load_frontier_chart_dimensions(frontier.id, &mut experiments)?;
+
+        let recipes = self.frontier_chart_metric_recipes()?;
+        let metric_ids = recipes
+            .iter()
+            .map(|(key, recipe)| (key.clone(), recipe.id))
+            .collect::<BTreeMap<_, _>>();
+        let recipes_by_id = recipes
+            .values()
+            .cloned()
+            .map(|recipe| (recipe.id, recipe))
+            .collect::<BTreeMap<_, _>>();
+        let mut observed = self.frontier_chart_observed_values(frontier.id)?;
+        let kpis_by_metric = kpis
+            .iter()
+            .cloned()
+            .map(|kpi| (kpi.metric.key.to_string(), kpi))
+            .collect::<BTreeMap<_, _>>();
+        let mut values_by_metric = vec![Vec::with_capacity(experiments.len()); metrics.len()];
+
+        for experiment in &experiments {
+            let values = observed.entry(experiment.id).or_default();
+            for (index, metric) in metrics.iter().enumerate() {
+                let metric_id = metric_ids
+                    .get(metric.key.as_str())
+                    .copied()
+                    .ok_or_else(|| StoreError::UnknownMetricDefinition(metric.key.clone()))?;
+                let value = evaluate_frontier_chart_metric(
+                    metric_id,
+                    values,
+                    &recipes_by_id,
+                    &metric_ids,
+                    &mut Vec::new(),
+                )?;
+                values_by_metric[index].push(value);
+            }
+        }
+
+        let series = metrics
+            .iter()
+            .cloned()
+            .zip(values_by_metric)
+            .map(|(metric, canonical_values)| FrontierChartSeries {
+                kpi: kpis_by_metric.get(metric.key.as_str()).cloned(),
+                metric,
+                canonical_values,
+            })
+            .collect();
+        Ok(FrontierChartScene {
+            frontier_id: frontier.id,
+            frontier_slug: frontier.slug,
+            experiments,
+            series,
+        })
+    }
+
+    fn frontier_chart_experiments(
+        &self,
+        frontier_id: FrontierId,
+    ) -> Result<Vec<FrontierChartExperiment>, StoreError> {
+        let mut statement = self.connection.prepare(
+            "SELECT experiments.id, experiments.slug, experiments.title,
+                    hypotheses.slug, hypotheses.title, experiment_outcomes.verdict,
+                    experiment_outcomes.closed_at
+             FROM experiments
+             JOIN hypotheses ON hypotheses.id = experiments.hypothesis_id
+             JOIN experiment_outcomes ON experiment_outcomes.experiment_id = experiments.id
+             WHERE hypotheses.frontier_id = ?1
+             ORDER BY experiment_outcomes.closed_at ASC, experiments.id ASC",
+        )?;
+        let rows = statement.query_map(params![frontier_id.to_string()], |row| {
+            Ok(FrontierChartExperiment {
+                id: ExperimentId::from_uuid(parse_uuid_sql(&row.get::<_, String>(0)?)?),
+                slug: parse_slug(&row.get::<_, String>(1)?)?,
+                title: parse_non_empty_text(&row.get::<_, String>(2)?)?,
+                hypothesis_slug: parse_slug(&row.get::<_, String>(3)?)?,
+                hypothesis_title: parse_non_empty_text(&row.get::<_, String>(4)?)?,
+                verdict: parse_frontier_verdict(&row.get::<_, String>(5)?)?,
+                closed_at: parse_timestamp_sql(&row.get::<_, String>(6)?)?,
+                dimensions: BTreeMap::new(),
+            })
+        })?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(StoreError::from)
+    }
+
+    fn load_frontier_chart_dimensions(
+        &self,
+        frontier_id: FrontierId,
+        experiments: &mut [FrontierChartExperiment],
+    ) -> Result<(), StoreError> {
+        let positions = experiments
+            .iter()
+            .enumerate()
+            .map(|(index, experiment)| (experiment.id, index))
+            .collect::<BTreeMap<_, _>>();
+        let query_prefix = "SELECT dimensions.experiment_id, dimensions.key, dimensions.value
+             FROM ";
+        let query_suffix = " AS dimensions
+             JOIN experiments ON experiments.id = dimensions.experiment_id
+             JOIN hypotheses ON hypotheses.id = experiments.hypothesis_id
+             JOIN experiment_outcomes ON experiment_outcomes.experiment_id = experiments.id
+             WHERE hypotheses.frontier_id = ?1
+             ORDER BY dimensions.experiment_id ASC, dimensions.key ASC";
+
+        let string_query = format!("{query_prefix}experiment_dimension_strings{query_suffix}");
+        let mut statement = self.connection.prepare(&string_query)?;
+        let rows = statement.query_map(params![frontier_id.to_string()], |row| {
+            Ok((
+                ExperimentId::from_uuid(parse_uuid_sql(&row.get::<_, String>(0)?)?),
+                parse_non_empty_text(&row.get::<_, String>(1)?)?,
+                RunDimensionValue::String(parse_non_empty_text(&row.get::<_, String>(2)?)?),
+            ))
+        })?;
+        insert_frontier_chart_dimensions(rows, &positions, experiments)?;
+
+        let numeric_query = format!("{query_prefix}experiment_dimension_numbers{query_suffix}");
+        let mut statement = self.connection.prepare(&numeric_query)?;
+        let rows = statement.query_map(params![frontier_id.to_string()], |row| {
+            Ok((
+                ExperimentId::from_uuid(parse_uuid_sql(&row.get::<_, String>(0)?)?),
+                parse_non_empty_text(&row.get::<_, String>(1)?)?,
+                RunDimensionValue::Numeric(row.get::<_, f64>(2)?),
+            ))
+        })?;
+        insert_frontier_chart_dimensions(rows, &positions, experiments)?;
+
+        let boolean_query = format!("{query_prefix}experiment_dimension_booleans{query_suffix}");
+        let mut statement = self.connection.prepare(&boolean_query)?;
+        let rows = statement.query_map(params![frontier_id.to_string()], |row| {
+            Ok((
+                ExperimentId::from_uuid(parse_uuid_sql(&row.get::<_, String>(0)?)?),
+                parse_non_empty_text(&row.get::<_, String>(1)?)?,
+                RunDimensionValue::Boolean(row.get::<_, i64>(2)? != 0),
+            ))
+        })?;
+        insert_frontier_chart_dimensions(rows, &positions, experiments)?;
+
+        let timestamp_query =
+            format!("{query_prefix}experiment_dimension_timestamps{query_suffix}");
+        let mut statement = self.connection.prepare(&timestamp_query)?;
+        let rows = statement.query_map(params![frontier_id.to_string()], |row| {
+            Ok((
+                ExperimentId::from_uuid(parse_uuid_sql(&row.get::<_, String>(0)?)?),
+                parse_non_empty_text(&row.get::<_, String>(1)?)?,
+                RunDimensionValue::Timestamp(parse_non_empty_text(&row.get::<_, String>(2)?)?),
+            ))
+        })?;
+        insert_frontier_chart_dimensions(rows, &positions, experiments)
+    }
+
+    fn frontier_chart_metric_recipes(
+        &self,
+    ) -> Result<BTreeMap<String, FrontierChartMetricRecipe>, StoreError> {
+        let mut statement = self.connection.prepare(
+            "SELECT metric_definitions.id, metric_definitions.key,
+                    synthetic_metric_definitions.expression_json
+             FROM metric_definitions
+             LEFT JOIN synthetic_metric_definitions
+               ON synthetic_metric_definitions.metric_id = metric_definitions.id
+             ORDER BY metric_definitions.key ASC",
+        )?;
+        let rows = statement.query_map([], |row| {
+            Ok((
+                parse_metric_id_sql(&row.get::<_, String>(0)?)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, Option<String>>(2)?,
+            ))
+        })?;
+        rows.map(|row| {
+            let (id, key, expression) = row?;
+            let expression = expression
+                .map(|raw| decode_json::<SyntheticMetricExpression>(&raw))
+                .transpose()?;
+            Ok((key, FrontierChartMetricRecipe { id, expression }))
+        })
+        .collect()
+    }
+
+    fn frontier_chart_observed_values(
+        &self,
+        frontier_id: FrontierId,
+    ) -> Result<BTreeMap<ExperimentId, BTreeMap<MetricId, Option<f64>>>, StoreError> {
+        let mut statement = self.connection.prepare(
+            "SELECT experiment_metrics.experiment_id, experiment_metrics.metric_id,
+                    experiment_metrics.value
+             FROM experiment_metrics
+             JOIN experiments ON experiments.id = experiment_metrics.experiment_id
+             JOIN hypotheses ON hypotheses.id = experiments.hypothesis_id
+             JOIN experiment_outcomes ON experiment_outcomes.experiment_id = experiments.id
+             WHERE hypotheses.frontier_id = ?1
+             ORDER BY experiment_metrics.experiment_id ASC, experiment_metrics.metric_id ASC",
+        )?;
+        let rows = statement.query_map(params![frontier_id.to_string()], |row| {
+            Ok((
+                ExperimentId::from_uuid(parse_uuid_sql(&row.get::<_, String>(0)?)?),
+                parse_metric_id_sql(&row.get::<_, String>(1)?)?,
+                row.get::<_, f64>(2)?,
+            ))
+        })?;
+        let mut values = BTreeMap::<ExperimentId, BTreeMap<MetricId, Option<f64>>>::new();
+        for row in rows {
+            let (experiment_id, metric_id, value) = row?;
+            let previous = values
+                .entry(experiment_id)
+                .or_default()
+                .insert(metric_id, Some(value));
+            if previous.is_some() {
+                return Err(StoreError::InvalidInput(format!(
+                    "experiment `{experiment_id}` has duplicate metric `{metric_id}` rows"
+                )));
+            }
+        }
+        Ok(values)
     }
 
     pub fn metric_keys(&self, query: MetricKeysQuery) -> Result<Vec<MetricKeySummary>, StoreError> {
@@ -6569,6 +6821,117 @@ fn evaluate_binary_synthetic(
     combine(left, right).filter(|value| value.is_finite())
 }
 
+#[derive(Clone, Debug)]
+struct FrontierChartMetricRecipe {
+    id: MetricId,
+    expression: Option<SyntheticMetricExpression>,
+}
+
+fn insert_frontier_chart_dimensions(
+    rows: impl Iterator<Item = Result<(ExperimentId, NonEmptyText, RunDimensionValue), rusqlite::Error>>,
+    positions: &BTreeMap<ExperimentId, usize>,
+    experiments: &mut [FrontierChartExperiment],
+) -> Result<(), StoreError> {
+    for row in rows {
+        let (experiment_id, key, value) = row?;
+        let Some(index) = positions.get(&experiment_id).copied() else {
+            return Err(StoreError::InvalidInput(format!(
+                "condition references unknown chart experiment `{experiment_id}`"
+            )));
+        };
+        let Some(experiment) = experiments.get_mut(index) else {
+            return Err(StoreError::InvalidInput(format!(
+                "chart experiment index `{index}` is out of bounds"
+            )));
+        };
+        reject_duplicate_dimension(&mut experiment.dimensions, key, value)?;
+    }
+    Ok(())
+}
+
+fn evaluate_frontier_chart_metric(
+    metric_id: MetricId,
+    values: &mut BTreeMap<MetricId, Option<f64>>,
+    recipes: &BTreeMap<MetricId, FrontierChartMetricRecipe>,
+    metric_ids: &BTreeMap<String, MetricId>,
+    stack: &mut Vec<MetricId>,
+) -> Result<Option<f64>, StoreError> {
+    if let Some(value) = values.get(&metric_id).copied() {
+        return Ok(value);
+    }
+    if stack.contains(&metric_id) {
+        return Err(StoreError::PolicyViolation(
+            "synthetic metric dependency graph contains a cycle".to_owned(),
+        ));
+    }
+    let recipe = recipes.get(&metric_id).ok_or_else(|| {
+        StoreError::InvalidInput(format!("chart metric `{metric_id}` has no recipe"))
+    })?;
+    let Some(expression) = recipe.expression.as_ref() else {
+        let _ = values.insert(metric_id, None);
+        return Ok(None);
+    };
+    stack.push(metric_id);
+    let value = evaluate_frontier_chart_expression(expression, values, recipes, metric_ids, stack)?;
+    let _ = stack.pop();
+    let _ = values.insert(metric_id, value);
+    Ok(value)
+}
+
+fn evaluate_frontier_chart_expression(
+    expression: &SyntheticMetricExpression,
+    values: &mut BTreeMap<MetricId, Option<f64>>,
+    recipes: &BTreeMap<MetricId, FrontierChartMetricRecipe>,
+    metric_ids: &BTreeMap<String, MetricId>,
+    stack: &mut Vec<MetricId>,
+) -> Result<Option<f64>, StoreError> {
+    match expression {
+        SyntheticMetricExpression::Metric { metric } => {
+            let metric_id = metric_ids
+                .get(metric.as_str())
+                .copied()
+                .ok_or_else(|| StoreError::UnknownMetricDefinition(metric.clone()))?;
+            evaluate_frontier_chart_metric(metric_id, values, recipes, metric_ids, stack)
+        }
+        SyntheticMetricExpression::Constant { value, .. } => Ok(Some(*value)),
+        SyntheticMetricExpression::Add { left, right } => Ok(evaluate_binary_synthetic(
+            evaluate_frontier_chart_expression(left, values, recipes, metric_ids, stack)?,
+            evaluate_frontier_chart_expression(right, values, recipes, metric_ids, stack)?,
+            |left, right| Some(left + right),
+        )),
+        SyntheticMetricExpression::Sub { left, right } => Ok(evaluate_binary_synthetic(
+            evaluate_frontier_chart_expression(left, values, recipes, metric_ids, stack)?,
+            evaluate_frontier_chart_expression(right, values, recipes, metric_ids, stack)?,
+            |left, right| Some(left - right),
+        )),
+        SyntheticMetricExpression::Mul { left, right } => Ok(evaluate_binary_synthetic(
+            evaluate_frontier_chart_expression(left, values, recipes, metric_ids, stack)?,
+            evaluate_frontier_chart_expression(right, values, recipes, metric_ids, stack)?,
+            |left, right| Some(left * right),
+        )),
+        SyntheticMetricExpression::Div { left, right } => Ok(evaluate_binary_synthetic(
+            evaluate_frontier_chart_expression(left, values, recipes, metric_ids, stack)?,
+            evaluate_frontier_chart_expression(right, values, recipes, metric_ids, stack)?,
+            |left, right| (right != 0.0).then_some(left / right),
+        )),
+        SyntheticMetricExpression::Gmean { terms } => {
+            let mut log_sum = 0.0;
+            for term in terms {
+                let Some(value) =
+                    evaluate_frontier_chart_expression(term, values, recipes, metric_ids, stack)?
+                else {
+                    return Ok(None);
+                };
+                if value <= 0.0 || !value.is_finite() {
+                    return Ok(None);
+                }
+                log_sum += value.ln();
+            }
+            Ok(Some((log_sum / terms.len() as f64).exp()))
+        }
+    }
+}
+
 fn inject_metric_units_into_legacy_outcomes(
     transaction: &Transaction<'_>,
     definitions: &[MetricDefinition],
@@ -9528,6 +9891,75 @@ mod tests {
             order: None,
         })?;
         assert!(best.is_empty());
+        fs::remove_dir_all(root.as_std_path())?;
+        Ok(())
+    }
+
+    #[test]
+    fn canonical_chart_scene_matches_legacy_observed_and_synthetic_series() -> Result<(), StoreError>
+    {
+        let (root, mut store, hypothesis) = seed_attention_frontier()?;
+        let _ = store.define_synthetic_metric(DefineSyntheticMetricRequest {
+            key: NonEmptyText::new("synthetic_score")?,
+            expression: SyntheticMetricExpression::metric(NonEmptyText::new("score")?),
+            aggregation: MetricAggregation::Point,
+            objective: OptimizationObjective::Maximize,
+            description: None,
+        })?;
+        let _ = store.define_run_dimension(DefineRunDimensionRequest {
+            key: NonEmptyText::new("compiler")?,
+            value_type: FieldValueType::String,
+            description: None,
+        })?;
+        let _ = store.open_experiment(OpenExperimentRequest {
+            hypothesis: hypothesis.slug.to_string(),
+            slug: Some(Slug::new("scene-parity")?),
+            title: NonEmptyText::new("Scene Parity")?,
+            summary: None,
+            tags: BTreeSet::new(),
+            parents: Vec::new(),
+        })?;
+        let mut request = close_request("scene-parity", Some(false))?;
+        let _ = request.dimensions.insert(
+            NonEmptyText::new("compiler")?,
+            RunDimensionValue::String(NonEmptyText::new("clang")?),
+        );
+        let _ = store.close_experiment(request)?;
+
+        let observed = store.frontier_metric_series(
+            "attention-frontier",
+            &NonEmptyText::new("score")?,
+            true,
+        )?;
+        let synthetic = store.frontier_metric_series(
+            "attention-frontier",
+            &NonEmptyText::new("synthetic_score")?,
+            true,
+        )?;
+        let metrics = vec![observed.metric.clone(), synthetic.metric.clone()];
+        let scene = store.frontier_chart_scene("attention-frontier", &metrics, &[])?;
+
+        assert_eq!(scene.experiments.len(), 1);
+        assert_eq!(
+            scene.experiments[0]
+                .dimensions
+                .get(&NonEmptyText::new("compiler")?),
+            Some(&RunDimensionValue::String(NonEmptyText::new("clang")?))
+        );
+        assert_eq!(scene.series.len(), 2);
+        for (canonical, legacy) in scene.series.iter().zip([observed, synthetic]) {
+            assert_eq!(canonical.canonical_values.len(), 1);
+            assert_eq!(
+                canonical.canonical_values[0],
+                Some(
+                    legacy
+                        .metric
+                        .display_unit
+                        .canonical_value(legacy.points[0].value)
+                )
+            );
+        }
+
         fs::remove_dir_all(root.as_std_path())?;
         Ok(())
     }
