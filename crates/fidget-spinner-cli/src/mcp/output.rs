@@ -163,10 +163,10 @@ fn projection_fault(error: ProjectionError, stage: FaultStage, operation: &str) 
     FaultRecord::new(FaultKind::Internal, stage, operation, error.to_string())
 }
 
-const fn full_porcelain_config() -> JsonPorcelainConfig {
-    JsonPorcelainConfig {
-        max_lines: FULL_PORCELAIN_MAX_LINES,
-        max_inline_chars: FULL_PORCELAIN_MAX_INLINE_CHARS,
+fn full_porcelain_config() -> JsonPorcelainConfig {
+    match JsonPorcelainConfig::try_new(FULL_PORCELAIN_MAX_LINES, FULL_PORCELAIN_MAX_INLINE_CHARS) {
+        Ok(config) => config,
+        Err(_) => unreachable!("fixed porcelain bounds must be valid"),
     }
 }
 

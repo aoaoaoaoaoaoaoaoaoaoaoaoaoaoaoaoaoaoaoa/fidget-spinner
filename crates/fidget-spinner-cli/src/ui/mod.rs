@@ -36,7 +36,7 @@ use percent_encoding::{NON_ALPHANUMERIC, percent_decode_str, utf8_percent_encode
 use plotters::prelude::{
     BLACK, ChartBuilder, Circle, Cross, DashedLineSeries, EmptyElement, IntoDrawingArea,
     IntoLogRange, LabelAreaPosition, LineSeries, PathElement, SVGBackend, SeriesLabelPosition,
-    ShapeStyle, Text,
+    ShapeStyle,
 };
 use plotters::style::{Color, IntoFont, RGBColor};
 use pulldown_cmark::html::push_html;
@@ -106,12 +106,6 @@ struct ProjectIndexItem {
     project_status: ProjectStatus,
 }
 
-#[derive(Clone, Copy, Default)]
-struct TagUsage {
-    hypotheses: u64,
-    experiments: u64,
-}
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum FrontierTab {
     Brief,
@@ -138,6 +132,7 @@ struct MetricAxisLogScales {
 #[derive(Clone, Debug, Default)]
 struct ProjectMetricsQuery {
     frontier: Option<String>,
+    page: u32,
 }
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -189,11 +184,24 @@ impl ProjectMetricsQuery {
             let (raw_key, raw_value) = segment.split_once('=').unwrap_or((segment, ""));
             let key = decode_query_component(raw_key)?;
             let value = decode_query_component(raw_value)?;
-            if key == "frontier" {
-                let trimmed = value.trim();
-                if !trimmed.is_empty() {
-                    query.frontier = Some(trimmed.to_owned());
+            match key.as_str() {
+                "frontier" => {
+                    let trimmed = value.trim();
+                    if !trimmed.is_empty() {
+                        query.frontier = Some(trimmed.to_owned());
+                    }
                 }
+                "page" => {
+                    query.page = value
+                        .parse::<u32>()
+                        .map_err(|error| {
+                            StoreError::InvalidInput(format!(
+                                "invalid metric page `{value}`: {error}"
+                            ))
+                        })?
+                        .saturating_sub(1);
+                }
+                _ => {}
             }
         }
         Ok(query)
@@ -973,51 +981,19 @@ fn project_metrics_frontier_href(slug: &Slug) -> String {
     format!("metrics?frontier={}", encode_path_segment(slug.as_str()))
 }
 
-struct MetricChoicePresentation<'a> {
-    metric: &'a MetricKeySummary,
-}
-
-impl<'a> MetricChoicePresentation<'a> {
-    const fn new(metric: &'a MetricKeySummary) -> Self {
-        Self { metric }
-    }
-
-    fn value(&self) -> &'a str {
-        self.metric.key.as_str()
-    }
-
-    fn label(&self) -> &'a NonEmptyText {
-        &self.metric.key
-    }
-
-    fn detail(&self) -> String {
-        format!(
-            "{} · {} · {} · {} · {}",
-            self.metric.kind.as_str(),
-            self.metric.objective.as_str(),
-            self.metric.dimension,
-            self.metric.display_unit.label(),
-            self.metric.aggregation.as_str()
-        )
-    }
-}
-
 fn metric_choice_detail(metric: &MetricKeySummary) -> String {
-    MetricChoicePresentation::new(metric).detail()
+    format!(
+        "{} · {} · {} · {} · {}",
+        metric.kind.as_str(),
+        metric.objective.as_str(),
+        metric.dimension,
+        metric.display_unit.label(),
+        metric.aggregation.as_str()
+    )
 }
 
 fn metric_is_synthetic(metric: &MetricKeySummary) -> bool {
     metric.kind.as_str() == "synthetic"
-}
-
-fn render_metric_choice_option(metric: &MetricKeySummary) -> Markup {
-    let choice = MetricChoicePresentation::new(metric);
-    let detail = choice.detail();
-    html! {
-        option value=(choice.value()) title=(&detail) data-metric-choice-detail=(&detail) {
-            (choice.label())
-        }
-    }
 }
 
 fn render_metric_kind_chip(metric: &MetricKeySummary) -> Markup {
@@ -1202,7 +1178,8 @@ mod tests {
     };
     use super::{
         FrontierPageQuery, FrontierTab, METRIC_TABLE_TITLE_MIN_BUDGET_CH, MetricAxisLogScales,
-        NavigatorState, Utf8PathBuf, encode_path_segment, markdown_html, resolve_project_context,
+        NavigatorState, ProjectMetricsQuery, StoreError, Utf8PathBuf, encode_path_segment,
+        markdown_html, resolve_project_context,
     };
     use std::collections::BTreeMap;
     use std::error::Error;
@@ -1361,6 +1338,19 @@ mod tests {
         assert!(!css.contains("minmax(320px, 1fr)"));
         assert!(!css.contains("minmax(260px, 1fr)"));
         assert!(!css.contains("overflow-x: hidden;\n    }\n    a"));
+        assert!(css.contains(".control-popout:not([open]) > .control-popout-panel"));
+        assert!(css.contains(".frontier-summary-editor[open]"));
+        assert!(css.contains(".chart-frame svg {\n            width: 780px;"));
+    }
+
+    #[test]
+    fn metric_registry_query_uses_one_based_public_pages() -> Result<(), StoreError> {
+        let query = ProjectMetricsQuery::parse(Some("frontier=the-hill&page=3"))?;
+        assert_eq!(query.frontier.as_deref(), Some("the-hill"));
+        assert_eq!(query.page, 2);
+        assert_eq!(ProjectMetricsQuery::parse(Some("page=0"))?.page, 0);
+        assert!(ProjectMetricsQuery::parse(Some("page=none")).is_err());
+        Ok(())
     }
 
     #[test]
@@ -1371,7 +1361,17 @@ mod tests {
         ];
         let frontier = test_frontier_summary();
         let kpi = test_kpi(metrics[0].clone());
-        let markup = render_metric_registry_table(&metrics, Some(&frontier), &[kpi]).into_string();
+        let markup = render_metric_registry_table(
+            &metrics,
+            &metrics,
+            Some(&frontier),
+            &[kpi],
+            None,
+            0,
+            0,
+            metrics.len(),
+        )
+        .into_string();
         let filter_text = metric_registry_filter_text(&metrics[0]);
 
         assert!(markup.contains(r#"data-table-filter-input="metric-registry""#));
@@ -1388,14 +1388,14 @@ mod tests {
         assert!(
             markup.contains(r#"class="metric-kind-chip" title="Synthetic metric">SYNTH</span>"#)
         );
-        assert!(markup.contains(r#"data-metric-choice-select="true""#));
+        assert!(markup.contains(r#"datalist id="metric-choices""#));
         assert!(markup.contains(r#"data-synthetic-operation-select="true""#));
-        assert!(markup.contains(r#"data-synthetic-gmean-extra="true""#));
-        assert!(markup.contains(">Extra gmean term 3</option>"));
+        assert!(markup.contains("data-synthetic-gmean-extra"));
+        assert!(markup.contains(r#"placeholder="Extra gmean term 3""#));
         assert!(!markup.contains(">optional</option>"));
         assert!(markup.contains(r#"title="synthetic · minimize · time · milliseconds · point""#));
         assert!(markup.contains(
-            r#"<option value="presolve_wallclock_per_row" title="synthetic · minimize · time · milliseconds · point" data-metric-choice-detail="synthetic · minimize · time · milliseconds · point">presolve_wallclock_per_row</option>"#
+            r#"<option value="presolve_wallclock_per_row" title="synthetic · minimize · time · milliseconds · point"></option>"#
         ));
         assert!(!markup.contains("SYNTH · presolve_wallclock_per_row"));
         assert!(!markup.contains(">BASE</span>"));

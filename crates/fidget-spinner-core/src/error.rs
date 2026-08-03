@@ -30,4 +30,6 @@ pub enum CoreError {
     UuidLikeSlug(String),
     #[error("command recipes must contain at least one argv element")]
     EmptyCommand,
+    #[error("experiment status and outcome disagree")]
+    InconsistentExperimentState,
 }

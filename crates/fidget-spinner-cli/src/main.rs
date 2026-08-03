@@ -50,7 +50,7 @@ enum Command {
         #[command(subcommand)]
         command: ProjectCommand,
     },
-    /// Manage the repo-local tag registry.
+    /// Manage the project tag registry.
     Tag {
         #[command(subcommand)]
         command: TagCommand,
@@ -688,6 +688,9 @@ struct UiServeArgs {
     bind: SocketAddr,
     #[arg(long)]
     limit: Option<u32>,
+    /// Permit the unauthenticated navigator to listen beyond the loopback interface.
+    #[arg(long)]
+    allow_remote: bool,
 }
 
 #[derive(Args)]
@@ -1324,7 +1327,7 @@ fn run_skill_install(args: SkillInstallArgs) -> Result<(), StoreError> {
 }
 
 fn run_ui_serve(args: UiServeArgs) -> Result<(), StoreError> {
-    ui::serve(args.bind, args.limit)
+    ui::serve(args.bind, args.limit, args.allow_remote)
 }
 
 fn resolve_bundled_skill(
@@ -1345,9 +1348,48 @@ fn default_skill_root() -> Result<PathBuf, StoreError> {
         .ok_or_else(|| invalid_input("home directory not found"))
 }
 
+const SKILL_OWNERSHIP_MARKER: &str = "managed by fidget-spinner installer\n";
+const SKILL_OWNERSHIP_MARKER_NAME: &str = ".fidget-spinner-owned";
+
 fn install_skill(skill: bundled_skill::BundledSkill, destination: &Path) -> Result<(), StoreError> {
+    match fs::symlink_metadata(destination) {
+        Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_dir() => {
+            return Err(invalid_input(format!(
+                "refusing to replace unowned skill path `{}`",
+                destination.display()
+            )));
+        }
+        Ok(_) => {
+            let entries = fs::read_dir(destination)?.collect::<Result<Vec<_>, _>>()?;
+            let owned = fs::read_to_string(destination.join(SKILL_OWNERSHIP_MARKER_NAME))
+                .is_ok_and(|marker| marker == SKILL_OWNERSHIP_MARKER);
+            let legacy_owned = entries.len() == 1
+                && entries[0].file_name() == "SKILL.md"
+                && fs::read_to_string(destination.join("SKILL.md"))
+                    .is_ok_and(|body| body == skill.body);
+            if !entries.is_empty() && !owned && !legacy_owned {
+                return Err(invalid_input(format!(
+                    "refusing to replace unowned skill path `{}`",
+                    destination.display()
+                )));
+            }
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.into()),
+    }
     fs::create_dir_all(destination)?;
-    fs::write(destination.join("SKILL.md"), skill.body)?;
+    let skill_path = destination.join("SKILL.md");
+    if fs::symlink_metadata(&skill_path).is_ok_and(|metadata| metadata.file_type().is_symlink()) {
+        return Err(invalid_input(format!(
+            "refusing to follow skill-file symlink `{}`",
+            skill_path.display()
+        )));
+    }
+    fs::write(
+        destination.join(SKILL_OWNERSHIP_MARKER_NAME),
+        SKILL_OWNERSHIP_MARKER,
+    )?;
+    fs::write(skill_path, skill.body)?;
     Ok(())
 }
 
@@ -1686,6 +1728,35 @@ mod tests {
         let store = open_or_init_store_for_binding(project_root.as_std_path())?;
 
         assert_eq!(store.project_root(), project_root);
+        Ok(())
+    }
+
+    #[test]
+    fn skill_install_marks_owned_copies_and_preserves_foreign_paths() -> Result<(), Box<dyn Error>>
+    {
+        let root = fresh_temp_root("skill-install")?;
+        let owned = root.join("owned");
+        let skill = bundled_skill::default_bundled_skill();
+        install_skill(skill, owned.as_std_path())?;
+        assert_eq!(
+            fs::read_to_string(owned.join(SKILL_OWNERSHIP_MARKER_NAME))?,
+            SKILL_OWNERSHIP_MARKER
+        );
+        assert_eq!(fs::read_to_string(owned.join("SKILL.md"))?, skill.body);
+
+        let foreign = root.join("foreign");
+        fs::create_dir_all(&foreign)?;
+        fs::write(foreign.join("keep"), "sovereign\n")?;
+        let error = match install_skill(skill, foreign.as_std_path()) {
+            Ok(()) => return Err("unowned skill directory was overwritten".into()),
+            Err(error) => error,
+        };
+        assert!(
+            error
+                .to_string()
+                .contains("refusing to replace unowned skill path")
+        );
+        assert_eq!(fs::read_to_string(foreign.join("keep"))?, "sovereign\n");
         Ok(())
     }
 }

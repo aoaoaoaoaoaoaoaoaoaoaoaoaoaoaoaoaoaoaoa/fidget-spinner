@@ -1,4 +1,4 @@
-use std::io::{self, BufRead, Write};
+use std::io::{self, Write};
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
@@ -6,8 +6,9 @@ use std::process::Command;
 use std::time::Instant;
 
 use libmcp::{
-    FramedMessage, HostSessionKernel, ReplayContract, RequestId, load_snapshot_file_from_env,
-    remove_snapshot_file, write_snapshot_file,
+    FrameLimit, FrameReadOutcome, FramedMessage, HostRejection, HostSessionKernel, ReplayContract,
+    SnapshotLimits, load_snapshot_file_from_env, read_frame_blocking, write_frame_blocking,
+    write_snapshot_file,
 };
 use serde::Serialize;
 use serde_json::{Map, Value, json};
@@ -36,24 +37,14 @@ use crate::mcp::telemetry::{
 pub(crate) fn run_host(
     initial_project: Option<PathBuf>,
 ) -> Result<(), fidget_spinner_store_sqlite::StoreError> {
-    let stdin = io::stdin();
+    let mut stdin = io::BufReader::new(io::stdin().lock());
     let mut stdout = io::stdout().lock();
     let mut host = HostRuntime::new(HostConfig::new(initial_project)?)?;
 
-    for line in stdin.lock().lines() {
-        let line = match line {
-            Ok(line) => line,
-            Err(error) => {
-                eprintln!("mcp stdin failure: {error}");
-                continue;
-            }
-        };
-        if line.trim().is_empty() {
-            continue;
-        }
-
-        let maybe_response = host.handle_line(&line);
-        if let Some(response) = maybe_response {
+    while let FrameReadOutcome::Frame(payload) =
+        read_frame_blocking(&mut stdin, FrameLimit::DEFAULT)?
+    {
+        if let Some(response) = host.handle_payload(payload) {
             write_message(&mut stdout, &response)?;
         }
         host.maybe_roll_forward()?;
@@ -61,6 +52,10 @@ pub(crate) fn run_host(
 
     Ok(())
 }
+
+const HOST_PENDING_CAPACITY: usize = 128;
+const HOST_SNAPSHOT_MAX_BYTES: usize = 16 * 1024 * 1024;
+const HOST_REPLAY_ATTEMPTS: u8 = 1;
 
 struct HostRuntime {
     config: HostConfig,
@@ -80,12 +75,13 @@ struct HostRuntime {
 impl HostRuntime {
     fn new(config: HostConfig) -> Result<Self, fidget_spinner_store_sqlite::StoreError> {
         let restored = restore_host_state()?;
+        let limits = snapshot_limits()?;
         let session_kernel = restored
             .as_ref()
-            .map(|seed| seed.session_kernel.clone().restore())
+            .map(|seed| seed.session_kernel.clone().restore(limits))
             .transpose()
-            .map_err(fidget_spinner_store_sqlite::StoreError::Io)?
-            .map_or_else(HostSessionKernel::cold, HostSessionKernel::from_restored);
+            .map_err(snapshot_store_error)?
+            .unwrap_or_else(HostSessionKernel::cold);
         let telemetry = restored
             .as_ref()
             .map_or_else(ServerTelemetry::default, |seed| seed.telemetry.clone());
@@ -139,8 +135,8 @@ impl HostRuntime {
         })
     }
 
-    fn handle_line(&mut self, line: &str) -> Option<Value> {
-        let frame = match FramedMessage::parse(line.as_bytes().to_vec()) {
+    fn handle_payload(&mut self, payload: Vec<u8>) -> Option<Value> {
+        let frame = match FramedMessage::parse(payload) {
             Ok(frame) => frame,
             Err(error) => {
                 return Some(jsonrpc_error(
@@ -158,8 +154,7 @@ impl HostRuntime {
     }
 
     fn handle_frame(&mut self, frame: FramedMessage) -> Option<Value> {
-        self.session_kernel.observe_client_frame(&frame);
-        let Some(object) = frame.value.as_object() else {
+        let Some(object) = frame.value().as_object() else {
             return Some(jsonrpc_error(
                 Value::Null,
                 FaultRecord::new(
@@ -173,12 +168,26 @@ impl HostRuntime {
 
         let method = object.get("method").and_then(Value::as_str)?;
         let id = object.get("id").cloned();
+        let journaled = id.is_some();
         let params = object.get("params").cloned().unwrap_or_else(|| json!({}));
         let operation_key = operation_key(method, &params);
         let started_at = Instant::now();
 
+        if let Err(rejection) = self.session_kernel.observe_client_frame(&frame) {
+            return id.map(|id| jsonrpc_error(id, host_rejection_fault(method, rejection)));
+        }
+        if journaled
+            && let Err(rejection) = self.session_kernel.begin_request_dispatch(
+                &frame,
+                request_replay_contract(method, &params),
+                HOST_PENDING_CAPACITY,
+            )
+        {
+            return id.map(|id| jsonrpc_error(id, host_rejection_fault(method, rejection)));
+        }
+
         self.telemetry.record_request(&operation_key);
-        let response = match self.dispatch(&frame, method, params, id.clone()) {
+        let response = match self.dispatch(method, params) {
             Ok(Some(result)) => {
                 self.telemetry
                     .record_success(&operation_key, started_at.elapsed().as_millis());
@@ -211,16 +220,17 @@ impl HostRuntime {
             self.rollout_requested = true;
         }
 
+        if journaled
+            && let Some(response) = response.as_ref()
+            && let Err(error) = self.complete_public_response(response)
+        {
+            eprintln!("MCP host-session completion failure: {error}");
+        }
+
         response
     }
 
-    fn dispatch(
-        &mut self,
-        request_frame: &FramedMessage,
-        method: &str,
-        params: Value,
-        request_id: Option<Value>,
-    ) -> Result<Option<Value>, FaultRecord> {
+    fn dispatch(&mut self, method: &str, params: Value) -> Result<Option<Value>, FaultRecord> {
         match method {
             "initialize" => Ok(Some(json!({
                 "protocolVersion": PROTOCOL_VERSION,
@@ -252,14 +262,8 @@ impl HostRuntime {
                 match other {
                     "tools/list" => Ok(Some(json!({ "tools": tool_definitions() }))),
                     "resources/list" => Ok(Some(json!({ "resources": list_resources() }))),
-                    "tools/call" => Ok(Some(self.dispatch_tool_call(
-                        request_frame,
-                        params,
-                        request_id,
-                    )?)),
-                    "resources/read" => {
-                        Ok(Some(self.dispatch_resource_read(request_frame, params)?))
-                    }
+                    "tools/call" => Ok(Some(self.dispatch_tool_call(params)?)),
+                    "resources/read" => Ok(Some(self.dispatch_resource_read(params)?)),
                     _ => Err(FaultRecord::new(
                         FaultKind::InvalidInput,
                         FaultStage::Protocol,
@@ -271,12 +275,7 @@ impl HostRuntime {
         }
     }
 
-    fn dispatch_tool_call(
-        &mut self,
-        request_frame: &FramedMessage,
-        params: Value,
-        _request_id: Option<Value>,
-    ) -> Result<Value, FaultRecord> {
+    fn dispatch_tool_call(&mut self, params: Value) -> Result<Value, FaultRecord> {
         let envelope = deserialize::<ToolCallEnvelope>(params, "tools/call")?;
         let spec = tool_spec(&envelope.name).ok_or_else(|| {
             FaultRecord::new(
@@ -288,17 +287,11 @@ impl HostRuntime {
         })?;
         match spec.dispatch {
             DispatchTarget::Host => self.handle_host_tool(&envelope.name, envelope.arguments),
-            DispatchTarget::Worker => {
-                self.dispatch_worker_tool(request_frame, spec, envelope.arguments)
-            }
+            DispatchTarget::Worker => self.dispatch_worker_tool(spec, envelope.arguments),
         }
     }
 
-    fn dispatch_resource_read(
-        &mut self,
-        request_frame: &FramedMessage,
-        params: Value,
-    ) -> Result<Value, FaultRecord> {
+    fn dispatch_resource_read(&mut self, params: Value) -> Result<Value, FaultRecord> {
         let args = deserialize::<ReadResourceArgs>(params, "resources/read")?;
         let spec = resource_spec(&args.uri).ok_or_else(|| {
             FaultRecord::new(
@@ -311,7 +304,6 @@ impl HostRuntime {
         match spec.dispatch {
             DispatchTarget::Host => Ok(Self::handle_host_resource(spec.uri)),
             DispatchTarget::Worker => self.dispatch_worker_operation(
-                request_frame,
                 format!("resources/read:{}", args.uri),
                 spec.replay,
                 WorkerOperation::ReadResource { uri: args.uri },
@@ -321,13 +313,11 @@ impl HostRuntime {
 
     fn dispatch_worker_tool(
         &mut self,
-        request_frame: &FramedMessage,
         spec: crate::mcp::catalog::ToolSpec,
         arguments: Value,
     ) -> Result<Value, FaultRecord> {
         let operation = format!("tools/call:{}", spec.name);
         self.dispatch_worker_operation(
-            request_frame,
             operation.clone(),
             spec.replay,
             WorkerOperation::CallTool {
@@ -339,7 +329,6 @@ impl HostRuntime {
 
     fn dispatch_worker_operation(
         &mut self,
-        request_frame: &FramedMessage,
         operation: String,
         replay: ReplayContract,
         worker_operation: WorkerOperation,
@@ -352,20 +341,13 @@ impl HostRuntime {
             self.worker.arm_crash_once();
         }
 
-        self.session_kernel
-            .record_forwarded_request(request_frame, replay);
-        let forwarded_request_id = request_id_from_frame(request_frame);
         let request_id = self.allocate_request_id();
         match self.worker.execute(request_id, worker_operation.clone()) {
-            Ok(result) => {
-                self.complete_forwarded_request(forwarded_request_id.as_ref());
-                Ok(result)
-            }
+            Ok(result) => Ok(result),
             Err(fault) => {
                 if fault.is_store_format_mismatch() {
                     return self.retry_after_store_format_rollout(
                         &operation,
-                        forwarded_request_id.as_ref(),
                         request_id,
                         worker_operation,
                         fault,
@@ -378,17 +360,10 @@ impl HostRuntime {
                         .restart()
                         .map_err(|restart_fault| restart_fault.mark_retried())?;
                     match self.worker.execute(request_id, worker_operation) {
-                        Ok(result) => {
-                            self.complete_forwarded_request(forwarded_request_id.as_ref());
-                            Ok(result)
-                        }
-                        Err(retry_fault) => {
-                            self.complete_forwarded_request(forwarded_request_id.as_ref());
-                            Err(retry_fault.mark_retried())
-                        }
+                        Ok(result) => Ok(result),
+                        Err(retry_fault) => Err(retry_fault.mark_retried()),
                     }
                 } else {
-                    self.complete_forwarded_request(forwarded_request_id.as_ref());
                     Err(fault)
                 }
             }
@@ -415,7 +390,6 @@ impl HostRuntime {
     fn retry_after_store_format_rollout(
         &mut self,
         operation: &str,
-        forwarded_request_id: Option<&RequestId>,
         request_id: HostRequestId,
         worker_operation: WorkerOperation,
         first_fault: FaultRecord,
@@ -426,18 +400,11 @@ impl HostRuntime {
             .restart()
             .map_err(|restart_fault| restart_fault.mark_retried())?;
         match self.worker.execute(request_id, worker_operation) {
-            Ok(result) => {
-                self.complete_forwarded_request(forwarded_request_id);
-                Ok(result)
-            }
+            Ok(result) => Ok(result),
             Err(retry_fault) if retry_fault.is_store_format_mismatch() => {
-                self.complete_forwarded_request(forwarded_request_id);
                 Err(first_fault.mark_retried())
             }
-            Err(retry_fault) => {
-                self.complete_forwarded_request(forwarded_request_id);
-                Err(retry_fault.mark_retried())
-            }
+            Err(retry_fault) => Err(retry_fault.mark_retried()),
         }
     }
 
@@ -567,17 +534,23 @@ impl HostRuntime {
     fn session_initialized(&self) -> bool {
         self.session_kernel
             .initialization_seed()
-            .is_some_and(|seed| seed.initialized_notification.is_some())
+            .is_some_and(|seed| seed.initialized_notification().is_some())
     }
 
     fn seed_captured(&self) -> bool {
         self.session_kernel.initialization_seed().is_some()
     }
 
-    fn complete_forwarded_request(&mut self, request_id: Option<&RequestId>) {
-        if let Some(request_id) = request_id {
-            let _ = self.session_kernel.take_completed_request(request_id);
-        }
+    fn complete_public_response(&mut self, response: &Value) -> Result<(), String> {
+        let payload = serde_json::to_vec(response)
+            .map_err(|error| format!("failed to encode terminal response: {error}"))?;
+        let response = FramedMessage::parse(payload)
+            .map_err(|error| format!("failed to validate terminal response: {error}"))?;
+        let _completed = self
+            .session_kernel
+            .complete_response(&response)
+            .map_err(|error| format!("kernel rejected terminal response: {error:?}"))?;
+        Ok(())
     }
 
     fn allocate_request_id(&mut self) -> HostRequestId {
@@ -607,23 +580,23 @@ impl HostRuntime {
             force_rollout_consumed: self.force_rollout_consumed,
             crash_once_consumed: self.crash_once_consumed,
         };
-        let state_path = write_snapshot_file("fidget-spinner-mcp-host-reexec", &state)
+        let state_capsule = write_snapshot_file("fidget-spinner-mcp-host-reexec", &state)
             .map_err(fidget_spinner_store_sqlite::StoreError::Io)?;
         let mut command = Command::new(&self.binary.path);
         let _ = command.arg("mcp").arg("serve");
         if let Some(project) = self.config.initial_project.as_ref() {
             let _ = command.arg("--project").arg(project);
         }
-        let _ = command.env(HOST_STATE_ENV, &state_path);
+        let _ = command.env(HOST_STATE_ENV, state_capsule.path());
         #[cfg(unix)]
         {
             let error = command.exec();
-            let _removed = remove_snapshot_file(&state_path);
+            drop(state_capsule);
             Err(fidget_spinner_store_sqlite::StoreError::Io(error))
         }
         #[cfg(not(unix))]
         {
-            let _removed = remove_snapshot_file(&state_path);
+            drop(state_capsule);
             return Err(fidget_spinner_store_sqlite::StoreError::Io(io::Error::new(
                 io::ErrorKind::Unsupported,
                 "host rollout requires unix exec support",
@@ -741,7 +714,30 @@ impl From<ProjectBinding> for ProjectBindingSeed {
 }
 
 fn restore_host_state() -> Result<Option<HostStateSeed>, fidget_spinner_store_sqlite::StoreError> {
-    load_snapshot_file_from_env(HOST_STATE_ENV).map_err(fidget_spinner_store_sqlite::StoreError::Io)
+    load_snapshot_file_from_env(HOST_STATE_ENV, HOST_SNAPSHOT_MAX_BYTES)
+        .map_err(fidget_spinner_store_sqlite::StoreError::Io)
+}
+
+fn snapshot_limits() -> Result<SnapshotLimits, fidget_spinner_store_sqlite::StoreError> {
+    SnapshotLimits::try_new(
+        HOST_PENDING_CAPACITY,
+        HOST_PENDING_CAPACITY,
+        FrameLimit::DEFAULT.get(),
+        HOST_REPLAY_ATTEMPTS,
+    )
+    .map_err(|error| {
+        fidget_spinner_store_sqlite::StoreError::Io(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            error.to_string(),
+        ))
+    })
+}
+
+fn snapshot_store_error(error: libmcp::SnapshotError) -> fidget_spinner_store_sqlite::StoreError {
+    fidget_spinner_store_sqlite::StoreError::Io(io::Error::new(
+        io::ErrorKind::InvalidData,
+        error.to_string(),
+    ))
 }
 
 fn deserialize<T: for<'de> serde::Deserialize<'de>>(
@@ -772,13 +768,41 @@ fn operation_key(method: &str, params: &Value) -> String {
     }
 }
 
-fn request_id_from_frame(frame: &FramedMessage) -> Option<RequestId> {
-    match frame.classify() {
-        libmcp::RpcEnvelopeKind::Request { id, .. } => Some(id),
-        libmcp::RpcEnvelopeKind::Notification { .. }
-        | libmcp::RpcEnvelopeKind::Response { .. }
-        | libmcp::RpcEnvelopeKind::Unknown => None,
+fn request_replay_contract(method: &str, params: &Value) -> ReplayContract {
+    match method {
+        "tools/call" => params
+            .get("name")
+            .and_then(Value::as_str)
+            .and_then(tool_spec)
+            .map_or(ReplayContract::NeverReplay, |spec| spec.replay),
+        "resources/read" => params
+            .get("uri")
+            .and_then(Value::as_str)
+            .and_then(resource_spec)
+            .map_or(ReplayContract::NeverReplay, |spec| spec.replay),
+        "initialize" | "ping" | "tools/list" | "resources/list" => ReplayContract::Convergent,
+        _ => ReplayContract::NeverReplay,
     }
+}
+
+fn host_rejection_fault(operation: &str, rejection: HostRejection) -> FaultRecord {
+    let kind = match rejection {
+        HostRejection::QueueOverflow
+        | HostRejection::ReplayBudgetExhausted
+        | HostRejection::PendingCapacityExhausted => FaultKind::Unavailable,
+        HostRejection::DuplicateRequestId
+        | HostRejection::InvalidRequestFrame
+        | HostRejection::RequestNotPending => FaultKind::InvalidInput,
+        HostRejection::AmbiguousOutcome | HostRejection::InvalidExecutionState => {
+            FaultKind::Internal
+        }
+    };
+    FaultRecord::new(
+        kind,
+        FaultStage::Host,
+        operation,
+        format!("host session rejected request: {rejection:?}"),
+    )
 }
 
 fn project_bind_output(status: &ProjectBindStatus) -> Result<ToolOutput, FaultRecord> {
@@ -973,11 +997,16 @@ fn system_telemetry_output(telemetry: &ServerTelemetry) -> Result<ToolOutput, Fa
                 "errors": errors,
                 "retries": retries,
                 "last_latency_ms": last_latency_ms,
+                "fault_codes": telemetry.operations[&operation].fault_codes,
             })
         })
         .collect::<Vec<_>>();
 
     let mut concise = Map::new();
+    let _ = concise.insert(
+        "window_started_at".to_owned(),
+        json!(telemetry.window_started_at),
+    );
     let _ = concise.insert("requests".to_owned(), json!(telemetry.requests));
     let _ = concise.insert("successes".to_owned(), json!(telemetry.successes));
     let _ = concise.insert("errors".to_owned(), json!(telemetry.errors));
@@ -993,6 +1022,7 @@ fn system_telemetry_output(telemetry: &ServerTelemetry) -> Result<ToolOutput, Fa
             "last_fault".to_owned(),
             json!({
                 "kind": format!("{:?}", fault.kind).to_ascii_lowercase(),
+                "code": fault.code,
                 "operation": fault.operation,
                 "message": fault.message,
             }),
@@ -1076,9 +1106,8 @@ fn write_message(
     stdout: &mut impl Write,
     message: &Value,
 ) -> Result<(), fidget_spinner_store_sqlite::StoreError> {
-    serde_json::to_writer(&mut *stdout, message)?;
-    stdout.write_all(b"\n")?;
-    stdout.flush()?;
+    let payload = serde_json::to_vec(message)?;
+    write_frame_blocking(stdout, &payload, FrameLimit::DEFAULT)?;
     Ok(())
 }
 

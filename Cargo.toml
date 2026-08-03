@@ -14,21 +14,20 @@ keywords = ["mcp", "optimization", "frontier", "experiments", "ledger"]
 license = "MIT"
 readme = "README.md"
 repository = "https://git.swarm.moe/fidget_spinner.git"
-rust-version = "1.94"
-version = "0.1.0"
+rust-version = "1.97"
+version = "1.0.0"
 
 [workspace.dependencies]
 axum = "0.8"
 camino = { version = "1", features = ["serde1"] }
 clap = { version = "4.5", features = ["derive"] }
 dirs = "6"
-linkify = "0.10"
 maud = { version = "0.27", features = ["axum"] }
 num-rational = { version = "0.4", features = ["serde"] }
 percent-encoding = "2"
-plotters = "0.3.7"
+plotters = { version = "0.3.7", default-features = false, features = ["line_series", "svg_backend"] }
 pulldown-cmark = "0.13"
-rusqlite = { version = "0.37", features = ["bundled", "hooks", "limits", "time"] }
+rusqlite = { version = "0.40.1", features = ["bundled", "hooks", "limits", "time"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
@@ -125,6 +124,8 @@ canonicalize_commands = [
   ],
 ]
 install_command = ["./scripts/install-local.sh"]
+ui_e2e_command = ["node", "scripts/ui-e2e.mjs"]
+install_e2e_command = ["bash", "scripts/install-e2e.sh"]
 
 [workspace.metadata.rust-starter.source_files]
 max_lines = 2500

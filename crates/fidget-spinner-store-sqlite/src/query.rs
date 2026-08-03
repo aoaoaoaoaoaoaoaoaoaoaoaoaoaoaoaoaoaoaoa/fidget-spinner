@@ -71,12 +71,30 @@ impl ProjectStore {
         })
     }
 
+    /// Executes one bounded read-only query against the frontier-local `q_*`
+    /// projection. The deadline includes required synthetic-metric
+    /// materialization as well as `SQLite` execution.
     pub fn frontier_query_sql(
         &self,
-        request: FrontierSqlQuery,
+        mut request: FrontierSqlQuery,
     ) -> Result<FrontierSqlQueryResult, StoreError> {
+        let timeout_ms = requested_timeout_ms(request.timeout_ms);
+        let deadline = Instant::now() + Duration::from_millis(timeout_ms);
         let frontier = self.resolve_frontier(&request.frontier)?;
-        let synthetic_values = self.frontier_synthetic_metric_values(frontier.id)?;
+        let synthetic_values = if query_uses_synthetic_materialization(&request.sql) {
+            self.frontier_synthetic_metric_values(frontier.id, deadline)?
+        } else {
+            Vec::new()
+        };
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(frontier_query_timeout());
+        }
+        request.timeout_ms = Some(
+            u64::try_from(remaining.as_millis())
+                .unwrap_or(HARD_TIMEOUT_MS)
+                .max(1),
+        );
         let connection = self.open_frontier_query_connection(
             &frontier.id.to_string(),
             &request,
@@ -102,14 +120,15 @@ impl ProjectStore {
         tighten_query_limits(&connection)?;
         install_frontier_query_views(&connection, frontier_id, synthetic_values)?;
         connection.pragma_update(None, "query_only", 1_i64)?;
-        connection.authorizer(Some(authorize_frontier_query));
-        install_progress_deadline(&connection, request.timeout_ms);
+        connection.authorizer(Some(authorize_frontier_query))?;
+        install_progress_deadline(&connection, request.timeout_ms)?;
         Ok(connection)
     }
 
     fn frontier_synthetic_metric_values(
         &self,
         frontier_id: FrontierId,
+        deadline: Instant,
     ) -> Result<Vec<SyntheticMetricQueryValue>, StoreError> {
         let synthetic_metrics = self
             .list_metric_definitions()?
@@ -127,6 +146,9 @@ impl ProjectStore {
         let mut values = Vec::new();
         for experiment in experiments {
             for metric in &synthetic_metrics {
+                if Instant::now() >= deadline {
+                    return Err(frontier_query_timeout());
+                }
                 if let Some(value) =
                     self.experiment_metric_canonical_value(experiment.id, metric.id)?
                 {
@@ -140,6 +162,17 @@ impl ProjectStore {
         }
         Ok(values)
     }
+}
+
+fn query_uses_synthetic_materialization(sql: &str) -> bool {
+    let sql = sql.to_ascii_lowercase();
+    ["q_metric", "q_experiment_metric"]
+        .iter()
+        .any(|view| sql.contains(view))
+}
+
+fn frontier_query_timeout() -> StoreError {
+    StoreError::InvalidInput("frontier query exceeded its execution deadline".to_owned())
 }
 
 fn execute_frontier_query(
@@ -217,12 +250,20 @@ fn tighten_query_limits(connection: &Connection) -> Result<(), StoreError> {
     Ok(())
 }
 
-fn install_progress_deadline(connection: &Connection, timeout_ms: Option<u64>) {
-    let timeout_ms = timeout_ms
-        .unwrap_or(DEFAULT_TIMEOUT_MS)
-        .clamp(1, HARD_TIMEOUT_MS);
+fn install_progress_deadline(
+    connection: &Connection,
+    timeout_ms: Option<u64>,
+) -> Result<(), StoreError> {
+    let timeout_ms = requested_timeout_ms(timeout_ms);
     let deadline = Instant::now() + Duration::from_millis(timeout_ms);
-    connection.progress_handler(20_000, Some(move || Instant::now() >= deadline));
+    connection.progress_handler(20_000, Some(move || Instant::now() >= deadline))?;
+    Ok(())
+}
+
+fn requested_timeout_ms(timeout_ms: Option<u64>) -> u64 {
+    timeout_ms
+        .unwrap_or(DEFAULT_TIMEOUT_MS)
+        .clamp(1, HARD_TIMEOUT_MS)
 }
 
 fn requested_max_rows(max_rows: Option<u32>) -> usize {
@@ -982,7 +1023,11 @@ const QUERY_VIEWS: &[FrontierSqlView] = &[
             col("hypothesis_slug", "text", "Owning hypothesis slug."),
             col("metric_key", "text", "Metric key."),
             col("metric_kind", "text", "observed."),
-            col("metric_dimension", "text", "Scientific metric dimension."),
+            col(
+                "metric_dimension",
+                "text",
+                "Scientific metric quantity; the column name is retained for compatibility.",
+            ),
             col("canonical_unit", "text", "Canonical backing unit."),
             col("display_unit", "text", "Default display unit."),
             col(
@@ -1118,7 +1163,11 @@ const QUERY_VIEWS: &[FrontierSqlView] = &[
 const METRIC_COLUMNS: &[FrontierSqlColumn] = &[
     col("metric_key", "text", "Metric key."),
     col("metric_kind", "text", "observed or synthetic."),
-    col("metric_dimension", "text", "Scientific metric dimension."),
+    col(
+        "metric_dimension",
+        "text",
+        "Scientific metric quantity; the column name is retained for compatibility.",
+    ),
     col("canonical_unit", "text", "Canonical backing unit."),
     col("display_unit", "text", "Default display unit."),
     col("aggregation", "text", "Observation aggregation semantics."),
@@ -1135,7 +1184,11 @@ const KPI_COLUMNS: &[FrontierSqlColumn] = &[
     col("kpi_ordinal", "integer", "Supervisor-defined KPI order."),
     col("metric_key", "text", "Metric key."),
     col("metric_kind", "text", "observed or synthetic."),
-    col("metric_dimension", "text", "Scientific metric dimension."),
+    col(
+        "metric_dimension",
+        "text",
+        "Scientific metric quantity; the column name is retained for compatibility.",
+    ),
     col("canonical_unit", "text", "Canonical backing unit."),
     col("display_unit", "text", "Default display unit."),
     col("aggregation", "text", "Observation aggregation semantics."),

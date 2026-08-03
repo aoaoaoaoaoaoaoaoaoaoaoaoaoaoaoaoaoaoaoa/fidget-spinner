@@ -36,7 +36,7 @@ pub use query::{
 pub const STORE_DIR_NAME: &str = ".fidget_spinner";
 pub const GIT_DIR_NAME: &str = ".git";
 pub const STATE_DB_NAME: &str = "state.sqlite";
-pub const CURRENT_STORE_FORMAT_VERSION: u32 = 19;
+pub const CURRENT_STORE_FORMAT_VERSION: u32 = 20;
 pub const STATE_HOME_DIR_NAME: &str = "fidget-spinner";
 pub const PROJECT_STATE_DIR_NAME: &str = "projects";
 const LEGACY_PROJECT_CONFIG_NAME: &str = "project.json";
@@ -47,6 +47,8 @@ static STATE_HOME_OVERRIDE: OnceLock<Utf8PathBuf> = OnceLock::new();
 pub enum StoreError {
     #[error("project store is not initialized at {0}")]
     MissingProjectStore(Utf8PathBuf),
+    #[error("project store is already initialized at {0}")]
+    ProjectStoreAlreadyInitialized(Utf8PathBuf),
     #[error("path `{path}` contains multiple descendant project stores: {candidates}")]
     AmbiguousProjectStoreDiscovery {
         path: Utf8PathBuf,
@@ -737,6 +739,12 @@ pub struct MetricKeySummary {
     pub reference_count: u64,
 }
 
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub struct TagUsageCounts {
+    pub hypotheses: u64,
+    pub experiments: u64,
+}
+
 #[derive(Clone, Debug)]
 pub struct MetricBestQuery {
     pub frontier: Option<String>,
@@ -929,6 +937,11 @@ pub struct UpdateProjectRequest {
 }
 
 impl ProjectStore {
+    /// Creates one new store with schema, project identity, and format version
+    /// committed atomically.
+    ///
+    /// Existing database paths are rejected. Use [`Self::open`] for an existing
+    /// store.
     pub fn init(
         project_root: impl AsRef<Utf8Path>,
         display_name: NonEmptyText,
@@ -940,15 +953,33 @@ impl ProjectStore {
         let config = ProjectConfig::new(project_root.clone(), display_name);
 
         let database_path = state_root.join(STATE_DB_NAME);
-        let connection = Connection::open(database_path.as_std_path())?;
-        connection.pragma_update(None, "foreign_keys", 1_i64)?;
-        connection.pragma_update(
-            None,
-            "user_version",
-            i64::from(CURRENT_STORE_FORMAT_VERSION),
-        )?;
-        install_schema(&connection)?;
-        replace_project_metadata(&connection, &config)?;
+        match fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(database_path.as_std_path())
+        {
+            Ok(file) => drop(file),
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+                return Err(StoreError::ProjectStoreAlreadyInitialized(database_path));
+            }
+            Err(error) => return Err(StoreError::Io(error)),
+        }
+        let connection = match (|| -> Result<Connection, StoreError> {
+            let mut connection = Connection::open(database_path.as_std_path())?;
+            connection.pragma_update(None, "foreign_keys", 1_i64)?;
+            let transaction = connection.transaction()?;
+            install_schema(&transaction)?;
+            replace_project_metadata(&transaction, &config)?;
+            set_store_user_version(&transaction, CURRENT_STORE_FORMAT_VERSION)?;
+            transaction.commit()?;
+            Ok(connection)
+        })() {
+            Ok(connection) => connection,
+            Err(error) => {
+                let _ = fs::remove_file(database_path.as_std_path());
+                return Err(error);
+            }
+        };
 
         Ok(Self {
             project_root,
@@ -958,6 +989,8 @@ impl ProjectStore {
         })
     }
 
+    /// Opens a project store and transactionally migrates supported formats to
+    /// [`CURRENT_STORE_FORMAT_VERSION`].
     pub fn open(project_root: impl AsRef<Utf8Path>) -> Result<Self, StoreError> {
         let project_root = canonical_project_root(project_root.as_ref())?;
         let state_root = state_root_for_project_root(&project_root)?;
@@ -1207,6 +1240,37 @@ impl ProjectStore {
             locks: self.load_registry_locks(&RegistryName::tags())?,
             name_history: self.load_tag_name_history()?,
         })
+    }
+
+    pub fn tag_usage_counts(&self) -> Result<BTreeMap<TagName, TagUsageCounts>, StoreError> {
+        let mut statement = self.connection.prepare(
+            "SELECT tags.name,
+                    COALESCE(hypothesis_usage.uses, 0),
+                    COALESCE(experiment_usage.uses, 0)
+               FROM tags
+          LEFT JOIN (
+                    SELECT tag_id, COUNT(*) AS uses
+                      FROM hypothesis_tags
+                  GROUP BY tag_id
+                    ) AS hypothesis_usage ON hypothesis_usage.tag_id = tags.id
+          LEFT JOIN (
+                    SELECT tag_id, COUNT(*) AS uses
+                      FROM experiment_tags
+                  GROUP BY tag_id
+                    ) AS experiment_usage ON experiment_usage.tag_id = tags.id
+           ORDER BY tags.name ASC",
+        )?;
+        let rows = statement.query_map([], |row| {
+            Ok((
+                parse_tag_name(&row.get::<_, String>(0)?)?,
+                TagUsageCounts {
+                    hypotheses: parse_u64_sql(row.get::<_, i64>(1)?)?,
+                    experiments: parse_u64_sql(row.get::<_, i64>(2)?)?,
+                },
+            ))
+        })?;
+        rows.collect::<Result<BTreeMap<_, _>, _>>()
+            .map_err(StoreError::from)
     }
 
     pub fn create_tag_family(
@@ -4141,7 +4205,7 @@ impl ProjectStore {
             attention: parse_hypothesis_attention(&row.get::<_, String>(8)?)?,
             worklist_ordinal: row.get::<_, Option<u32>>(9)?,
             tags: self.hypothesis_tags(id)?,
-            revision: row.get::<_, u64>(10)?,
+            revision: parse_u64_sql(row.get::<_, i64>(10)?)?,
             created_at: parse_timestamp_sql(&row.get::<_, String>(11)?)?,
             updated_at: parse_timestamp_sql(&row.get::<_, String>(12)?)?,
         })
@@ -4789,10 +4853,9 @@ impl ProjectStore {
         Ok(record
             .outcome
             .as_ref()
-            .map(all_metrics)
-            .unwrap_or_default()
             .into_iter()
-            .map(|metric| metric.key.to_string())
+            .flat_map(metrics_by_role)
+            .map(|(_, metric)| metric.key.to_string())
             .collect())
     }
 
@@ -4809,13 +4872,13 @@ impl ProjectStore {
             self.connection.query_row(
                 &format!("{base_sql} WHERE metrics.metric_id = ?1 AND hypotheses.frontier_id = ?2"),
                 params![metric_id.to_string(), frontier_id.to_string()],
-                |row| row.get::<_, u64>(0),
+                |row| parse_u64_sql(row.get::<_, i64>(0)?),
             )?
         } else {
             self.connection.query_row(
                 &format!("{base_sql} WHERE metrics.metric_id = ?1"),
                 params![metric_id.to_string()],
-                |row| row.get::<_, u64>(0),
+                |row| parse_u64_sql(row.get::<_, i64>(0)?),
             )?
         };
         Ok(count)
@@ -4903,7 +4966,7 @@ impl ProjectStore {
             .query_row(
                 "SELECT COUNT(*) FROM frontier_kpis WHERE metric_id = ?1",
                 params![metric_id.to_string()],
-                |row| row.get::<_, u64>(0),
+                |row| parse_u64_sql(row.get::<_, i64>(0)?),
             )
             .map_err(StoreError::from)
     }
@@ -4913,7 +4976,7 @@ impl ProjectStore {
             .query_row(
                 "SELECT COUNT(*) FROM synthetic_metric_dependencies WHERE dependency_metric_id = ?1",
                 params![metric_id.to_string()],
-                |row| row.get::<_, u64>(0),
+                |row| parse_u64_sql(row.get::<_, i64>(0)?),
             )
             .map_err(StoreError::from)
     }
@@ -5102,6 +5165,12 @@ impl ProjectStore {
         &self,
         metric: &ReportedMetricValue,
     ) -> Result<MetricValue, StoreError> {
+        if !metric.value.is_finite() {
+            return Err(StoreError::InvalidInput(format!(
+                "metric `{}` value must be finite",
+                metric.key
+            )));
+        }
         let definition = self
             .metric_definition(&metric.key)?
             .ok_or_else(|| StoreError::UnknownMetricDefinition(metric.key.clone()))?;
@@ -5546,7 +5615,7 @@ impl ProjectStore {
         )?;
         let rows = statement.query_map(params![entity_kind, entity_id], |row| {
             Ok(EntityHistoryEntry {
-                revision: row.get(0)?,
+                revision: parse_u64_sql(row.get::<_, i64>(0)?)?,
                 event_kind: parse_non_empty_text(&row.get::<_, String>(1)?)?,
                 occurred_at: parse_timestamp_sql(&row.get::<_, String>(2)?)?,
                 snapshot: decode_json(&row.get::<_, String>(3)?)
@@ -5818,12 +5887,47 @@ fn install_schema(connection: &Connection) -> Result<(), StoreError> {
         );
         ",
     )?;
+    install_query_indexes(connection)
+}
+
+fn install_query_indexes(connection: &Connection) -> Result<(), StoreError> {
+    connection.execute_batch(
+        "
+        CREATE INDEX IF NOT EXISTS idx_frontiers_status
+            ON frontiers(status);
+        CREATE INDEX IF NOT EXISTS idx_hypotheses_frontier
+            ON hypotheses(frontier_id);
+        CREATE INDEX IF NOT EXISTS idx_hypotheses_attention_worklist
+            ON hypotheses(attention, worklist_ordinal);
+        CREATE INDEX IF NOT EXISTS idx_experiments_hypothesis
+            ON experiments(hypothesis_id);
+        CREATE INDEX IF NOT EXISTS idx_hypothesis_tags_tag
+            ON hypothesis_tags(tag_id);
+        CREATE INDEX IF NOT EXISTS idx_experiment_tags_tag
+            ON experiment_tags(tag_id);
+        CREATE INDEX IF NOT EXISTS idx_influence_edges_parent
+            ON influence_edges(parent_kind, parent_id);
+        CREATE INDEX IF NOT EXISTS idx_influence_edges_child
+            ON influence_edges(child_kind, child_id);
+        CREATE INDEX IF NOT EXISTS idx_frontier_kpis_metric
+            ON frontier_kpis(metric_id);
+        CREATE INDEX IF NOT EXISTS idx_experiment_metrics_metric
+            ON experiment_metrics(metric_id);
+        CREATE INDEX IF NOT EXISTS idx_metric_name_history_target
+            ON metric_name_history(target_metric_id);
+        ",
+    )?;
     Ok(())
 }
 
 fn load_store_user_version(connection: &Connection) -> Result<u32, StoreError> {
     let observed: i64 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
     Ok(u32::try_from(observed).unwrap_or(0))
+}
+
+fn set_store_user_version(connection: &Connection, version: u32) -> Result<(), StoreError> {
+    connection.pragma_update(None, "user_version", i64::from(version))?;
+    Ok(())
 }
 
 fn replace_project_metadata(
@@ -5907,6 +6011,10 @@ fn migrate_store_to_current(
         migrate_store_v18_to_v19(connection)?;
         version = 19;
     }
+    if version == 19 {
+        migrate_store_v19_to_v20(connection)?;
+        version = 20;
+    }
     if version == CURRENT_STORE_FORMAT_VERSION {
         return Ok(());
     }
@@ -5917,13 +6025,26 @@ fn migrate_store_to_current(
 }
 
 fn migrate_store_v9_to_v10(connection: &mut Connection) -> Result<(), StoreError> {
-    purge_legacy_artifact_schema(connection)?;
-    connection.pragma_update(None, "user_version", 10_i64)?;
+    let transaction = connection.transaction()?;
+    purge_legacy_artifact_schema_rows(&transaction)?;
+    set_store_user_version(&transaction, 10)?;
+    transaction.commit()?;
+    let _ = connection.execute_batch("VACUUM");
     Ok(())
 }
 
 fn migrate_store_v18_to_v19(connection: &mut Connection) -> Result<(), StoreError> {
-    connection.pragma_update(None, "user_version", 19_i64)?;
+    let transaction = connection.transaction()?;
+    set_store_user_version(&transaction, 19)?;
+    transaction.commit()?;
+    Ok(())
+}
+
+fn migrate_store_v19_to_v20(connection: &mut Connection) -> Result<(), StoreError> {
+    let transaction = connection.transaction()?;
+    install_query_indexes(&transaction)?;
+    set_store_user_version(&transaction, 20)?;
+    transaction.commit()?;
     Ok(())
 }
 
@@ -5942,8 +6063,8 @@ fn migrate_store_v10_to_v11(connection: &mut Connection) -> Result<(), StoreErro
     inject_metric_units_into_legacy_outcomes(&transaction, &definitions)?;
     normalize_legacy_time_metric_keys(&transaction, &mut definitions)?;
     refresh_experiment_metric_index(&transaction)?;
+    set_store_user_version(&transaction, 11)?;
     transaction.commit()?;
-    connection.pragma_update(None, "user_version", 11_i64)?;
     Ok(())
 }
 
@@ -6094,8 +6215,8 @@ fn migrate_store_v11_to_v12(
     drop_column_if_exists(&transaction, "frontier_kpis", "updated_at")?;
     drop_column_if_exists(&transaction, "run_dimension_definitions", "updated_at")?;
     let _ = transaction.execute("DROP TABLE IF EXISTS experiment_dimensions", [])?;
+    set_store_user_version(&transaction, 12)?;
     transaction.commit()?;
-    connection.pragma_update(None, "user_version", 12_i64)?;
     let legacy_config_path = state_root.join(LEGACY_PROJECT_CONFIG_NAME);
     match fs::remove_file(legacy_config_path.as_std_path()) {
         Ok(()) => {}
@@ -6171,8 +6292,8 @@ fn migrate_store_v12_to_v13(connection: &mut Connection) -> Result<(), StoreErro
         ALTER TABLE frontier_kpis_v13 RENAME TO frontier_kpis;
         ",
     )?;
+    set_store_user_version(&transaction, 13)?;
     transaction.commit()?;
-    connection.pragma_update(None, "user_version", 13_i64)?;
     Ok(())
 }
 
@@ -6201,8 +6322,8 @@ fn migrate_store_v13_to_v14(connection: &mut Connection) -> Result<(), StoreErro
         );
         ",
     )?;
+    set_store_user_version(&transaction, 14)?;
     transaction.commit()?;
-    connection.pragma_update(None, "user_version", 14_i64)?;
     Ok(())
 }
 
@@ -6223,8 +6344,8 @@ fn migrate_store_v14_to_v15(connection: &mut Connection) -> Result<(), StoreErro
            OR confidence IS NULL;
         ",
     )?;
+    set_store_user_version(&transaction, 15)?;
     transaction.commit()?;
-    connection.pragma_update(None, "user_version", 15_i64)?;
     Ok(())
 }
 
@@ -6245,8 +6366,8 @@ fn migrate_store_v15_to_v16(connection: &mut Connection) -> Result<(), StoreErro
         );
         ",
     )?;
+    set_store_user_version(&transaction, 16)?;
     transaction.commit()?;
-    connection.pragma_update(None, "user_version", 16_i64)?;
     Ok(())
 }
 
@@ -6269,8 +6390,8 @@ fn migrate_store_v16_to_v17(
          WHERE id = 1",
         params![project_root.as_str()],
     )?;
+    set_store_user_version(&transaction, 17)?;
     transaction.commit()?;
-    connection.pragma_update(None, "user_version", 17_i64)?;
     Ok(())
 }
 
@@ -6343,8 +6464,8 @@ fn migrate_store_v17_to_v18(connection: &mut Connection) -> Result<(), StoreErro
         DROP TABLE IF EXISTS frontier_roadmap_items;
         ",
     )?;
+    set_store_user_version(&transaction, 18)?;
     transaction.commit()?;
-    connection.pragma_update(None, "user_version", 18_i64)?;
     Ok(())
 }
 
@@ -6671,16 +6792,21 @@ fn legacy_artifact_schema_present(connection: &Connection) -> Result<bool, Store
 }
 
 fn purge_legacy_artifact_schema(connection: &Connection) -> Result<(), StoreError> {
+    let transaction = connection.unchecked_transaction()?;
+    purge_legacy_artifact_schema_rows(&transaction)?;
+    transaction.commit()?;
+    let _ = connection.execute_batch("VACUUM");
+    Ok(())
+}
+
+fn purge_legacy_artifact_schema_rows(connection: &Connection) -> Result<(), StoreError> {
     connection.execute_batch(
         "
-        BEGIN IMMEDIATE;
         DELETE FROM events WHERE entity_kind = 'artifact';
         DROP TABLE IF EXISTS artifact_attachments;
         DROP TABLE IF EXISTS artifacts;
-        COMMIT;
         ",
     )?;
-    let _ = connection.execute_batch("VACUUM");
     Ok(())
 }
 
@@ -6693,7 +6819,7 @@ fn insert_tag(transaction: &Transaction<'_>, tag: &TagRecord) -> Result<(), Stor
             tag.name.as_str(),
             tag.description.as_str(),
             tag.family_id.map(|id| id.to_string()),
-            tag.revision,
+            encode_u64_sql(tag.revision)?,
             encode_timestamp(tag.created_at)?,
             encode_timestamp(tag.updated_at)?,
         ],
@@ -6711,7 +6837,7 @@ fn update_tag(transaction: &Transaction<'_>, tag: &TagRecord) -> Result<(), Stor
             tag.name.as_str(),
             tag.description.as_str(),
             tag.family_id.map(|id| id.to_string()),
-            tag.revision,
+            encode_u64_sql(tag.revision)?,
             encode_timestamp(tag.updated_at)?,
         ],
     )?;
@@ -6738,7 +6864,7 @@ fn insert_tag_family(
             family.name.as_str(),
             family.description.as_str(),
             bool_to_sql(family.mandatory),
-            family.revision,
+            encode_u64_sql(family.revision)?,
             encode_timestamp(family.created_at)?,
             encode_timestamp(family.updated_at)?,
         ],
@@ -6759,7 +6885,7 @@ fn update_tag_family(
             family.name.as_str(),
             family.description.as_str(),
             bool_to_sql(family.mandatory),
-            family.revision,
+            encode_u64_sql(family.revision)?,
             encode_timestamp(family.updated_at)?,
         ],
     )?;
@@ -6861,7 +6987,7 @@ fn upsert_registry_lock(
             lock.scope_kind.as_str(),
             lock.scope_id.as_str(),
             lock.reason.as_str(),
-            lock.revision,
+            encode_u64_sql(lock.revision)?,
             encode_timestamp(lock.locked_at)?,
             encode_timestamp(lock.updated_at)?,
         ],
@@ -6908,7 +7034,7 @@ fn insert_frontier(
             frontier.label.as_str(),
             frontier.objective.as_str(),
             frontier.status.as_str(),
-            frontier.revision,
+            encode_u64_sql(frontier.revision)?,
             encode_timestamp(frontier.created_at)?,
             encode_timestamp(frontier.updated_at)?,
         ],
@@ -6965,7 +7091,7 @@ fn update_frontier_row(
             frontier.label.as_str(),
             frontier.objective.as_str(),
             frontier.status.as_str(),
-            frontier.revision,
+            encode_u64_sql(frontier.revision)?,
             encode_timestamp(frontier.updated_at)?,
         ],
     )?;
@@ -6994,7 +7120,7 @@ fn insert_hypothesis(
             hypothesis.confidence.as_str(),
             hypothesis.attention.as_str(),
             hypothesis.worklist_ordinal,
-            hypothesis.revision,
+            encode_u64_sql(hypothesis.revision)?,
             encode_timestamp(hypothesis.created_at)?,
             encode_timestamp(hypothesis.updated_at)?,
         ],
@@ -7029,7 +7155,7 @@ fn update_hypothesis_row(
             hypothesis.confidence.as_str(),
             hypothesis.attention.as_str(),
             hypothesis.worklist_ordinal,
-            hypothesis.revision,
+            encode_u64_sql(hypothesis.revision)?,
             encode_timestamp(hypothesis.updated_at)?,
         ],
     )?;
@@ -7067,7 +7193,7 @@ fn insert_experiment(
             experiment.hypothesis_id.to_string(),
             experiment.title.as_str(),
             experiment.summary.as_ref().map(NonEmptyText::as_str),
-            experiment.revision,
+            encode_u64_sql(experiment.revision)?,
             encode_timestamp(experiment.created_at)?,
             encode_timestamp(experiment.updated_at)?,
         ],
@@ -7091,7 +7217,7 @@ fn update_experiment_row(
             experiment.slug.as_str(),
             experiment.title.as_str(),
             experiment.summary.as_ref().map(NonEmptyText::as_str),
-            experiment.revision,
+            encode_u64_sql(experiment.revision)?,
             encode_timestamp(experiment.updated_at)?,
         ],
     )?;
@@ -7291,7 +7417,14 @@ fn replace_experiment_metrics(
         params![experiment_id.to_string()],
     )?;
     if let Some(outcome) = outcome {
-        for (ordinal, metric) in all_metrics(outcome).into_iter().enumerate() {
+        let mut seen = BTreeSet::new();
+        for (ordinal, (role, metric)) in metrics_by_role(outcome).enumerate() {
+            if !seen.insert(&metric.key) {
+                return Err(StoreError::InvalidInput(format!(
+                    "metric `{}` appears more than once in one experiment outcome",
+                    metric.key
+                )));
+            }
             let metric_id = transaction.query_row(
                 "SELECT id FROM metric_definitions WHERE key = ?1",
                 params![metric.key.as_str()],
@@ -7305,7 +7438,7 @@ fn replace_experiment_metrics(
                     experiment_id.to_string(),
                     metric_id.to_string(),
                     i64::try_from(ordinal).unwrap_or(i64::MAX),
-                    bool_to_sql(ordinal == 0),
+                    bool_to_sql(role == MetricRole::Primary),
                     value,
                 ],
             )?;
@@ -7329,7 +7462,7 @@ fn insert_metric_definition(
             metric.aggregation.as_str(),
             metric.objective.as_str(),
             metric.description.as_ref().map(NonEmptyText::as_str),
-            metric.revision,
+            encode_u64_sql(metric.revision)?,
             encode_timestamp(metric.created_at)?,
             encode_timestamp(metric.updated_at)?,
         ],
@@ -7389,7 +7522,7 @@ fn update_metric_definition_row(
             metric.aggregation.as_str(),
             metric.objective.as_str(),
             metric.description.as_ref().map(NonEmptyText::as_str),
-            metric.revision,
+            encode_u64_sql(metric.revision)?,
             encode_timestamp(metric.updated_at)?,
         ],
     )?;
@@ -7751,7 +7884,7 @@ fn record_event(
         params![
             entity_kind,
             entity_id,
-            revision,
+            encode_u64_sql(revision)?,
             event_kind,
             encode_timestamp(OffsetDateTime::now_utc())?,
             encode_json(snapshot)?,
@@ -7774,7 +7907,7 @@ fn decode_tag_row(row: &rusqlite::Row<'_>) -> Result<TagRecord, rusqlite::Error>
             .map(TagFamilyName::new)
             .transpose()
             .map_err(core_to_sql_conversion_error)?,
-        revision: row.get(5)?,
+        revision: parse_u64_sql(row.get::<_, i64>(5)?)?,
         created_at: parse_timestamp_sql(&row.get::<_, String>(6)?)?,
         updated_at: parse_timestamp_sql(&row.get::<_, String>(7)?)?,
     })
@@ -7786,7 +7919,7 @@ fn decode_tag_family_row(row: &rusqlite::Row<'_>) -> Result<TagFamilyRecord, rus
         name: TagFamilyName::new(row.get::<_, String>(1)?).map_err(core_to_sql_conversion_error)?,
         description: parse_non_empty_text(&row.get::<_, String>(2)?)?,
         mandatory: row.get::<_, i64>(3)? != 0,
-        revision: row.get(4)?,
+        revision: parse_u64_sql(row.get::<_, i64>(4)?)?,
         created_at: parse_timestamp_sql(&row.get::<_, String>(5)?)?,
         updated_at: parse_timestamp_sql(&row.get::<_, String>(6)?)?,
     })
@@ -7822,7 +7955,7 @@ fn decode_registry_lock_row(
         scope_kind: parse_non_empty_text(&row.get::<_, String>(3)?)?,
         scope_id: parse_non_empty_text(&row.get::<_, String>(4)?)?,
         reason: parse_non_empty_text(&row.get::<_, String>(5)?)?,
-        revision: row.get(6)?,
+        revision: parse_u64_sql(row.get::<_, i64>(6)?)?,
         locked_at: parse_timestamp_sql(&row.get::<_, String>(7)?)?,
         updated_at: parse_timestamp_sql(&row.get::<_, String>(8)?)?,
     })
@@ -7878,7 +8011,7 @@ fn decode_frontier_row(row: &rusqlite::Row<'_>) -> Result<FrontierRecord, rusqli
         objective: parse_non_empty_text(&row.get::<_, String>(3)?)?,
         status: parse_frontier_status(&row.get::<_, String>(4)?)?,
         brief: FrontierBrief::default(),
-        revision: row.get(5)?,
+        revision: parse_u64_sql(row.get::<_, i64>(5)?)?,
         created_at: parse_timestamp_sql(&row.get::<_, String>(6)?)?,
         updated_at: parse_timestamp_sql(&row.get::<_, String>(7)?)?,
     })
@@ -7895,7 +8028,7 @@ fn decode_experiment_row(row: &rusqlite::Row<'_>) -> Result<ExperimentRecord, ru
         tags: Vec::new(),
         status: ExperimentStatus::Open,
         outcome: None,
-        revision: row.get(6)?,
+        revision: parse_u64_sql(row.get::<_, i64>(6)?)?,
         created_at: parse_timestamp_sql(&row.get::<_, String>(7)?)?,
         updated_at: parse_timestamp_sql(&row.get::<_, String>(8)?)?,
     })
@@ -7913,7 +8046,7 @@ fn decode_metric_definition_row(
         objective: parse_optimization_objective(&row.get::<_, String>(5)?)?,
         description: parse_optional_non_empty_text(row.get::<_, Option<String>>(6)?)?,
         kind: MetricDefinitionKind::Observed,
-        revision: row.get::<_, u64>(7)?,
+        revision: parse_u64_sql(row.get::<_, i64>(7)?)?,
         created_at: parse_timestamp_sql(&row.get::<_, String>(8)?)?,
         updated_at: parse_timestamp_sql(&row.get::<_, String>(9)?)?,
     })
@@ -8378,13 +8511,25 @@ fn compare_metric_values(left: f64, right: f64, order: MetricRankOrder) -> std::
     }
 }
 
-fn all_metrics(outcome: &ExperimentOutcome) -> Vec<MetricValue> {
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum MetricRole {
+    Primary,
+    Supporting,
+}
+
+fn metrics_by_role(
+    outcome: &ExperimentOutcome,
+) -> impl Iterator<Item = (MetricRole, &MetricValue)> {
     outcome
         .primary_metric
-        .clone()
-        .into_iter()
-        .chain(outcome.supporting_metrics.clone())
-        .collect()
+        .iter()
+        .map(|metric| (MetricRole::Primary, metric))
+        .chain(
+            outcome
+                .supporting_metrics
+                .iter()
+                .map(|metric| (MetricRole::Supporting, metric)),
+        )
 }
 
 #[derive(Clone)]
@@ -8569,10 +8714,22 @@ fn bool_to_sql(value: bool) -> i64 {
     i64::from(value)
 }
 
+fn encode_u64_sql(value: u64) -> Result<i64, StoreError> {
+    i64::try_from(value).map_err(|error| {
+        StoreError::InvalidInput(format!(
+            "unsigned value `{value}` exceeds SQLite's signed integer domain: {error}"
+        ))
+    })
+}
+
+fn parse_u64_sql(raw: i64) -> Result<u64, rusqlite::Error> {
+    u64::try_from(raw).map_err(|_| rusqlite::Error::IntegralValueOutOfRange(0, raw))
+}
+
 fn count_rows(connection: &Connection, table: &str) -> Result<u64, StoreError> {
     let sql = format!("SELECT COUNT(*) FROM {table}");
     connection
-        .query_row(&sql, [], |row| row.get::<_, u64>(0))
+        .query_row(&sql, [], |row| parse_u64_sql(row.get::<_, i64>(0)?))
         .map_err(StoreError::from)
 }
 
@@ -8594,7 +8751,7 @@ fn count_rows_where(
 ) -> Result<u64, StoreError> {
     let sql = format!("SELECT COUNT(*) FROM {table} WHERE {predicate}");
     connection
-        .query_row(&sql, [], |row| row.get::<_, u64>(0))
+        .query_row(&sql, [], |row| parse_u64_sql(row.get::<_, i64>(0)?))
         .map_err(StoreError::from)
 }
 
@@ -8657,6 +8814,11 @@ pub fn state_root_for_project_root(project_root: &Utf8Path) -> Result<Utf8PathBu
 }
 
 pub fn install_state_home_override(path: impl AsRef<Utf8Path>) -> Result<(), StoreError> {
+    if !path.as_ref().is_absolute() {
+        return Err(StoreError::InvalidInput(
+            "state home override must be an absolute path".to_owned(),
+        ));
+    }
     let state_home = canonicalize_utf8_path(path.as_ref())?;
     if let Some(existing) = STATE_HOME_OVERRIDE.get() {
         if existing == &state_home {
@@ -8666,9 +8828,13 @@ pub fn install_state_home_override(path: impl AsRef<Utf8Path>) -> Result<(), Sto
             "state home override already installed".to_owned(),
         ));
     }
-    STATE_HOME_OVERRIDE
-        .set(state_home)
-        .map_err(|_| StoreError::InvalidInput("state home override already installed".to_owned()))
+    match STATE_HOME_OVERRIDE.set(state_home) {
+        Ok(()) => Ok(()),
+        Err(contender) if STATE_HOME_OVERRIDE.get() == Some(&contender) => Ok(()),
+        Err(_) => Err(StoreError::InvalidInput(
+            "state home override already installed".to_owned(),
+        )),
+    }
 }
 
 pub fn project_state_home() -> Result<Utf8PathBuf, StoreError> {
@@ -8723,9 +8889,18 @@ fn spinner_state_home() -> Result<Utf8PathBuf, StoreError> {
         return Ok(path.join(STATE_HOME_DIR_NAME).join(PROJECT_STATE_DIR_NAME));
     }
     if let Some(path) = std::env::var_os("FIDGET_SPINNER_STATE_HOME") {
-        return Ok(utf8_path(std::path::PathBuf::from(path))
-            .join(STATE_HOME_DIR_NAME)
-            .join(PROJECT_STATE_DIR_NAME));
+        let path = Utf8PathBuf::from_path_buf(std::path::PathBuf::from(path)).map_err(|path| {
+            StoreError::InvalidInput(format!(
+                "FIDGET_SPINNER_STATE_HOME is not valid UTF-8: {}",
+                path.display()
+            ))
+        })?;
+        if !path.is_absolute() {
+            return Err(StoreError::InvalidInput(
+                "FIDGET_SPINNER_STATE_HOME must be an absolute path".to_owned(),
+            ));
+        }
+        return Ok(path.join(STATE_HOME_DIR_NAME).join(PROJECT_STATE_DIR_NAME));
     }
     let state_root = dirs::state_dir()
         .or_else(|| dirs::home_dir().map(|home| home.join(".local/state")))
@@ -8896,6 +9071,23 @@ mod tests {
 
     static TEST_STATE_HOME: OnceLock<Result<Utf8PathBuf, String>> = OnceLock::new();
 
+    #[test]
+    fn state_home_override_rejects_ambient_relative_paths() -> Result<(), StoreError> {
+        let error = match install_state_home_override(Utf8Path::new("relative-state")) {
+            Ok(()) => {
+                return Err(StoreError::InvalidInput(
+                    "relative state path was accepted".to_owned(),
+                ));
+            }
+            Err(error) => error,
+        };
+        assert_eq!(
+            error.to_string(),
+            "state home override must be an absolute path"
+        );
+        Ok(())
+    }
+
     fn ensure_test_state_home() -> Result<(), StoreError> {
         let state_home = TEST_STATE_HOME
             .get_or_init(|| {
@@ -8972,6 +9164,30 @@ mod tests {
                 && manifest.state_root == store.state_root
                 && manifest.display_name == display_name
         }));
+        fs::remove_dir_all(root.as_std_path())?;
+        Ok(())
+    }
+
+    #[test]
+    fn project_store_initialization_refuses_to_relabel_an_existing_database()
+    -> Result<(), StoreError> {
+        let root = fresh_test_root("exclusive-init")?;
+        let store = ProjectStore::init(&root, NonEmptyText::new("Original Identity")?)?;
+        let database_path = store.state_root.join(STATE_DB_NAME);
+        drop(store);
+
+        let error = ProjectStore::init(&root, NonEmptyText::new("Replacement Identity")?)
+            .err()
+            .ok_or_else(|| {
+                StoreError::InvalidInput("reinitialization overwrote an existing store".to_owned())
+            })?;
+        assert!(matches!(
+            error,
+            StoreError::ProjectStoreAlreadyInitialized(path) if path == database_path
+        ));
+
+        let reopened = ProjectStore::open(&root)?;
+        assert_eq!(reopened.config.display_name.as_str(), "Original Identity");
         fs::remove_dir_all(root.as_std_path())?;
         Ok(())
     }
@@ -9189,6 +9405,76 @@ mod tests {
         assert_eq!(outcome.verdict, FrontierVerdict::Scuffed);
         assert!(outcome.primary_metric.is_none());
         assert!(outcome.commit_hash.is_none());
+        fs::remove_dir_all(root.as_std_path())?;
+        Ok(())
+    }
+
+    #[test]
+    fn experiment_metric_index_preserves_roles_and_rejects_non_finite_values()
+    -> Result<(), StoreError> {
+        let (root, mut store, hypothesis) = seed_attention_frontier()?;
+        let _ = store.define_metric(DefineMetricRequest {
+            key: NonEmptyText::new("secondary")?,
+            dimension: MetricDimension::Count,
+            display_unit: Some(MetricUnit::Count),
+            aggregation: MetricAggregation::Point,
+            objective: OptimizationObjective::Maximize,
+            description: None,
+        })?;
+        let _ = store.open_experiment(OpenExperimentRequest {
+            hypothesis: hypothesis.slug.to_string(),
+            slug: Some(Slug::new("metric-roles")?),
+            title: NonEmptyText::new("Metric Roles")?,
+            summary: None,
+            tags: BTreeSet::new(),
+            parents: Vec::new(),
+        })?;
+
+        let mut request = close_request("metric-roles", Some(false))?;
+        request.primary_metric = None;
+        request.verdict = FrontierVerdict::Scuffed;
+        request.rationale = NonEmptyText::new("The primary measurement was invalid.")?;
+        request.supporting_metrics.push(ReportedMetricValue {
+            key: NonEmptyText::new("secondary")?,
+            value: 2.0,
+            unit: Some(MetricUnit::Count),
+        });
+        let _ = store.close_experiment(request)?;
+
+        let indexed = {
+            let mut statement = store.connection.prepare(
+                "SELECT metric_definitions.key, experiment_metrics.is_primary
+                   FROM experiment_metrics
+                   JOIN metric_definitions ON metric_definitions.id = experiment_metrics.metric_id
+               ORDER BY experiment_metrics.ordinal",
+            )?;
+            let rows = statement.query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+            })?;
+            rows.collect::<Result<Vec<_>, _>>()?
+        };
+        assert_eq!(indexed, vec![("secondary".to_owned(), 0)]);
+
+        let _ = store.open_experiment(OpenExperimentRequest {
+            hypothesis: hypothesis.slug.to_string(),
+            slug: Some(Slug::new("non-finite")?),
+            title: NonEmptyText::new("Non-finite Metric")?,
+            summary: None,
+            tags: BTreeSet::new(),
+            parents: Vec::new(),
+        })?;
+        let mut request = close_request("non-finite", Some(false))?;
+        let Some(metric) = request.primary_metric.as_mut() else {
+            return Err(StoreError::InvalidInput(
+                "test close request omitted its primary metric".to_owned(),
+            ));
+        };
+        metric.value = f64::NAN;
+        let error = store.close_experiment(request).err().ok_or_else(|| {
+            StoreError::InvalidInput("non-finite metric value was accepted".to_owned())
+        })?;
+        assert!(matches!(error, StoreError::InvalidInput(message) if message.contains("finite")));
+
         fs::remove_dir_all(root.as_std_path())?;
         Ok(())
     }

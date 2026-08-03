@@ -1,12 +1,13 @@
+# managed by fidget-spinner installer
 [Unit]
 Description=Fidget Spinner central navigator
 
 [Service]
 Type=simple
 WorkingDirectory=@HOME@
-Environment=HOME=@HOME@
-Environment=PATH=@HOME@/.cargo/bin:@LOCAL_BIN_DIR@:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-ExecStart=@LOCAL_BIN_DIR@/fidget-spinner-cli ui serve --bind @UI_BIND@
+Environment="HOME=@HOME@"
+Environment="PATH=@HOME@/.cargo/bin:@LOCAL_BIN_DIR@:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+ExecStart="@LOCAL_BIN_DIR@/fidget-spinner-cli" ui serve --bind "@UI_BIND@"
 Restart=always
 RestartSec=3
 

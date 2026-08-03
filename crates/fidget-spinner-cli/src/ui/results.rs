@@ -12,7 +12,7 @@ use super::{
     ListHypothesesQuery, METRIC_TABLE_TITLE_MIN_BUDGET_CH, METRIC_TABLE_TITLE_PERCENT_BUDGET,
     Markup, MetricAxisLogScales, MetricDisplayUnit, MetricKeysQuery, MetricQuantity, MetricScope,
     NonEmptyText, PathElement, PreEscaped, RGBColor, SVGBackend, SeriesLabelPosition, ShapeStyle,
-    Slug, StoreError, Text, experiment_href, format_metric_value, format_timestamp, frontier_href,
+    Slug, StoreError, experiment_href, format_metric_value, format_timestamp, frontier_href,
     frontier_tab_href_with_query, html, hypothesis_href, limit_items, metric_choice_detail,
     project_metrics_frontier_href, render_dimension_value, render_hypothesis_meta_chips,
     render_metric_kind_chip, scuff_icon, status_chip_classes, verdict_class,
@@ -334,17 +334,12 @@ struct FilteredMetricSeries<'a> {
     points: Vec<&'a fidget_spinner_store_sqlite::FrontierMetricPoint>,
 }
 
-struct MetricChartReference {
-    label: String,
-    value: f64,
-}
-
 struct MetricChartSeries {
     label: String,
     color: RGBColor,
     side: MetricAxisSide,
     points: Vec<(i32, f64, FrontierVerdict)>,
-    references: Vec<MetricChartReference>,
+    references: Vec<f64>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -481,6 +476,7 @@ pub(super) fn render_metric_series_section(
                     &experiment_positions,
                 )))
             }
+            (render_metric_reference_legend(&plotted_series))
         }
         @if !no_metric_history {
         @if let Some(table_series) = table_series {
@@ -614,6 +610,30 @@ pub(super) fn render_metric_series_section(
         }
         }
     }
+    }
+}
+
+fn render_metric_reference_legend(series: &[&FilteredMetricSeries<'_>]) -> Markup {
+    let has_references = series.iter().any(|series| !series.references.is_empty());
+    html! {
+        @if has_references {
+            div.chart-reference-list aria-label="KPI reference lines" {
+                @for (index, series) in series.iter().enumerate() {
+                    @let color = metric_chart_color(index);
+                    @for reference in series.references {
+                        span.chart-reference {
+                            span.chart-reference-swatch style=(format!(
+                                "border-color: rgb({}, {}, {})",
+                                color.0, color.1, color.2,
+                            )) {}
+                            strong { (&series.metric.key) }
+                            " · " (&reference.label) " "
+                            (format_metric_value(reference.value, &reference.display_unit))
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -877,7 +897,7 @@ fn render_metric_chart_svg(
                     .points
                     .iter()
                     .map(|(_, value, _)| *value)
-                    .chain(series.references.iter().map(|reference| reference.value))
+                    .chain(series.references.iter().copied())
             })
             .collect::<Vec<_>>();
         let Some((primary_min, primary_max)) =
@@ -893,7 +913,7 @@ fn render_metric_chart_svg(
                     .points
                     .iter()
                     .map(|(_, value, _)| *value)
-                    .chain(series.references.iter().map(|reference| reference.value))
+                    .chain(series.references.iter().copied())
             })
             .collect::<Vec<_>>();
         let secondary_range = if axes.secondary.is_some() {
@@ -923,11 +943,10 @@ fn render_metric_chart_svg(
             ($chart:expr, $method:ident, $side:expr) => {{
                 for series in chart_series.iter().filter(|series| series.side == $side) {
                     let reference_style = ShapeStyle::from(&series.color.mix(0.42)).stroke_width(1);
-                    let reference_label_x = x_end;
                     for reference in &series.references {
                         if $chart
                             .$method(DashedLineSeries::new(
-                                [(0_i32, reference.value), (x_end, reference.value)],
+                                [(0_i32, *reference), (x_end, *reference)],
                                 5,
                                 5,
                                 reference_style,
@@ -935,16 +954,6 @@ fn render_metric_chart_svg(
                             .is_err()
                         {
                             return chart_error_markup("reference line draw failed");
-                        }
-                        if $chart
-                            .$method(std::iter::once(Text::new(
-                                reference.label.clone(),
-                                (reference_label_x, reference.value),
-                                ("Iosevka Web", 11).into_font().color(&series.color),
-                            )))
-                            .is_err()
-                        {
-                            return chart_error_markup("reference label draw failed");
                         }
                     }
 
@@ -1872,10 +1881,7 @@ fn build_metric_chart_series(
                 .iter()
                 .filter_map(|reference| {
                     let value = axis.normalize_value(reference.value, &reference.display_unit)?;
-                    Some(MetricChartReference {
-                        label: reference.label.to_string(),
-                        value,
-                    })
+                    Some(value)
                 })
                 .collect::<Vec<_>>();
             (!points.is_empty()).then(|| MetricChartSeries {

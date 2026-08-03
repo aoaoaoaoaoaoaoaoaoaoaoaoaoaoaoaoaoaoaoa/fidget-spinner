@@ -16,7 +16,11 @@ use crate::{
 };
 
 #[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
-#[serde(transparent)]
+#[serde(try_from = "String", into = "String")]
+/// Owned text whose Unicode-trimmed form contains at least one character.
+///
+/// The original spacing is preserved. Construction and deserialization enforce
+/// the same refinement.
 pub struct NonEmptyText(String);
 
 impl NonEmptyText {
@@ -31,6 +35,20 @@ impl NonEmptyText {
     #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
+    }
+}
+
+impl TryFrom<String> for NonEmptyText {
+    type Error = CoreError;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        Self::new(value)
+    }
+}
+
+impl From<NonEmptyText> for String {
+    fn from(value: NonEmptyText) -> Self {
+        value.0
     }
 }
 
@@ -391,9 +409,28 @@ impl MetricDimension {
 pub type RationalExponent = Ratio<i32>;
 
 #[derive(Clone, Debug, Default, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
-#[serde(transparent)]
+#[serde(
+    from = "BTreeMap<MetricBaseDimension, RationalExponent>",
+    into = "BTreeMap<MetricBaseDimension, RationalExponent>"
+)]
+/// Canonical algebraic quantity represented by nonzero rational base exponents.
+///
+/// Multiplication, division, roots, parsing, and deserialization all erase zero
+/// exponents, so algebraically equal quantities compare equal.
 pub struct MetricQuantity {
     exponents: BTreeMap<MetricBaseDimension, RationalExponent>,
+}
+
+impl From<BTreeMap<MetricBaseDimension, RationalExponent>> for MetricQuantity {
+    fn from(exponents: BTreeMap<MetricBaseDimension, RationalExponent>) -> Self {
+        Self::from_exponents(exponents)
+    }
+}
+
+impl From<MetricQuantity> for BTreeMap<MetricBaseDimension, RationalExponent> {
+    fn from(quantity: MetricQuantity) -> Self {
+        quantity.exponents
+    }
 }
 
 impl MetricQuantity {
@@ -1151,7 +1188,13 @@ impl RunDimensionDefinition {
 
 #[cfg(test)]
 mod tests {
-    use super::{GitCommitHash, MetricQuantity, MetricUnit};
+    use super::{
+        CommandRecipe, ExperimentRecord, ExperimentStatus, GitCommitHash, MetricQuantity,
+        MetricUnit, NonEmptyText, Slug,
+    };
+    use crate::{ExperimentId, FrontierId, HypothesisId};
+    use num_rational::Ratio;
+    use time::OffsetDateTime;
 
     #[test]
     fn metric_unit_normalizes_known_aliases() {
@@ -1211,6 +1254,42 @@ mod tests {
 
         let non_hex = GitCommitHash::new("zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz");
         assert!(non_hex.is_err());
+    }
+
+    #[test]
+    fn refined_values_cannot_be_bypassed_through_serde() -> Result<(), Box<dyn std::error::Error>> {
+        assert!(serde_json::from_str::<NonEmptyText>(r#""   ""#).is_err());
+        assert!(serde_json::from_str::<CommandRecipe>(r#"{"argv":[]}"#).is_err());
+
+        let mut quantity = serde_json::to_value(MetricQuantity::time())?;
+        if let Some(exponents) = quantity.as_object_mut() {
+            let _ = exponents.insert(
+                "count".to_owned(),
+                serde_json::to_value(Ratio::<i32>::new(0, 1))?,
+            );
+        }
+        let quantity = serde_json::from_value::<MetricQuantity>(quantity);
+        assert_eq!(quantity.ok(), Some(MetricQuantity::time()));
+
+        let now = OffsetDateTime::UNIX_EPOCH;
+        let open = ExperimentRecord {
+            id: ExperimentId::fresh(),
+            slug: Slug::new("serde-state")?,
+            frontier_id: FrontierId::fresh(),
+            hypothesis_id: HypothesisId::fresh(),
+            title: NonEmptyText::new("Serde state")?,
+            summary: None,
+            tags: Vec::new(),
+            status: ExperimentStatus::Open,
+            outcome: None,
+            revision: 0,
+            created_at: now,
+            updated_at: now,
+        };
+        let mut malformed = serde_json::to_value(open)?;
+        malformed["status"] = serde_json::json!("closed");
+        assert!(serde_json::from_value::<ExperimentRecord>(malformed).is_err());
+        Ok(())
     }
 }
 
@@ -1514,12 +1593,34 @@ pub struct TagRegistrySnapshot {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(try_from = "CommandRecipeWire")]
+/// A replayable command description with at least one argument.
+///
+/// Environment values are deliberate data; this type does not inherit or
+/// capture the ambient process environment.
 pub struct CommandRecipe {
     #[serde(default)]
     pub working_directory: Option<Utf8PathBuf>,
     pub argv: Vec<NonEmptyText>,
     #[serde(default)]
     pub env: BTreeMap<String, String>,
+}
+
+#[derive(Deserialize)]
+struct CommandRecipeWire {
+    #[serde(default)]
+    working_directory: Option<Utf8PathBuf>,
+    argv: Vec<NonEmptyText>,
+    #[serde(default)]
+    env: BTreeMap<String, String>,
+}
+
+impl TryFrom<CommandRecipeWire> for CommandRecipe {
+    type Error = CoreError;
+
+    fn try_from(wire: CommandRecipeWire) -> Result<Self, Self::Error> {
+        Self::new(wire.working_directory, wire.argv, wire.env)
+    }
 }
 
 impl CommandRecipe {
@@ -1617,6 +1718,12 @@ pub struct ExperimentOutcome {
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(try_from = "ExperimentRecordWire")]
+/// Durable experiment state.
+///
+/// `status` remains serialized for 1.x compatibility, but `outcome` is the
+/// authority: no outcome means open and an outcome means closed. Deserialization
+/// rejects disagreement between the two fields.
 pub struct ExperimentRecord {
     pub id: ExperimentId,
     pub slug: Slug,
@@ -1630,6 +1737,51 @@ pub struct ExperimentRecord {
     pub revision: u64,
     pub created_at: OffsetDateTime,
     pub updated_at: OffsetDateTime,
+}
+
+#[derive(Deserialize)]
+struct ExperimentRecordWire {
+    id: ExperimentId,
+    slug: Slug,
+    frontier_id: FrontierId,
+    hypothesis_id: HypothesisId,
+    title: NonEmptyText,
+    summary: Option<NonEmptyText>,
+    tags: Vec<TagName>,
+    status: ExperimentStatus,
+    outcome: Option<ExperimentOutcome>,
+    revision: u64,
+    created_at: OffsetDateTime,
+    updated_at: OffsetDateTime,
+}
+
+impl TryFrom<ExperimentRecordWire> for ExperimentRecord {
+    type Error = CoreError;
+
+    fn try_from(wire: ExperimentRecordWire) -> Result<Self, Self::Error> {
+        let expected_status = if wire.outcome.is_some() {
+            ExperimentStatus::Closed
+        } else {
+            ExperimentStatus::Open
+        };
+        if wire.status != expected_status {
+            return Err(CoreError::InconsistentExperimentState);
+        }
+        Ok(Self {
+            id: wire.id,
+            slug: wire.slug,
+            frontier_id: wire.frontier_id,
+            hypothesis_id: wire.hypothesis_id,
+            title: wire.title,
+            summary: wire.summary,
+            tags: wire.tags,
+            status: wire.status,
+            outcome: wire.outcome,
+            revision: wire.revision,
+            created_at: wire.created_at,
+            updated_at: wire.updated_at,
+        })
+    }
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]

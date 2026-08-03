@@ -1,4 +1,3 @@
-use super::assets::{interaction_script, styles};
 use super::results::{
     load_other_metric_keys, render_frontier_tab_bar, render_frontier_tab_content,
     requested_or_kpi_metric_keys, resolve_selected_metric_keys, visible_metric_catalog,
@@ -7,8 +6,8 @@ use super::{
     BTreeMap, DOCTYPE, ExperimentAnalysis, ExperimentDetail, ExperimentOutcome, ExperimentStatus,
     ExperimentSummary, FrontierOpenProjection, FrontierPageQuery, FrontierRecord, FrontierTab,
     FrontierVerdict, HypothesisAttention, HypothesisDetail, Markup, MetricAxisLogScales,
-    MetricKeysQuery, MetricScope, NonEmptyText, PreEscaped, ProjectRenderContext,
-    RunDimensionValue, ShellFrame, Slug, StoreError, VertexRef, VertexSummary, experiment_href,
+    MetricKeysQuery, MetricScope, NonEmptyText, ProjectRenderContext, RunDimensionValue,
+    ShellFrame, Slug, StoreError, VertexRef, VertexSummary, experiment_href,
     experiment_status_class, format_metric_value, format_timestamp, frontier_href,
     frontier_status_class, frontier_tab_href, html, hypothesis_attention_label, hypothesis_href,
     limit_items, load_shell_frame, open_store, pencil_icon, render_dimension_value, render_fact,
@@ -828,7 +827,7 @@ pub(super) fn render_shell(
                 (render_favicon_links())
                 base href=(&shell.base_href);
                 title { (title) }
-                style { (PreEscaped(styles())) }
+                link rel="stylesheet" href="/navigator.css";
             }
             body {
                 main.shell data-refresh-token-url=(&shell.refresh_token_href) {
@@ -842,7 +841,7 @@ pub(super) fn render_shell(
                         (content)
                     }
                 }
-                script { (PreEscaped(interaction_script())) }
+                script defer src="/navigator.js" {}
             }
         }
     }

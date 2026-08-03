@@ -1,3 +1,4 @@
+use super::assets::{interaction_script, styles};
 use super::detail::{render_experiment_detail, render_frontier_detail, render_hypothesis_detail};
 use super::registry::{
     render_project_home, render_project_index, render_project_metrics, render_project_tags,
@@ -22,18 +23,45 @@ use super::{
     resolve_project_context, tag_mutation_response, text_patch_field, update_frontier_status,
     update_project_description,
 };
+use axum::extract::Request;
+use axum::http::header::{CACHE_CONTROL, HOST, ORIGIN};
+use axum::http::{HeaderMap, Method, StatusCode};
+use axum::middleware::{self, Next};
 use serde::Deserialize;
 
-pub(crate) fn serve(bind: SocketAddr, limit: Option<u32>) -> Result<(), StoreError> {
+#[derive(Clone, Copy)]
+struct BrowserBoundary {
+    loopback_port: Option<u16>,
+}
+
+pub(crate) fn serve(
+    bind: SocketAddr,
+    limit: Option<u32>,
+    allow_remote: bool,
+) -> Result<(), StoreError> {
+    if !bind.ip().is_loopback() && !allow_remote {
+        return Err(StoreError::InvalidInput(format!(
+            "refusing unauthenticated navigator bind `{bind}`; pass --allow-remote to accept remote access"
+        )));
+    }
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_io()
         .build()
         .map_err(StoreError::from)?;
     runtime.block_on(async move {
+        let listener = tokio::net::TcpListener::bind(bind)
+            .await
+            .map_err(StoreError::from)?;
+        let address = listener.local_addr().map_err(StoreError::from)?;
         let state = NavigatorState { limit };
+        let boundary = BrowserBoundary {
+            loopback_port: address.ip().is_loopback().then_some(address.port()),
+        };
         let app = Router::new()
             .route("/favicon.svg", get(favicon_svg))
             .route("/favicon.ico", get(favicon_svg))
+            .route("/navigator.css", get(navigator_css))
+            .route("/navigator.js", get(navigator_javascript))
             .route("/", get(root_page))
             .route("/project/{project}", get(project_home))
             .route("/project/{project}/", get(project_home))
@@ -129,21 +157,94 @@ pub(crate) fn serve(bind: SocketAddr, limit: Option<u32>) -> Result<(), StoreErr
                 "/project/{project}/experiment/{selector}/scuff",
                 post(scuff_experiment),
             )
-            .with_state(state.clone());
-        let listener = tokio::net::TcpListener::bind(bind)
-            .await
-            .map_err(StoreError::from)?;
-        println!("navigator: http://{bind}/");
+            .with_state(state)
+            .layer(middleware::from_fn_with_state(
+                boundary,
+                enforce_browser_boundary,
+            ));
+        println!("navigator: http://{address}/");
         axum::serve(listener, app)
             .await
             .map_err(|error| StoreError::Io(io::Error::other(error.to_string())))
     })
 }
 
+async fn enforce_browser_boundary(
+    State(boundary): State<BrowserBoundary>,
+    request: Request,
+    next: Next,
+) -> Response {
+    match validate_browser_boundary(boundary, request.method(), request.headers()) {
+        Ok(()) => next.run(request).await,
+        Err(reason) => (StatusCode::FORBIDDEN, reason).into_response(),
+    }
+}
+
+fn validate_browser_boundary(
+    boundary: BrowserBoundary,
+    method: &Method,
+    headers: &HeaderMap,
+) -> Result<(), &'static str> {
+    let host = headers
+        .get(HOST)
+        .and_then(|value| value.to_str().ok())
+        .ok_or("navigator rejected a request without a valid Host header")?;
+    if boundary
+        .loopback_port
+        .is_some_and(|port| !is_loopback_authority(host, port))
+    {
+        return Err("navigator rejected a non-loopback Host header");
+    }
+    if matches!(*method, Method::GET | Method::HEAD | Method::OPTIONS) {
+        return Ok(());
+    }
+    if headers
+        .get("sec-fetch-site")
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|site| !matches!(site, "same-origin" | "none"))
+    {
+        return Err("navigator rejected a cross-site mutation");
+    }
+    if let Some(origin) = headers.get(ORIGIN).and_then(|value| value.to_str().ok()) {
+        let expected = format!("http://{host}");
+        if origin != expected {
+            return Err("navigator rejected a mutation from another origin");
+        }
+    }
+    Ok(())
+}
+
+fn is_loopback_authority(authority: &str, port: u16) -> bool {
+    authority == format!("localhost:{port}")
+        || authority
+            .parse::<SocketAddr>()
+            .is_ok_and(|address| address.ip().is_loopback() && address.port() == port)
+}
+
 async fn favicon_svg() -> impl IntoResponse {
     (
         [(CONTENT_TYPE, "image/svg+xml; charset=utf-8")],
         FAVICON_SVG,
+    )
+}
+
+async fn navigator_css() -> impl IntoResponse {
+    (
+        [
+            (CONTENT_TYPE, "text/css; charset=utf-8"),
+            (CACHE_CONTROL, "public, max-age=3600"),
+        ],
+        styles(),
+    )
+}
+
+async fn navigator_javascript() -> impl IntoResponse {
+    (
+        [
+            (CONTENT_TYPE, "text/javascript; charset=utf-8"),
+            (CACHE_CONTROL, "public, max-age=3600"),
+        ],
+        interaction_script(),
     )
 }
 
@@ -1096,5 +1197,46 @@ fn reported_metric_value(metric: &fidget_spinner_core::MetricValue) -> ReportedM
         key: metric.key.clone(),
         value: metric.value,
         unit: Some(metric.unit),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::http::HeaderValue;
+
+    const LOOPBACK: BrowserBoundary = BrowserBoundary {
+        loopback_port: Some(8913),
+    };
+
+    #[test]
+    fn browser_boundary_rejects_dns_rebinding_hosts() {
+        let mut headers = HeaderMap::new();
+        let _ = headers.insert(HOST, HeaderValue::from_static("hostile.example:8913"));
+
+        assert!(validate_browser_boundary(LOOPBACK, &Method::GET, &headers).is_err());
+    }
+
+    #[test]
+    fn browser_boundary_rejects_cross_origin_mutations() {
+        let mut headers = HeaderMap::new();
+        let _ = headers.insert(HOST, HeaderValue::from_static("localhost:8913"));
+        let _ = headers.insert(ORIGIN, HeaderValue::from_static("https://hostile.example"));
+        let _ = headers.insert("sec-fetch-site", HeaderValue::from_static("cross-site"));
+
+        assert!(validate_browser_boundary(LOOPBACK, &Method::POST, &headers).is_err());
+    }
+
+    #[test]
+    fn browser_boundary_accepts_same_origin_and_non_browser_clients() {
+        let mut browser_headers = HeaderMap::new();
+        let _ = browser_headers.insert(HOST, HeaderValue::from_static("localhost:8913"));
+        let _ = browser_headers.insert(ORIGIN, HeaderValue::from_static("http://localhost:8913"));
+        let _ = browser_headers.insert("sec-fetch-site", HeaderValue::from_static("same-origin"));
+        assert!(validate_browser_boundary(LOOPBACK, &Method::POST, &browser_headers).is_ok());
+
+        let mut client_headers = HeaderMap::new();
+        let _ = client_headers.insert(HOST, HeaderValue::from_static("127.0.0.1:8913"));
+        assert!(validate_browser_boundary(LOOPBACK, &Method::POST, &client_headers).is_ok());
     }
 }

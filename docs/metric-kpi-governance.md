@@ -13,7 +13,7 @@ A metric has:
 
 - stable ID
 - key
-- metric dimension
+- metric quantity
 - display unit
 - aggregation
 - objective
@@ -23,9 +23,12 @@ A metric has:
 Keys name concepts, not units. Prefer `presolve_wallclock` with display unit
 `milliseconds`, not `presolve_ms`.
 
-## Dimensions And Units
+The CLI and MCP retain `dimension` as the compatible boundary spelling for a
+metric quantity. Internal policy and new prose use **quantity** only.
 
-Dimensions are algebraic quantities:
+## Quantities And Units
+
+Quantities are algebraic:
 
 - `time`
 - `count`
@@ -35,8 +38,16 @@ Dimensions are algebraic quantities:
 
 Units are input/display sugar. Values normalize on ingress.
 
-Addition and subtraction require identical dimensions. Multiplication and
-division compose dimensions. `gmean` takes an exact rational root.
+Addition and subtraction require identical quantities. Multiplication and
+division compose quantities. `gmean` requires at least one term and takes an
+exact rational root. Zero exponents are discarded during construction and
+deserialization, so one algebraic quantity has one representation.
+
+Reported observations must be finite. `NaN` and positive or negative infinity
+are invalid at every ingress. An experiment may have no primary metric only
+when a scuffed closure records that the procedure yielded no meaningful point.
+Supporting observations never become primary by position. Duplicate metric
+keys in one outcome are rejected.
 
 ## KPIs
 
@@ -78,7 +89,8 @@ already a KPI on that frontier.
 ## Reference Lines
 
 A KPI reference is a named `(frontier, KPI)` value. Results plots render it as a
-horizontal comparison line.
+horizontal comparison line, with its name and value in the reference legend
+below the plot.
 
 Use it for baselines, rivals, targets, or theoretical bounds.
 
@@ -105,3 +117,7 @@ Model-facing tools:
 - `frontier.query.sql`
 
 No MCP synthetic-definition tool. No MCP KPI demotion. No bulk KPI mutation.
+
+Scuffed experiments remain auditable but do not enter plots, rankings, or
+running-best calculations. A rejected experiment is valid negative evidence
+and remains visible in analytical surfaces unless the caller narrows it.

@@ -83,6 +83,20 @@ def load_commands(metadata: dict[str, object]) -> dict[str, Command | CommandSeq
             key_path="workspace.metadata.rust-starter.install_command",
         )
 
+    raw_ui_e2e_command = metadata.get("ui_e2e_command")
+    if raw_ui_e2e_command is not None:
+        commands["ui_e2e_command"] = load_command(
+            raw_ui_e2e_command,
+            key_path="workspace.metadata.rust-starter.ui_e2e_command",
+        )
+
+    raw_install_e2e_command = metadata.get("install_e2e_command")
+    if raw_install_e2e_command is not None:
+        commands["install_e2e_command"] = load_command(
+            raw_install_e2e_command,
+            key_path="workspace.metadata.rust-starter.install_e2e_command",
+        )
+
     return commands
 
 
@@ -142,11 +156,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "mode",
         nargs="?",
-        choices=("check", "verify", "deep", "fix", "canon"),
+        choices=("check", "verify", "deep", "fix", "canon", "install"),
         default="check",
         help=(
-            "Run canonicalization plus the fast gate, run a non-mutating verification gate, "
-            "include docs for the deep gate, or run only canonicalization."
+            "Run the non-mutating fast gate, include docs and browser E2E for the deep gate, "
+            "or explicitly canonicalize or install."
         ),
     )
     return parser.parse_args()
@@ -213,10 +227,14 @@ def main() -> None:
     if args.mode in {"fix", "canon"}:
         run_command_sequence("canonicalize", commands["canonicalize_commands"])
         return
+    if args.mode == "install":
+        install_command = commands.get("install_command")
+        if install_command is None or not isinstance(install_command, tuple):
+            raise SystemExit("[check] no install command is configured")
+        run("install", install_command)
+        return
 
     enforce_source_file_policy(source_file_policy)
-    if args.mode != "verify":
-        run_command_sequence("canonicalize", commands["canonicalize_commands"])
 
     run("fmt", commands["format_command"])
     run("clippy", commands["clippy_command"])
@@ -224,9 +242,10 @@ def main() -> None:
 
     if args.mode == "deep" and "doc_command" in commands:
         run("doc", commands["doc_command"])
-
-    if args.mode in {"check", "deep"} and "install_command" in commands:
-        run("install", commands["install_command"])
+    if args.mode == "deep" and "ui_e2e_command" in commands:
+        run("ui-e2e", commands["ui_e2e_command"])
+    if args.mode == "deep" and "install_e2e_command" in commands:
+        run("install-e2e", commands["install_e2e_command"])
 
 
 if __name__ == "__main__":

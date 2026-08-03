@@ -61,7 +61,7 @@ const TOOL_SPECS: &[ToolSpec] = &[
     },
     ToolSpec {
         name: "tag.add",
-        description: "Register one repo-local tag with a required description unless tag definition writes are locked.",
+        description: "Register one project tag with a required description unless tag definition writes are locked.",
         dispatch: DispatchTarget::Worker,
         replay: ReplayContract::NeverReplay,
     },
@@ -175,7 +175,7 @@ const TOOL_SPECS: &[ToolSpec] = &[
     },
     ToolSpec {
         name: "experiment.update",
-        description: "Patch experiment metadata, influence parents, archive state, or replace the closed outcome wholesale.",
+        description: "Patch experiment metadata or influence parents, or replace the closed outcome wholesale.",
         dispatch: DispatchTarget::Worker,
         replay: ReplayContract::NeverReplay,
     },

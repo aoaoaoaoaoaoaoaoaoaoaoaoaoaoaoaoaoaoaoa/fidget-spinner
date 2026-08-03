@@ -1,16 +1,13 @@
-use super::assets::styles;
 use super::detail::{render_favicon_links, render_shell};
 use super::{
-    BTreeMap, BTreeSet, DOCTYPE, FrontierSummary, KpiSummary, ListExperimentsQuery,
-    ListHypothesesQuery, Markup, MetricKeysQuery, MetricScope, MoveKpiDirection, NavigatorState,
-    NonEmptyText, PreEscaped, ProjectIndexItem, ProjectMetricsQuery, ProjectRenderContext,
-    ProjectStatus, RegistryLockMode, RegistryName, StoreError, TagName, TagUsage, arrow_down_icon,
-    arrow_up_icon, chevron_down_icon, chevron_up_icon, format_metric_value, format_timestamp,
-    frontier_href, frontier_results_href, frontier_status_class, html, limit_items,
-    list_project_manifests, load_shell_frame, metric_choice_detail, open_store, pencil_icon,
-    plus_icon, project_root_href, project_state_home, render_fact, render_kv,
-    render_markdown_prose, render_metric_choice_option, render_metric_kind_chip,
-    status_chip_classes, trash_icon,
+    BTreeMap, BTreeSet, DOCTYPE, FrontierSummary, KpiSummary, Markup, MetricKeysQuery, MetricScope,
+    MoveKpiDirection, NavigatorState, NonEmptyText, ProjectIndexItem, ProjectMetricsQuery,
+    ProjectRenderContext, ProjectStatus, RegistryLockMode, RegistryName, StoreError, TagName,
+    arrow_down_icon, arrow_up_icon, chevron_down_icon, chevron_up_icon, format_metric_value,
+    format_timestamp, frontier_href, frontier_results_href, frontier_status_class, html,
+    limit_items, list_project_manifests, load_shell_frame, metric_choice_detail, open_store,
+    pencil_icon, plus_icon, project_root_href, project_state_home, render_fact, render_kv,
+    render_markdown_prose, render_metric_kind_chip, status_chip_classes, trash_icon,
 };
 
 pub(super) fn render_project_index(state: NavigatorState) -> Result<Markup, StoreError> {
@@ -34,7 +31,7 @@ pub(super) fn render_project_index(state: NavigatorState) -> Result<Markup, Stor
                 meta name="viewport" content="width=device-width, initial-scale=1";
                 (render_favicon_links())
                 title { "Fidget Spinner navigator" }
-                style { (PreEscaped(styles())) }
+                link rel="stylesheet" href="/navigator.css";
             }
             body {
                 main.index-shell {
@@ -215,6 +212,19 @@ pub(super) fn render_project_metrics(
         .iter()
         .filter(|metric| metric.reference_count == 0)
         .count();
+    const METRIC_PAGE_SIZE: usize = 100;
+    let last_page = metrics.len().saturating_sub(1) / METRIC_PAGE_SIZE;
+    let page_index = usize::try_from(query.page)
+        .unwrap_or(usize::MAX)
+        .min(last_page);
+    let page_start = page_index
+        .saturating_mul(METRIC_PAGE_SIZE)
+        .min(metrics.len());
+    let page_end = page_start
+        .saturating_add(METRIC_PAGE_SIZE)
+        .min(metrics.len());
+    let visible_metrics = &metrics[page_start..page_end];
+    let page = u32::try_from(page_index).unwrap_or(u32::MAX);
     let title = format!("{} · metrics", shell.project_status.display_name);
     let content = html! {
         section.card.tag-state-card {
@@ -235,9 +245,14 @@ pub(super) fn render_project_metrics(
             kpi_creation_locked,
         ))
         (render_metric_registry_table(
+            visible_metrics,
             &metrics,
             selected_frontier.as_ref(),
             &selected_kpis,
+            query.frontier.as_deref(),
+            page,
+            page_start,
+            page_end,
         ))
     };
     Ok(render_shell(&title, &shell, None, content))
@@ -245,25 +260,8 @@ pub(super) fn render_project_metrics(
 
 fn load_tag_usage(
     store: &fidget_spinner_store_sqlite::ProjectStore,
-) -> Result<BTreeMap<TagName, TagUsage>, StoreError> {
-    let mut usage = BTreeMap::<TagName, TagUsage>::new();
-    for hypothesis in store.list_hypotheses(ListHypothesesQuery {
-        limit: None,
-        ..ListHypothesesQuery::default()
-    })? {
-        for tag in hypothesis.tags {
-            usage.entry(tag).or_default().hypotheses += 1;
-        }
-    }
-    for experiment in store.list_experiments(ListExperimentsQuery {
-        limit: None,
-        ..ListExperimentsQuery::default()
-    })? {
-        for tag in experiment.tags {
-            usage.entry(tag).or_default().experiments += 1;
-        }
-    }
-    Ok(usage)
+) -> Result<BTreeMap<TagName, fidget_spinner_store_sqlite::TagUsageCounts>, StoreError> {
+    store.tag_usage_counts()
 }
 
 #[derive(Clone, Copy, Default)]
@@ -313,8 +311,8 @@ fn render_tag_families(families: &[fidget_spinner_core::TagFamilyRecord]) -> Mar
                 h2 { "Families" }
             }
             form.tag-create-form method="post" action="tags/families/create" data-preserve-viewport="true" {
-                input.compact-input type="text" name="name" placeholder="family name";
-                input.compact-input type="text" name="description" placeholder="description";
+                input.compact-input type="text" name="name" placeholder="family name" aria-label="Family name";
+                input.compact-input type="text" name="description" placeholder="description" aria-label="Family description";
                 label.inline-check {
                     input type="checkbox" name="mandatory" value="1";
                     "mandatory"
@@ -353,7 +351,7 @@ fn render_tag_families(families: &[fidget_spinner_core::TagFamilyRecord]) -> Mar
 fn render_tag_table(
     tags: &[fidget_spinner_core::TagRecord],
     families: &[fidget_spinner_core::TagFamilyRecord],
-    usage: &BTreeMap<TagName, TagUsage>,
+    usage: &BTreeMap<TagName, fidget_spinner_store_sqlite::TagUsageCounts>,
 ) -> Markup {
     html! {
         section.card {
@@ -364,6 +362,11 @@ fn render_tag_table(
             @if tags.is_empty() {
                 p.muted { "No tags yet." }
             } @else {
+                datalist id="tag-merge-targets" {
+                    @for target in tags {
+                        option value=(target.name.as_str()) {}
+                    }
+                }
                 div.table-wrap {
                     table.dense-table.tag-registry-table {
                         thead {
@@ -426,13 +429,13 @@ fn render_tag_table(
                                         form.tag-inline-form method="post" action="tags/merge" data-preserve-viewport="true" {
                                             input type="hidden" name="source" value=(tag.name.as_str());
                                             input type="hidden" name="expected_revision" value=(tag.revision);
-                                            select.compact-select name="target" {
-                                                @for target in tags {
-                                                    @if target.name != tag.name {
-                                                        option value=(target.name.as_str()) { (target.name) }
-                                                    }
-                                                }
-                                            }
+                                            input.compact-input
+                                                type="text"
+                                                name="target"
+                                                list="tag-merge-targets"
+                                                placeholder="merge into..."
+                                                aria-label=(format!("Merge target for {}", tag.name))
+                                                required;
                                             button.form-button type="submit" { "Merge" }
                                         }
                                     }
@@ -524,35 +527,19 @@ fn render_metric_objective_select() -> Markup {
 fn render_metric_operand_select(
     name: &str,
     label: &str,
-    metrics: &[fidget_spinner_store_sqlite::MetricKeySummary],
+    _metrics: &[fidget_spinner_store_sqlite::MetricKeySummary],
     required: bool,
 ) -> Markup {
-    if required {
-        html! {
-            select.compact-select.wide-compact-select name=(name) aria-label=(label) required data-metric-choice-select="true" {
-                (render_metric_operand_options(None, metrics))
-            }
-        }
-    } else {
-        html! {
-            select.compact-select.wide-compact-select name=(name) aria-label=(label) data-metric-choice-select="true" data-synthetic-gmean-extra="true" title="Only used by the gmean operation." {
-                (render_metric_operand_options(Some(label), metrics))
-            }
-        }
-    }
-}
-
-fn render_metric_operand_options(
-    placeholder: Option<&str>,
-    metrics: &[fidget_spinner_store_sqlite::MetricKeySummary],
-) -> Markup {
     html! {
-        @if let Some(placeholder) = placeholder {
-            option value="" { (placeholder) }
-        }
-        @for metric in metrics {
-            (render_metric_choice_option(metric))
-        }
+        input.compact-input.wide-compact-input
+            type="text"
+            name=(name)
+            list="metric-choices"
+            placeholder=(label)
+            aria-label=(label)
+            required[required]
+            data-synthetic-gmean-extra[!required]
+            title=(if required { label } else { "Only used by the gmean operation." });
     }
 }
 
@@ -644,15 +631,14 @@ fn render_create_kpi_form(
     html! {
         form.tag-create-form method="post" action="metrics/kpi" data-preserve-viewport="true" {
             input type="hidden" name="frontier" value=(frontier.slug.as_str());
-            select.compact-select.wide-compact-select name="metric" aria-label="Metric to promote" required data-metric-choice-select="true" {
-                @if has_candidates {
-                    @for metric in candidates {
-                        (render_metric_choice_option(metric))
-                    }
-                } @else {
-                    option value="" { "all metrics are KPIs" }
-                }
-            }
+            input.compact-input.wide-compact-input
+                type="text"
+                name="metric"
+                list="metric-choices"
+                placeholder=(if has_candidates { "metric to promote" } else { "all metrics are KPIs" })
+                aria-label="Metric to promote"
+                required
+                disabled[!has_candidates];
             button.inline-icon-button.promote-icon-button type="submit" aria-label="Promote KPI metric" title="Promote metric to KPI" disabled[!has_candidates] {
                 (chevron_up_icon())
             }
@@ -825,8 +811,13 @@ fn render_metric_promote_kpi_button(
 
 pub(super) fn render_metric_registry_table(
     metrics: &[fidget_spinner_store_sqlite::MetricKeySummary],
+    all_metrics: &[fidget_spinner_store_sqlite::MetricKeySummary],
     selected_frontier: Option<&FrontierSummary>,
     kpis: &[KpiSummary],
+    selected_frontier_query: Option<&str>,
+    page: u32,
+    page_start: usize,
+    page_end: usize,
 ) -> Markup {
     let kpi_keys = kpis
         .iter()
@@ -835,16 +826,16 @@ pub(super) fn render_metric_registry_table(
     html! {
         section.card {
             div.card-header { h2 { "Metric Registry" } }
-            (render_create_metric_form(metrics))
-            @if metrics.is_empty() {
+            datalist id="metric-choices" {
+                @for metric in all_metrics {
+                    option value=(metric.key.as_str()) title=(metric_choice_detail(metric)) {}
+                }
+            }
+            (render_create_metric_form(all_metrics))
+            @if all_metrics.is_empty() {
                 p.muted { "No metrics yet." }
             } @else {
                 div.table-scroll {
-                    datalist id="metric-merge-targets" {
-                        @for target in metrics {
-                            option value=(target.key.as_str()) title=(metric_choice_detail(target)) {}
-                        }
-                    }
                     table.metric-table {
                         thead {
                             tr {
@@ -854,8 +845,8 @@ pub(super) fn render_metric_registry_table(
                                         span { "Metric" }
                                         input.compact-input.metric-registry-filter
                                             type="search"
-                                            placeholder="filter"
-                                            aria-label="Filter metrics"
+                                            placeholder="filter this page"
+                                            aria-label="Filter metrics on this page"
                                             data-table-filter-input="metric-registry";
                                     }
                                 }
@@ -923,7 +914,7 @@ pub(super) fn render_metric_registry_table(
                                             input.compact-input
                                                 type="text"
                                                 name="target"
-                                                list="metric-merge-targets"
+                                                list="metric-choices"
                                                 placeholder="merge into..."
                                                 aria-label=(format!("Merge target for {}", metric.key))
                                                 data-auto-submit="true";
@@ -937,9 +928,33 @@ pub(super) fn render_metric_registry_table(
                         }
                     }
                 }
+                nav.registry-pagination aria-label="Metric pages" {
+                    @if page > 0 {
+                        a.form-button href=(metric_registry_page_href(selected_frontier_query, page - 1)) { "Previous" }
+                    }
+                    span.muted {
+                        "Showing " (page_start + 1) "–" (page_end) " of " (all_metrics.len())
+                    }
+                    @if page_end < all_metrics.len() {
+                        a.form-button href=(metric_registry_page_href(selected_frontier_query, page + 1)) { "Next" }
+                    }
+                }
             }
         }
     }
+}
+
+fn metric_registry_page_href(frontier: Option<&str>, zero_based_page: u32) -> String {
+    let page = zero_based_page.saturating_add(1);
+    frontier.map_or_else(
+        || format!("metrics?page={page}"),
+        |frontier| {
+            format!(
+                "metrics?frontier={}&page={page}",
+                crate::ui::encode_path_segment(frontier)
+            )
+        },
+    )
 }
 
 pub(super) fn metric_registry_filter_text(

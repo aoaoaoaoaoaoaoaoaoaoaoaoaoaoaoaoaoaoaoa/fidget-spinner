@@ -176,7 +176,9 @@ impl StructuredProjection for HypothesisDetailOutput {
 }
 
 impl SurfacePolicy for HypothesisDetailOutput {
-    const KIND: SurfaceKind = SurfaceKind::Read;
+    fn projection_policy(&self) -> libmcp::ProjectionPolicy {
+        libmcp::ProjectionPolicy::from_surface(SurfaceKind::Read, true, false)
+    }
 }
 
 #[derive(Clone, Serialize, libmcp::ToolProjection)]
@@ -274,7 +276,9 @@ impl StructuredProjection for ExperimentDetailOutput {
 }
 
 impl SurfacePolicy for ExperimentDetailOutput {
-    const KIND: SurfaceKind = SurfaceKind::Read;
+    fn projection_policy(&self) -> libmcp::ProjectionPolicy {
+        libmcp::ProjectionPolicy::from_surface(SurfaceKind::Read, true, false)
+    }
 }
 
 #[derive(Clone, Serialize, libmcp::ToolProjection)]
@@ -1258,7 +1262,10 @@ fn vertex_summary(vertex: &VertexSummary) -> VertexSummaryProjection {
 }
 
 fn timestamp_value(timestamp: time::OffsetDateTime) -> TimestampText {
-    TimestampText::from(timestamp)
+    match TimestampText::try_from(timestamp) {
+        Ok(timestamp) => timestamp,
+        Err(_) => unreachable!("stored timestamps must inhabit RFC3339's year range"),
+    }
 }
 
 fn store_fault(operation: &str) -> impl Fn(StoreError) -> FaultRecord + '_ {

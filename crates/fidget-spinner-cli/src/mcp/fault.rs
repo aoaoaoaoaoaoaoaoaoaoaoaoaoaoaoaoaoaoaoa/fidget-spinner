@@ -24,6 +24,8 @@ pub(crate) enum FaultStage {
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub(crate) struct FaultRecord {
+    #[serde(default = "legacy_fault_code")]
+    pub code: String,
     pub kind: FaultKind,
     pub stage: FaultStage,
     pub operation: String,
@@ -43,6 +45,7 @@ impl FaultRecord {
         message: impl Into<String>,
     ) -> Self {
         Self {
+            code: default_fault_code(kind, stage).to_owned(),
             kind,
             stage,
             operation: operation.into(),
@@ -52,6 +55,12 @@ impl FaultRecord {
             worker_generation: None,
             occurred_at: OffsetDateTime::now_utc(),
         }
+    }
+
+    #[must_use]
+    pub fn with_code(mut self, code: &'static str) -> Self {
+        code.clone_into(&mut self.code);
+        self
     }
 
     #[must_use]
@@ -101,10 +110,28 @@ impl FaultRecord {
 
     #[must_use]
     pub fn is_store_format_mismatch(&self) -> bool {
-        self.kind == FaultKind::Unavailable
-            && self.stage == FaultStage::Store
-            && self.message.contains("project store format ")
-            && self.message.contains(" is incompatible with this binary ")
+        self.code == "store_format_mismatch"
+            || (self.code == "legacy"
+                && self.kind == FaultKind::Unavailable
+                && self.stage == FaultStage::Store
+                && self.message.contains("project store format ")
+                && self.message.contains(" is incompatible with this binary "))
+    }
+}
+
+fn legacy_fault_code() -> String {
+    "legacy".to_owned()
+}
+
+const fn default_fault_code(kind: FaultKind, stage: FaultStage) -> &'static str {
+    match (kind, stage) {
+        (FaultKind::InvalidInput, FaultStage::Protocol) => "invalid_protocol_input",
+        (FaultKind::InvalidInput, _) => "invalid_input",
+        (FaultKind::NotInitialized, _) => "not_initialized",
+        (FaultKind::PolicyViolation, _) => "policy_violation",
+        (FaultKind::Unavailable, _) => "unavailable",
+        (FaultKind::Transient, _) => "transient",
+        (FaultKind::Internal, _) => "internal",
     }
 }
 
@@ -119,7 +146,8 @@ mod tests {
             FaultStage::Store,
             "tools/call:frontier.list",
             "project store format 7 is incompatible with this binary (expected 6); restart/upgrade the stale MCP binary if the store is newer, or run the manual store migration if the store is older",
-        );
+        )
+        .with_code("store_format_mismatch");
 
         assert!(fault.is_store_format_mismatch());
     }

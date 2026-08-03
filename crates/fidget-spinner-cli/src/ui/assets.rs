@@ -460,34 +460,14 @@ function applyAllTableFilters() {{
     }}
 }}
 
-function syncMetricChoiceSelectTitle(select) {{
-    const option = select.selectedOptions && select.selectedOptions[0];
-    const detail = option instanceof HTMLOptionElement
-        ? option.dataset.metricChoiceDetail || option.title
-        : "";
-    if (detail) {{
-        select.title = detail;
-    }} else {{
-        select.removeAttribute("title");
-    }}
-}}
-
-function syncAllMetricChoiceSelectTitles() {{
-    for (const select of document.querySelectorAll("select[data-metric-choice-select]")) {{
-        if (select instanceof HTMLSelectElement) {{
-            syncMetricChoiceSelectTitle(select);
-        }}
-    }}
-}}
-
 function syncSyntheticMetricExtras(form) {{
     const operation = form.querySelector("select[data-synthetic-operation-select]");
     if (!(operation instanceof HTMLSelectElement)) {{
         return;
     }}
     const showExtras = operation.value === "gmean";
-    for (const extra of form.querySelectorAll("select[data-synthetic-gmean-extra]")) {{
-        if (extra instanceof HTMLSelectElement) {{
+    for (const extra of form.querySelectorAll("[data-synthetic-gmean-extra]")) {{
+        if (extra instanceof HTMLInputElement) {{
             extra.hidden = !showExtras;
         }}
     }}
@@ -511,7 +491,6 @@ document.addEventListener("visibilitychange", () => {{
 }});
 pollRefreshToken();
 applyAllTableFilters();
-syncAllMetricChoiceSelectTitles();
 syncAllSyntheticMetricExtras();
 
 document.addEventListener("click", (event) => {{
@@ -619,9 +598,6 @@ document.addEventListener("change", (event) => {{
     const target = event.target;
     if (!(target instanceof HTMLElement)) {{
         return;
-    }}
-    if (target instanceof HTMLSelectElement && target.hasAttribute("data-metric-choice-select")) {{
-        syncMetricChoiceSelectTitle(target);
     }}
     if (target instanceof HTMLSelectElement && target.hasAttribute("data-synthetic-operation-select")) {{
         const form = target.closest("form");
@@ -1226,6 +1202,7 @@ pub(super) fn styles() -> &'static str {
     }
     .dense-table {
         width: 100%;
+        min-width: 720px;
         border-collapse: collapse;
         table-layout: auto;
     }
@@ -1682,6 +1659,11 @@ pub(super) fn styles() -> &'static str {
         overflow-wrap: anywhere;
         word-break: break-word;
     }
+    .tag-registry-table .tag-chip {
+        white-space: nowrap;
+        overflow-wrap: normal;
+        word-break: normal;
+    }
     .plot-card-header {
         align-items: center;
     }
@@ -1733,6 +1715,9 @@ pub(super) fn styles() -> &'static str {
         display: grid;
         gap: 12px;
         box-shadow: 0 16px 36px rgba(83, 61, 33, 0.16);
+    }
+    .control-popout:not([open]) > .control-popout-panel {
+        display: none;
     }
     .metric-popout-panel {
         width: min(760px, calc(100vw - 80px));
@@ -1944,7 +1929,7 @@ pub(super) fn styles() -> &'static str {
     .status-archived { color: #7a756d; border-color: var(--border); background: var(--panel); }
     .metric-table {
         width: 100%;
-        min-width: 0;
+        min-width: 860px;
         border-collapse: collapse;
         table-layout: auto;
         font-size: 13px;
@@ -1958,7 +1943,8 @@ pub(super) fn styles() -> &'static str {
     .table-scroll {
         width: 100%;
         min-width: 0;
-        overflow-x: hidden;
+        overflow-x: auto;
+        overscroll-behavior-inline: contain;
     }
     .metric-table th,
     .metric-table td {
@@ -1995,6 +1981,14 @@ pub(super) fn styles() -> &'static str {
         min-width: 14ch;
         text-transform: none;
         letter-spacing: normal;
+    }
+    .registry-pagination {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 10px;
+        flex-wrap: wrap;
+        margin-top: 12px;
     }
     .metric-table-fit-heading,
     .metric-table-action-cell,
@@ -2054,12 +2048,33 @@ pub(super) fn styles() -> &'static str {
         border: 1px solid var(--border);
         background: var(--panel-2);
         padding: 8px;
-        overflow: hidden;
+        overflow-x: auto;
+        overscroll-behavior-inline: contain;
     }
     .chart-frame svg {
         display: block;
         width: 100%;
         height: auto;
+    }
+    .chart-reference-list {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 5px 14px;
+        margin-top: 8px;
+        color: var(--muted);
+        font-size: 11px;
+    }
+    .chart-reference {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        min-width: 0;
+        overflow-wrap: anywhere;
+    }
+    .chart-reference-swatch {
+        width: 16px;
+        flex: 0 0 16px;
+        border-top: 1px dashed;
     }
     .chart-action-row {
         position: absolute;
@@ -2128,6 +2143,9 @@ pub(super) fn styles() -> &'static str {
     .metric-table-caption {
         margin: 0;
         font-size: 12px;
+        white-space: normal;
+        overflow-wrap: anywhere;
+        word-break: break-word;
     }
     .chart-error {
         color: var(--rejected);
@@ -2179,6 +2197,13 @@ pub(super) fn styles() -> &'static str {
         .control-popout {
             width: 100%;
         }
+        .frontier-summary-editor {
+            width: auto;
+        }
+        .frontier-summary-editor[open] {
+            width: 100%;
+            flex: 1 0 100%;
+        }
         .control-popout-toggle {
             width: 100%;
             justify-content: center;
@@ -2193,6 +2218,10 @@ pub(super) fn styles() -> &'static str {
         }
         .metric-popout-layout {
             grid-template-columns: 1fr;
+        }
+        .chart-frame svg {
+            width: 780px;
+            max-width: none;
         }
     }
     "#
