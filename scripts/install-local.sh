@@ -128,6 +128,7 @@ uninstall_skill() {
 
 install_binary() {
   local binary="${LOCAL_BIN_DIR}/fidget-spinner-cli"
+  local staged_binary
   if [[ -e "${binary}" || -L "${binary}" ]] && [[ ! -f "${binary}" || -L "${binary}" ]]; then
     printf 'refusing non-regular binary path: %s\n' "${binary}" >&2
     return 1
@@ -144,9 +145,17 @@ install_binary() {
       return 1
     fi
   fi
-  install -m 0755 \
+  staged_binary="$(mktemp "${LOCAL_BIN_DIR}/.fidget-spinner-cli.XXXXXX")"
+  if ! install -m 0755 \
     "${CARGO_TARGET_DIR}/release/fidget-spinner-cli" \
-    "${binary}"
+    "${staged_binary}"; then
+    rm -f "${staged_binary}"
+    return 1
+  fi
+  if ! mv -f "${staged_binary}" "${binary}"; then
+    rm -f "${staged_binary}"
+    return 1
+  fi
   printf '%s\n' "${OWNERSHIP_MARKER}" > "${BINARY_MARKER}"
   chmod 0644 "${BINARY_MARKER}"
   printf 'installed binary: %s\n' "${binary}"

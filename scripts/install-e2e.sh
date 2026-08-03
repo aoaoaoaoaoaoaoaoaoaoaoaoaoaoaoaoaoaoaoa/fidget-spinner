@@ -72,6 +72,14 @@ run_installer "${LOCAL_ROOT}" "${SKILL_ROOT}"
 
 "${LOCAL_ROOT}/bin/fidget-spinner-cli" --version | grep -Eq '^fidget-spinner-cli 1\.0\.0$' \
   || fail "installed binary has the wrong identity"
+first_binary_inode="$(stat -c '%i' "${LOCAL_ROOT}/bin/fidget-spinner-cli")"
+run_installer "${LOCAL_ROOT}" "${SKILL_ROOT}"
+second_binary_inode="$(stat -c '%i' "${LOCAL_ROOT}/bin/fidget-spinner-cli")"
+[[ "${first_binary_inode}" != "${second_binary_inode}" ]] \
+  || fail "binary upgrade did not publish a new inode"
+if compgen -G "${LOCAL_ROOT}/bin/.fidget-spinner-cli.??????" >/dev/null; then
+  fail "binary upgrade left a staged executable"
+fi
 for skill in fidget-spinner frontier-loop; do
   [[ -f "${SKILL_ROOT}/${skill}/SKILL.md" ]] || fail "${skill} was not copied"
   [[ ! -L "${SKILL_ROOT}/${skill}" ]] || fail "${skill} still depends on the source checkout"

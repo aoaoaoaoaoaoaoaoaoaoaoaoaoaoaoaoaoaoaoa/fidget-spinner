@@ -6,6 +6,81 @@
 
 include!("support/mcp_harness.rs");
 
+#[cfg(target_os = "linux")]
+#[test]
+fn idle_host_adopts_atomically_replaced_executable_without_losing_session() -> TestResult {
+    let project_root = temp_project_root("idle_binary_rollout")?;
+    init_project(&project_root)?;
+    let canonical = install_test_executable(&project_root)?;
+
+    let mut harness = McpHarness::spawn_from(canonical.as_std_path(), Some(&project_root))?;
+    let host_pid = harness.process_id();
+    let _ = harness.initialize()?;
+    harness.notify_initialized()?;
+
+    let successor_inode = replace_test_executable(canonical.as_std_path())?;
+    wait_for_live_executable(host_pid, successor_inode)?;
+
+    assert_eq!(
+        harness.process_id(),
+        host_pid,
+        "rollout must preserve the host PID"
+    );
+    let health = harness.call_tool_full(3, "system.health", json!({}))?;
+    assert_tool_ok(&health);
+    let health = tool_content(&health);
+    assert_eq!(health["initialization"]["ready"].as_bool(), Some(true));
+    assert_eq!(health["binding"]["bound"].as_bool(), Some(true));
+    assert_eq!(health["binary"]["rollout_pending"].as_bool(), Some(false));
+
+    let telemetry = harness.call_tool_full(4, "system.telemetry", json!({}))?;
+    assert_tool_ok(&telemetry);
+    assert_eq!(tool_content(&telemetry)["host_rollouts"].as_u64(), Some(1));
+    assert!(!tool_names(&harness.tools_list()?).is_empty());
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn binary_rollout_waits_for_a_partially_buffered_request() -> TestResult {
+    let project_root = temp_project_root("buffered_binary_rollout")?;
+    init_project(&project_root)?;
+    let canonical = install_test_executable(&project_root)?;
+
+    let mut harness = McpHarness::spawn_from(canonical.as_std_path(), Some(&project_root))?;
+    let host_pid = harness.process_id();
+    let _ = harness.initialize()?;
+    harness.notify_initialized()?;
+    let request = must(
+        serde_json::to_vec(&json!({
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": "tools/list",
+            "params": {},
+        })),
+        "encode fragmented request",
+    )?;
+    let fracture = request.len() / 2;
+    harness.write_fragment(&request[..fracture])?;
+
+    let successor_inode = replace_test_executable(canonical.as_std_path())?;
+    std::thread::sleep(std::time::Duration::from_millis(750));
+    assert_ne!(
+        live_executable_inode(host_pid)?,
+        successor_inode,
+        "host must not exec while a request fragment is buffered"
+    );
+
+    harness.write_fragment(&request[fracture..])?;
+    harness.write_fragment(b"\n")?;
+    let response = harness.read_response()?;
+    assert_eq!(response["id"].as_u64(), Some(3));
+    assert!(!tool_names(&response).is_empty());
+    wait_for_live_executable(host_pid, successor_inode)?;
+    assert!(!tool_names(&harness.tools_list()?).is_empty());
+    Ok(())
+}
+
 #[test]
 fn cold_start_exposes_bound_surface_and_new_toolset() -> TestResult {
     let project_root = temp_project_root("cold_start")?;

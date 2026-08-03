@@ -26,12 +26,20 @@ Version 1.0 writes store format 20 and automatically accepts formats 9 through
 transaction. Failed initialization removes its partial database. Initializing
 an existing database is rejected.
 
-Before an upgrade:
+Before an upgrade that changes the store format:
 
 1. Stop the navigator and MCP processes that use the project.
 2. Copy `state.sqlite` to durable storage.
 3. Install the new binary and open the project once.
 4. Run `project status`, then inspect `system.health` through MCP.
+
+Format-compatible executable upgrades do not require an MCP restart. The local
+installer publishes the successor with an atomic rename. Each idle Unix MCP
+host polls the canonical executable, waits for one stable successor
+observation, and then replaces its process image while retaining its stdio
+pipes, initialized session, project binding, request journal, and telemetry.
+Partially written or temporarily absent successors are never executed. The
+navigator remains a systemd-managed process and is restarted by the installer.
 
 If an upgrade fails, preserve both the database and the exact error. Retry with
 the same binary only after correcting an external cause such as permissions or
@@ -82,10 +90,10 @@ expose it directly to an untrusted network.
 
 The operation map is cardinality-bounded; unknown overflow is folded into
 `other`. Telemetry contains no arguments, SQL, experiment prose, paths beyond
-ordinary health output, or result payloads. It survives in-process binary
-rollouts through the private libmcp snapshot capsule and resets on an ordinary
-host restart. These aggregates are the evidence surface for deciding whether
-additive argument tolerance or aliases are warranted.
+ordinary health output, or result payloads. It survives proactive in-process
+binary rollouts through the private libmcp snapshot capsule and resets on an
+ordinary host restart. These aggregates are the evidence surface for deciding
+whether additive argument tolerance or aliases are warranted.
 
 ## Frontier SQL
 

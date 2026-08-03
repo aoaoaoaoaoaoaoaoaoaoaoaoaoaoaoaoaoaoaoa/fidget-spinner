@@ -4,7 +4,7 @@ use dirs as _;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::{self, BufRead, BufReader, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::OnceLock;
 
@@ -176,6 +176,66 @@ fn binary_path() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_fidget-spinner-cli"))
 }
 
+#[cfg(target_os = "linux")]
+fn install_test_executable(project_root: &Utf8PathBuf) -> TestResult<Utf8PathBuf> {
+    let installation = project_root.join("installation");
+    must(fs::create_dir(&installation), "create test installation")?;
+    let canonical = installation.join("fidget-spinner-cli");
+    let _installed_bytes = must(
+        fs::copy(binary_path(), &canonical),
+        "install initial test executable",
+    )?;
+    Ok(canonical)
+}
+
+#[cfg(target_os = "linux")]
+fn replace_test_executable(canonical: &Path) -> TestResult<u64> {
+    use std::os::unix::fs::MetadataExt;
+
+    let staged = canonical.with_file_name(".fidget-spinner-cli.successor");
+    let _staged_bytes = must(
+        fs::copy(binary_path(), &staged),
+        "stage successor test executable",
+    )?;
+    must(
+        fs::rename(&staged, canonical),
+        "atomically publish successor test executable",
+    )?;
+    Ok(must(
+        fs::metadata(canonical),
+        "inspect successor executable",
+    )?
+    .ino())
+}
+
+#[cfg(target_os = "linux")]
+fn live_executable_inode(process_id: u32) -> TestResult<u64> {
+    use std::os::unix::fs::MetadataExt;
+
+    Ok(must(
+        fs::metadata(format!("/proc/{process_id}/exe")),
+        "inspect live host executable",
+    )?
+    .ino())
+}
+
+#[cfg(target_os = "linux")]
+fn wait_for_live_executable(process_id: u32, successor_inode: u64) -> TestResult {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        if live_executable_inode(process_id)? == successor_inode {
+            return Ok(());
+        }
+        if std::time::Instant::now() >= deadline {
+            return Err(io::Error::other(format!(
+                "idle MCP host {process_id} did not adopt successor inode {successor_inode}"
+            ))
+            .into());
+        }
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+}
+
 struct McpHarness {
     child: Child,
     stdin: ChildStdin,
@@ -184,8 +244,12 @@ struct McpHarness {
 
 impl McpHarness {
     fn spawn(project_root: Option<&Utf8PathBuf>) -> TestResult<Self> {
+        Self::spawn_from(&binary_path(), project_root)
+    }
+
+    fn spawn_from(executable: &Path, project_root: Option<&Utf8PathBuf>) -> TestResult<Self> {
         let state_home = ensure_test_state_home()?;
-        let mut command = Command::new(binary_path());
+        let mut command = Command::new(executable);
         let _ = command
             .arg("mcp")
             .arg("serve")
@@ -204,6 +268,10 @@ impl McpHarness {
             stdin,
             stdout,
         })
+    }
+
+    fn process_id(&self) -> u32 {
+        self.child.id()
     }
 
     fn initialize(&mut self) -> TestResult<Value> {
@@ -262,12 +330,7 @@ impl McpHarness {
         let encoded = must(serde_json::to_string(&message), "request json")?;
         must(writeln!(self.stdin, "{encoded}"), "write request")?;
         must(self.stdin.flush(), "flush request")?;
-        let mut line = String::new();
-        let byte_count = must(self.stdout.read_line(&mut line), "read response")?;
-        if byte_count == 0 {
-            return Err(io::Error::other("unexpected EOF reading response").into());
-        }
-        must(serde_json::from_str(&line), "response json")
+        self.read_response()
     }
 
     fn notify(&mut self, message: Value) -> TestResult {
@@ -275,6 +338,21 @@ impl McpHarness {
         must(writeln!(self.stdin, "{encoded}"), "write notify")?;
         must(self.stdin.flush(), "flush notify")?;
         Ok(())
+    }
+
+    fn write_fragment(&mut self, fragment: &[u8]) -> TestResult {
+        must(self.stdin.write_all(fragment), "write request fragment")?;
+        must(self.stdin.flush(), "flush request fragment")?;
+        Ok(())
+    }
+
+    fn read_response(&mut self) -> TestResult<Value> {
+        let mut line = String::new();
+        let byte_count = must(self.stdout.read_line(&mut line), "read response")?;
+        if byte_count == 0 {
+            return Err(io::Error::other("unexpected EOF reading response").into());
+        }
+        must(serde_json::from_str(&line), "response json")
     }
 }
 

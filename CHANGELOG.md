@@ -12,6 +12,11 @@
 - Bounds initial experiment tables to 250 matching rows and extends the real
   browser gate across chart interaction, clipboard export, hostile geometry,
   and the largest non-archived frontier in a supplied ledger.
+- Publishes local binary upgrades atomically and makes idle Unix MCP hosts
+  adopt stable successor inodes proactively without losing stdio, session
+  state, binding, request history, or telemetry.
+- Moves lossless timed frame polling into libmcp and pins the official GitHub
+  source, removing the retired Swarm dependency.
 
 ## 1.0.0 - 2026-08-02
 

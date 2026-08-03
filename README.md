@@ -31,6 +31,9 @@ This builds a release binary, installs it at
 `~/.codex/skills/`, and installs the loopback navigator as
 `fidget-spinner-ui.service`. Re-running the command upgrades those owned
 artifacts. It refuses to replace unowned binary, skill, or service paths.
+Binary publication is atomic. Existing Unix MCP sessions observe a stable
+successor while idle and re-exec in place, preserving their stdio transport and
+session state without a client restart.
 
 To install the binary and skills without systemd integration:
 

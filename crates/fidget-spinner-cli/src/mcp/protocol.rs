@@ -69,12 +69,6 @@ pub(crate) enum WorkerOutcome {
     },
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub(crate) struct BinaryFingerprint {
-    pub length_bytes: u64,
-    pub modified_unix_nanos: u128,
-}
-
 #[derive(Clone, Debug)]
 pub(crate) struct WorkerSpawnConfig {
     pub executable: PathBuf,

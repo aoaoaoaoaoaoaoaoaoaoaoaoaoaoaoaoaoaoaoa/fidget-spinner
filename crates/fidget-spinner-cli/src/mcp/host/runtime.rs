@@ -3,18 +3,21 @@ use std::io::{self, Write};
 use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
 use std::process::Command;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use libmcp::{
-    FrameLimit, FrameReadOutcome, FramedMessage, HostRejection, HostSessionKernel, ReplayContract,
-    SnapshotLimits, load_snapshot_file_from_env, read_frame_blocking, write_frame_blocking,
-    write_snapshot_file,
+    FrameLimit, FramedMessage, HostRejection, HostSessionKernel, ReplayContract, SnapshotLimits,
+    load_snapshot_file_from_env, write_frame_blocking, write_snapshot_file,
 };
+#[cfg(not(unix))]
+use libmcp::{FrameReadOutcome, read_frame_blocking};
+#[cfg(unix)]
+use libmcp::{TimedFrameReadOutcome, TimedFrameReader};
 use serde::Serialize;
 use serde_json::{Map, Value, json};
 
 use super::{
-    binary::BinaryRuntime,
+    binary::{BinaryObservation, BinaryRuntime},
     config::HostConfig,
     process::{ProjectBinding, WorkerSupervisor},
 };
@@ -37,6 +40,45 @@ use crate::mcp::telemetry::{
 pub(crate) fn run_host(
     initial_project: Option<PathBuf>,
 ) -> Result<(), fidget_spinner_store_sqlite::StoreError> {
+    #[cfg(unix)]
+    {
+        run_polling_host(initial_project)
+    }
+    #[cfg(not(unix))]
+    {
+        run_blocking_host(initial_project)
+    }
+}
+
+#[cfg(unix)]
+fn run_polling_host(
+    initial_project: Option<PathBuf>,
+) -> Result<(), fidget_spinner_store_sqlite::StoreError> {
+    let stdin = io::stdin();
+    let mut stdin = TimedFrameReader::new(stdin.lock(), FrameLimit::DEFAULT);
+    let mut stdout = io::stdout().lock();
+    let mut host = HostRuntime::new(HostConfig::new(initial_project)?)?;
+
+    loop {
+        match stdin.read_frame(HOST_CONTROL_POLL_INTERVAL)? {
+            TimedFrameReadOutcome::Frame(payload) => {
+                if let Some(response) = host.handle_payload(payload) {
+                    write_message(&mut stdout, &response)?;
+                }
+            }
+            TimedFrameReadOutcome::EndOfStream => return Ok(()),
+            TimedFrameReadOutcome::TimedOut => {}
+        }
+        if !stdin.has_buffered_input() {
+            host.maybe_roll_forward();
+        }
+    }
+}
+
+#[cfg(not(unix))]
+fn run_blocking_host(
+    initial_project: Option<PathBuf>,
+) -> Result<(), fidget_spinner_store_sqlite::StoreError> {
     let mut stdin = io::BufReader::new(io::stdin().lock());
     let mut stdout = io::stdout().lock();
     let mut host = HostRuntime::new(HostConfig::new(initial_project)?)?;
@@ -47,7 +89,7 @@ pub(crate) fn run_host(
         if let Some(response) = host.handle_payload(payload) {
             write_message(&mut stdout, &response)?;
         }
-        host.maybe_roll_forward()?;
+        host.maybe_roll_forward();
     }
 
     Ok(())
@@ -56,6 +98,9 @@ pub(crate) fn run_host(
 const HOST_PENDING_CAPACITY: usize = 128;
 const HOST_SNAPSHOT_MAX_BYTES: usize = 16 * 1024 * 1024;
 const HOST_REPLAY_ATTEMPTS: u8 = 1;
+#[cfg(unix)]
+const HOST_CONTROL_POLL_INTERVAL: Duration = Duration::from_millis(250);
+const HOST_ROLLOUT_RETRY_DELAY: Duration = Duration::from_secs(5);
 
 struct HostRuntime {
     config: HostConfig,
@@ -70,6 +115,7 @@ struct HostRuntime {
     rollout_requested: bool,
     crash_once_key: Option<String>,
     crash_once_consumed: bool,
+    rollout_retry_not_before: Option<Instant>,
 }
 
 impl HostRuntime {
@@ -132,6 +178,7 @@ impl HostRuntime {
             rollout_requested: false,
             crash_once_key: std::env::var(CRASH_ONCE_ENV).ok(),
             crash_once_consumed,
+            rollout_retry_not_before: None,
         })
     }
 
@@ -371,7 +418,7 @@ impl HostRuntime {
     }
 
     fn refresh_worker_for_binary_rollout(&mut self, operation: &str) -> Result<(), FaultRecord> {
-        let rollout_pending = self.binary.rollout_pending().map_err(|error| {
+        let observation = self.binary.observe_rollout().map_err(|error| {
             FaultRecord::new(
                 FaultKind::Internal,
                 FaultStage::Rollout,
@@ -379,7 +426,7 @@ impl HostRuntime {
                 format!("failed to inspect MCP binary rollout state: {error}"),
             )
         })?;
-        if !rollout_pending {
+        if !observation.rollout_ready() {
             return Ok(());
         }
         self.telemetry.record_worker_restart();
@@ -469,7 +516,11 @@ impl HostRuntime {
                     binary: BinaryHealth {
                         current_executable: self.binary.path.display().to_string(),
                         launch_path_stable: self.binary.launch_path_stable,
-                        rollout_pending: self.binary.rollout_pending().unwrap_or(false),
+                        rollout_pending: self.rollout_requested
+                            || self
+                                .binary
+                                .observe_rollout()
+                                .map_or(true, BinaryObservation::rollout_pending),
                     },
                     last_fault: self.telemetry.last_fault.clone(),
                 };
@@ -559,15 +610,34 @@ impl HostRuntime {
         id
     }
 
-    fn maybe_roll_forward(&mut self) -> Result<(), fidget_spinner_store_sqlite::StoreError> {
-        let binary_pending = self.binary.rollout_pending()?;
-        if !self.rollout_requested && !binary_pending {
-            return Ok(());
+    fn maybe_roll_forward(&mut self) {
+        let now = Instant::now();
+        if self
+            .rollout_retry_not_before
+            .is_some_and(|deadline| now < deadline)
+        {
+            return;
         }
-        if binary_pending && !self.rollout_requested {
+        self.rollout_retry_not_before = None;
+        let observation = match self.binary.observe_rollout() {
+            Ok(observation) => observation,
+            Err(error) => {
+                self.rollout_retry_not_before =
+                    Instant::now().checked_add(HOST_ROLLOUT_RETRY_DELAY);
+                eprintln!("MCP successor observation failure: {error}");
+                return;
+            }
+        };
+        if !self.rollout_requested && !observation.rollout_ready() {
+            return;
+        }
+        if observation.rollout_ready() && !self.rollout_requested {
             self.telemetry.record_rollout();
         }
-        self.roll_forward()
+        if let Err(error) = self.roll_forward() {
+            self.rollout_retry_not_before = Instant::now().checked_add(HOST_ROLLOUT_RETRY_DELAY);
+            eprintln!("MCP host rollout deferred after failed exec: {error}");
+        }
     }
 
     fn roll_forward(&mut self) -> Result<(), fidget_spinner_store_sqlite::StoreError> {
