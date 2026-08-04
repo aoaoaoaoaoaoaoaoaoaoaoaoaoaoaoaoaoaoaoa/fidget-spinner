@@ -41,6 +41,7 @@ use crate::open_store;
 mod assets;
 mod chart;
 mod detail;
+mod number;
 mod registry;
 mod results;
 mod routes;
@@ -929,15 +930,27 @@ impl MetricValueUnit for MetricDisplayUnit {
 fn format_metric_value(value: f64, unit: &impl MetricValueUnit) -> String {
     match unit.known_unit() {
         Some(KnownMetricUnit::Bytes) => format!("{} B", format_integerish(value)),
-        Some(KnownMetricUnit::Kibibytes) => format!("{value:.2} KiB"),
-        Some(KnownMetricUnit::Mebibytes) => format!("{value:.2} MiB"),
-        Some(KnownMetricUnit::Gibibytes) => format!("{value:.2} GiB"),
-        Some(KnownMetricUnit::Seconds) => format!("{value:.3} s"),
-        Some(KnownMetricUnit::Milliseconds) => format!("{value:.3} ms"),
+        Some(KnownMetricUnit::Kibibytes) => {
+            format!("{} KiB", number::format_significant(value, 2))
+        }
+        Some(KnownMetricUnit::Mebibytes) => {
+            format!("{} MiB", number::format_significant(value, 2))
+        }
+        Some(KnownMetricUnit::Gibibytes) => {
+            format!("{} GiB", number::format_significant(value, 2))
+        }
+        Some(KnownMetricUnit::Seconds) => {
+            format!("{} s", number::format_significant(value, 3))
+        }
+        Some(KnownMetricUnit::Milliseconds) => {
+            format!("{} ms", number::format_significant(value, 3))
+        }
         Some(KnownMetricUnit::Microseconds) => format!("{} us", format_integerish(value)),
         Some(KnownMetricUnit::Nanoseconds) => format!("{} ns", format_integerish(value)),
         Some(KnownMetricUnit::Count) => format_integerish(value),
-        Some(KnownMetricUnit::Percent) => format!("{value:.2}%"),
+        Some(KnownMetricUnit::Percent) => {
+            format!("{}%", number::format_significant(value, 2))
+        }
         Some(KnownMetricUnit::Dimensionless) | None => {
             let label = unit.label();
             if label == "dimensionless" {
@@ -953,11 +966,14 @@ fn format_float(value: f64) -> String {
     if value.fract() == 0.0 {
         format_integerish(value)
     } else {
-        format!("{value:.4}")
+        number::format_significant(value, 4)
     }
 }
 
 fn format_integerish(value: f64) -> String {
+    if value.fract() != 0.0 {
+        return number::format_significant(value, 0);
+    }
     let negative = value.is_sign_negative();
     let digits = format!("{:.0}", value.abs());
     let mut grouped = String::with_capacity(digits.len() + (digits.len() / 3));
@@ -1247,7 +1263,8 @@ mod tests {
     use super::results::resolve_selected_metric_keys;
     use super::{
         FrontierPageQuery, FrontierTab, NavigatorState, ProjectMetricsQuery, StoreError,
-        Utf8PathBuf, encode_path_segment, markdown_html, resolve_project_context,
+        Utf8PathBuf, encode_path_segment, format_metric_value, markdown_html,
+        resolve_project_context,
     };
     use std::collections::BTreeMap;
     use std::error::Error;
@@ -1319,6 +1336,18 @@ mod tests {
             description: None,
             reference_count: 0,
         }
+    }
+
+    #[test]
+    fn metric_tables_preserve_small_measurements() {
+        assert_eq!(
+            format_metric_value(0.000_123, &MetricUnit::Seconds),
+            "0.000123 s"
+        );
+        assert_eq!(
+            format_metric_value(1.234_5, &MetricUnit::Microseconds),
+            "1.23 us"
+        );
     }
 
     #[test]

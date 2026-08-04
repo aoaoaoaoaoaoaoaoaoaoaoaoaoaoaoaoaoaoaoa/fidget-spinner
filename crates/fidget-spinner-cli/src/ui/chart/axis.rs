@@ -1,11 +1,14 @@
 use fidget_spinner_core::{KnownMetricUnit, MetricDisplayUnit, MetricQuantity};
 
+use crate::ui::number::format_significant;
+
 const TARGET_TICKS: f64 = 6.0;
 
 #[derive(Clone, Debug, PartialEq)]
 pub(super) struct AxisUnit {
     label: String,
     canonical_per_unit: f64,
+    integer_observations: bool,
 }
 
 impl AxisUnit {
@@ -39,7 +42,7 @@ impl AxisUnit {
             );
         }
         if quantity == &MetricQuantity::count() {
-            return Self::new("count", 1.0);
+            return Self::integer("count");
         }
         if quantity.is_dimensionless()
             && display_units.into_iter().any(|unit| {
@@ -70,6 +73,15 @@ impl AxisUnit {
         Self {
             label: label.into(),
             canonical_per_unit,
+            integer_observations: false,
+        }
+    }
+
+    fn integer(label: impl Into<String>) -> Self {
+        Self {
+            label: label.into(),
+            canonical_per_unit: 1.0,
+            integer_observations: true,
         }
     }
 
@@ -176,11 +188,12 @@ impl ValueAxisPlan {
             .windows(2)
             .next()
             .map_or(1.0, |ticks| (ticks[1].value - ticks[0].value).abs());
-        format!(
-            "{} {}",
-            format_axis_number(display, step),
-            self.unit.label()
-        )
+        let number = if self.unit.integer_observations && display.fract() == 0.0 {
+            format_axis_number(display, 1.0)
+        } else {
+            format_observation_number(display, step)
+        };
+        format!("{} {}", number, self.unit.label())
     }
 }
 
@@ -275,12 +288,29 @@ pub(super) fn format_axis_number(value: f64, step: f64) -> String {
             return trim_decimal(value / threshold, 2) + suffix;
         }
     }
-    let decimals = if step >= 1.0 {
+    trim_decimal(value, axis_decimals(step))
+}
+
+fn format_observation_number(value: f64, step: f64) -> String {
+    let absolute = value.abs();
+    for (threshold, suffix) in [(1e9, "G"), (1e6, "M"), (1e3, "k")] {
+        if absolute >= threshold {
+            return format!(
+                "{}{}",
+                format_significant(value / threshold, axis_decimals(step / threshold)),
+                suffix
+            );
+        }
+    }
+    format_significant(value, axis_decimals(step))
+}
+
+fn axis_decimals(step: f64) -> usize {
+    if step >= 1.0 {
         0
     } else {
         usize::try_from((-step.log10().floor() as i32 + 1).clamp(0, 8)).unwrap_or(8)
-    };
-    trim_decimal(value, decimals)
+    }
 }
 
 fn trim_decimal(value: f64, decimals: usize) -> String {
@@ -313,6 +343,39 @@ mod tests {
             false,
         );
         assert_eq!(axis.map(|axis| axis.unit.label), Some("hours".to_owned()));
+    }
+
+    #[test]
+    fn observation_labels_preserve_precision_after_unit_promotion() {
+        let canonical = 8.456 * 60_000_000_000.0;
+        let axis = ValueAxisPlan::build(
+            MetricQuantity::time(),
+            std::iter::empty(),
+            &[canonical],
+            false,
+        );
+
+        assert_eq!(axis.as_ref().map(|axis| axis.unit.label()), Some("minutes"));
+        assert_eq!(
+            axis.map(|axis| axis.format_value(canonical)),
+            Some("8.46 minutes".to_owned())
+        );
+    }
+
+    #[test]
+    fn integral_counts_do_not_acquire_counterfeit_fractional_precision() {
+        let canonical = 20.0;
+        let axis = ValueAxisPlan::build(
+            MetricQuantity::count(),
+            std::iter::empty(),
+            &[canonical],
+            false,
+        );
+
+        assert_eq!(
+            axis.map(|axis| axis.format_value(canonical)),
+            Some("20 count".to_owned())
+        );
     }
 
     #[test]
