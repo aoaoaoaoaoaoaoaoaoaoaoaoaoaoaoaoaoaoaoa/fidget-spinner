@@ -16,7 +16,7 @@
   adopt stable successor inodes proactively without losing stdio, session
   state, binding, request history, or telemetry.
 - Moves lossless timed frame polling into libmcp and pins the official GitHub
-  source, removing the retired Swarm dependency.
+  source.
 
 ## 1.0.0 - 2026-08-02
 
