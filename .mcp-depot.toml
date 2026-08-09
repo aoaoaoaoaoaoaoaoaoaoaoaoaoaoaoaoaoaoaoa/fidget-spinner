@@ -1,0 +1,11 @@
+schema = 1
+name = "fidget-spinner"
+package = "fidget-spinner-cli"
+binary = "fidget-spinner-cli"
+arguments = ["mcp", "serve"]
+gate = ["./check.py", "check"]
+
+[state]
+mode = "versioned"
+readable = [9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]
+writable = 20

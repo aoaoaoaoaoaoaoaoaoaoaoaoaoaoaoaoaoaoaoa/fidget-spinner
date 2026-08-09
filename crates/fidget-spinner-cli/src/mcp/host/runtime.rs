@@ -1,13 +1,11 @@
 use std::io::{self, Write};
-#[cfg(unix)]
-use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
-use std::process::Command;
 use std::time::{Duration, Instant};
 
 use libmcp::{
-    FrameLimit, FramedMessage, HostRejection, HostSessionKernel, ReplayContract, SnapshotLimits,
-    load_snapshot_file_from_env, write_frame_blocking, write_snapshot_file,
+    FrameLimit, FramedMessage, HandoffOutcome, HostRejection, HostSessionKernel, ReleaseRuntime,
+    ReplayContract, SnapshotLimits, load_snapshot_file_from_env, write_frame_blocking,
+    write_snapshot_file,
 };
 #[cfg(not(unix))]
 use libmcp::{FrameReadOutcome, read_frame_blocking};
@@ -17,7 +15,6 @@ use serde::Serialize;
 use serde_json::{Map, Value, json};
 
 use super::{
-    binary::{BinaryObservation, BinaryRuntime},
     config::HostConfig,
     process::{ProjectBinding, WorkerSupervisor},
 };
@@ -58,6 +55,9 @@ fn run_polling_host(
     let mut stdin = TimedFrameReader::new(stdin.lock(), FrameLimit::DEFAULT);
     let mut stdout = io::stdout().lock();
     let mut host = HostRuntime::new(HostConfig::new(initial_project)?)?;
+    host.release
+        .admit_successor()
+        .map_err(fidget_spinner_store_sqlite::StoreError::Io)?;
 
     loop {
         match stdin.read_frame(HOST_CONTROL_POLL_INTERVAL)? {
@@ -69,8 +69,8 @@ fn run_polling_host(
             TimedFrameReadOutcome::EndOfStream => return Ok(()),
             TimedFrameReadOutcome::TimedOut => {}
         }
-        if !stdin.has_buffered_input() {
-            host.maybe_roll_forward();
+        if !stdin.has_buffered_input() && host.maybe_roll_forward() {
+            return Ok(());
         }
     }
 }
@@ -82,6 +82,9 @@ fn run_blocking_host(
     let mut stdin = io::BufReader::new(io::stdin().lock());
     let mut stdout = io::stdout().lock();
     let mut host = HostRuntime::new(HostConfig::new(initial_project)?)?;
+    host.release
+        .admit_successor()
+        .map_err(fidget_spinner_store_sqlite::StoreError::Io)?;
 
     while let FrameReadOutcome::Frame(payload) =
         read_frame_blocking(&mut stdin, FrameLimit::DEFAULT)?
@@ -89,7 +92,9 @@ fn run_blocking_host(
         if let Some(response) = host.handle_payload(payload) {
             write_message(&mut stdout, &response)?;
         }
-        host.maybe_roll_forward();
+        if host.maybe_roll_forward() {
+            return Ok(());
+        }
     }
 
     Ok(())
@@ -101,6 +106,7 @@ const HOST_REPLAY_ATTEMPTS: u8 = 1;
 #[cfg(unix)]
 const HOST_CONTROL_POLL_INTERVAL: Duration = Duration::from_millis(250);
 const HOST_ROLLOUT_RETRY_DELAY: Duration = Duration::from_secs(5);
+const HOST_HANDOFF_TIMEOUT: Duration = Duration::from_secs(15);
 
 struct HostRuntime {
     config: HostConfig,
@@ -109,7 +115,7 @@ struct HostRuntime {
     telemetry: ServerTelemetry,
     next_request_id: u64,
     worker: WorkerSupervisor,
-    binary: BinaryRuntime,
+    release: ReleaseRuntime,
     force_rollout_key: Option<String>,
     force_rollout_consumed: bool,
     rollout_requested: bool,
@@ -164,6 +170,8 @@ impl HostRuntime {
             }
             worker
         };
+        let release = ReleaseRuntime::discover(SERVER_NAME)
+            .map_err(fidget_spinner_store_sqlite::StoreError::Io)?;
 
         Ok(Self {
             config: config.clone(),
@@ -172,7 +180,7 @@ impl HostRuntime {
             telemetry,
             next_request_id,
             worker,
-            binary: BinaryRuntime::new(config.executable.clone())?,
+            release,
             force_rollout_key: std::env::var(FORCE_ROLLOUT_ENV).ok(),
             force_rollout_consumed,
             rollout_requested: false,
@@ -418,7 +426,7 @@ impl HostRuntime {
     }
 
     fn refresh_worker_for_binary_rollout(&mut self, operation: &str) -> Result<(), FaultRecord> {
-        let observation = self.binary.observe_rollout().map_err(|error| {
+        let observation = self.release.observe().map_err(|error| {
             FaultRecord::new(
                 FaultKind::Internal,
                 FaultStage::Rollout,
@@ -426,7 +434,7 @@ impl HostRuntime {
                 format!("failed to inspect MCP binary rollout state: {error}"),
             )
         })?;
-        if !observation.rollout_ready() {
+        if self.release.is_managed() || !observation.rollout_ready() {
             return Ok(());
         }
         self.telemetry.record_worker_restart();
@@ -514,13 +522,13 @@ impl HostRuntime {
                         alive: self.worker.is_alive(),
                     },
                     binary: BinaryHealth {
-                        current_executable: self.binary.path.display().to_string(),
-                        launch_path_stable: self.binary.launch_path_stable,
+                        current_executable: self.config.executable.display().to_string(),
+                        launch_path_stable: self.release.launch_path_stable(),
                         rollout_pending: self.rollout_requested
                             || self
-                                .binary
-                                .observe_rollout()
-                                .map_or(true, BinaryObservation::rollout_pending),
+                                .release
+                                .observe()
+                                .map_or(true, libmcp::ReleaseObservation::rollout_pending),
                     },
                     last_fault: self.telemetry.last_fault.clone(),
                 };
@@ -610,37 +618,48 @@ impl HostRuntime {
         id
     }
 
-    fn maybe_roll_forward(&mut self) {
+    fn maybe_roll_forward(&mut self) -> bool {
         let now = Instant::now();
         if self
             .rollout_retry_not_before
             .is_some_and(|deadline| now < deadline)
         {
-            return;
+            return false;
         }
         self.rollout_retry_not_before = None;
-        let observation = match self.binary.observe_rollout() {
+        let observation = match self.release.observe() {
             Ok(observation) => observation,
             Err(error) => {
                 self.rollout_retry_not_before =
                     Instant::now().checked_add(HOST_ROLLOUT_RETRY_DELAY);
                 eprintln!("MCP successor observation failure: {error}");
-                return;
+                return false;
             }
         };
+        if self.rollout_requested
+            && !observation.rollout_ready()
+            && let Err(error) = self.release.arm_current_relaunch()
+        {
+            self.defer_rollout(error);
+            return false;
+        }
         if !self.rollout_requested && !observation.rollout_ready() {
-            return;
+            return false;
         }
         if observation.rollout_ready() && !self.rollout_requested {
             self.telemetry.record_rollout();
         }
-        if let Err(error) = self.roll_forward() {
-            self.rollout_retry_not_before = Instant::now().checked_add(HOST_ROLLOUT_RETRY_DELAY);
-            eprintln!("MCP host rollout deferred after failed exec: {error}");
+        match self.roll_forward() {
+            Ok(HandoffOutcome::Relinquish) => true,
+            Ok(HandoffOutcome::Retained) => false,
+            Err(error) => {
+                self.defer_rollout(error);
+                false
+            }
         }
     }
 
-    fn roll_forward(&mut self) -> Result<(), fidget_spinner_store_sqlite::StoreError> {
+    fn roll_forward(&self) -> Result<HandoffOutcome, fidget_spinner_store_sqlite::StoreError> {
         let state = HostStateSeed {
             session_kernel: self.session_kernel.snapshot(),
             telemetry: self.telemetry.clone(),
@@ -652,26 +671,14 @@ impl HostRuntime {
         };
         let state_capsule = write_snapshot_file("fidget-spinner-mcp-host-reexec", &state)
             .map_err(fidget_spinner_store_sqlite::StoreError::Io)?;
-        let mut command = Command::new(&self.binary.path);
-        let _ = command.arg("mcp").arg("serve");
-        if let Some(project) = self.config.initial_project.as_ref() {
-            let _ = command.arg("--project").arg(project);
-        }
-        let _ = command.env(HOST_STATE_ENV, state_capsule.path());
-        #[cfg(unix)]
-        {
-            let error = command.exec();
-            drop(state_capsule);
-            Err(fidget_spinner_store_sqlite::StoreError::Io(error))
-        }
-        #[cfg(not(unix))]
-        {
-            drop(state_capsule);
-            return Err(fidget_spinner_store_sqlite::StoreError::Io(io::Error::new(
-                io::ErrorKind::Unsupported,
-                "host rollout requires unix exec support",
-            )));
-        }
+        self.release
+            .handoff(HOST_STATE_ENV, state_capsule.path(), HOST_HANDOFF_TIMEOUT)
+            .map_err(fidget_spinner_store_sqlite::StoreError::Io)
+    }
+
+    fn defer_rollout(&mut self, error: impl std::fmt::Display) {
+        self.rollout_retry_not_before = Instant::now().checked_add(HOST_ROLLOUT_RETRY_DELAY);
+        eprintln!("fidget-spinner MCP rollout retained incumbent: {error}");
     }
 
     fn should_force_rollout(&self, operation: &str) -> bool {

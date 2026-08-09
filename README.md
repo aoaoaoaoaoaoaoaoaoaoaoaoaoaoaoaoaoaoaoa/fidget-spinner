@@ -35,6 +35,10 @@ Binary publication is atomic. Existing Unix MCP sessions observe a stable
 successor while idle and re-exec in place, preserving their stdio transport and
 session state without a client restart.
 
+The checked-in `.mcp-depot.toml` additionally supports optional eager immutable
+releases and readiness-gated handoff. Direct installation and standalone
+execution remain complete paths; neither requires the depot.
+
 To install the binary and skills without systemd integration:
 
 ```bash

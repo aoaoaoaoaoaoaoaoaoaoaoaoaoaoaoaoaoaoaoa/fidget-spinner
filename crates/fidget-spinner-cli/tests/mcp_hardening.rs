@@ -8,24 +8,17 @@ include!("support/mcp_harness.rs");
 
 #[cfg(target_os = "linux")]
 #[test]
-fn idle_host_adopts_atomically_replaced_executable_without_losing_session() -> TestResult {
+fn idle_host_hands_the_session_to_an_atomically_replaced_successor() -> TestResult {
     let project_root = temp_project_root("idle_binary_rollout")?;
     init_project(&project_root)?;
     let canonical = install_test_executable(&project_root)?;
 
     let mut harness = McpHarness::spawn_from(canonical.as_std_path(), Some(&project_root))?;
-    let host_pid = harness.process_id();
     let _ = harness.initialize()?;
     harness.notify_initialized()?;
 
-    let successor_inode = replace_test_executable(canonical.as_std_path())?;
-    wait_for_live_executable(host_pid, successor_inode)?;
-
-    assert_eq!(
-        harness.process_id(),
-        host_pid,
-        "rollout must preserve the host PID"
-    );
+    let _successor_inode = replace_test_executable(canonical.as_std_path())?;
+    harness.wait_for_incumbent_exit()?;
     let health = harness.call_tool_full(3, "system.health", json!({}))?;
     assert_tool_ok(&health);
     let health = tool_content(&health);
@@ -76,7 +69,7 @@ fn binary_rollout_waits_for_a_partially_buffered_request() -> TestResult {
     let response = harness.read_response()?;
     assert_eq!(response["id"].as_u64(), Some(3));
     assert!(!tool_names(&response).is_empty());
-    wait_for_live_executable(host_pid, successor_inode)?;
+    harness.wait_for_incumbent_exit()?;
     assert!(!tool_names(&harness.tools_list()?).is_empty());
     Ok(())
 }

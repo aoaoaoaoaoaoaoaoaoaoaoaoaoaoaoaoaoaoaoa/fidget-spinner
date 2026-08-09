@@ -220,22 +220,6 @@ fn live_executable_inode(process_id: u32) -> TestResult<u64> {
 }
 
 #[cfg(target_os = "linux")]
-fn wait_for_live_executable(process_id: u32, successor_inode: u64) -> TestResult {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    loop {
-        if live_executable_inode(process_id)? == successor_inode {
-            return Ok(());
-        }
-        if std::time::Instant::now() >= deadline {
-            return Err(io::Error::other(format!(
-                "idle MCP host {process_id} did not adopt successor inode {successor_inode}"
-            ))
-            .into());
-        }
-        std::thread::sleep(std::time::Duration::from_millis(25));
-    }
-}
-
 struct McpHarness {
     child: Child,
     stdin: ChildStdin,
@@ -272,6 +256,23 @@ impl McpHarness {
 
     fn process_id(&self) -> u32 {
         self.child.id()
+    }
+
+    fn wait_for_incumbent_exit(&mut self) -> TestResult {
+        let process_id = self.child.id();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            if must(self.child.try_wait(), "inspect incumbent host")?.is_some() {
+                return Ok(());
+            }
+            if std::time::Instant::now() >= deadline {
+                return Err(io::Error::other(format!(
+                    "incumbent MCP host {process_id} did not relinquish the session"
+                ))
+                .into());
+            }
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
     }
 
     fn initialize(&mut self) -> TestResult<Value> {
