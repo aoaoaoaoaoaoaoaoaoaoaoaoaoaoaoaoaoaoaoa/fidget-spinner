@@ -13,7 +13,7 @@ edition = "2024"
 keywords = ["mcp", "optimization", "frontier", "experiments", "ledger"]
 license = "MIT"
 readme = "README.md"
-repository = "https://git.swarm.moe/fidget_spinner.git"
+repository = "https://github.com/aoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoa/fidget-spinner"
 rust-version = "1.97"
 version = "1.0.0"
 
