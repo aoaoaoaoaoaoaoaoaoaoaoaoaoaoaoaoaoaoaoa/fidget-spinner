@@ -118,8 +118,17 @@ fn cold_start_exposes_bound_surface_and_new_toolset() -> TestResult {
         tool_content(&bind)["state_root"].as_str(),
         "bind state root",
     )?;
-    assert!(!state_root.starts_with(project_root.as_str()));
-    assert!(state_root.contains("fidget-spinner/projects"));
+    let state_root = Path::new(state_root);
+    assert!(!state_root.starts_with(project_root.as_std_path()));
+    let state_components = state_root
+        .components()
+        .map(|component| component.as_os_str().to_string_lossy())
+        .collect::<Vec<_>>();
+    assert!(
+        state_components
+            .windows(2)
+            .any(|pair| pair[0] == "fidget-spinner" && pair[1] == "projects")
+    );
 
     let rebound_health = harness.call_tool(5, "system.health", json!({}))?;
     assert_tool_ok(&rebound_health);
