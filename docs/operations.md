@@ -6,18 +6,20 @@ authority, telemetry, and recovery contracts. CLI syntax remains canonical in
 
 ## State Discovery
 
-The default project-store root is:
+The default project-store root is the platform's local per-user state
+directory beneath `fidget-spinner/projects/`. On Linux it is:
 
 ```text
 ${XDG_STATE_HOME:-~/.local/state}/fidget-spinner/projects/
 ```
 
+macOS uses the user Application Support directory; Windows uses local AppData.
 Each directory contains a `state.sqlite` whose metadata names its canonical
-project root. `FIDGET_SPINNER_STATE_HOME=/absolute/path` replaces the XDG state
-root; Spinner still appends `fidget-spinner/projects/`. Moving a Git checkout
-changes its canonical identity and is not an automatic store migration. Retain
-the original path or recover from a backup with operator assistance; do not
-rename store directories by hand.
+project root. `FIDGET_SPINNER_STATE_HOME=/absolute/path` replaces the platform
+state root; Spinner still appends `fidget-spinner/projects/`. Moving a Git
+checkout changes its canonical identity and is not an automatic store
+migration. Retain the original path or recover from a backup with operator
+assistance; do not rename store directories by hand.
 
 ## Upgrade And Recovery
 
@@ -38,8 +40,10 @@ installer publishes the successor with an atomic rename. Each idle Unix MCP
 host polls the canonical executable, waits for one stable successor
 observation, and then replaces its process image while retaining its stdio
 pipes, initialized session, project binding, request journal, and telemetry.
-Partially written or temporarily absent successors are never executed. The
-navigator remains a systemd-managed process and is restarted by the installer.
+Partially written or temporarily absent successors are never executed. With
+the enhanced Linux installation, the navigator remains a systemd-managed
+process and is restarted by the installer. Other installations restart it
+through their chosen process supervisor.
 
 If an upgrade fails, preserve both the database and the exact error. Retry with
 the same binary only after correcting an external cause such as permissions or
@@ -50,7 +54,7 @@ format.
 Ledger removal is deliberately separate from program removal. The installer’s
 `--uninstall` mode leaves every project store intact.
 
-## User Service
+## Linux User Service
 
 The installer creates `fidget-spinner-ui.service` under the absolute
 `$XDG_CONFIG_HOME/systemd/user` or its `~/.config/systemd/user` fallback and

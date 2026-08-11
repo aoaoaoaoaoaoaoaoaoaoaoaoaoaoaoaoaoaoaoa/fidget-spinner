@@ -1,0 +1,19 @@
+[package]
+name = "fidget-spinner-portability"
+categories.workspace = true
+description = "Native installation and lifecycle witness for Fidget Spinner"
+edition.workspace = true
+keywords.workspace = true
+license.workspace = true
+publish = false
+readme.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+version.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+tempfile.workspace = true
+
+[lints]
+workspace = true

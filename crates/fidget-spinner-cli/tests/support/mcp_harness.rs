@@ -181,9 +181,14 @@ fn install_test_executable(project_root: &Utf8PathBuf) -> TestResult<Utf8PathBuf
     let installation = project_root.join("installation");
     must(fs::create_dir(&installation), "create test installation")?;
     let canonical = installation.join("fidget-spinner-cli");
+    let staged = installation.join(".fidget-spinner-cli.initial");
     let _installed_bytes = must(
-        fs::copy(binary_path(), &canonical),
-        "install initial test executable",
+        fs::copy(binary_path(), &staged),
+        "stage initial test executable",
+    )?;
+    must(
+        fs::rename(&staged, &canonical),
+        "atomically publish initial test executable",
     )?;
     Ok(canonical)
 }

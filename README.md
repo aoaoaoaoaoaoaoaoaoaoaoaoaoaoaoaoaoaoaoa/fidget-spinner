@@ -9,16 +9,26 @@ It is not a notebook, task tracker, cloud service, or parallel source archive.
 
 ## Install
 
-The supported release target is x86_64 Linux. Building requires the pinned Rust
-toolchain, Cargo, Git, and `jq`.
+Fidget Spinner is release-tested on x86_64 Linux, Apple silicon and Intel Macs,
+and x86_64 Windows. Install the unsigned command-line release from its signed
+source tag with Cargo:
+
+```console
+cargo install --git https://github.com/aoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoa/fidget-spinner.git \
+  --tag v1.0.1 --locked fidget-spinner-cli
+fidget-spinner-cli skill install
+```
+
+The enhanced Linux installer also installs the bundled Codex skills and a
+systemd user service for the navigator. It requires the pinned Rust toolchain,
+Cargo, Git, and `jq`:
 
 ```bash
 ./scripts/install-local.sh
 ```
 
-This installs `fidget-spinner-cli`, the bundled Codex skills, and the loopback
-navigator service. It upgrades owned artifacts atomically and refuses foreign
-paths. State survives uninstall:
+It upgrades owned artifacts atomically and refuses foreign paths. State
+survives uninstall:
 
 ```bash
 ./scripts/install-local.sh --uninstall
@@ -50,8 +60,10 @@ fidget-spinner-cli ui serve --bind 127.0.0.1:8913
 
 ## State And Authority
 
-Project stores live under
-`${XDG_STATE_HOME:-~/.local/state}/fidget-spinner/projects/`.
+Project stores live beneath the operating system's per-user state directory at
+`fidget-spinner/projects/`. On Linux this is
+`${XDG_STATE_HOME:-~/.local/state}/fidget-spinner/projects/`; macOS uses the
+user Application Support directory and Windows uses local AppData.
 `FIDGET_SPINNER_STATE_HOME` accepts an absolute test or deployment root.
 
 Non-scuffed experiment closure requires a clean Git worktree and records

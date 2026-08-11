@@ -53,6 +53,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "anyhow"
+version = "1.0.104"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
+
+[[package]]
 name = "atomic-waker"
 version = "1.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -326,7 +332,7 @@ checksum = "da7c62ceae207dd37ea5b845da6a0696c799f85e97da1ab5b7910be3c1c80223"
 
 [[package]]
 name = "fidget-spinner-cli"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "axum",
  "camino",
@@ -347,7 +353,7 @@ dependencies = [
 
 [[package]]
 name = "fidget-spinner-core"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "camino",
  "num-rational",
@@ -359,8 +365,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "fidget-spinner-portability"
+version = "1.0.1"
+dependencies = [
+ "anyhow",
+ "tempfile",
+]
+
+[[package]]
 name = "fidget-spinner-store-sqlite"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "camino",
  "dirs",

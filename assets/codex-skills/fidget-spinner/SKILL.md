@@ -15,7 +15,8 @@ with the target repo root, the repo’s `.git` directory, or any nested path
 inside that project.
 
 Do not create `.fidget_spinner` directories by hand. Spinner state is
-centralized under `~/.local/state/fidget-spinner/`, not stored in the repo.
+centralized beneath the platform's per-user state directory, not stored in the
+repo. On Linux the default is `~/.local/state/fidget-spinner/`.
 
 If the canonical project root does not have a Spinner store yet,
 `project.bind` will bootstrap it automatically in the centralized state path.

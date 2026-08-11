@@ -17,6 +17,10 @@ XDG_STATE_ROOT="${SANDBOX}/xdg state"
 FAKE_BIN="${SANDBOX}/fake-bin"
 SYSTEMCTL_LOG="${SANDBOX}/systemctl.log"
 SERVICE_PATH="${XDG_CONFIG_ROOT}/systemd/user/fidget-spinner-ui.service"
+EXPECTED_VERSION="$(
+  cargo metadata --format-version 1 --no-deps --manifest-path "${ROOT_DIR}/Cargo.toml" |
+    jq -er '.packages[] | select(.name == "fidget-spinner-cli") | .version'
+)"
 
 cleanup() {
   rm -rf -- "${SANDBOX}"
@@ -70,7 +74,7 @@ mkdir -p "${XDG_STATE_ROOT}/fidget-spinner/projects/sentinel"
 printf 'ledger\n' > "${XDG_STATE_ROOT}/fidget-spinner/projects/sentinel/state.sqlite"
 run_installer "${LOCAL_ROOT}" "${SKILL_ROOT}"
 
-"${LOCAL_ROOT}/bin/fidget-spinner-cli" --version | grep -Eq '^fidget-spinner-cli 1\.0\.0$' \
+"${LOCAL_ROOT}/bin/fidget-spinner-cli" --version | grep -Fqx "fidget-spinner-cli ${EXPECTED_VERSION}" \
   || fail "installed binary has the wrong identity"
 first_binary_inode="$(stat -c '%i' "${LOCAL_ROOT}/bin/fidget-spinner-cli")"
 run_installer "${LOCAL_ROOT}" "${SKILL_ROOT}"

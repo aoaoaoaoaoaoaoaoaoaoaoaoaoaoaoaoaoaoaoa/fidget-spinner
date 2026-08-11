@@ -1,0 +1,54 @@
+schema = 1
+
+[product]
+name = "Fidget Spinner"
+package = "fidget-spinner-cli"
+binary = "fidget-spinner-cli"
+profile = "portable-cli"
+
+[coordinates]
+release-tested = [
+  "linux-x86_64",
+  "macos-aarch64",
+  "macos-x86_64",
+  "windows-x86_64",
+]
+
+[delivery]
+linux = "cargo"
+macos = "cargo"
+windows = "cargo"
+
+[trust]
+macos = "unsigned-incubation"
+windows = "unsigned-incubation"
+
+[[proofs]]
+name = "source"
+laws = ["source"]
+run = ["./check.py", "check"]
+timeout-minutes = 60
+
+[[proofs]]
+name = "security"
+laws = ["security"]
+run = ["scripts/audit"]
+timeout-minutes = 15
+
+[[proofs]]
+name = "source-package"
+laws = ["source-package"]
+run = ["scripts/package"]
+timeout-minutes = 45
+
+[[proofs]]
+name = "runtime"
+laws = ["host", "lifecycle"]
+run = ["bash", "scripts/prove-runtime"]
+coordinates = [
+  "linux-x86_64",
+  "macos-aarch64",
+  "macos-x86_64",
+  "windows-x86_64",
+]
+timeout-minutes = 90

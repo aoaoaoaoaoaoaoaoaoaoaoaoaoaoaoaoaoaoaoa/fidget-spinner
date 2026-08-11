@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## 1.0.1 - 2026-08-10
+
+- Carries the CLI, MCP server, bundled skills, and local navigator across
+  x86_64 Linux, Apple silicon and Intel Macs, and x86_64 Windows.
+- Uses native per-user state roots on macOS and Windows while retaining XDG
+  state semantics on Linux.
+- Proves Cargo installation, project reopening, navigator first contact, skill
+  installation, removal, and state preservation on every release host.
 - Replaces Plotters with a dependency-free semantic SVG chart planned and
   rendered in Rust.
 - Adds direct series toggles, linked datum tooltips, horizontal drag zoom,

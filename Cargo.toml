@@ -3,6 +3,7 @@ members = [
   "crates/fidget-spinner-core",
   "crates/fidget-spinner-store-sqlite",
   "crates/fidget-spinner-cli",
+  "crates/fidget-spinner-portability",
 ]
 resolver = "3"
 
@@ -15,9 +16,10 @@ license = "MIT"
 readme = "README.md"
 repository = "https://github.com/aoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoa/fidget-spinner"
 rust-version = "1.97"
-version = "1.0.0"
+version = "1.0.1"
 
 [workspace.dependencies]
+anyhow = "1"
 axum = "0.8"
 camino = { version = "1", features = ["serde1"] }
 clap = { version = "4.5", features = ["derive"] }
@@ -30,6 +32,7 @@ rusqlite = { version = "0.40.1", features = ["bundled", "hooks", "limits", "time
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
+tempfile = "3"
 time = { version = "0.3", features = ["formatting", "macros", "parsing", "serde"] }
 tokio = { version = "1", features = ["net", "rt-multi-thread"] }
 uuid = { version = "1", features = ["serde", "v5", "v7"] }

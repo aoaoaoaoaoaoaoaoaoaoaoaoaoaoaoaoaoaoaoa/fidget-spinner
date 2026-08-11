@@ -9266,6 +9266,7 @@ fn spinner_state_home() -> Result<Utf8PathBuf, StoreError> {
         return Ok(path.join(STATE_HOME_DIR_NAME).join(PROJECT_STATE_DIR_NAME));
     }
     let state_root = dirs::state_dir()
+        .or_else(dirs::data_local_dir)
         .or_else(|| dirs::home_dir().map(|home| home.join(".local/state")))
         .ok_or_else(|| StoreError::InvalidInput("state directory not found".to_owned()))?;
     Ok(utf8_path(state_root)
