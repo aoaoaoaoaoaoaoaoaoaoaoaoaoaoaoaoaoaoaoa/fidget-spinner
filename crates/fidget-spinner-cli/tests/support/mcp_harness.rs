@@ -99,8 +99,12 @@ fn temp_project_root(name: &str) -> TestResult<Utf8PathBuf> {
         .as_nanos()
     ));
     must(fs::create_dir_all(&root), "create temp project root")?;
-    let root = must(fs::canonicalize(root), "canonicalize temp project root")?;
-    Ok(Utf8PathBuf::from(root.to_string_lossy().into_owned()))
+    must(
+        fidget_spinner_store_sqlite::canonical_project_root(&Utf8PathBuf::from(
+            root.to_string_lossy().into_owned(),
+        )),
+        "canonicalize temp project root",
+    )
 }
 
 fn init_project(root: &Utf8PathBuf) -> TestResult {

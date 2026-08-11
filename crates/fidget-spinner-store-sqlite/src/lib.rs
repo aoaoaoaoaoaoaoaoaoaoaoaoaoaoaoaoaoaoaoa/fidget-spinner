@@ -9301,18 +9301,20 @@ fn sanitize_project_stem(raw: &str) -> String {
     }
 }
 
-fn canonical_project_root(project_root: &Utf8Path) -> Result<Utf8PathBuf, StoreError> {
+/// Resolves one project identity without leaking Windows verbatim-path syntax
+/// into subprocesses or user-visible state.
+pub fn canonical_project_root(project_root: &Utf8Path) -> Result<Utf8PathBuf, StoreError> {
     canonicalize_utf8_path(project_root)
 }
 
 fn canonicalize_utf8_path(path: &Utf8Path) -> Result<Utf8PathBuf, StoreError> {
-    match fs::canonicalize(path.as_std_path()) {
+    match dunce::canonicalize(path.as_std_path()) {
         Ok(canonical) => Ok(utf8_path(canonical)),
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
             let Some(parent) = path.parent() else {
                 return Err(StoreError::from(error));
             };
-            let canonical_parent = fs::canonicalize(parent.as_std_path())?;
+            let canonical_parent = dunce::canonicalize(parent.as_std_path())?;
             Ok(utf8_path(canonical_parent).join(path.file_name().unwrap_or_default()))
         }
         Err(error) => Err(StoreError::from(error)),
@@ -9477,7 +9479,7 @@ mod tests {
             std::process::id()
         ));
         fs::create_dir_all(&root)?;
-        Ok(utf8_path(root))
+        canonical_project_root(&utf8_path(root))
     }
 
     fn run_git(root: &Utf8Path, args: &[&str]) -> Result<String, StoreError> {

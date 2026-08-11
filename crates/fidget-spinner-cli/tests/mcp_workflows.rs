@@ -1416,6 +1416,9 @@ fn experiment_close_uses_command_worktree_when_present() -> TestResult {
     Ok(())
 }
 
+// NT forbids replacing SQLite's directory while the worker holds the database
+// open; Unix unlink semantics are the contract under test here.
+#[cfg(not(windows))]
 #[test]
 fn already_bound_worker_refreshes_after_destructive_reseed() -> TestResult {
     let project_root = temp_project_root("same_path_reseed")?;
