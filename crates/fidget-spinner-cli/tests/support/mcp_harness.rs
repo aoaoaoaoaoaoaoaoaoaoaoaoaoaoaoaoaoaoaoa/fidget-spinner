@@ -224,7 +224,6 @@ fn live_executable_inode(process_id: u32) -> TestResult<u64> {
     .ino())
 }
 
-#[cfg(target_os = "linux")]
 struct McpHarness {
     child: Child,
     stdin: ChildStdin,
