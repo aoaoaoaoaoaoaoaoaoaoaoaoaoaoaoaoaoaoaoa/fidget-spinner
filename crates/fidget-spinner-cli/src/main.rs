@@ -1681,11 +1681,12 @@ impl From<CliExperimentStatus> for ExperimentStatus {
 mod tests {
     use std::error::Error;
     use std::sync::OnceLock;
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use std::sync::atomic::{AtomicU64, Ordering};
 
     use super::*;
 
     static TEST_STATE_HOME: OnceLock<Result<Utf8PathBuf, String>> = OnceLock::new();
+    static TEST_ROOT_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
     fn ensure_test_state_home() -> Result<(), Box<dyn Error>> {
         let state_home = TEST_STATE_HOME
@@ -1705,15 +1706,15 @@ mod tests {
 
     fn fresh_temp_root(label: &str) -> Result<Utf8PathBuf, Box<dyn Error>> {
         ensure_test_state_home()?;
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_or(0, |duration| duration.as_nanos());
+        let sequence = TEST_ROOT_SEQUENCE.fetch_add(1, Ordering::Relaxed);
         let root = std::env::temp_dir().join(format!(
-            "fidget-spinner-cli-{label}-{}-{nanos}",
+            "fidget-spinner-cli-{label}-{}-{sequence}",
             std::process::id()
         ));
-        fs::create_dir_all(&root)?;
-        Ok(utf8_path(fs::canonicalize(root)?))
+        fs::create_dir(&root)?;
+        Ok(fidget_spinner_store_sqlite::canonical_project_root(
+            &utf8_path(root),
+        )?)
     }
 
     #[test]

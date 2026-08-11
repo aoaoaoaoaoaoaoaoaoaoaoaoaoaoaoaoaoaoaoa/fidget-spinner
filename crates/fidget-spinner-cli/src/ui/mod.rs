@@ -1270,7 +1270,7 @@ mod tests {
     use std::error::Error;
     use std::fs;
     use std::sync::OnceLock;
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use std::sync::atomic::{AtomicU64, Ordering};
 
     use fidget_spinner_core::{
         DefaultVisibility, FrontierBrief, FrontierId, FrontierRecord, FrontierStatus,
@@ -1285,6 +1285,7 @@ mod tests {
     use time::format_description::well_known::Rfc3339;
 
     static TEST_STATE_HOME: OnceLock<Result<Utf8PathBuf, String>> = OnceLock::new();
+    static TEST_ROOT_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
     #[allow(clippy::panic, reason = "test constructors should fail loudly")]
     fn must<T, E: std::fmt::Display>(result: Result<T, E>, context: &str) -> T {
@@ -1312,16 +1313,15 @@ mod tests {
 
     fn fresh_temp_root(label: &str) -> Result<Utf8PathBuf, Box<dyn Error>> {
         ensure_test_state_home()?;
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_or(0, |duration| duration.as_nanos());
+        let sequence = TEST_ROOT_SEQUENCE.fetch_add(1, Ordering::Relaxed);
         let root = std::env::temp_dir().join(format!(
-            "fidget-spinner-ui-{label}-{}-{nanos}",
+            "fidget-spinner-ui-{label}-{}-{sequence}",
             std::process::id()
         ));
-        fs::create_dir_all(&root)?;
-        let root = fs::canonicalize(root)?;
-        Ok(Utf8PathBuf::from(root.to_string_lossy().into_owned()))
+        fs::create_dir(&root)?;
+        Ok(fidget_spinner_store_sqlite::canonical_project_root(
+            &Utf8PathBuf::from(root.to_string_lossy().into_owned()),
+        )?)
     }
 
     fn test_metric(key: &str, unit: &str) -> MetricKeySummary {

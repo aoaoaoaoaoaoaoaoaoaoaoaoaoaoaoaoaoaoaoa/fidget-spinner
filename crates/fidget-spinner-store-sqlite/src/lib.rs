@@ -9434,8 +9434,10 @@ mod tests {
     use super::*;
     use std::process::Command;
     use std::sync::OnceLock;
+    use std::sync::atomic::{AtomicU64, Ordering};
 
     static TEST_STATE_HOME: OnceLock<Result<Utf8PathBuf, String>> = OnceLock::new();
+    static TEST_ROOT_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
     #[test]
     fn state_home_override_rejects_ambient_relative_paths() -> Result<(), StoreError> {
@@ -9471,14 +9473,12 @@ mod tests {
 
     fn fresh_test_root(label: &str) -> Result<Utf8PathBuf, StoreError> {
         ensure_test_state_home()?;
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |duration| duration.as_nanos());
+        let sequence = TEST_ROOT_SEQUENCE.fetch_add(1, Ordering::Relaxed);
         let root = std::env::temp_dir().join(format!(
-            "fidget-spinner-store-{label}-{}-{nanos}",
+            "fidget-spinner-store-{label}-{}-{sequence}",
             std::process::id()
         ));
-        fs::create_dir_all(&root)?;
+        fs::create_dir(&root)?;
         canonical_project_root(&utf8_path(root))
     }
 
