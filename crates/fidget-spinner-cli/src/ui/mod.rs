@@ -1320,6 +1320,7 @@ mod tests {
             std::process::id()
         ));
         fs::create_dir_all(&root)?;
+        let root = fs::canonicalize(root)?;
         Ok(Utf8PathBuf::from(root.to_string_lossy().into_owned()))
     }
 

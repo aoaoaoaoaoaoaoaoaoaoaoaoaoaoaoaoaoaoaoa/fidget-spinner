@@ -1713,7 +1713,7 @@ mod tests {
             std::process::id()
         ));
         fs::create_dir_all(&root)?;
-        Ok(utf8_path(root))
+        Ok(utf8_path(fs::canonicalize(root)?))
     }
 
     #[test]
