@@ -9452,7 +9452,7 @@ mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
 
     static TEST_STATE_HOME: OnceLock<Result<Utf8PathBuf, String>> = OnceLock::new();
-    static TEST_ROOT_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+    static TEST_DIRECTORY_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
     #[test]
     fn state_home_override_rejects_ambient_relative_paths() -> Result<(), StoreError> {
@@ -9471,15 +9471,24 @@ mod tests {
         Ok(())
     }
 
+    fn fresh_directory(label: &str) -> Result<Utf8PathBuf, StoreError> {
+        loop {
+            let sequence = TEST_DIRECTORY_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+            let root = std::env::temp_dir().join(format!(
+                "fidget-spinner-store-{label}-{}-{sequence}",
+                std::process::id()
+            ));
+            match fs::create_dir(&root) {
+                Ok(()) => return Ok(utf8_path(root)),
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+                Err(error) => return Err(error.into()),
+            }
+        }
+    }
+
     fn ensure_test_state_home() -> Result<(), StoreError> {
         let state_home = TEST_STATE_HOME
-            .get_or_init(|| {
-                let root = std::env::temp_dir()
-                    .join(format!("fidget-spinner-store-state-{}", std::process::id()));
-                fs::create_dir_all(&root)
-                    .map_err(|error| error.to_string())
-                    .map(|()| utf8_path(root))
-            })
+            .get_or_init(|| fresh_directory("state").map_err(|error| error.to_string()))
             .as_ref()
             .map_err(|error| StoreError::InvalidInput(error.clone()))?
             .clone();
@@ -9488,18 +9497,7 @@ mod tests {
 
     fn fresh_test_root(label: &str) -> Result<Utf8PathBuf, StoreError> {
         ensure_test_state_home()?;
-        loop {
-            let sequence = TEST_ROOT_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-            let root = std::env::temp_dir().join(format!(
-                "fidget-spinner-store-{label}-{}-{sequence}",
-                std::process::id()
-            ));
-            match fs::create_dir(&root) {
-                Ok(()) => return canonical_project_root(&utf8_path(root)),
-                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
-                Err(error) => return Err(error.into()),
-            }
-        }
+        canonical_project_root(&fresh_directory(label)?)
     }
 
     fn run_git(root: &Utf8Path, args: &[&str]) -> Result<String, StoreError> {

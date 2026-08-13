@@ -30,6 +30,43 @@ use libmcp_testkit as _;
 use serde::Serialize;
 use serde_json::Value;
 
+#[cfg(test)]
+static TEST_DIRECTORY_SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+#[cfg(test)]
+static TEST_STATE_HOME: std::sync::OnceLock<Result<Utf8PathBuf, String>> =
+    std::sync::OnceLock::new();
+
+#[cfg(test)]
+fn fresh_test_directory(label: &str) -> std::io::Result<PathBuf> {
+    loop {
+        let sequence = TEST_DIRECTORY_SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let root = std::env::temp_dir().join(format!(
+            "fidget-spinner-cli-{label}-{}-{sequence}",
+            std::process::id()
+        ));
+        match fs::create_dir(&root) {
+            Ok(()) => return Ok(root),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(error) => return Err(error),
+        }
+    }
+}
+
+#[cfg(test)]
+fn ensure_test_state_home() -> Result<(), Box<dyn std::error::Error>> {
+    let state_home = TEST_STATE_HOME
+        .get_or_init(|| {
+            fresh_test_directory("state")
+                .map(utf8_path)
+                .map_err(|error| error.to_string())
+        })
+        .as_ref()
+        .map_err(Clone::clone)?
+        .clone();
+    fidget_spinner_store_sqlite::install_state_home_override(state_home)?;
+    Ok(())
+}
+
 #[derive(Parser)]
 #[command(
     author,
@@ -1680,48 +1717,14 @@ impl From<CliExperimentStatus> for ExperimentStatus {
 #[cfg(test)]
 mod tests {
     use std::error::Error;
-    use std::sync::OnceLock;
-    use std::sync::atomic::{AtomicU64, Ordering};
 
     use super::*;
 
-    static TEST_STATE_HOME: OnceLock<Result<Utf8PathBuf, String>> = OnceLock::new();
-    static TEST_ROOT_SEQUENCE: AtomicU64 = AtomicU64::new(0);
-
-    fn ensure_test_state_home() -> Result<(), Box<dyn Error>> {
-        let state_home = TEST_STATE_HOME
-            .get_or_init(|| {
-                let root = std::env::temp_dir()
-                    .join(format!("fidget-spinner-cli-state-{}", std::process::id()));
-                fs::create_dir_all(&root)
-                    .map_err(|error| error.to_string())
-                    .map(|()| utf8_path(root))
-            })
-            .as_ref()
-            .map_err(Clone::clone)?
-            .clone();
-        fidget_spinner_store_sqlite::install_state_home_override(state_home)?;
-        Ok(())
-    }
-
     fn fresh_temp_root(label: &str) -> Result<Utf8PathBuf, Box<dyn Error>> {
         ensure_test_state_home()?;
-        loop {
-            let sequence = TEST_ROOT_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-            let root = std::env::temp_dir().join(format!(
-                "fidget-spinner-cli-{label}-{}-{sequence}",
-                std::process::id()
-            ));
-            match fs::create_dir(&root) {
-                Ok(()) => {
-                    return Ok(fidget_spinner_store_sqlite::canonical_project_root(
-                        &utf8_path(root),
-                    )?);
-                }
-                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
-                Err(error) => return Err(error.into()),
-            }
-        }
+        Ok(fidget_spinner_store_sqlite::canonical_project_root(
+            &utf8_path(fresh_test_directory(label)?),
+        )?)
     }
 
     #[test]

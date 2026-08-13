@@ -1267,9 +1267,6 @@ mod tests {
     };
     use std::collections::BTreeMap;
     use std::error::Error;
-    use std::fs;
-    use std::sync::OnceLock;
-    use std::sync::atomic::{AtomicU64, Ordering};
 
     use fidget_spinner_core::{
         DefaultVisibility, FrontierBrief, FrontierId, FrontierRecord, FrontierStatus,
@@ -1283,9 +1280,6 @@ mod tests {
     use time::OffsetDateTime;
     use time::format_description::well_known::Rfc3339;
 
-    static TEST_STATE_HOME: OnceLock<Result<Utf8PathBuf, String>> = OnceLock::new();
-    static TEST_ROOT_SEQUENCE: AtomicU64 = AtomicU64::new(0);
-
     #[allow(clippy::panic, reason = "test constructors should fail loudly")]
     fn must<T, E: std::fmt::Display>(result: Result<T, E>, context: &str) -> T {
         match result {
@@ -1294,40 +1288,12 @@ mod tests {
         }
     }
 
-    fn ensure_test_state_home() -> Result<(), Box<dyn Error>> {
-        let state_home = TEST_STATE_HOME
-            .get_or_init(|| {
-                let root = std::env::temp_dir()
-                    .join(format!("fidget-spinner-cli-state-{}", std::process::id()));
-                fs::create_dir_all(&root)
-                    .map_err(|error| error.to_string())
-                    .map(|()| Utf8PathBuf::from(root.to_string_lossy().into_owned()))
-            })
-            .as_ref()
-            .map_err(Clone::clone)?
-            .clone();
-        fidget_spinner_store_sqlite::install_state_home_override(state_home)?;
-        Ok(())
-    }
-
     fn fresh_temp_root(label: &str) -> Result<Utf8PathBuf, Box<dyn Error>> {
-        ensure_test_state_home()?;
-        loop {
-            let sequence = TEST_ROOT_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-            let root = std::env::temp_dir().join(format!(
-                "fidget-spinner-ui-{label}-{}-{sequence}",
-                std::process::id()
-            ));
-            match fs::create_dir(&root) {
-                Ok(()) => {
-                    return Ok(fidget_spinner_store_sqlite::canonical_project_root(
-                        &Utf8PathBuf::from(root.to_string_lossy().into_owned()),
-                    )?);
-                }
-                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
-                Err(error) => return Err(error.into()),
-            }
-        }
+        crate::ensure_test_state_home()?;
+        let root = crate::fresh_test_directory(&format!("ui-{label}"))?;
+        Ok(fidget_spinner_store_sqlite::canonical_project_root(
+            &Utf8PathBuf::from(root.to_string_lossy().into_owned()),
+        )?)
     }
 
     fn test_metric(key: &str, unit: &str) -> MetricKeySummary {

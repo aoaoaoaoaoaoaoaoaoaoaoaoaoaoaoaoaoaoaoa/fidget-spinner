@@ -7,6 +7,7 @@ use std::io::{self, BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use camino::Utf8PathBuf;
 use fidget_spinner_core::{
@@ -36,6 +37,23 @@ use tokio as _;
 
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 
+static TEST_DIRECTORY_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+fn temp_directory(label: &str) -> TestResult<Utf8PathBuf> {
+    loop {
+        let sequence = TEST_DIRECTORY_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        let root = std::env::temp_dir().join(format!(
+            "fidget-spinner-mcp-{label}-{}-{sequence}",
+            std::process::id()
+        ));
+        match fs::create_dir(&root) {
+            Ok(()) => return Ok(Utf8PathBuf::from(root.to_string_lossy().into_owned())),
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
+}
+
 fn assert_no_opaque_ids(value: &Value) -> Result<(), String> {
     fn walk(value: &Value, path: &str) -> Result<(), String> {
         match value {
@@ -64,9 +82,7 @@ fn assert_no_opaque_ids(value: &Value) -> Result<(), String> {
 fn ensure_test_state_home() -> TestResult<&'static Utf8PathBuf> {
     static STATE_HOME: OnceLock<Result<Utf8PathBuf, String>> = OnceLock::new();
     match STATE_HOME.get_or_init(|| {
-        let root = std::env::temp_dir().join("fidget_spinner_test_state_home");
-        fs::create_dir_all(&root).map_err(|error| format!("create temp state home: {error}"))?;
-        let root = Utf8PathBuf::from(root.to_string_lossy().into_owned());
+        let root = temp_directory("state").map_err(|error| error.to_string())?;
         fidget_spinner_store_sqlite::install_state_home_override(&root)
             .map_err(|error| format!("install state home override: {error}"))?;
         Ok(root)
@@ -89,20 +105,9 @@ fn must_some<T>(value: Option<T>, context: &str) -> TestResult<T> {
 
 fn temp_project_root(name: &str) -> TestResult<Utf8PathBuf> {
     let _ = ensure_test_state_home()?;
-    let root = std::env::temp_dir().join(format!(
-        "fidget_spinner_mcp_{name}_{}_{}",
-        std::process::id(),
-        must(
-            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH),
-            "current time after unix epoch",
-        )?
-        .as_nanos()
-    ));
-    must(fs::create_dir_all(&root), "create temp project root")?;
+    let root = temp_directory(name)?;
     must(
-        fidget_spinner_store_sqlite::canonical_project_root(&Utf8PathBuf::from(
-            root.to_string_lossy().into_owned(),
-        )),
+        fidget_spinner_store_sqlite::canonical_project_root(&root),
         "canonicalize temp project root",
     )
 }
