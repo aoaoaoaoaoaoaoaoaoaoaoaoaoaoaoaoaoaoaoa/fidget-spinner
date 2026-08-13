@@ -9488,13 +9488,18 @@ mod tests {
 
     fn fresh_test_root(label: &str) -> Result<Utf8PathBuf, StoreError> {
         ensure_test_state_home()?;
-        let sequence = TEST_ROOT_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-        let root = std::env::temp_dir().join(format!(
-            "fidget-spinner-store-{label}-{}-{sequence}",
-            std::process::id()
-        ));
-        fs::create_dir(&root)?;
-        canonical_project_root(&utf8_path(root))
+        loop {
+            let sequence = TEST_ROOT_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+            let root = std::env::temp_dir().join(format!(
+                "fidget-spinner-store-{label}-{}-{sequence}",
+                std::process::id()
+            ));
+            match fs::create_dir(&root) {
+                Ok(()) => return canonical_project_root(&utf8_path(root)),
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+                Err(error) => return Err(error.into()),
+            }
+        }
     }
 
     fn run_git(root: &Utf8Path, args: &[&str]) -> Result<String, StoreError> {

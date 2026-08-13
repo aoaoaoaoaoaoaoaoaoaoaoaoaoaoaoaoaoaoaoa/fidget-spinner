@@ -1706,15 +1706,22 @@ mod tests {
 
     fn fresh_temp_root(label: &str) -> Result<Utf8PathBuf, Box<dyn Error>> {
         ensure_test_state_home()?;
-        let sequence = TEST_ROOT_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-        let root = std::env::temp_dir().join(format!(
-            "fidget-spinner-cli-{label}-{}-{sequence}",
-            std::process::id()
-        ));
-        fs::create_dir(&root)?;
-        Ok(fidget_spinner_store_sqlite::canonical_project_root(
-            &utf8_path(root),
-        )?)
+        loop {
+            let sequence = TEST_ROOT_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+            let root = std::env::temp_dir().join(format!(
+                "fidget-spinner-cli-{label}-{}-{sequence}",
+                std::process::id()
+            ));
+            match fs::create_dir(&root) {
+                Ok(()) => {
+                    return Ok(fidget_spinner_store_sqlite::canonical_project_root(
+                        &utf8_path(root),
+                    )?);
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+                Err(error) => return Err(error.into()),
+            }
+        }
     }
 
     #[test]
