@@ -103,6 +103,24 @@ fn must_some<T>(value: Option<T>, context: &str) -> TestResult<T> {
     value.ok_or_else(|| io::Error::other(context).into())
 }
 
+fn spawn_mcp_host(command: &mut Command) -> io::Result<Child> {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
+    loop {
+        match command.spawn() {
+            Err(error)
+                if error.kind() == io::ErrorKind::ExecutableFileBusy
+                    && std::time::Instant::now() < deadline =>
+            {
+                // Some CI filesystems briefly retain a writer after publishing
+                // the copied fixture. Retry only that kernel condition so
+                // fixture timing cannot counterfeit a rollout failure.
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            outcome => return outcome,
+        }
+    }
+}
+
 fn temp_project_root(name: &str) -> TestResult<Utf8PathBuf> {
     let _ = ensure_test_state_home()?;
     let root = temp_directory(name)?;
@@ -258,7 +276,7 @@ impl McpHarness {
         if let Some(project_root) = project_root {
             let _ = command.arg("--project").arg(project_root.as_str());
         }
-        let mut child = must(command.spawn(), "spawn mcp host")?;
+        let mut child = must(spawn_mcp_host(&mut command), "spawn mcp host")?;
         let stdin = must_some(child.stdin.take(), "host stdin")?;
         let stdout = BufReader::new(must_some(child.stdout.take(), "host stdout")?);
         Ok(Self {

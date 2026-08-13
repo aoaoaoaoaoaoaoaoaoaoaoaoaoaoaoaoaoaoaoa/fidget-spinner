@@ -15,7 +15,7 @@ source tag with Cargo:
 
 ```console
 cargo install --git https://github.com/aoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoa/fidget-spinner.git \
-  --tag v1.0.3 --locked fidget-spinner-cli
+  --tag v1.0.4 --locked fidget-spinner-cli
 fidget-spinner-cli skill install
 ```
 
