@@ -117,7 +117,7 @@ pub(super) struct ValueAxisPlan {
 
 impl ValueAxisPlan {
     pub(super) fn build(
-        quantity: MetricQuantity,
+        quantity: &MetricQuantity,
         display_units: impl Iterator<Item = MetricDisplayUnit>,
         canonical_values: &[f64],
         request_logarithmic: bool,
@@ -128,7 +128,7 @@ impl ValueAxisPlan {
             .filter(|value| value.is_finite())
             .map(f64::abs)
             .fold(0.0, f64::max);
-        let unit = AxisUnit::choose(&quantity, display_units, magnitude);
+        let unit = AxisUnit::choose(quantity, display_units, magnitude);
         let values = canonical_values
             .iter()
             .copied()
@@ -197,6 +197,10 @@ impl ValueAxisPlan {
     }
 }
 
+#[expect(
+    clippy::float_cmp,
+    reason = "exact equality identifies a mathematically degenerate plotted domain"
+)]
 fn linear_domain_and_ticks(values: &[f64]) -> Option<(f64, f64, Vec<AxisTick>)> {
     let minimum = values.iter().copied().fold(f64::INFINITY, f64::min);
     let maximum = values.iter().copied().fold(f64::NEG_INFINITY, f64::max);
@@ -231,6 +235,10 @@ fn linear_domain_and_ticks(values: &[f64]) -> Option<(f64, f64, Vec<AxisTick>)> 
     Some((domain_minimum, domain_maximum, ticks))
 }
 
+#[expect(
+    clippy::float_cmp,
+    reason = "exact equality identifies a mathematically degenerate plotted domain"
+)]
 fn logarithmic_domain_and_ticks(values: &[f64]) -> Option<(f64, f64, Vec<AxisTick>)> {
     let minimum = values.iter().copied().fold(f64::INFINITY, f64::min);
     let maximum = values.iter().copied().fold(f64::NEG_INFINITY, f64::max);
@@ -243,8 +251,7 @@ fn logarithmic_domain_and_ticks(values: &[f64]) -> Option<(f64, f64, Vec<AxisTic
         domain_minimum /= 10.0;
         domain_maximum *= 10.0;
     }
-    let first_power = domain_minimum.log10().floor() as i32;
-    let last_power = domain_maximum.log10().ceil() as i32;
+    let (first_power, last_power) = decimal_power_bounds(domain_minimum, domain_maximum);
     let mut ticks = Vec::new();
     for power in first_power..=last_power {
         let decade = 10.0_f64.powi(power);
@@ -259,6 +266,17 @@ fn logarithmic_domain_and_ticks(values: &[f64]) -> Option<(f64, f64, Vec<AxisTic
         }
     }
     Some((domain_minimum, domain_maximum, ticks))
+}
+
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "positive finite f64 base-10 exponents are bounded to -324..309 before this conversion"
+)]
+fn decimal_power_bounds(minimum: f64, maximum: f64) -> (i32, i32) {
+    (
+        minimum.log10().floor() as i32,
+        maximum.log10().ceil() as i32,
+    )
 }
 
 fn nice_step(raw: f64) -> f64 {
@@ -309,7 +327,13 @@ fn axis_decimals(step: f64) -> usize {
     if step >= 1.0 {
         0
     } else {
-        usize::try_from((-step.log10().floor() as i32 + 1).clamp(0, 8)).unwrap_or(8)
+        let mut scaled = step;
+        let mut decimals = 1;
+        while scaled < 1.0 && decimals < 8 {
+            scaled *= 10.0;
+            decimals += 1;
+        }
+        decimals
     }
 }
 
@@ -337,7 +361,7 @@ mod tests {
     #[test]
     fn time_axis_uses_visible_magnitude() {
         let axis = ValueAxisPlan::build(
-            MetricQuantity::time(),
+            &MetricQuantity::time(),
             std::iter::empty(),
             &[30_000_000_000_000.0],
             false,
@@ -349,7 +373,7 @@ mod tests {
     fn observation_labels_preserve_precision_after_unit_promotion() {
         let canonical = 8.456 * 60_000_000_000.0;
         let axis = ValueAxisPlan::build(
-            MetricQuantity::time(),
+            &MetricQuantity::time(),
             std::iter::empty(),
             &[canonical],
             false,
@@ -366,7 +390,7 @@ mod tests {
     fn integral_counts_do_not_acquire_counterfeit_fractional_precision() {
         let canonical = 20.0;
         let axis = ValueAxisPlan::build(
-            MetricQuantity::count(),
+            &MetricQuantity::count(),
             std::iter::empty(),
             &[canonical],
             false,
@@ -381,7 +405,15 @@ mod tests {
     #[test]
     fn logarithmic_ticks_use_canonical_subdivisions() {
         let (_, _, ticks) = logarithmic_domain_and_ticks(&[0.91, 1_000.0]).unwrap_or_default();
-        assert!(ticks.iter().any(|tick| tick.value == 2.0));
-        assert!(ticks.iter().any(|tick| tick.value == 500.0));
+        assert!(
+            ticks
+                .iter()
+                .any(|tick| tick.value.to_bits() == 2.0_f64.to_bits())
+        );
+        assert!(
+            ticks
+                .iter()
+                .any(|tick| tick.value.to_bits() == 500.0_f64.to_bits())
+        );
     }
 }

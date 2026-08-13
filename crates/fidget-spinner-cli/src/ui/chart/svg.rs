@@ -5,7 +5,7 @@ use maud::{Markup, html};
 use super::axis::ValueAxisPlan;
 use super::{
     CHART_HEIGHT, CHART_WIDTH, ChartPlan, ChartPointMarker, ChartSeriesPlan, format_metric_value,
-    point_marker,
+    point_marker, ui_scalar,
 };
 use crate::ui::experiment_href;
 
@@ -58,7 +58,7 @@ impl ChartLayout {
             } else {
                 1_064.0
             },
-            top: 24.0 + legend_rows(plan) as f64 * 18.0,
+            top: 24.0 + ui_scalar(legend_rows(plan)) * 18.0,
             bottom: 372.0,
         }
     }
@@ -321,7 +321,7 @@ fn render_marker(x: f64, y: f64, color: &str, verdict: FrontierVerdict) -> Marku
 }
 
 fn render_hit_bands(plan: &ChartPlan, scene: &FrontierChartScene, layout: &ChartLayout) -> Markup {
-    let denominator = plan.x.last.saturating_sub(plan.x.first).max(1) as f64;
+    let denominator = ui_scalar(plan.x.last.saturating_sub(plan.x.first).max(1));
     let half_width = (layout.right - layout.left) / denominator / 2.0;
     html! {
         @for ordinal in &plan.hit_ordinals {
@@ -377,6 +377,12 @@ fn chart_metadata(plan: &ChartPlan) -> String {
     serde_json::to_string(&(labels, values)).unwrap_or_else(|_| "[]".to_owned())
 }
 
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "rounded SVG coordinates are clamped to the destination integer range before conversion"
+)]
 fn pixel(value: f64) -> i32 {
-    value.round() as i32
+    value
+        .round()
+        .clamp(f64::from(i32::MIN), f64::from(i32::MAX)) as i32
 }

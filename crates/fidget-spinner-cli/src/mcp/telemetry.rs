@@ -77,7 +77,7 @@ impl ServerTelemetry {
         self.operation(operation).retries += 1;
     }
 
-    pub fn record_error(&mut self, operation: &str, fault: FaultRecord, latency_ms: u128) {
+    pub fn record_error(&mut self, operation: &str, fault: &FaultRecord, latency_ms: u128) {
         self.errors += 1;
         self.last_fault = Some(fault.clone());
         let code = fault.code.clone();
@@ -113,7 +113,7 @@ mod tests {
             "unknown:0",
             "bad arguments",
         );
-        telemetry.record_error("unknown:0", fault, 1);
+        telemetry.record_error("unknown:0", &fault, 1);
 
         assert_eq!(telemetry.operations.len(), MAX_OPERATION_BUCKETS + 1);
         assert_eq!(telemetry.operations["other"].requests, 1);

@@ -10,7 +10,9 @@ use super::{
     render_markdown_prose, render_metric_kind_chip, status_chip_classes, trash_icon,
 };
 
-pub(super) fn render_project_index(state: NavigatorState) -> Result<Markup, StoreError> {
+const METRIC_PAGE_SIZE: usize = 100;
+
+pub(super) fn render_project_index(state: &NavigatorState) -> Result<Markup, StoreError> {
     let state_home = project_state_home()?;
     let projects = list_project_manifests()?
         .into_iter()
@@ -79,20 +81,20 @@ pub(super) fn render_project_index(state: NavigatorState) -> Result<Markup, Stor
     })
 }
 
-pub(super) fn render_project_home(context: ProjectRenderContext) -> Result<Markup, StoreError> {
+pub(super) fn render_project_home(context: &ProjectRenderContext) -> Result<Markup, StoreError> {
     let store = open_store(context.project_root.as_std_path())?;
-    let shell = load_shell_frame(&store, None, &context)?;
+    let shell = load_shell_frame(&store, None, context)?;
     let title = format!("{} navigator", shell.project_status.display_name);
-    let content = html! {
+    let page_body = html! {
         (render_project_status(&shell.project_status, &context.base_href))
         (render_frontier_grid(&shell.frontiers, context.limit))
     };
-    Ok(render_shell(&title, &shell, None, content))
+    Ok(render_shell(&title, &shell, None, &page_body))
 }
 
-pub(super) fn render_project_tags(context: ProjectRenderContext) -> Result<Markup, StoreError> {
+pub(super) fn render_project_tags(context: &ProjectRenderContext) -> Result<Markup, StoreError> {
     let store = open_store(context.project_root.as_std_path())?;
-    let shell = load_shell_frame(&store, None, &context)?;
+    let shell = load_shell_frame(&store, None, context)?;
     let registry = store.tag_registry(fidget_spinner_store_sqlite::TagRegistryQuery {
         include_hidden: true,
     })?;
@@ -113,7 +115,7 @@ pub(super) fn render_project_tags(context: ProjectRenderContext) -> Result<Marku
                 .is_none_or(|usage| usage.hypotheses + usage.experiments == 0)
         })
         .count();
-    let content = html! {
+    let page_body = html! {
         section.card.tag-state-card {
             div.tag-state-band {
                 div.fact-strip {
@@ -155,15 +157,15 @@ pub(super) fn render_project_tags(context: ProjectRenderContext) -> Result<Marku
             }
         }
     };
-    Ok(render_shell(&title, &shell, None, content))
+    Ok(render_shell(&title, &shell, None, &page_body))
 }
 
 pub(super) fn render_project_metrics(
-    context: ProjectRenderContext,
-    query: ProjectMetricsQuery,
+    context: &ProjectRenderContext,
+    query: &ProjectMetricsQuery,
 ) -> Result<Markup, StoreError> {
     let store = open_store(context.project_root.as_std_path())?;
-    let shell = load_shell_frame(&store, None, &context)?;
+    let shell = load_shell_frame(&store, None, context)?;
     let metrics = store.metric_keys(MetricKeysQuery {
         frontier: None,
         scope: MetricScope::All,
@@ -212,7 +214,6 @@ pub(super) fn render_project_metrics(
         .iter()
         .filter(|metric| metric.reference_count == 0)
         .count();
-    const METRIC_PAGE_SIZE: usize = 100;
     let last_page = metrics.len().saturating_sub(1) / METRIC_PAGE_SIZE;
     let page_index = usize::try_from(query.page)
         .unwrap_or(usize::MAX)
@@ -226,7 +227,7 @@ pub(super) fn render_project_metrics(
     let visible_metrics = &metrics[page_start..page_end];
     let page = u32::try_from(page_index).unwrap_or(u32::MAX);
     let title = format!("{} · metrics", shell.project_status.display_name);
-    let content = html! {
+    let page_body = html! {
         section.card.tag-state-card {
             div.tag-state-band {
                 div.fact-strip {
@@ -255,7 +256,7 @@ pub(super) fn render_project_metrics(
             page_end,
         ))
     };
-    Ok(render_shell(&title, &shell, None, content))
+    Ok(render_shell(&title, &shell, None, &page_body))
 }
 
 fn load_tag_usage(

@@ -9,14 +9,33 @@ pub(super) fn format_significant(value: f64, minimum_fraction_digits: usize) -> 
         return fixed_zero(minimum_fraction_digits);
     }
 
-    let integer_digits = value.abs().log10().floor() as i32 + 1;
-    let significant_decimals = (MIN_SIGNIFICANT_DIGITS as i32 - integer_digits).max(0) as usize;
+    let significant_decimals = significant_decimal_floor(value.abs());
     let decimals = minimum_fraction_digits.max(significant_decimals);
     if decimals <= MAX_FIXED_DECIMALS {
         format!("{value:.decimals$}")
     } else {
         let decimals = MIN_SIGNIFICANT_DIGITS - 1;
         format!("{value:.decimals$e}")
+    }
+}
+
+fn significant_decimal_floor(magnitude: f64) -> usize {
+    if magnitude >= 1.0 {
+        let mut scaled = magnitude;
+        let mut integer_digits = 0_usize;
+        while scaled >= 1.0 {
+            scaled /= 10.0;
+            integer_digits += 1;
+        }
+        MIN_SIGNIFICANT_DIGITS.saturating_sub(integer_digits)
+    } else {
+        let mut scaled = magnitude;
+        let mut leading_fractional_places = 0_usize;
+        while scaled < 1.0 && leading_fractional_places <= MAX_FIXED_DECIMALS {
+            scaled *= 10.0;
+            leading_fractional_places += 1;
+        }
+        leading_fractional_places.saturating_add(MIN_SIGNIFICANT_DIGITS - 1)
     }
 }
 

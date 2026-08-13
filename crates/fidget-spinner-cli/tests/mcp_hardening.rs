@@ -3,6 +3,10 @@
     unused_imports,
     reason = "the shared MCP process harness serves both split integration scenario suites"
 )]
+#![expect(
+    clippy::float_cmp,
+    reason = "stored metric scalars must round-trip to the exact fixture values"
+)]
 
 include!("support/mcp_harness.rs");
 
@@ -104,7 +108,7 @@ fn cold_start_exposes_bound_surface_and_new_toolset() -> TestResult {
     assert!(!tool_names.contains(&"research.record"));
     assert!(!tool_names.contains(&"frontier.brief.update"));
 
-    let health = harness.call_tool(3, "system.health", json!({}))?;
+    let health = harness.call_tool(3, "system.health", json!({ "render": "json" }))?;
     assert_tool_ok(&health);
     assert_eq!(tool_content(&health)["bound"].as_bool(), Some(false));
 
@@ -130,7 +134,7 @@ fn cold_start_exposes_bound_surface_and_new_toolset() -> TestResult {
             .any(|pair| pair[0] == "fidget-spinner" && pair[1] == "projects")
     );
 
-    let rebound_health = harness.call_tool(5, "system.health", json!({}))?;
+    let rebound_health = harness.call_tool(5, "system.health", json!({ "render": "json" }))?;
     assert_tool_ok(&rebound_health);
     assert_eq!(tool_content(&rebound_health)["bound"].as_bool(), Some(true));
     Ok(())
@@ -153,14 +157,9 @@ fn telemetry_retains_coded_tool_specific_argument_failures() -> TestResult {
         }),
     )?;
     assert_tool_error(&malformed);
-    assert_eq!(
-        tool_content(&malformed)["code"].as_str(),
-        Some("invalid_protocol_input")
-    );
-    assert_eq!(
-        tool_content(&malformed)["operation"].as_str(),
-        Some("tools/call:frontier.create")
-    );
+    let malformed_text = must_some(tool_text(&malformed), "malformed tool error")?;
+    assert!(malformed_text.contains("fault=invalid_protocol_input"));
+    assert!(malformed_text.contains("operation=tools/call:frontier.create"));
 
     let telemetry = harness.call_tool_full(91, "system.telemetry", json!({}))?;
     assert_tool_ok(&telemetry);
@@ -752,10 +751,7 @@ fn tag_add_lock_only_rejects_mcp_tag_creation() -> TestResult {
         json!({"name": "model-invented", "description": "should be rejected"}),
     )?;
     assert_tool_error(&response);
-    assert_eq!(
-        tool_content(&response)["kind"].as_str(),
-        Some("PolicyViolation")
-    );
+    assert!(must_some(tool_text(&response), "policy fault")?.contains("fault=policy_violation"));
     assert!(
         must_some(tool_error_message(&response), "policy message")?
             .contains("new tag creation is locked from the Tags page")
@@ -816,10 +812,7 @@ fn kpi_creation_lock_rejects_mcp_only() -> TestResult {
         json!({"frontier": "kpi-lock", "metric": "nodes_solved"}),
     )?;
     assert_tool_error(&response);
-    assert_eq!(
-        tool_content(&response)["kind"].as_str(),
-        Some("PolicyViolation")
-    );
+    assert!(must_some(tool_text(&response), "policy fault")?.contains("fault=policy_violation"));
     assert!(
         must_some(tool_error_message(&response), "policy message")?
             .contains("MCP KPI creation is locked")
@@ -946,17 +939,7 @@ fn kpi_references_are_mcp_settable_normalized_and_queryable() -> TestResult {
     let set_text = must_some(tool_text(&set), "reference set text")?;
     assert!(set_text.contains("comparison only"));
     assert!(set_text.contains("experiment.close"));
-    assert_eq!(
-        tool_content(&set)["record"]["label"].as_str(),
-        Some("rival")
-    );
-    assert_eq!(tool_content(&set)["record"]["value"].as_f64(), Some(8500.0));
-    assert_eq!(
-        tool_content(&set)["record"]["canonical_value"].as_f64(),
-        Some(8_500_000_000.0)
-    );
-
-    let kpis = harness.call_tool(
+    let kpis = harness.call_tool_full(
         1164,
         "kpi.list",
         json!({"frontier": "kpi-reference-frontier"}),
@@ -966,8 +949,16 @@ fn kpi_references_are_mcp_settable_normalized_and_queryable() -> TestResult {
         tool_content(&kpis)["kpis"][0]["references"][0]["value"].as_f64(),
         Some(8500.0)
     );
+    assert_eq!(
+        tool_content(&kpis)["kpis"][0]["references"][0]["label"].as_str(),
+        Some("rival")
+    );
+    assert_eq!(
+        tool_content(&kpis)["kpis"][0]["references"][0]["canonical_value"].as_f64(),
+        Some(8_500_000_000.0)
+    );
 
-    let updated = harness.call_tool(
+    let updated = harness.call_tool_full(
         1165,
         "kpi.reference.set",
         json!({
@@ -983,7 +974,7 @@ fn kpi_references_are_mcp_settable_normalized_and_queryable() -> TestResult {
         Some(8400.0)
     );
 
-    let references = harness.call_tool(
+    let references = harness.call_tool_full(
         1166,
         "kpi.reference.list",
         json!({"frontier": "kpi-reference-frontier"}),
@@ -1017,7 +1008,7 @@ fn kpi_references_are_mcp_settable_normalized_and_queryable() -> TestResult {
             "reference": "rival",
         }),
     )?);
-    let empty = harness.call_tool(
+    let empty = harness.call_tool_full(
         1169,
         "kpi.reference.list",
         json!({"frontier": "kpi-reference-frontier"}),
@@ -1193,10 +1184,7 @@ fn mcp_hypothesis_record_requires_frontier_kpi() -> TestResult {
         }),
     )?;
     assert_tool_error(&rejected);
-    assert_eq!(
-        tool_content(&rejected)["kind"].as_str(),
-        Some("PolicyViolation")
-    );
+    assert!(must_some(tool_text(&rejected), "policy fault")?.contains("fault=policy_violation"));
     assert!(
         must_some(tool_error_message(&rejected), "KPI checkpoint message")?
             .contains("frontier `no-kpi` has no KPI metrics")

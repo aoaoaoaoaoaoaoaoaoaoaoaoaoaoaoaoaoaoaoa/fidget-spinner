@@ -682,7 +682,7 @@ struct McpWorkerArgs {
     project: PathBuf,
 }
 
-#[derive(Args)]
+#[derive(Args, Clone, Copy)]
 struct UiServeArgs {
     #[arg(long, default_value = "127.0.0.1:8913")]
     bind: SocketAddr,
@@ -941,8 +941,8 @@ fn main() -> Result<(), StoreError> {
             }
         },
         Command::Mcp { command } => match command {
-            McpCommand::Serve(args) => mcp::serve(args.project),
-            McpCommand::Worker(args) => mcp::serve_worker(args.project),
+            McpCommand::Serve(args) => mcp::serve(args.project.as_deref()),
+            McpCommand::Worker(args) => mcp::serve_worker(&args.project),
         },
         Command::Ui { command } => match command {
             UiCommand::Serve(args) => run_ui_serve(args),
@@ -1698,7 +1698,7 @@ mod tests {
                     .map(|()| utf8_path(root))
             })
             .as_ref()
-            .map_err(|error| error.clone())?
+            .map_err(Clone::clone)?
             .clone();
         fidget_spinner_store_sqlite::install_state_home_override(state_home)?;
         Ok(())

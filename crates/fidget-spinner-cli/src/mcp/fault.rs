@@ -85,14 +85,26 @@ impl FaultRecord {
         })
     }
 
+    fn rendered_message(&self) -> String {
+        format!(
+            "{}\nfault={} stage={} operation={} retryable={} retried={}",
+            self.message,
+            self.code,
+            format!("{:?}", self.stage).to_ascii_lowercase(),
+            self.operation,
+            self.retryable,
+            self.retried,
+        )
+    }
+
     #[must_use]
     pub fn into_tool_result(self) -> Value {
+        let rendered_message = self.rendered_message();
         json!({
             "content": [{
                 "type": "text",
-                "text": self.message,
+                "text": rendered_message,
             }],
-            "structuredContent": self,
             "isError": true,
         })
     }

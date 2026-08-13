@@ -72,9 +72,10 @@ fn workspace_root() -> Result<PathBuf> {
 }
 
 fn cargo() -> PathBuf {
-    env::var_os("CARGO")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(format!("cargo{}", env::consts::EXE_SUFFIX)))
+    env::var_os("CARGO").map_or_else(
+        || PathBuf::from(format!("cargo{}", env::consts::EXE_SUFFIX)),
+        PathBuf::from,
+    )
 }
 
 fn prove_identity(binary: &Path, isolation: &Isolation) -> Result<()> {

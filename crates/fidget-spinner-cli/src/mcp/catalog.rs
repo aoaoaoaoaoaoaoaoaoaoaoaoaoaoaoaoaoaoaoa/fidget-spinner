@@ -181,7 +181,7 @@ const TOOL_SPECS: &[ToolSpec] = &[
     },
     ToolSpec {
         name: "experiment.close",
-        description: "Close one open experiment with typed conditions, verdict, rationale, optional analysis, and an explicit keep_hypothesis_on_worklist decision when this is the hypothesis's last open experiment. Non-scuffed closes require a primary KPI metric, a clean git worktree, and record HEAD automatically from command.working_directory when provided, else from the bound project root. Scuffed closes are break-glass invalid-procedure records and may omit metrics.",
+        description: "Close one open experiment with typed conditions, verdict, rationale, optional analysis, and an explicit keep_hypothesis_on_worklist decision when this is the hypothesis's last open experiment. Non-scuffed closes require at least one measured frontier KPI, with exactly one designated primary; every other KPI is optional. A metric MUST mean exactly the same thing across all experiments, and all values reported for it within the frontier MUST be meaningfully pairwise comparable. A clean git worktree is required, and HEAD is recorded automatically from command.working_directory when provided, else from the bound project root. Scuffed closes are break-glass invalid-procedure records and may omit metrics.",
         dispatch: DispatchTarget::Worker,
         replay: ReplayContract::NeverReplay,
     },
@@ -205,7 +205,7 @@ const TOOL_SPECS: &[ToolSpec] = &[
     },
     ToolSpec {
         name: "metric.define",
-        description: "Register one project-level metric definition.",
+        description: "Register one project-level metric definition whose meaning remains invariant across experiments.",
         dispatch: DispatchTarget::Worker,
         replay: ReplayContract::NeverReplay,
     },
@@ -365,8 +365,6 @@ fn tool_input_schema(name: &str) -> Value {
             )],
             &["path"],
         ),
-        "project.status" | "tag.list" | "condition.list" | "skill.list" | "system.health"
-        | "system.telemetry" => empty_object_schema(),
         "tag.add" => object_schema(
             &[
                 ("name", string_schema("Repo-local tag token.")),
@@ -995,6 +993,7 @@ fn command_schema() -> Value {
 fn metric_value_schema() -> Value {
     json!({
         "type": "object",
+        "description": "One observed metric value. The metric MUST mean exactly the same thing across all experiments; within a frontier, all values reported for its key MUST be meaningfully pairwise comparable.",
         "properties": {
             "key": { "type": "string" },
             "value": { "type": "number" },
@@ -1009,7 +1008,11 @@ fn metric_value_schema() -> Value {
 }
 
 fn metric_value_array_schema() -> Value {
-    json!({ "type": "array", "items": metric_value_schema() })
+    json!({
+        "type": "array",
+        "description": "Optional supporting observations. KPI membership does not require inclusion; report only values actually measured under the metric's invariant meaning.",
+        "items": metric_value_schema()
+    })
 }
 
 fn conditions_schema() -> Value {

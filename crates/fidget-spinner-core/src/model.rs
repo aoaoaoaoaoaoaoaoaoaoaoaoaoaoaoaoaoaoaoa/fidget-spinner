@@ -689,32 +689,28 @@ impl MetricUnit {
     #[must_use]
     pub fn canonical_value(self, value: f64) -> f64 {
         match self {
-            Self::Nanoseconds => value,
+            Self::Nanoseconds | Self::Bytes | Self::Count | Self::Dimensionless => value,
             Self::Microseconds => value * 1_000.0,
             Self::Milliseconds => value * 1_000_000.0,
             Self::Seconds => value * 1_000_000_000.0,
-            Self::Bytes => value,
             Self::Kibibytes => value * 1_024.0,
             Self::Mebibytes => value * 1_048_576.0,
             Self::Gibibytes => value * 1_073_741_824.0,
             Self::Percent => value / 100.0,
-            Self::Count | Self::Dimensionless => value,
         }
     }
 
     #[must_use]
     pub fn display_value(self, canonical_value: f64) -> f64 {
         match self {
-            Self::Nanoseconds => canonical_value,
+            Self::Nanoseconds | Self::Bytes | Self::Count | Self::Dimensionless => canonical_value,
             Self::Microseconds => canonical_value / 1_000.0,
             Self::Milliseconds => canonical_value / 1_000_000.0,
             Self::Seconds => canonical_value / 1_000_000_000.0,
-            Self::Bytes => canonical_value,
             Self::Kibibytes => canonical_value / 1_024.0,
             Self::Mebibytes => canonical_value / 1_048_576.0,
             Self::Gibibytes => canonical_value / 1_073_741_824.0,
             Self::Percent => canonical_value * 100.0,
-            Self::Count | Self::Dimensionless => canonical_value,
         }
     }
 
@@ -750,9 +746,10 @@ fn normalize_metric_unit(raw: &str) -> Result<MetricUnit, CoreError> {
         return Err(CoreError::EmptyMetricUnit);
     }
     match normalized.as_str() {
-        "1" | "scalar" | "unitless" | "dimensionless" => Ok(MetricUnit::Dimensionless),
+        "1" | "scalar" | "unitless" | "dimensionless" | "ratio" | "fraction" => {
+            Ok(MetricUnit::Dimensionless)
+        }
         "count" | "counts" => Ok(MetricUnit::Count),
-        "ratio" | "fraction" => Ok(MetricUnit::Dimensionless),
         "%" | "percent" | "percentage" | "pct" => Ok(MetricUnit::Percent),
         "bytes" | "byte" | "b" | "by" => Ok(MetricUnit::Bytes),
         "kibibytes" | "kibibyte" | "kib" | "kibs" => Ok(MetricUnit::Kibibytes),
@@ -1017,7 +1014,7 @@ fn format_dimension_factor(dimension: MetricBaseDimension, exponent: RationalExp
     if magnitude == Ratio::from_integer(1) {
         dimension.to_string()
     } else {
-        format!("{dimension}^{}", format_rational_exponent(&magnitude))
+        format!("{dimension}^{}", format_rational_exponent(magnitude))
     }
 }
 
@@ -1088,7 +1085,7 @@ fn parse_dimension_factor(
     Ok((dimension, exponent))
 }
 
-fn format_rational_exponent(exponent: &RationalExponent) -> String {
+fn format_rational_exponent(exponent: RationalExponent) -> String {
     if *exponent.denom() == 1 {
         exponent.numer().to_string()
     } else {
@@ -1188,6 +1185,11 @@ impl RunDimensionDefinition {
 
 #[cfg(test)]
 mod tests {
+    #![expect(
+        clippy::manual_let_else,
+        reason = "tests assert constructor success before extracting values for subsequent evidence"
+    )]
+
     use super::{
         CommandRecipe, ExperimentRecord, ExperimentStatus, GitCommitHash, MetricQuantity,
         MetricUnit, NonEmptyText, Slug,

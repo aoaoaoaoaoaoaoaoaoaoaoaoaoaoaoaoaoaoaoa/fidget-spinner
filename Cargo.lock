@@ -338,7 +338,7 @@ checksum = "da7c62ceae207dd37ea5b845da6a0696c799f85e97da1ab5b7910be3c1c80223"
 
 [[package]]
 name = "fidget-spinner-cli"
-version = "1.0.1"
+version = "1.0.2"
 dependencies = [
  "axum",
  "camino",
@@ -359,7 +359,7 @@ dependencies = [
 
 [[package]]
 name = "fidget-spinner-core"
-version = "1.0.1"
+version = "1.0.2"
 dependencies = [
  "camino",
  "num-rational",
@@ -372,7 +372,7 @@ dependencies = [
 
 [[package]]
 name = "fidget-spinner-portability"
-version = "1.0.1"
+version = "1.0.2"
 dependencies = [
  "anyhow",
  "tempfile",
@@ -380,7 +380,7 @@ dependencies = [
 
 [[package]]
 name = "fidget-spinner-store-sqlite"
-version = "1.0.1"
+version = "1.0.2"
 dependencies = [
  "camino",
  "dirs",

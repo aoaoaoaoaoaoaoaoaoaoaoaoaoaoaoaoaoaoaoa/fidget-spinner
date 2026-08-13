@@ -3,7 +3,7 @@ mod styles;
 use super::UI_NAV_STATE_KEY;
 pub(super) use styles::styles;
 
-pub(super) fn harden_autofill_controls(document: String) -> String {
+pub(super) fn harden_autofill_controls(document: &str) -> String {
     let mut hardened = String::with_capacity(document.len() + 512);
     let mut cursor = 0;
     while let Some(tag_offset) = document[cursor..].find('<') {

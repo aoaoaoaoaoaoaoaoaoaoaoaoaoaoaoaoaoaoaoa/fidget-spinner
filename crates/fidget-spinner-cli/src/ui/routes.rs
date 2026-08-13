@@ -257,14 +257,16 @@ async fn navigator_javascript() -> impl IntoResponse {
 }
 
 async fn root_page(State(state): State<NavigatorState>) -> Response {
-    render_response(render_project_index(state))
+    render_response(render_project_index(&state))
 }
 
 async fn project_home(
     State(state): State<NavigatorState>,
     Path(project): Path<String>,
 ) -> Response {
-    render_response(resolve_project_context(&state, &project).and_then(render_project_home))
+    render_response(
+        resolve_project_context(&state, &project).and_then(|context| render_project_home(&context)),
+    )
 }
 
 #[derive(Debug, Deserialize)]
@@ -297,7 +299,9 @@ async fn project_tags(
     State(state): State<NavigatorState>,
     Path(project): Path<String>,
 ) -> Response {
-    render_response(resolve_project_context(&state, &project).and_then(render_project_tags))
+    render_response(
+        resolve_project_context(&state, &project).and_then(|context| render_project_tags(&context)),
+    )
 }
 
 async fn project_metrics(
@@ -308,7 +312,7 @@ async fn project_metrics(
     render_response(
         resolve_project_context(&state, &project).and_then(|context| {
             ProjectMetricsQuery::parse(uri.query())
-                .and_then(|query| render_project_metrics(context, query))
+                .and_then(|query| render_project_metrics(&context, &query))
         }),
     )
 }
@@ -828,7 +832,7 @@ async fn set_kpi_reference(
         resolve_project_context(&state, &project).and_then(|context| {
             let mut store = open_store(context.project_root.as_std_path())?;
             let frontier = form.frontier;
-            let unit = optional_metric_display_unit_field(form.unit)?;
+            let unit = optional_metric_display_unit_field(&form.unit)?;
             let _ = store.set_kpi_reference(SetKpiReferenceRequest {
                 frontier: frontier.clone(),
                 kpi: form.kpi,
@@ -878,9 +882,7 @@ async fn delete_kpi(
     )
 }
 
-fn optional_metric_display_unit_field(
-    raw: String,
-) -> Result<Option<MetricDisplayUnit>, StoreError> {
+fn optional_metric_display_unit_field(raw: &str) -> Result<Option<MetricDisplayUnit>, StoreError> {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
         Ok(None)
@@ -899,7 +901,7 @@ async fn frontier_detail(
     render_response(
         resolve_project_context(&state, &project).and_then(|context| {
             FrontierPageQuery::parse(uri.query())
-                .and_then(|query| render_frontier_detail(context, selector, query))
+                .and_then(|query| render_frontier_detail(&context, &selector, &query))
         }),
     )
 }
@@ -995,7 +997,7 @@ async fn archive_frontier(
     frontier_status_mutation_response(resolve_project_context(&state, &project).and_then(
         |context| {
             update_frontier_status(
-                context,
+                &context,
                 selector,
                 form.expected_revision,
                 FrontierStatus::Archived,
@@ -1012,7 +1014,7 @@ async fn unarchive_frontier(
     frontier_status_mutation_response(resolve_project_context(&state, &project).and_then(
         |context| {
             update_frontier_status(
-                context,
+                &context,
                 selector,
                 form.expected_revision,
                 FrontierStatus::Exploring,
@@ -1027,7 +1029,7 @@ async fn hypothesis_detail(
 ) -> Response {
     render_response(
         resolve_project_context(&state, &project)
-            .and_then(|context| render_hypothesis_detail(context, selector)),
+            .and_then(|context| render_hypothesis_detail(&context, &selector)),
     )
 }
 
@@ -1106,7 +1108,7 @@ async fn experiment_detail(
 ) -> Response {
     render_response(
         resolve_project_context(&state, &project)
-            .and_then(|context| render_experiment_detail(context, selector)),
+            .and_then(|context| render_experiment_detail(&context, &selector)),
     )
 }
 

@@ -1196,10 +1196,7 @@ fn experiment_outcome(outcome: &ExperimentOutcome) -> ExperimentOutcomeProjectio
         verdict: outcome.verdict.as_str().to_owned(),
         rationale: outcome.rationale.to_string(),
         analysis: outcome.analysis.as_ref().map(experiment_analysis),
-        commit_hash: outcome
-            .commit_hash
-            .as_ref()
-            .map(|commit_hash| commit_hash.to_string()),
+        commit_hash: outcome.commit_hash.as_ref().map(ToString::to_string),
         closed_at: timestamp_value(outcome.closed_at),
     }
 }
@@ -1242,6 +1239,10 @@ fn condition_map(
         .collect()
 }
 
+#[expect(
+    clippy::match_same_arms,
+    reason = "string and timestamp variants share JSON representation but remain distinct domain cases"
+)]
 fn condition_value(value: &RunDimensionValue) -> Value {
     match value {
         RunDimensionValue::String(value) => Value::String(value.to_string()),

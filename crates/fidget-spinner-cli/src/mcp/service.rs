@@ -704,7 +704,7 @@ impl WorkerService {
                 ));
             }
         };
-        tool_success(output, presentation, FaultStage::Worker, &operation)
+        Ok(tool_success(&output, presentation))
     }
 
     fn read_resource(uri: &str) -> Result<Value, FaultRecord> {
@@ -1495,7 +1495,7 @@ fn frontier_record_output(
     )];
     lines.push(format!("status: {}", frontier.status.as_str()));
     if let Some(situation) = frontier.brief.situation.as_ref() {
-        lines.push(format!("situation: {}", situation));
+        lines.push(format!("situation: {situation}"));
     }
     if !frontier.brief.unknowns.is_empty() {
         lines.push(format!(
@@ -1528,7 +1528,7 @@ fn frontier_open_output(
         projection.frontier.slug, projection.frontier.objective
     )];
     if let Some(situation) = projection.frontier.brief.situation.as_ref() {
-        lines.push(format!("situation: {}", situation));
+        lines.push(format!("situation: {situation}"));
     }
     if !projection.active_tags.is_empty() {
         lines.push(format!(

@@ -15,13 +15,13 @@ use super::{
 };
 
 pub(super) fn render_frontier_detail(
-    context: ProjectRenderContext,
-    selector: String,
-    query: FrontierPageQuery,
+    context: &ProjectRenderContext,
+    selector: &str,
+    query: &FrontierPageQuery,
 ) -> Result<Markup, StoreError> {
     let store = open_store(context.project_root.as_std_path())?;
-    let projection = store.frontier_open(&selector)?;
-    let shell = load_shell_frame(&store, Some(projection.frontier.slug.clone()), &context)?;
+    let projection = store.frontier_open(selector)?;
+    let shell = load_shell_frame(&store, Some(projection.frontier.slug.clone()), context)?;
     let kpi_metric_keys_for_tab_bar = projection
         .kpis
         .iter()
@@ -35,7 +35,7 @@ pub(super) fn render_frontier_detail(
     );
     let tab = FrontierTab::from_query(query.tab.as_deref());
     let title = format!("{} · frontier", projection.frontier.label);
-    let content = render_frontier_tab_content(&store, &projection, tab, &query, &context)?;
+    let page_body = render_frontier_tab_content(&store, &projection, tab, query, context)?;
     let selection = query.chart_selection();
     Ok(render_shell(
         &title,
@@ -53,20 +53,20 @@ pub(super) fn render_frontier_detail(
             &selection,
             query.table_metric.as_deref(),
         )),
-        content,
+        &page_body,
     ))
 }
 
 pub(super) fn render_hypothesis_detail(
-    context: ProjectRenderContext,
-    selector: String,
+    context: &ProjectRenderContext,
+    selector: &str,
 ) -> Result<Markup, StoreError> {
     let store = open_store(context.project_root.as_std_path())?;
-    let detail = store.read_hypothesis(&selector)?;
+    let detail = store.read_hypothesis(selector)?;
     let frontier = store.read_frontier(&detail.record.frontier_id.to_string())?;
-    let shell = load_shell_frame(&store, Some(frontier.slug.clone()), &context)?;
+    let shell = load_shell_frame(&store, Some(frontier.slug.clone()), context)?;
     let title = format!("{} · hypothesis", detail.record.title);
-    let content = html! {
+    let page_body = html! {
         (render_hypothesis_header(&detail, &frontier))
         (render_hypothesis_body(&detail))
         (render_vertex_relation_sections(&detail.parents, &detail.children, context.limit))
@@ -81,19 +81,19 @@ pub(super) fn render_hypothesis_detail(
             context.limit,
         ))
     };
-    Ok(render_shell(&title, &shell, None, content))
+    Ok(render_shell(&title, &shell, None, &page_body))
 }
 
 pub(super) fn render_experiment_detail(
-    context: ProjectRenderContext,
-    selector: String,
+    context: &ProjectRenderContext,
+    selector: &str,
 ) -> Result<Markup, StoreError> {
     let store = open_store(context.project_root.as_std_path())?;
-    let detail = store.read_experiment(&selector)?;
+    let detail = store.read_experiment(selector)?;
     let frontier = store.read_frontier(&detail.record.frontier_id.to_string())?;
-    let shell = load_shell_frame(&store, Some(frontier.slug.clone()), &context)?;
+    let shell = load_shell_frame(&store, Some(frontier.slug.clone()), context)?;
     let title = format!("{} · experiment", detail.record.title);
-    let content = html! {
+    let page_body = html! {
         (render_experiment_header(&detail, &frontier))
         @if let Some(outcome) = detail.record.outcome.as_ref() {
             (render_experiment_outcome(&detail.record.slug, detail.record.revision, outcome))
@@ -102,7 +102,7 @@ pub(super) fn render_experiment_detail(
         }
         (render_vertex_relation_sections(&detail.parents, &detail.children, context.limit))
     };
-    Ok(render_shell(&title, &shell, None, content))
+    Ok(render_shell(&title, &shell, None, &page_body))
 }
 
 pub(super) fn render_frontier_header(frontier: &FrontierRecord) -> Markup {
@@ -789,7 +789,7 @@ pub(super) fn render_shell(
     title: &str,
     shell: &ShellFrame,
     tab_bar: Option<Markup>,
-    content: Markup,
+    content: &Markup,
 ) -> Markup {
     html! {
         (DOCTYPE)

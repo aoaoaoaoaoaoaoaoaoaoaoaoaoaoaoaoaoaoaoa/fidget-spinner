@@ -23,6 +23,10 @@ A metric has:
 Keys name concepts, not units. Prefer `presolve_wallclock` with display unit
 `milliseconds`, not `presolve_ms`.
 
+A metric MUST mean exactly the same thing across all experiments. Within a
+frontier, all values reported for that metric MUST be meaningfully pairwise
+comparable.
+
 The CLI and MCP retain `dimension` as the compatible boundary spelling for a
 metric quantity. Internal policy and new prose use **quantity** only.
 
@@ -59,6 +63,11 @@ A KPI is only:
 
 Active MCP-visible frontiers must have at least one KPI before hypothesis or
 experiment work.
+
+KPI membership does not make a metric mandatory for every experiment. A
+non-scuffed MCP closure must report at least one frontier KPI and designate
+exactly one as primary. Report other KPIs only when meaningfully comparable
+values were actually measured.
 
 KPI order drives:
 

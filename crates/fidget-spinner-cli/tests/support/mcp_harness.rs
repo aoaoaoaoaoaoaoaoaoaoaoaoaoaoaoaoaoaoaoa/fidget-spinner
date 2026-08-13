@@ -314,9 +314,13 @@ impl McpHarness {
     }
 
     fn bind_project(&mut self, id: u64, path: &Utf8PathBuf) -> TestResult<Value> {
-        self.call_tool(id, "project.bind", json!({ "path": path.as_str() }))
+        self.call_tool_full(id, "project.bind", json!({ "path": path.as_str() }))
     }
 
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "the process harness owns each ephemeral JSON argument envelope at the call boundary"
+    )]
     fn call_tool(&mut self, id: u64, name: &str, arguments: Value) -> TestResult<Value> {
         self.request(json!({
             "jsonrpc": "2.0",
@@ -329,6 +333,10 @@ impl McpHarness {
         }))
     }
 
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "the process harness owns and augments each ephemeral JSON argument envelope"
+    )]
     fn call_tool_full(&mut self, id: u64, name: &str, arguments: Value) -> TestResult<Value> {
         let mut arguments = arguments.as_object().cloned().unwrap_or_default();
         let _ = arguments.insert("render".to_owned(), json!("json"));
@@ -336,6 +344,10 @@ impl McpHarness {
         self.call_tool(id, name, Value::Object(arguments))
     }
 
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "the process harness owns each one-shot JSON-RPC request envelope"
+    )]
     fn request(&mut self, message: Value) -> TestResult<Value> {
         let encoded = must(serde_json::to_string(&message), "request json")?;
         must(writeln!(self.stdin, "{encoded}"), "write request")?;
@@ -343,6 +355,10 @@ impl McpHarness {
         self.read_response()
     }
 
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "the process harness owns each one-shot JSON-RPC notification envelope"
+    )]
     fn notify(&mut self, message: Value) -> TestResult {
         let encoded = must(serde_json::to_string(&message), "notify json")?;
         must(writeln!(self.stdin, "{encoded}"), "write notify")?;
@@ -382,7 +398,7 @@ fn tool_text(response: &Value) -> Option<&str> {
 }
 
 fn tool_error_message(response: &Value) -> Option<&str> {
-    response["result"]["structuredContent"]["message"].as_str()
+    tool_text(response)
 }
 
 fn assert_tool_ok(response: &Value) {

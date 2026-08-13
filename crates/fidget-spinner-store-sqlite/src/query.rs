@@ -268,8 +268,7 @@ fn requested_timeout_ms(timeout_ms: Option<u64>) -> u64 {
 
 fn requested_max_rows(max_rows: Option<u32>) -> usize {
     max_rows
-        .map(|limit| limit as usize)
-        .unwrap_or(DEFAULT_MAX_ROWS)
+        .map_or(DEFAULT_MAX_ROWS, |limit| limit as usize)
         .clamp(1, HARD_MAX_ROWS)
 }
 
@@ -296,9 +295,9 @@ fn sql_value_to_json(value: ValueRef<'_>) -> Value {
     match value {
         ValueRef::Null => Value::Null,
         ValueRef::Integer(value) => Value::Number(Number::from(value)),
-        ValueRef::Real(value) => Number::from_f64(value)
-            .map(Value::Number)
-            .unwrap_or_else(|| Value::String(value.to_string())),
+        ValueRef::Real(value) => {
+            Number::from_f64(value).map_or_else(|| Value::String(value.to_string()), Value::Number)
+        }
         ValueRef::Text(value) => Value::String(String::from_utf8_lossy(value).into_owned()),
         ValueRef::Blob(value) => Value::String(format!("<blob:{} bytes>", value.len())),
     }

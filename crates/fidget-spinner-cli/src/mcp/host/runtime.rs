@@ -1,5 +1,5 @@
 use std::io::{self, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use libmcp::{
@@ -35,7 +35,7 @@ use crate::mcp::telemetry::{
 };
 
 pub(crate) fn run_host(
-    initial_project: Option<PathBuf>,
+    initial_project: Option<&Path>,
 ) -> Result<(), fidget_spinner_store_sqlite::StoreError> {
     #[cfg(unix)]
     {
@@ -49,7 +49,7 @@ pub(crate) fn run_host(
 
 #[cfg(unix)]
 fn run_polling_host(
-    initial_project: Option<PathBuf>,
+    initial_project: Option<&Path>,
 ) -> Result<(), fidget_spinner_store_sqlite::StoreError> {
     let stdin = io::stdin();
     let mut stdin = TimedFrameReader::new(stdin.lock(), FrameLimit::DEFAULT);
@@ -77,7 +77,7 @@ fn run_polling_host(
 
 #[cfg(not(unix))]
 fn run_blocking_host(
-    initial_project: Option<PathBuf>,
+    initial_project: Option<&Path>,
 ) -> Result<(), fidget_spinner_store_sqlite::StoreError> {
     let mut stdin = io::BufReader::new(io::stdin().lock());
     let mut stdout = io::stdout().lock();
@@ -109,7 +109,7 @@ const HOST_ROLLOUT_RETRY_DELAY: Duration = Duration::from_secs(5);
 const HOST_HANDOFF_TIMEOUT: Duration = Duration::from_secs(15);
 
 struct HostRuntime {
-    config: HostConfig,
+    executable: PathBuf,
     binding: Option<ProjectBinding>,
     session_kernel: HostSessionKernel,
     telemetry: ServerTelemetry,
@@ -126,13 +126,17 @@ struct HostRuntime {
 
 impl HostRuntime {
     fn new(config: HostConfig) -> Result<Self, fidget_spinner_store_sqlite::StoreError> {
+        let HostConfig {
+            executable,
+            initial_project,
+        } = config;
         let restored = restore_host_state()?;
         let limits = snapshot_limits()?;
         let session_kernel = restored
             .as_ref()
             .map(|seed| seed.session_kernel.clone().restore(limits))
             .transpose()
-            .map_err(snapshot_store_error)?
+            .map_err(|error| snapshot_store_error(&error))?
             .unwrap_or_else(HostSessionKernel::cold);
         let telemetry = restored
             .as_ref()
@@ -150,9 +154,8 @@ impl HostRuntime {
         let binding = restored
             .as_ref()
             .and_then(|seed| seed.binding.clone().map(ProjectBinding::from))
-            .or(config
-                .initial_project
-                .clone()
+            .or(initial_project
+                .as_deref()
                 .map(resolve_project_binding)
                 .transpose()?
                 .map(|resolved| resolved.binding));
@@ -160,7 +163,7 @@ impl HostRuntime {
         let worker = {
             let mut worker = WorkerSupervisor::new(
                 WorkerSpawnConfig {
-                    executable: config.executable.clone(),
+                    executable: executable.clone(),
                 },
                 worker_generation,
             );
@@ -174,7 +177,7 @@ impl HostRuntime {
             .map_err(fidget_spinner_store_sqlite::StoreError::Io)?;
 
         Ok(Self {
-            config: config.clone(),
+            executable,
             binding,
             session_kernel,
             telemetry,
@@ -195,7 +198,7 @@ impl HostRuntime {
             Ok(frame) => frame,
             Err(error) => {
                 return Some(jsonrpc_error(
-                    Value::Null,
+                    &Value::Null,
                     FaultRecord::new(
                         FaultKind::InvalidInput,
                         FaultStage::Protocol,
@@ -205,13 +208,13 @@ impl HostRuntime {
                 ));
             }
         };
-        self.handle_frame(frame)
+        self.handle_frame(&frame)
     }
 
-    fn handle_frame(&mut self, frame: FramedMessage) -> Option<Value> {
+    fn handle_frame(&mut self, frame: &FramedMessage) -> Option<Value> {
         let Some(object) = frame.value().as_object() else {
             return Some(jsonrpc_error(
-                Value::Null,
+                &Value::Null,
                 FaultRecord::new(
                     FaultKind::InvalidInput,
                     FaultStage::Protocol,
@@ -228,17 +231,17 @@ impl HostRuntime {
         let operation_key = operation_key(method, &params);
         let started_at = Instant::now();
 
-        if let Err(rejection) = self.session_kernel.observe_client_frame(&frame) {
-            return id.map(|id| jsonrpc_error(id, host_rejection_fault(method, rejection)));
+        if let Err(rejection) = self.session_kernel.observe_client_frame(frame) {
+            return id.map(|id| jsonrpc_error(&id, host_rejection_fault(method, rejection)));
         }
         if journaled
             && let Err(rejection) = self.session_kernel.begin_request_dispatch(
-                &frame,
+                frame,
                 request_replay_contract(method, &params),
                 HOST_PENDING_CAPACITY,
             )
         {
-            return id.map(|id| jsonrpc_error(id, host_rejection_fault(method, rejection)));
+            return id.map(|id| jsonrpc_error(&id, host_rejection_fault(method, rejection)));
         }
 
         self.telemetry.record_request(&operation_key);
@@ -246,7 +249,7 @@ impl HostRuntime {
             Ok(Some(result)) => {
                 self.telemetry
                     .record_success(&operation_key, started_at.elapsed().as_millis());
-                id.map(|id| jsonrpc_result(id, result))
+                id.map(|id| jsonrpc_result(&id, &result))
             }
             Ok(None) => {
                 self.telemetry
@@ -256,15 +259,15 @@ impl HostRuntime {
             Err(fault) => {
                 self.telemetry.record_error(
                     &operation_key,
-                    fault.clone(),
+                    &fault,
                     started_at.elapsed().as_millis(),
                 );
                 Some(match id {
                     Some(id) => match method {
-                        "tools/call" => jsonrpc_result(id, fault.into_tool_result()),
-                        _ => jsonrpc_error(id, fault),
+                        "tools/call" => jsonrpc_result(&id, &fault.into_tool_result()),
+                        _ => jsonrpc_error(&id, fault),
                     },
-                    None => jsonrpc_error(Value::Null, fault),
+                    None => jsonrpc_error(&Value::Null, fault),
                 })
             }
         };
@@ -358,11 +361,14 @@ impl HostRuntime {
         })?;
         match spec.dispatch {
             DispatchTarget::Host => Ok(Self::handle_host_resource(spec.uri)),
-            DispatchTarget::Worker => self.dispatch_worker_operation(
-                format!("resources/read:{}", args.uri),
-                spec.replay,
-                WorkerOperation::ReadResource { uri: args.uri },
-            ),
+            DispatchTarget::Worker => {
+                let operation = format!("resources/read:{}", args.uri);
+                self.dispatch_worker_operation(
+                    &operation,
+                    spec.replay,
+                    WorkerOperation::ReadResource { uri: args.uri },
+                )
+            }
         }
     }
 
@@ -373,7 +379,7 @@ impl HostRuntime {
     ) -> Result<Value, FaultRecord> {
         let operation = format!("tools/call:{}", spec.name);
         self.dispatch_worker_operation(
-            operation.clone(),
+            &operation,
             spec.replay,
             WorkerOperation::CallTool {
                 name: spec.name.to_owned(),
@@ -384,15 +390,15 @@ impl HostRuntime {
 
     fn dispatch_worker_operation(
         &mut self,
-        operation: String,
+        operation: &str,
         replay: ReplayContract,
         worker_operation: WorkerOperation,
     ) -> Result<Value, FaultRecord> {
-        let binding = self.require_bound_project(&operation)?;
+        let binding = self.require_bound_project(operation)?;
         self.worker.rebind(binding.project_root.clone());
-        self.refresh_worker_for_binary_rollout(&operation)?;
+        self.refresh_worker_for_binary_rollout(operation)?;
 
-        if self.should_crash_worker_once(&operation) {
+        if self.should_crash_worker_once(operation) {
             self.worker.arm_crash_once();
         }
 
@@ -402,18 +408,16 @@ impl HostRuntime {
             Err(fault) => {
                 if fault.is_store_format_mismatch() {
                     return self.retry_after_store_format_rollout(
-                        &operation,
+                        operation,
                         request_id,
                         worker_operation,
                         fault,
                     );
                 }
                 if replay == ReplayContract::Convergent && fault.retryable {
-                    self.telemetry.record_retry(&operation);
+                    self.telemetry.record_retry(operation);
                     self.telemetry.record_worker_restart();
-                    self.worker
-                        .restart()
-                        .map_err(|restart_fault| restart_fault.mark_retried())?;
+                    self.worker.restart().map_err(FaultRecord::mark_retried)?;
                     match self.worker.execute(request_id, worker_operation) {
                         Ok(result) => Ok(result),
                         Err(retry_fault) => Err(retry_fault.mark_retried()),
@@ -451,9 +455,7 @@ impl HostRuntime {
     ) -> Result<Value, FaultRecord> {
         self.telemetry.record_retry(operation);
         self.telemetry.record_worker_restart();
-        self.worker
-            .restart()
-            .map_err(|restart_fault| restart_fault.mark_retried())?;
+        self.worker.restart().map_err(FaultRecord::mark_retried)?;
         match self.worker.execute(request_id, worker_operation) {
             Ok(result) => Ok(result),
             Err(retry_fault) if retry_fault.is_store_format_mismatch() => {
@@ -470,24 +472,18 @@ impl HostRuntime {
         match name {
             "project.bind" => {
                 let args = deserialize::<ProjectBindArgs>(arguments, "tools/call:project.bind")?;
-                let resolved = resolve_project_binding(PathBuf::from(args.path))
+                let resolved = resolve_project_binding(Path::new(&args.path))
                     .map_err(host_store_fault("tools/call:project.bind"))?;
                 self.worker
                     .refresh_binding(resolved.binding.project_root.clone());
                 self.binding = Some(resolved.binding);
-                tool_success(
-                    project_bind_output(&resolved.status)?,
-                    presentation,
-                    FaultStage::Host,
-                    "tools/call:project.bind",
-                )
+                let output = project_bind_output(&resolved.status)?;
+                Ok(tool_success(&output, presentation))
             }
-            "skill.list" => tool_success(
-                skill_list_output()?,
-                presentation,
-                FaultStage::Host,
-                "tools/call:skill.list",
-            ),
+            "skill.list" => {
+                let output = skill_list_output()?;
+                Ok(tool_success(&output, presentation))
+            }
             "skill.show" => {
                 let args = deserialize::<SkillShowArgs>(arguments, "tools/call:skill.show")?;
                 let skill = args.name.as_deref().map_or_else(
@@ -503,12 +499,8 @@ impl HostRuntime {
                         })
                     },
                 )?;
-                tool_success(
-                    skill_show_output(skill)?,
-                    presentation,
-                    FaultStage::Host,
-                    "tools/call:skill.show",
-                )
+                let output = skill_show_output(skill)?;
+                Ok(tool_success(&output, presentation))
             }
             "system.health" => {
                 let health = HealthSnapshot {
@@ -522,7 +514,7 @@ impl HostRuntime {
                         alive: self.worker.is_alive(),
                     },
                     binary: BinaryHealth {
-                        current_executable: self.config.executable.display().to_string(),
+                        current_executable: self.executable.display().to_string(),
                         launch_path_stable: self.release.launch_path_stable(),
                         rollout_pending: self.rollout_requested
                             || self
@@ -532,19 +524,13 @@ impl HostRuntime {
                     },
                     last_fault: self.telemetry.last_fault.clone(),
                 };
-                tool_success(
-                    system_health_output(&health)?,
-                    presentation,
-                    FaultStage::Host,
-                    "tools/call:system.health",
-                )
+                let output = system_health_output(&health)?;
+                Ok(tool_success(&output, presentation))
             }
-            "system.telemetry" => tool_success(
-                system_telemetry_output(&self.telemetry)?,
-                presentation,
-                FaultStage::Host,
-                "tools/call:system.telemetry",
-            ),
+            "system.telemetry" => {
+                let output = system_telemetry_output(&self.telemetry)?;
+                Ok(tool_success(&output, presentation))
+            }
             other => Err(FaultRecord::new(
                 FaultKind::InvalidInput,
                 FaultStage::Host,
@@ -719,13 +705,13 @@ struct ResolvedProjectBinding {
 }
 
 fn resolve_project_binding(
-    requested_path: PathBuf,
+    requested_path: &Path,
 ) -> Result<ResolvedProjectBinding, fidget_spinner_store_sqlite::StoreError> {
-    let store = crate::open_or_init_store_for_binding(&requested_path)?;
+    let store = crate::open_or_init_store_for_binding(requested_path)?;
     let project_status = store.status_from_mcp()?;
     Ok(ResolvedProjectBinding {
         binding: ProjectBinding {
-            requested_path: requested_path.clone(),
+            requested_path: requested_path.to_owned(),
             project_root: PathBuf::from(store.project_root().as_str()),
         },
         status: ProjectBindStatus {
@@ -810,7 +796,7 @@ fn snapshot_limits() -> Result<SnapshotLimits, fidget_spinner_store_sqlite::Stor
     })
 }
 
-fn snapshot_store_error(error: libmcp::SnapshotError) -> fidget_spinner_store_sqlite::StoreError {
+fn snapshot_store_error(error: &libmcp::SnapshotError) -> fidget_spinner_store_sqlite::StoreError {
     fidget_spinner_store_sqlite::StoreError::Io(io::Error::new(
         io::ErrorKind::InvalidData,
         error.to_string(),
@@ -1163,7 +1149,7 @@ fn host_store_fault(
     }
 }
 
-fn jsonrpc_result(id: Value, result: Value) -> Value {
+fn jsonrpc_result(id: &Value, result: &Value) -> Value {
     json!({
         "jsonrpc": "2.0",
         "id": id,
@@ -1171,7 +1157,7 @@ fn jsonrpc_result(id: Value, result: Value) -> Value {
     })
 }
 
-fn jsonrpc_error(id: Value, fault: FaultRecord) -> Value {
+fn jsonrpc_error(id: &Value, fault: FaultRecord) -> Value {
     json!({
         "jsonrpc": "2.0",
         "id": id,

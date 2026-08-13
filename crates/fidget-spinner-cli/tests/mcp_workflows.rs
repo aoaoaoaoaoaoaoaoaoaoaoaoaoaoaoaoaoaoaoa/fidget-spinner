@@ -3,6 +3,10 @@
     unused_imports,
     reason = "the shared MCP process harness serves both split integration scenario suites"
 )]
+#![expect(
+    clippy::float_cmp,
+    reason = "stored metric scalars must round-trip to the exact fixture values"
+)]
 
 include!("support/mcp_harness.rs");
 
@@ -1022,12 +1026,13 @@ fn frontier_query_sql_is_scoped_and_tabular() -> TestResult {
     assert!(schema_text.contains("q_experiment_metric|metric_key|text|Metric key."));
     assert!(!schema_text.contains("frontier_id"));
 
+    let sql = "select experiment_slug, hypothesis_slug, metric_key, display_value from q_experiment_metric where metric_key = ? order by experiment_slug";
     let query = harness.call_tool(
         3061,
         "frontier.query.sql",
         json!({
             "frontier": "query-alpha",
-            "sql": "select experiment_slug, hypothesis_slug, metric_key, display_value from q_experiment_metric where metric_key = ? order by experiment_slug",
+            "sql": sql,
             "params": ["nodes_solved"],
         }),
     )?;
@@ -1050,7 +1055,18 @@ fn frontier_query_sql_is_scoped_and_tabular() -> TestResult {
     let command_text = must_some(tool_text(&command), "frontier query command text")?;
     assert_eq!(command_text, "arg\nquery-alpha-command");
 
-    let rows = must_some(tool_content(&query)["rows"].as_array(), "query rows")?;
+    let query_json = harness.call_tool(
+        3063,
+        "frontier.query.sql",
+        json!({
+            "frontier": "query-alpha",
+            "sql": sql,
+            "params": ["nodes_solved"],
+            "render": "json",
+        }),
+    )?;
+    assert_tool_ok(&query_json);
+    let rows = must_some(tool_content(&query_json)["rows"].as_array(), "query rows")?;
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0][0].as_str(), Some("query-alpha-run"));
     assert_eq!(rows[0][3].as_f64(), Some(111.0));

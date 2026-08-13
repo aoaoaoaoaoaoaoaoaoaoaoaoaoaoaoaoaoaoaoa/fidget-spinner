@@ -1,3 +1,8 @@
+#![allow(
+    clippy::needless_pass_by_value,
+    reason = "the stable 1.x store API consumes typed command and query envelopes by contract; borrowing them would break ownership semantics and the public interface"
+)]
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io;
@@ -4848,8 +4853,7 @@ impl ProjectStore {
                         record
                             .outcome
                             .as_ref()
-                            .map(|outcome| outcome.closed_at)
-                            .unwrap_or(record.updated_at)
+                            .map_or(record.updated_at, |outcome| outcome.closed_at)
                     })
             })
     }
@@ -5340,7 +5344,10 @@ impl ProjectStore {
                     }
                     log_sum += value.ln();
                 }
-                Ok(Some((log_sum / terms.len() as f64).exp()))
+                let term_count = u32::try_from(terms.len()).map_err(|_| {
+                    StoreError::InvalidInput("synthetic geomean has too many terms".to_owned())
+                })?;
+                Ok(Some((log_sum / f64::from(term_count)).exp()))
             }
         }
     }
@@ -6927,7 +6934,10 @@ fn evaluate_frontier_chart_expression(
                 }
                 log_sum += value.ln();
             }
-            Ok(Some((log_sum / terms.len() as f64).exp()))
+            let term_count = u32::try_from(terms.len()).map_err(|_| {
+                StoreError::InvalidInput("chart geomean has too many terms".to_owned())
+            })?;
+            Ok(Some((log_sum / f64::from(term_count)).exp()))
         }
     }
 }
@@ -9234,7 +9244,7 @@ pub fn preferred_project_root(path: impl AsRef<Utf8Path>) -> Result<Utf8PathBuf,
 }
 
 fn discovery_start(path: &Utf8Path) -> Utf8PathBuf {
-    if matches!(path.file_name(), Some(STORE_DIR_NAME) | Some(GIT_DIR_NAME)) {
+    if matches!(path.file_name(), Some(STORE_DIR_NAME | GIT_DIR_NAME)) {
         return path
             .parent()
             .map_or_else(|| path.to_path_buf(), Utf8Path::to_path_buf);
@@ -9431,6 +9441,11 @@ fn parse_timestamp_sql(raw: &str) -> Result<OffsetDateTime, rusqlite::Error> {
 
 #[cfg(test)]
 mod tests {
+    #![expect(
+        clippy::manual_let_else,
+        reason = "tests discriminate exact error variants before extracting them for subsequent evidence"
+    )]
+
     use super::*;
     use std::process::Command;
     use std::sync::OnceLock;

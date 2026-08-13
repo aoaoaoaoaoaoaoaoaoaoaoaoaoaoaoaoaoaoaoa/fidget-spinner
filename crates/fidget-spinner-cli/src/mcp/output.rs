@@ -106,10 +106,10 @@ pub(crate) fn projected_tool_output(
 ) -> Result<ToolOutput, FaultRecord> {
     let concise = projection
         .concise_projection()
-        .map_err(|error| projection_fault(error, stage, operation))?;
+        .map_err(|error| projection_fault(&error, stage, operation))?;
     let full = projection
         .full_projection()
-        .map_err(|error| projection_fault(error, stage, operation))?;
+        .map_err(|error| projection_fault(&error, stage, operation))?;
     Ok(ToolOutput::from_values(
         concise,
         full,
@@ -128,38 +128,33 @@ pub(crate) fn fallback_detailed_tool_output(
     operation: &str,
 ) -> Result<ToolOutput, FaultRecord> {
     let projection = FallbackJsonProjection::new(concise, full, kind)
-        .map_err(|error| projection_fault(error, stage, operation))?;
+        .map_err(|error| projection_fault(&error, stage, operation))?;
     projected_tool_output(&projection, concise_text, full_text, stage, operation)
 }
 
-pub(crate) fn tool_success(
-    output: ToolOutput,
-    presentation: Presentation,
-    stage: FaultStage,
-    operation: &str,
-) -> Result<Value, FaultRecord> {
+pub(crate) fn tool_success(output: &ToolOutput, presentation: Presentation) -> Value {
     let structured = output.structured(presentation.detail).clone();
-    let text = match presentation.render {
-        RenderMode::Porcelain => output.porcelain_text(presentation.detail),
-        RenderMode::Json => crate::to_pretty_json(&structured).map_err(|error| {
-            FaultRecord::new(FaultKind::Internal, stage, operation, error.to_string())
-        })?,
-    };
-    Ok(json!({
-        "content": [{
-            "type": "text",
-            "text": text,
-        }],
-        "structuredContent": structured,
-        "isError": false,
-    }))
+    match presentation.render {
+        RenderMode::Porcelain => json!({
+            "content": [{
+                "type": "text",
+                "text": output.porcelain_text(presentation.detail),
+            }],
+            "isError": false,
+        }),
+        RenderMode::Json => json!({
+            "content": [],
+            "structuredContent": structured,
+            "isError": false,
+        }),
+    }
 }
 
 pub(crate) fn with_common_presentation(schema: Value) -> Value {
     with_presentation_properties(schema)
 }
 
-fn projection_fault(error: ProjectionError, stage: FaultStage, operation: &str) -> FaultRecord {
+fn projection_fault(error: &ProjectionError, stage: FaultStage, operation: &str) -> FaultRecord {
     FaultRecord::new(FaultKind::Internal, stage, operation, error.to_string())
 }
 

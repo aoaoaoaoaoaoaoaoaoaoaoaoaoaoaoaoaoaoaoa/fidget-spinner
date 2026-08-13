@@ -318,12 +318,12 @@ fn query_flag_enabled(flags: &BTreeMap<String, String>, key: &str) -> bool {
 
 fn render_response(result: Result<Markup, StoreError>) -> Response {
     match result {
-        Ok(markup) => Html(harden_autofill_controls(markup.into_string())).into_response(),
-        Err(StoreError::UnknownFrontierSelector(_))
-        | Err(StoreError::UnknownHypothesisSelector(_))
-        | Err(StoreError::UnknownExperimentSelector(_)) => {
-            (StatusCode::NOT_FOUND, "not found".to_owned()).into_response()
-        }
+        Ok(markup) => Html(harden_autofill_controls(&markup.into_string())).into_response(),
+        Err(
+            StoreError::UnknownFrontierSelector(_)
+            | StoreError::UnknownHypothesisSelector(_)
+            | StoreError::UnknownExperimentSelector(_),
+        ) => (StatusCode::NOT_FOUND, "not found".to_owned()).into_response(),
         Err(error) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             format!("navigator render failed: {error}"),
@@ -388,7 +388,7 @@ fn tag_mutation_response(result: Result<String, StoreError>) -> Response {
                 .to_owned(),
         )
             .into_response(),
-        Err(StoreError::UnknownTag(_)) | Err(StoreError::UnknownTagFamily(_)) => {
+        Err(StoreError::UnknownTag(_) | StoreError::UnknownTagFamily(_)) => {
             (StatusCode::NOT_FOUND, "not found".to_owned()).into_response()
         }
         Err(StoreError::PolicyViolation(message)) => {
@@ -405,13 +405,13 @@ fn tag_mutation_response(result: Result<String, StoreError>) -> Response {
 fn metric_mutation_response(result: Result<String, StoreError>) -> Response {
     match result {
         Ok(location) => Redirect::to(&location).into_response(),
-        Err(StoreError::UnknownMetricDefinition(_))
-        | Err(StoreError::UnknownKpi(_))
-        | Err(StoreError::UnknownKpiReference(_))
-        | Err(StoreError::UnknownFrontierSelector(_)) => {
-            (StatusCode::NOT_FOUND, "not found".to_owned()).into_response()
-        }
-        Err(StoreError::DuplicateMetricDefinition(_)) | Err(StoreError::DuplicateKpi(_)) => {
+        Err(
+            StoreError::UnknownMetricDefinition(_)
+            | StoreError::UnknownKpi(_)
+            | StoreError::UnknownKpiReference(_)
+            | StoreError::UnknownFrontierSelector(_),
+        ) => (StatusCode::NOT_FOUND, "not found".to_owned()).into_response(),
+        Err(StoreError::DuplicateMetricDefinition(_) | StoreError::DuplicateKpi(_)) => {
             (StatusCode::CONFLICT, "metric registry conflict".to_owned()).into_response()
         }
         Err(StoreError::PolicyViolation(message)) => {
@@ -609,7 +609,7 @@ fn update_project_description(
 }
 
 fn update_frontier_status(
-    context: ProjectRenderContext,
+    context: &ProjectRenderContext,
     selector: String,
     expected_revision: Option<u64>,
     status: FrontierStatus,
@@ -892,10 +892,9 @@ fn short_commit_hash(commit_hash: &str) -> &str {
 
 fn render_dimension_value(value: &RunDimensionValue) -> String {
     match value {
-        RunDimensionValue::String(value) => value.to_string(),
+        RunDimensionValue::String(value) | RunDimensionValue::Timestamp(value) => value.to_string(),
         RunDimensionValue::Numeric(value) => format_float(*value),
         RunDimensionValue::Boolean(value) => value.to_string(),
-        RunDimensionValue::Timestamp(value) => value.to_string(),
     }
 }
 
@@ -1020,7 +1019,7 @@ fn decode_query_component(raw: &str) -> Result<String, StoreError> {
     let plus_decoded = raw.replace('+', " ");
     percent_decode_str(&plus_decoded)
         .decode_utf8()
-        .map(|decoded| decoded.into_owned())
+        .map(std::borrow::Cow::into_owned)
         .map_err(|error| StoreError::InvalidInput(format!("invalid query string: {error}")))
 }
 
@@ -1305,7 +1304,7 @@ mod tests {
                     .map(|()| Utf8PathBuf::from(root.to_string_lossy().into_owned()))
             })
             .as_ref()
-            .map_err(|error| error.clone())?
+            .map_err(Clone::clone)?
             .clone();
         fidget_spinner_store_sqlite::install_state_home_override(state_home)?;
         Ok(())
@@ -1392,7 +1391,7 @@ mod tests {
     #[test]
     fn autofill_hardening_marks_visible_form_controls_once() {
         let document = r#"<form method="post"><input type="text" name="tag"><select name="family"></select><textarea name="body"></textarea><input type="hidden" name="revision"></form>"#;
-        let hardened = harden_autofill_controls(document.to_owned());
+        let hardened = harden_autofill_controls(document);
         assert!(hardened.contains(r#"<form method="post" autocomplete="off">"#));
         assert!(hardened.contains(
             r#"<input type="text" name="tag" autocomplete="off" data-protonpass-ignore="true">"#
@@ -1405,7 +1404,7 @@ mod tests {
         ));
         assert!(hardened.contains(r#"<input type="hidden" name="revision">"#));
 
-        let rehardened = harden_autofill_controls(hardened);
+        let rehardened = harden_autofill_controls(&hardened);
         assert_eq!(rehardened.matches(r#"autocomplete="off""#).count(), 4);
         assert_eq!(
             rehardened

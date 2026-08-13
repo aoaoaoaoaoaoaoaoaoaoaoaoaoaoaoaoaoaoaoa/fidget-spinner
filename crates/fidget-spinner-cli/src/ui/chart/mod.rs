@@ -25,9 +25,13 @@ pub(super) fn series_color(index: usize) -> &'static str {
     SERIES_COLORS[index % SERIES_COLORS.len()]
 }
 
+pub(super) fn ui_scalar(value: usize) -> f64 {
+    f64::from(u32::try_from(value).unwrap_or(u32::MAX))
+}
+
 pub(super) fn format_metric_value(metric: &MetricKeySummary, canonical_value: f64) -> String {
     ValueAxisPlan::build(
-        metric.dimension.clone(),
+        &metric.dimension,
         std::iter::once(metric.display_unit.clone()),
         &[canonical_value],
         false,
@@ -96,8 +100,8 @@ impl OrdinalAxisPlan {
         if self.first == self.last {
             return left.midpoint(right);
         }
-        let numerator = ordinal.saturating_sub(self.first) as f64;
-        let denominator = self.last.saturating_sub(self.first) as f64;
+        let numerator = ui_scalar(ordinal.saturating_sub(self.first));
+        let denominator = ui_scalar(self.last.saturating_sub(self.first));
         left + numerator / denominator * (right - left)
     }
 }
@@ -217,7 +221,7 @@ impl ChartPlan {
             .enumerate()
             .filter_map(|(index, quantity)| {
                 ValueAxisPlan::build(
-                    quantity.clone(),
+                    quantity,
                     candidates
                         .iter()
                         .filter(|(metric, _, _, _)| metric.dimension == *quantity)

@@ -1,5 +1,5 @@
 use std::io::{self, BufRead, Write};
-use std::path::PathBuf;
+use std::path::Path;
 
 use camino::Utf8PathBuf;
 
@@ -7,7 +7,7 @@ use crate::mcp::fault::{FaultKind, FaultRecord, FaultStage};
 use crate::mcp::protocol::{WorkerOutcome, WorkerRequest, WorkerResponse};
 use crate::mcp::service::WorkerService;
 
-pub(crate) fn serve(project: PathBuf) -> Result<(), fidget_spinner_store_sqlite::StoreError> {
+pub(crate) fn serve(project: &Path) -> Result<(), fidget_spinner_store_sqlite::StoreError> {
     let project = Utf8PathBuf::from(project.to_string_lossy().into_owned());
     let mut service = WorkerService::new(&project)?;
     let stdin = io::stdin();

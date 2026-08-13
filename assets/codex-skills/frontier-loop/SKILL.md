@@ -40,6 +40,9 @@ Do not begin the loop until these are reasonably clear:
 
 Infer them from context when they are genuinely clear.
 If the evaluation signal is mushy, force it into focus before going rampant.
+A metric MUST mean exactly the same thing across all experiments. Within a
+frontier, all values reported for that metric MUST be meaningfully pairwise
+comparable.
 
 Before the first serious iteration, read the frontier and recent evidence
 through `fidget-spinner`.
@@ -113,6 +116,10 @@ When a line becomes a real measured experiment, close it through the proper
 `fidget-spinner` path instead of improvising a chain of half-recorded steps:
 `hypothesis.record` or an existing hypothesis -> `experiment.open` ->
 `experiment.close`.
+
+A non-scuffed close must report at least one frontier KPI. Every other KPI is
+optional; report another only when a meaningfully comparable value was actually
+measured.
 
 Hypotheses are not scarce. If you notice an obviously stale or superseded
 idle worklist hypothesis while walking the graph, shelve it with
