@@ -1262,8 +1262,7 @@ mod tests {
     use super::results::resolve_selected_metric_keys;
     use super::{
         FrontierPageQuery, FrontierTab, NavigatorState, ProjectMetricsQuery, StoreError,
-        Utf8PathBuf, encode_path_segment, format_metric_value, markdown_html,
-        resolve_project_context,
+        encode_path_segment, format_metric_value, markdown_html, resolve_project_context,
     };
     use std::collections::BTreeMap;
     use std::error::Error;
@@ -1288,12 +1287,8 @@ mod tests {
         }
     }
 
-    fn fresh_temp_root(label: &str) -> Result<Utf8PathBuf, Box<dyn Error>> {
-        crate::ensure_test_state_home()?;
-        let root = crate::fresh_test_directory(&format!("ui-{label}"))?;
-        Ok(fidget_spinner_store_sqlite::canonical_project_root(
-            &Utf8PathBuf::from(root.to_string_lossy().into_owned()),
-        )?)
+    fn fresh_temp_root(label: &str) -> Result<crate::Utf8TestCell, Box<dyn Error>> {
+        crate::fresh_test_root(&format!("ui-{label}"))
     }
 
     fn test_metric(key: &str, unit: &str) -> MetricKeySummary {
@@ -1337,7 +1332,7 @@ mod tests {
 
         let context = resolve_project_context(&state, &encode_path_segment(project_root.as_str()))?;
 
-        assert_eq!(context.project_root, project_root);
+        assert_eq!(context.project_root, project_root.path);
         Ok(())
     }
 

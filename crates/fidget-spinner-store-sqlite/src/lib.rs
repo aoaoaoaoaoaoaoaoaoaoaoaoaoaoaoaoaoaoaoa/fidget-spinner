@@ -9447,11 +9447,14 @@ mod tests {
     )]
 
     use super::*;
+    use libmcp_testkit::TestCell;
+    use std::ops::Deref;
     use std::process::Command;
     use std::sync::OnceLock;
     use std::sync::atomic::{AtomicU64, Ordering};
 
     static TEST_STATE_HOME: OnceLock<Result<Utf8PathBuf, String>> = OnceLock::new();
+    static TEST_PROCESS_ROOT: OnceLock<Result<std::path::PathBuf, String>> = OnceLock::new();
     static TEST_DIRECTORY_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
     #[test]
@@ -9471,33 +9474,89 @@ mod tests {
         Ok(())
     }
 
-    fn fresh_directory(label: &str) -> Result<Utf8PathBuf, StoreError> {
-        loop {
-            let sequence = TEST_DIRECTORY_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-            let root = std::env::temp_dir().join(format!(
-                "fidget-spinner-store-{label}-{}-{sequence}",
-                std::process::id()
-            ));
-            match fs::create_dir(&root) {
-                Ok(()) => return Ok(utf8_path(root)),
-                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
-                Err(error) => return Err(error.into()),
+    fn test_process_root() -> Result<&'static std::path::PathBuf, StoreError> {
+        match TEST_PROCESS_ROOT.get_or_init(|| {
+            let executable = std::env::current_exe().map_err(|error| error.to_string())?;
+            let parent = executable
+                .parent()
+                .ok_or_else(|| "test executable has no parent directory".to_owned())?;
+            let suite = parent.join(".fidget-spinner-tests").join("store");
+            fs::create_dir_all(&suite).map_err(|error| error.to_string())?;
+            #[cfg(target_os = "linux")]
+            for entry in fs::read_dir(&suite)
+                .map_err(|error| error.to_string())?
+                .filter_map(Result::ok)
+            {
+                let Some(process_id) = entry
+                    .file_name()
+                    .to_str()
+                    .and_then(|name| name.split_once('-'))
+                    .and_then(|(process_id, _)| process_id.parse::<u32>().ok())
+                else {
+                    continue;
+                };
+                if !std::path::Path::new("/proc")
+                    .join(process_id.to_string())
+                    .exists()
+                {
+                    fs::remove_dir_all(entry.path()).map_err(|error| error.to_string())?;
+                }
             }
+            TestCell::new_in(&format!("{}-", std::process::id()), &suite)
+                .map(TestCell::persist)
+                .map_err(|error| error.to_string())
+        }) {
+            Ok(path) => Ok(path),
+            Err(error) => Err(StoreError::InvalidInput(error.clone())),
         }
+    }
+
+    fn fresh_directory(label: &str) -> Result<TestCell, StoreError> {
+        let sequence = TEST_DIRECTORY_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        Ok(TestCell::new_in(
+            &format!("{label}-{sequence}-"),
+            test_process_root()?,
+        )?)
     }
 
     fn ensure_test_state_home() -> Result<(), StoreError> {
         let state_home = TEST_STATE_HOME
-            .get_or_init(|| fresh_directory("state").map_err(|error| error.to_string()))
+            .get_or_init(|| {
+                fresh_directory("state")
+                    .map(TestCell::persist)
+                    .map(utf8_path)
+                    .map_err(|error| error.to_string())
+            })
             .as_ref()
             .map_err(|error| StoreError::InvalidInput(error.clone()))?
             .clone();
         install_state_home_override(state_home)
     }
 
-    fn fresh_test_root(label: &str) -> Result<Utf8PathBuf, StoreError> {
+    struct Utf8TestCell {
+        _cell: TestCell,
+        path: Utf8PathBuf,
+    }
+
+    impl Deref for Utf8TestCell {
+        type Target = Utf8Path;
+
+        fn deref(&self) -> &Self::Target {
+            self.path.as_path()
+        }
+    }
+
+    impl AsRef<Utf8Path> for Utf8TestCell {
+        fn as_ref(&self) -> &Utf8Path {
+            self.path.as_path()
+        }
+    }
+
+    fn fresh_test_root(label: &str) -> Result<Utf8TestCell, StoreError> {
         ensure_test_state_home()?;
-        canonical_project_root(&fresh_directory(label)?)
+        let cell = fresh_directory(label)?;
+        let path = canonical_project_root(&utf8_path(cell.path().to_path_buf()))?;
+        Ok(Utf8TestCell { _cell: cell, path })
     }
 
     fn run_git(root: &Utf8Path, args: &[&str]) -> Result<String, StoreError> {
@@ -9544,11 +9603,10 @@ mod tests {
         let manifests = list_project_manifests()?;
 
         assert!(manifests.iter().any(|manifest| {
-            manifest.project_root == root
+            manifest.project_root == root.path
                 && manifest.state_root == store.state_root
                 && manifest.display_name == display_name
         }));
-        fs::remove_dir_all(root.as_std_path())?;
         Ok(())
     }
 
@@ -9572,7 +9630,6 @@ mod tests {
 
         let reopened = ProjectStore::open(&root)?;
         assert_eq!(reopened.config.display_name.as_str(), "Original Identity");
-        fs::remove_dir_all(root.as_std_path())?;
         Ok(())
     }
 
@@ -9584,7 +9641,6 @@ mod tests {
         fs::create_dir_all(nested.as_std_path())?;
 
         assert_eq!(preferred_project_root(&nested)?, nested);
-        fs::remove_dir_all(root.as_std_path())?;
         Ok(())
     }
 
@@ -9599,8 +9655,7 @@ mod tests {
         )?;
         fs::create_dir_all(nested.as_std_path())?;
 
-        assert_eq!(preferred_project_root(&nested)?, root);
-        fs::remove_dir_all(root.as_std_path())?;
+        assert_eq!(preferred_project_root(&nested)?, root.path);
         Ok(())
     }
 
@@ -9611,8 +9666,7 @@ mod tests {
         fs::write(root.join(".git").as_std_path(), "gitdir: /tmp/gitdir\n")?;
         fs::create_dir_all(nested.as_std_path())?;
 
-        assert_eq!(preferred_project_root(&nested)?, root);
-        fs::remove_dir_all(root.as_std_path())?;
+        assert_eq!(preferred_project_root(&nested)?, root.path);
         Ok(())
     }
 
@@ -9643,8 +9697,8 @@ mod tests {
         })
     }
 
-    fn seed_attention_frontier() -> Result<(Utf8PathBuf, ProjectStore, HypothesisRecord), StoreError>
-    {
+    fn seed_attention_frontier()
+    -> Result<(Utf8TestCell, ProjectStore, HypothesisRecord), StoreError> {
         let root = fresh_test_root("hypothesis-attention")?;
         seed_clean_git_repository(&root)?;
         let mut store = ProjectStore::init(&root, NonEmptyText::new("Hypothesis Attention")?)?;
@@ -9677,7 +9731,7 @@ mod tests {
 
     #[test]
     fn hypothesis_attention_is_explicit_and_lifecycle_is_derived() -> Result<(), StoreError> {
-        let (root, mut store, hypothesis) = seed_attention_frontier()?;
+        let (_root, mut store, hypothesis) = seed_attention_frontier()?;
         let _ = store.open_experiment(OpenExperimentRequest {
             hypothesis: hypothesis.slug.to_string(),
             slug: Some(Slug::new("attention-experiment")?),
@@ -9758,7 +9812,6 @@ mod tests {
         assert_eq!(worklist[0].attention, HypothesisAttention::Worklist);
         assert_eq!(worklist[0].lifecycle, HypothesisLifecycle::Working);
 
-        fs::remove_dir_all(root.as_std_path())?;
         Ok(())
     }
 
@@ -9789,14 +9842,13 @@ mod tests {
         assert_eq!(outcome.verdict, FrontierVerdict::Scuffed);
         assert!(outcome.primary_metric.is_none());
         assert!(outcome.commit_hash.is_none());
-        fs::remove_dir_all(root.as_std_path())?;
         Ok(())
     }
 
     #[test]
     fn experiment_metric_index_preserves_roles_and_rejects_non_finite_values()
     -> Result<(), StoreError> {
-        let (root, mut store, hypothesis) = seed_attention_frontier()?;
+        let (_root, mut store, hypothesis) = seed_attention_frontier()?;
         let _ = store.define_metric(DefineMetricRequest {
             key: NonEmptyText::new("secondary")?,
             dimension: MetricDimension::Count,
@@ -9859,13 +9911,12 @@ mod tests {
         })?;
         assert!(matches!(error, StoreError::InvalidInput(message) if message.contains("finite")));
 
-        fs::remove_dir_all(root.as_std_path())?;
         Ok(())
     }
 
     #[test]
     fn retroactive_scuff_preserves_metric_rows_but_removes_rankings() -> Result<(), StoreError> {
-        let (root, mut store, hypothesis) = seed_attention_frontier()?;
+        let (_root, mut store, hypothesis) = seed_attention_frontier()?;
         let _ = store.open_experiment(OpenExperimentRequest {
             hypothesis: hypothesis.slug.to_string(),
             slug: Some(Slug::new("retro-scuff")?),
@@ -9912,14 +9963,13 @@ mod tests {
             order: None,
         })?;
         assert!(best.is_empty());
-        fs::remove_dir_all(root.as_std_path())?;
         Ok(())
     }
 
     #[test]
     fn canonical_chart_scene_matches_legacy_observed_and_synthetic_series() -> Result<(), StoreError>
     {
-        let (root, mut store, hypothesis) = seed_attention_frontier()?;
+        let (_root, mut store, hypothesis) = seed_attention_frontier()?;
         let _ = store.define_synthetic_metric(DefineSyntheticMetricRequest {
             key: NonEmptyText::new("synthetic_score")?,
             expression: SyntheticMetricExpression::metric(NonEmptyText::new("score")?),
@@ -9981,7 +10031,6 @@ mod tests {
             );
         }
 
-        fs::remove_dir_all(root.as_std_path())?;
         Ok(())
     }
 
@@ -10047,7 +10096,6 @@ mod tests {
         if state_root.exists() {
             fs::remove_dir_all(state_root.as_std_path())?;
         }
-        fs::remove_dir_all(root.as_std_path())?;
         Ok(())
     }
 }

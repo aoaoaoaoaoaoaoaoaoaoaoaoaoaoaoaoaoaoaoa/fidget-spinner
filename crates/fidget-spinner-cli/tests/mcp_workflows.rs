@@ -1312,10 +1312,11 @@ fn experiment_close_uses_command_worktree_when_present() -> TestResult {
     let project_root = temp_project_root("worktree_close")?;
     init_project(&project_root)?;
     let _ = seed_clean_git_repository(&project_root)?;
-    let worktree_root = must_some(project_root.parent(), "worktree parent")?.join(format!(
-        "{}-linked-worktree",
-        must_some(project_root.file_name(), "project root name")?
-    ));
+    let worktree_root = temp_directory("worktree-close-linked")?;
+    must(
+        fs::remove_dir(worktree_root.as_std_path()),
+        "vacate linked worktree path",
+    )?;
     let _ = run_git(
         &project_root,
         &[

@@ -18,7 +18,7 @@ clap.workspace = true
 dirs.workspace = true
 fidget-spinner-core = { path = "../fidget-spinner-core" }
 fidget-spinner-store-sqlite = { path = "../fidget-spinner-store-sqlite" }
-libmcp = { git = "https://github.com/aoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoa/libmcp.git", rev = "b0f27d48a6a7c43e193082f601b01b02f08da831" }
+libmcp = { git = "https://github.com/aoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoa/libmcp.git", rev = "62c6b44ba927a16191c9e50cb6862578784913e8" }
 maud.workspace = true
 percent-encoding.workspace = true
 pulldown-cmark.workspace = true
@@ -28,7 +28,7 @@ time.workspace = true
 tokio.workspace = true
 
 [dev-dependencies]
-libmcp-testkit = { git = "https://github.com/aoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoa/libmcp.git", rev = "b0f27d48a6a7c43e193082f601b01b02f08da831", package = "libmcp-testkit" }
+libmcp-testkit = { git = "https://github.com/aoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoa/libmcp.git", rev = "62c6b44ba927a16191c9e50cb6862578784913e8", package = "libmcp-testkit" }
 
 [lints]
 workspace = true

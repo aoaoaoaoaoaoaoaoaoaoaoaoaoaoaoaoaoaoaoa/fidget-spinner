@@ -5,6 +5,8 @@ mod ui;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::net::SocketAddr;
+#[cfg(test)]
+use std::ops::Deref;
 use std::path::{Path, PathBuf};
 
 use camino::{Utf8Path, Utf8PathBuf};
@@ -26,7 +28,7 @@ use fidget_spinner_store_sqlite::{
     UpdateHypothesisRequest, VertexSelector,
 };
 #[cfg(test)]
-use libmcp_testkit as _;
+use libmcp_testkit::TestCell;
 use serde::Serialize;
 use serde_json::Value;
 
@@ -35,21 +37,79 @@ static TEST_DIRECTORY_SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic
 #[cfg(test)]
 static TEST_STATE_HOME: std::sync::OnceLock<Result<Utf8PathBuf, String>> =
     std::sync::OnceLock::new();
+#[cfg(test)]
+static TEST_PROCESS_ROOT: std::sync::OnceLock<Result<PathBuf, String>> = std::sync::OnceLock::new();
 
 #[cfg(test)]
-fn fresh_test_directory(label: &str) -> std::io::Result<PathBuf> {
-    loop {
-        let sequence = TEST_DIRECTORY_SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let root = std::env::temp_dir().join(format!(
-            "fidget-spinner-cli-{label}-{}-{sequence}",
-            std::process::id()
-        ));
-        match fs::create_dir(&root) {
-            Ok(()) => return Ok(root),
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
-            Err(error) => return Err(error),
+fn test_process_root() -> std::io::Result<&'static PathBuf> {
+    match TEST_PROCESS_ROOT.get_or_init(|| {
+        let executable = std::env::current_exe().map_err(|error| error.to_string())?;
+        let parent = executable
+            .parent()
+            .ok_or_else(|| "test executable has no parent directory".to_owned())?;
+        let suite = parent.join(".fidget-spinner-tests").join("cli");
+        fs::create_dir_all(&suite).map_err(|error| error.to_string())?;
+        #[cfg(target_os = "linux")]
+        for entry in fs::read_dir(&suite)
+            .map_err(|error| error.to_string())?
+            .filter_map(Result::ok)
+        {
+            let Some(process_id) = entry
+                .file_name()
+                .to_str()
+                .and_then(|name| name.split_once('-'))
+                .and_then(|(process_id, _)| process_id.parse::<u32>().ok())
+            else {
+                continue;
+            };
+            if !Path::new("/proc").join(process_id.to_string()).exists() {
+                fs::remove_dir_all(entry.path()).map_err(|error| error.to_string())?;
+            }
         }
+        TestCell::new_in(&format!("{}-", std::process::id()), &suite)
+            .map(TestCell::persist)
+            .map_err(|error| error.to_string())
+    }) {
+        Ok(path) => Ok(path),
+        Err(error) => Err(std::io::Error::other(error.clone())),
     }
+}
+
+#[cfg(test)]
+fn fresh_test_directory(label: &str) -> std::io::Result<TestCell> {
+    let sequence = TEST_DIRECTORY_SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    TestCell::new_in(&format!("{label}-{sequence}-"), test_process_root()?)
+}
+
+#[cfg(test)]
+struct Utf8TestCell {
+    _cell: TestCell,
+    path: Utf8PathBuf,
+}
+
+#[cfg(test)]
+impl Deref for Utf8TestCell {
+    type Target = Utf8Path;
+
+    fn deref(&self) -> &Self::Target {
+        self.path.as_path()
+    }
+}
+
+#[cfg(test)]
+impl AsRef<Utf8Path> for Utf8TestCell {
+    fn as_ref(&self) -> &Utf8Path {
+        self.path.as_path()
+    }
+}
+
+#[cfg(test)]
+fn fresh_test_root(label: &str) -> Result<Utf8TestCell, Box<dyn std::error::Error>> {
+    ensure_test_state_home()?;
+    let cell = fresh_test_directory(label)?;
+    let path =
+        fidget_spinner_store_sqlite::canonical_project_root(&utf8_path(cell.path().to_path_buf()))?;
+    Ok(Utf8TestCell { _cell: cell, path })
 }
 
 #[cfg(test)]
@@ -57,6 +117,7 @@ fn ensure_test_state_home() -> Result<(), Box<dyn std::error::Error>> {
     let state_home = TEST_STATE_HOME
         .get_or_init(|| {
             fresh_test_directory("state")
+                .map(TestCell::persist)
                 .map(utf8_path)
                 .map_err(|error| error.to_string())
         })
@@ -1720,11 +1781,8 @@ mod tests {
 
     use super::*;
 
-    fn fresh_temp_root(label: &str) -> Result<Utf8PathBuf, Box<dyn Error>> {
-        ensure_test_state_home()?;
-        Ok(fidget_spinner_store_sqlite::canonical_project_root(
-            &utf8_path(fresh_test_directory(label)?),
-        )?)
+    fn fresh_temp_root(label: &str) -> Result<Utf8TestCell, Box<dyn Error>> {
+        fresh_test_root(label)
     }
 
     #[test]
@@ -1738,7 +1796,7 @@ mod tests {
 
         let store = open_or_init_store_for_binding(project_root.as_std_path())?;
 
-        assert_eq!(store.project_root(), project_root);
+        assert_eq!(store.project_root(), project_root.path);
         Ok(())
     }
 

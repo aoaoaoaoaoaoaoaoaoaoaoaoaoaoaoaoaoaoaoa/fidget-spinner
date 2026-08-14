@@ -23,5 +23,8 @@ thiserror.workspace = true
 time.workspace = true
 uuid.workspace = true
 
+[dev-dependencies]
+libmcp-testkit = { git = "https://github.com/aoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoa/libmcp.git", rev = "62c6b44ba927a16191c9e50cb6862578784913e8", package = "libmcp-testkit" }
+
 [lints]
 workspace = true

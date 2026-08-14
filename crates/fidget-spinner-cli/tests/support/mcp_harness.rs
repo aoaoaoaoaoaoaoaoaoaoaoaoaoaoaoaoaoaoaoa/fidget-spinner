@@ -6,8 +6,8 @@ use std::fs;
 use std::io::{self, BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
+use std::ops::Deref;
 use std::sync::OnceLock;
-use std::sync::atomic::{AtomicU64, Ordering};
 
 use camino::Utf8PathBuf;
 use fidget_spinner_core::{
@@ -26,7 +26,7 @@ use fidget_spinner_store_sqlite::{
     SetFrontierRegistryLockRequest, SetRegistryLockRequest, UpdateFrontierRequest,
 };
 use libmcp as _;
-use libmcp_testkit as _;
+use libmcp_testkit::TestCell;
 use maud as _;
 use percent_encoding as _;
 use pulldown_cmark as _;
@@ -37,21 +37,71 @@ use tokio as _;
 
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 
-static TEST_DIRECTORY_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+struct TestDirectory {
+    _cell: TestCell,
+    path: Utf8PathBuf,
+}
 
-fn temp_directory(label: &str) -> TestResult<Utf8PathBuf> {
-    loop {
-        let sequence = TEST_DIRECTORY_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-        let root = std::env::temp_dir().join(format!(
-            "fidget-spinner-mcp-{label}-{}-{sequence}",
-            std::process::id()
-        ));
-        match fs::create_dir(&root) {
-            Ok(()) => return Ok(Utf8PathBuf::from(root.to_string_lossy().into_owned())),
-            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
-            Err(error) => return Err(error.into()),
+impl Deref for TestDirectory {
+    type Target = Utf8PathBuf;
+
+    fn deref(&self) -> &Self::Target {
+        &self.path
+    }
+}
+
+impl AsRef<camino::Utf8Path> for TestDirectory {
+    fn as_ref(&self) -> &camino::Utf8Path {
+        self.path.as_path()
+    }
+}
+
+fn test_process_root() -> TestResult<&'static PathBuf> {
+    static ROOT: OnceLock<Result<PathBuf, String>> = OnceLock::new();
+    match ROOT.get_or_init(|| {
+        let executable = std::env::current_exe().map_err(|error| error.to_string())?;
+        let parent = executable
+            .parent()
+            .ok_or_else(|| "test executable has no parent directory".to_owned())?;
+        let suite = parent.join(".fidget-spinner-tests").join("mcp");
+        fs::create_dir_all(&suite).map_err(|error| error.to_string())?;
+        reap_dead_test_processes(&suite).map_err(|error| error.to_string())?;
+        TestCell::new_in(&format!("{}-", std::process::id()), &suite)
+            .map(TestCell::persist)
+            .map_err(|error| error.to_string())
+    }) {
+        Ok(path) => Ok(path),
+        Err(error) => Err(io::Error::other(error.clone()).into()),
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn reap_dead_test_processes(suite: &Path) -> io::Result<()> {
+    for entry in fs::read_dir(suite)?.filter_map(Result::ok) {
+        let Some(process_id) = entry
+            .file_name()
+            .to_str()
+            .and_then(|name| name.split_once('-'))
+            .and_then(|(process_id, _)| process_id.parse::<u32>().ok())
+        else {
+            continue;
+        };
+        if !Path::new("/proc").join(process_id.to_string()).exists() {
+            fs::remove_dir_all(entry.path())?;
         }
     }
+    Ok(())
+}
+
+#[cfg(not(target_os = "linux"))]
+fn reap_dead_test_processes(_suite: &Path) -> io::Result<()> {
+    Ok(())
+}
+
+fn temp_directory(label: &str) -> TestResult<TestDirectory> {
+    let cell = TestCell::new_in(&format!("{label}-"), test_process_root()?)?;
+    let path = Utf8PathBuf::from(cell.path().to_string_lossy().into_owned());
+    Ok(TestDirectory { _cell: cell, path })
 }
 
 fn assert_no_opaque_ids(value: &Value) -> Result<(), String> {
@@ -82,7 +132,11 @@ fn assert_no_opaque_ids(value: &Value) -> Result<(), String> {
 fn ensure_test_state_home() -> TestResult<&'static Utf8PathBuf> {
     static STATE_HOME: OnceLock<Result<Utf8PathBuf, String>> = OnceLock::new();
     match STATE_HOME.get_or_init(|| {
-        let root = temp_directory("state").map_err(|error| error.to_string())?;
+        let root = test_process_root()
+            .map_err(|error| error.to_string())?
+            .join("state");
+        fs::create_dir_all(&root).map_err(|error| error.to_string())?;
+        let root = Utf8PathBuf::from(root.to_string_lossy().into_owned());
         fidget_spinner_store_sqlite::install_state_home_override(&root)
             .map_err(|error| format!("install state home override: {error}"))?;
         Ok(root)
@@ -121,16 +175,17 @@ fn spawn_mcp_host(command: &mut Command) -> io::Result<Child> {
     }
 }
 
-fn temp_project_root(name: &str) -> TestResult<Utf8PathBuf> {
+fn temp_project_root(name: &str) -> TestResult<TestDirectory> {
     let _ = ensure_test_state_home()?;
-    let root = temp_directory(name)?;
-    must(
-        fidget_spinner_store_sqlite::canonical_project_root(&root),
+    let mut root = temp_directory(name)?;
+    root.path = must(
+        fidget_spinner_store_sqlite::canonical_project_root(&root.path),
         "canonicalize temp project root",
-    )
+    )?;
+    Ok(root)
 }
 
-fn init_project(root: &Utf8PathBuf) -> TestResult {
+fn init_project(root: &camino::Utf8Path) -> TestResult {
     let _ = ensure_test_state_home()?;
     let _store = must(
         ProjectStore::init(
