@@ -1446,6 +1446,10 @@ fn already_bound_worker_refreshes_after_destructive_reseed() -> TestResult {
 
     let bind = harness.bind_project(60, &project_root)?;
     assert_tool_ok(&bind);
+    let state_root = must_some(
+        tool_content(&bind)["state_root"].as_str(),
+        "bound project state root",
+    )?;
 
     assert_tool_ok(&harness.call_tool(
         601,
@@ -1471,12 +1475,7 @@ fn already_bound_worker_refreshes_after_destructive_reseed() -> TestResult {
     assert_tool_ok(&alpha_list);
     assert_eq!(frontier_slugs(&alpha_list), vec!["alpha"]);
 
-    must(
-        fs::remove_dir_all(fidget_spinner_store_sqlite::state_root_for_project_root(
-            &project_root,
-        )?),
-        "remove project store",
-    )?;
+    must(fs::remove_dir_all(state_root), "remove project store")?;
     init_project(&project_root)?;
     let mut reopened = must(ProjectStore::open(&project_root), "open recreated store")?;
     let _metric = must(

@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 1.0.6 - 2026-08-15
+
+- Declares libmcp rollover contracts for the MCP tool catalog.
+- Uses the binding response as the authority in the destructive-reseed
+  portability scenario.
+
 ## 1.0.1 - 2026-08-10
 
 - Carries the CLI, MCP server, bundled skills, and local navigator across
