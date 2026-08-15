@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 1.0.7 - 2026-08-15
+
+- Updates libmcp for bounded Windows telemetry rollover.
+
 ## 1.0.6 - 2026-08-15
 
 - Declares libmcp rollover contracts for the MCP tool catalog.
