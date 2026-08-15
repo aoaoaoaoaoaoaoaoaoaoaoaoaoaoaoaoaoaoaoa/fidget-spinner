@@ -747,8 +747,8 @@ checksum = "3eaf3ede3fee6db1a4c2ee091bf8a8b4dccdc6d17f656fb07896ee72867612f2"
 
 [[package]]
 name = "libmcp"
-version = "2.1.0"
-source = "git+https://github.com/aoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoa/libmcp.git?rev=62c6b44ba927a16191c9e50cb6862578784913e8#62c6b44ba927a16191c9e50cb6862578784913e8"
+version = "2.2.0"
+source = "git+https://github.com/aoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoa/libmcp.git?rev=98efebdc031f8e2d93fdb56f1382beeb9b19a6e5#98efebdc031f8e2d93fdb56f1382beeb9b19a6e5"
 dependencies = [
  "libmcp-derive",
  "rustix",
@@ -765,8 +765,8 @@ dependencies = [
 
 [[package]]
 name = "libmcp-derive"
-version = "2.1.0"
-source = "git+https://github.com/aoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoa/libmcp.git?rev=62c6b44ba927a16191c9e50cb6862578784913e8#62c6b44ba927a16191c9e50cb6862578784913e8"
+version = "2.2.0"
+source = "git+https://github.com/aoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoa/libmcp.git?rev=98efebdc031f8e2d93fdb56f1382beeb9b19a6e5#98efebdc031f8e2d93fdb56f1382beeb9b19a6e5"
 dependencies = [
  "proc-macro-crate",
  "proc-macro2",
@@ -776,8 +776,8 @@ dependencies = [
 
 [[package]]
 name = "libmcp-testkit"
-version = "2.1.0"
-source = "git+https://github.com/aoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoa/libmcp.git?rev=62c6b44ba927a16191c9e50cb6862578784913e8#62c6b44ba927a16191c9e50cb6862578784913e8"
+version = "2.2.0"
+source = "git+https://github.com/aoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoa/libmcp.git?rev=98efebdc031f8e2d93fdb56f1382beeb9b19a6e5#98efebdc031f8e2d93fdb56f1382beeb9b19a6e5"
 dependencies = [
  "libmcp",
  "serde",
@@ -1245,6 +1245,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f8fadd59c855ef2080decdef8ff161eb6661b86933c9d82e5ba29dc602a55aba"
 
 [[package]]
+name = "signal-hook-registry"
+version = "1.4.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c4db69cba1110affc0e9f7bcd48bbf87b3f4fc7c61fc9155afd4c469eb3d6c1b"
+dependencies = [
+ "errno",
+ "libc",
+]
+
+[[package]]
 name = "slab"
 version = "0.4.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1413,6 +1423,7 @@ dependencies = [
  "libc",
  "mio",
  "pin-project-lite",
+ "signal-hook-registry",
  "socket2",
  "tokio-macros",
  "windows-sys",
