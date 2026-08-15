@@ -1439,6 +1439,9 @@ fn experiment_close_uses_command_worktree_when_present() -> TestResult {
 #[test]
 fn already_bound_worker_refreshes_after_destructive_reseed() -> TestResult {
     let project_root = temp_project_root("same_path_reseed")?;
+    // Establish the exact project identity before binding: CI may place this
+    // directory beneath the checkout, whose Git root is otherwise preferred.
+    init_project(&project_root)?;
 
     let mut harness = McpHarness::spawn(None)?;
     let _ = harness.initialize()?;

@@ -9634,13 +9634,11 @@ mod tests {
     }
 
     #[test]
-    fn preferred_project_root_ignores_empty_git_directory() -> Result<(), StoreError> {
+    fn empty_git_directory_is_not_a_project_marker() -> Result<(), StoreError> {
         let root = fresh_test_root("empty-git-marker")?;
-        let nested = root.join("nested");
         fs::create_dir_all(root.join(".git").as_std_path())?;
-        fs::create_dir_all(nested.as_std_path())?;
 
-        assert_eq!(preferred_project_root(&nested)?, nested);
+        assert!(!has_git_marker(&root)?);
         Ok(())
     }
 

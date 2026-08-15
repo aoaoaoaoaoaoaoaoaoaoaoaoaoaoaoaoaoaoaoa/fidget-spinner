@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 1.0.8 - 2026-08-15
+
+- Makes project-discovery proofs independent of Cargo target placement.
+- Preserves the underlying I/O cause when a live rollout retains its incumbent.
+
 ## 1.0.7 - 2026-08-15
 
 - Updates libmcp for bounded Windows telemetry rollover.

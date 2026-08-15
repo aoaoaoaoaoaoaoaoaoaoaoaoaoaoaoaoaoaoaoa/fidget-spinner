@@ -662,9 +662,9 @@ impl HostRuntime {
             .map_err(fidget_spinner_store_sqlite::StoreError::Io)
     }
 
-    fn defer_rollout(&mut self, error: impl std::fmt::Display) {
+    fn defer_rollout(&mut self, error: impl std::fmt::Debug) {
         self.rollout_retry_not_before = Instant::now().checked_add(HOST_ROLLOUT_RETRY_DELAY);
-        eprintln!("fidget-spinner MCP rollout retained incumbent: {error}");
+        eprintln!("fidget-spinner MCP rollout retained incumbent: {error:?}");
     }
 
     fn should_force_rollout(&self, operation: &str) -> bool {
