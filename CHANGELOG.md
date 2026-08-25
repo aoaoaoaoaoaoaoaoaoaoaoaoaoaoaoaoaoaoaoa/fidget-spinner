@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 1.0.9 - 2026-08-24
+
+- Raises the pinned Rust toolchain and minimum supported Rust version to 1.98.0.
+
 ## 1.0.8 - 2026-08-15
 
 - Makes project-discovery proofs independent of Cargo target placement.
