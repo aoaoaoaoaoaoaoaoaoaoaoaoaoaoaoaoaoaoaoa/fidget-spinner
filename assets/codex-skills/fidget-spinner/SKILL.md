@@ -90,6 +90,7 @@ If you need more context, pull it from:
 - `metric.best` when you need the best closed experiments by one numeric key; pass exact condition filters when comparing one like-for-like slice
 - `condition.define` when a new experimental condition such as `instance`, `profile`, `seed`, or `hardware` becomes query-worthy
 - `condition.list` before guessing which conditions actually exist in the store
+- `metric.update` to correct an existing metric description without changing its measurement meaning; quantity, units, aggregation, objective, and recorded observations remain unchanged
 
 ## Workflow
 

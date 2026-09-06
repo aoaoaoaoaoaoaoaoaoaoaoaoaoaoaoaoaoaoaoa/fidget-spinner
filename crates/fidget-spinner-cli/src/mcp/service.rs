@@ -23,7 +23,7 @@ use fidget_spinner_store_sqlite::{
     MetricKeysQuery, MetricRankOrder, MetricScope, OpenExperimentRequest, ProjectStatus,
     ProjectStore, ScuffExperimentRequest, SetKpiReferenceRequest, StoreError, TagRegistryQuery,
     TextPatch, UpdateExperimentRequest, UpdateFrontierRequest, UpdateHypothesisRequest,
-    VertexSelector,
+    UpdateMetricRequest, VertexSelector,
 };
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
@@ -554,6 +554,16 @@ impl WorkerService {
                 );
                 metric_definition_output(&metric, &operation)?
             }
+            "metric.update" => {
+                let args = deserialize::<MetricUpdateArgs>(arguments, &operation)?;
+                let metric = lift!(self.store.update_metric(UpdateMetricRequest {
+                    metric: NonEmptyText::new(args.key).map_err(store_fault(&operation))?,
+                    description: TextPatch::Set(
+                        NonEmptyText::new(args.description).map_err(store_fault(&operation))?,
+                    ),
+                }));
+                metric_definition_output(&metric, &operation)?
+            }
             "metric.keys" => {
                 let args = deserialize::<MetricKeysArgs>(arguments, &operation)?;
                 reject_optional_frontier_selector_for_mcp(
@@ -945,6 +955,13 @@ struct MetricDefineArgs {
     aggregation: Option<MetricAggregation>,
     objective: OptimizationObjective,
     description: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct MetricUpdateArgs {
+    key: String,
+    description: String,
 }
 
 #[derive(Debug, Deserialize)]

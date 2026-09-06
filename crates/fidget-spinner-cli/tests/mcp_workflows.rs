@@ -506,7 +506,7 @@ fn registry_and_history_surfaces_render_timestamps_as_strings() -> TestResult {
 }
 
 #[test]
-fn metric_define_accepts_builtin_and_custom_unit_tokens() -> TestResult {
+fn metric_registry_preserves_units_and_identity_across_annotations() -> TestResult {
     let project_root = temp_project_root("metric_units")?;
     init_project(&project_root)?;
 
@@ -529,6 +529,40 @@ fn metric_define_accepts_builtin_and_custom_unit_tokens() -> TestResult {
         tool_content(&microseconds)["record"]["display_unit"].as_str(),
         Some("microseconds")
     );
+    // Annotation crosses MCP dispatch, replay, and the revisioned store. It
+    // must not redefine historical measurements or manufacture replay revisions.
+    let annotation = json!({
+        "key": "oracle_solve_wallclock_micros",
+        "description": "Elapsed solve time under the experiment's sealed horizon."
+    });
+    let updated = harness.call_tool_full(230, "metric.update", annotation.clone())?;
+    assert_tool_ok(&updated);
+    for field in [
+        "id",
+        "key",
+        "dimension",
+        "display_unit",
+        "aggregation",
+        "objective",
+    ] {
+        assert_eq!(
+            tool_content(&updated)["record"][field],
+            tool_content(&microseconds)["record"][field]
+        );
+    }
+    assert_eq!(
+        tool_content(&updated)["record"]["description"],
+        annotation["description"]
+    );
+    let replay = harness.call_tool_full(231, "metric.update", annotation.clone())?;
+    assert_tool_ok(&replay);
+    assert_eq!(
+        tool_content(&replay)["record"],
+        tool_content(&updated)["record"]
+    );
+    let mut redefinition = annotation;
+    redefinition["dimension"] = json!("bytes");
+    assert_tool_error(&harness.call_tool_full(232, "metric.update", redefinition)?);
 
     let bytes = harness.call_tool_full(
         24,

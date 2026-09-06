@@ -121,6 +121,7 @@ verdict, rationale, and owning hypothesis.
 Model-facing tools:
 
 - `metric.define`
+- `metric.update` corrects descriptions only; measurement semantics and existing observations are immutable
 - `metric.keys`
 - `metric.best`
 - `kpi.create`

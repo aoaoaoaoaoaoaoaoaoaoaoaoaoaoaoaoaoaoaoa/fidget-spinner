@@ -226,6 +226,12 @@ const TOOL_SPECS: &[ToolSpec] = &[
         replay: ReplayContract::NeverReplay,
     },
     ToolSpec {
+        name: "metric.update",
+        description: "Correct an existing metric's description without changing its identity, quantity, units, aggregation, objective, or observations. A changed measurement meaning requires a new metric.",
+        dispatch: DispatchTarget::Worker,
+        replay: ReplayContract::Convergent,
+    },
+    ToolSpec {
         name: "metric.keys",
         description: "List metric keys, defaulting to the live frontier comparison set.",
         dispatch: DispatchTarget::Worker,
@@ -726,6 +732,16 @@ fn tool_input_schema(name: &str) -> Value {
                 ),
             ],
             &[],
+        ),
+        "metric.update" => object_schema(
+            &[
+                ("key", string_schema("Existing metric key.")),
+                (
+                    "description",
+                    string_schema("Corrected description; cannot redefine the measurement."),
+                ),
+            ],
+            &["key", "description"],
         ),
         "metric.define" => object_schema(
             &[
