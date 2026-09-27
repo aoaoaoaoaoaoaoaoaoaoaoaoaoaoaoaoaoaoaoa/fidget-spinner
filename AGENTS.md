@@ -1,6 +1,6 @@
 # Fidget Spinner
 
-Read and follow `/home/main/programming/projects/rust_starter/docs/rust-style-doctrine.md` before meaningful Rust work.
+Load and follow `$style-doctrine` before meaningful Rust work.
 
 Fidget Spinner is a local-first, agent-first frontier ledger for autonomous
 optimization work.
