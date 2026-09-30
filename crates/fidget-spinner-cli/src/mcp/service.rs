@@ -1085,7 +1085,7 @@ where
             | StoreError::ManualExperimentRequiresCommand
             | StoreError::MetricOrderRequired { .. }
             | StoreError::MetricScopeRequiresFrontier { .. }
-            | StoreError::UnknownDimensionFilter(_)
+            | StoreError::DimensionTypeMismatch { .. }
             | StoreError::DuplicateTag(_)
             | StoreError::DuplicateTagFamily(_)
             | StoreError::DuplicateMetricDefinition(_)

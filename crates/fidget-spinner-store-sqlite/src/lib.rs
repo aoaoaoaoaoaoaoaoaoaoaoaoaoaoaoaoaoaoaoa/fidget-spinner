@@ -178,8 +178,12 @@ pub enum StoreError {
     ManualExperimentRequiresCommand,
     #[error("metric key `{key}` requires an explicit ranking order")]
     MetricOrderRequired { key: String },
-    #[error("condition filter references unknown condition `{0}`")]
-    UnknownDimensionFilter(String),
+    #[error("condition `{key}` expects {expected:?}, received {observed:?}")]
+    DimensionTypeMismatch {
+        key: String,
+        expected: FieldValueType,
+        observed: FieldValueType,
+    },
     #[error("metric scope `{scope}` requires a frontier selector")]
     MetricScopeRequiresFrontier { scope: &'static str },
 }
@@ -5372,7 +5376,11 @@ impl ProjectStore {
                 .map(RunDimensionValue::value_type)
                 .ok_or_else(|| StoreError::UnknownRunDimension(key.clone()))?;
             if definition.value_type != observed {
-                return Err(StoreError::UnknownDimensionFilter(key.to_string()));
+                return Err(StoreError::DimensionTypeMismatch {
+                    key: key.to_string(),
+                    expected: definition.value_type,
+                    observed,
+                });
             }
         }
         let primary_metric = patch
