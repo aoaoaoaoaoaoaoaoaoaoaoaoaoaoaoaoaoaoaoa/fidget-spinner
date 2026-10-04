@@ -300,7 +300,7 @@ impl HostRuntime {
                     "name": SERVER_NAME,
                     "version": env!("CARGO_PKG_VERSION")
                 },
-                "instructions": "Bind the session with project.bind before project-local work when the MCP is unbound. Use frontier.open as the only overview surface, then walk hypotheses and experiments deliberately by selector. Hypotheses are cheap idea-capture nodes: record them eagerly when a plausible KPI-moving branch appears, always setting expected_yield and confidence as crude low/medium/high vibe checks. Use hypothesis.update to reprioritize fields or tidy wording/tags/parents, and hypothesis.attention.set to shelve stale idle ideas or restore them to the worklist. Closing the last open experiment for a hypothesis requires keep_hypothesis_on_worklist=true or false."
+                "instructions": "Read system.health; bind an unbound session with project.bind. Ground through frontier.open, then traverse by selector. Render changes encoding only; use porcelain for model reading. Detail adds fields, not rows; follow page/section cursors and opt into history snapshots explicitly. Hypotheses own KPI-moving ideas; experiments record their measured evidence. Closing the last open experiment requires keep_hypothesis_on_worklist. The bundled fidget-spinner skill owns workflow guidance."
             }))),
             "notifications/initialized" => {
                 if !self.seed_captured() {
@@ -528,7 +528,8 @@ impl HostRuntime {
                 Ok(tool_success(&output, presentation))
             }
             "system.telemetry" => {
-                let output = system_telemetry_output(&self.telemetry)?;
+                let query = deserialize::<TelemetryQuery>(arguments, &operation)?;
+                let output = system_telemetry_output(&self.telemetry, &query)?;
                 Ok(tool_success(&output, presentation))
             }
             other => Err(FaultRecord::new(
@@ -892,19 +893,6 @@ fn project_bind_output(status: &ProjectBindStatus) -> Result<ToolOutput, FaultRe
     fallback_detailed_tool_output(
         &Value::Object(concise),
         status,
-        [
-            format!("bound project {}", status.display_name),
-            format!("root: {}", status.project_root),
-            format!("state: {}", status.state_root),
-            format!("frontiers: {}", status.frontier_count),
-            format!("hypotheses: {}", status.hypothesis_count),
-            format!(
-                "experiments: {} total, {} open",
-                status.experiment_count, status.open_experiment_count
-            ),
-        ]
-        .join("\n"),
-        None,
         libmcp::SurfaceKind::Mutation,
         FaultStage::Host,
         "tools/call:project.bind",
@@ -921,17 +909,9 @@ fn skill_list_output() -> Result<ToolOutput, FaultRecord> {
             })
         }).collect::<Vec<_>>(),
     });
-    let mut lines = vec![format!("{} bundled skill(s)", skills.len())];
-    lines.extend(
-        skills
-            .iter()
-            .map(|skill| format!("{}: {}", skill.name, skill.description)),
-    );
     fallback_detailed_tool_output(
         &concise,
         &json!({ "skills": skills }),
-        lines.join("\n"),
-        None,
         libmcp::SurfaceKind::List,
         FaultStage::Host,
         "tools/call:skill.list",
@@ -940,19 +920,8 @@ fn skill_list_output() -> Result<ToolOutput, FaultRecord> {
 
 fn skill_show_output(skill: crate::bundled_skill::BundledSkill) -> Result<ToolOutput, FaultRecord> {
     fallback_detailed_tool_output(
-        &json!({
-            "name": skill.name,
-            "resource_uri": skill.resource_uri,
-            "body": skill.body,
-        }),
-        &json!({
-            "name": skill.name,
-            "description": skill.description,
-            "resource_uri": skill.resource_uri,
-            "body": skill.body,
-        }),
-        skill.body,
-        None,
+        &json!({"name": skill.name, "body": skill.body}),
+        &json!({"name": skill.name, "description": skill.description, "resource_uri": skill.resource_uri, "body": skill.body}),
         libmcp::SurfaceKind::Read,
         FaultStage::Host,
         "tools/call:skill.show",
@@ -982,126 +951,39 @@ fn system_health_output(health: &HealthSnapshot) -> Result<ToolOutput, FaultReco
         "rollout_pending".to_owned(),
         json!(health.binary.rollout_pending),
     );
-    let mut lines = vec![format!(
-        "{} | {}",
-        if health.initialization.ready && health.initialization.seed_captured {
-            "ready"
-        } else {
-            "not-ready"
-        },
-        if health.binding.bound {
-            "bound"
-        } else {
-            "unbound"
-        }
-    )];
-    if let Some(project_root) = health.binding.project_root.as_ref() {
-        lines.push(format!("project: {project_root}"));
-    }
-    lines.push(format!(
-        "worker: gen {} {}",
-        health.worker.worker_generation,
-        if health.worker.alive { "alive" } else { "dead" }
-    ));
-    lines.push(format!(
-        "binary: {}{}",
-        if health.binary.launch_path_stable {
-            "stable"
-        } else {
-            "unstable"
-        },
-        if health.binary.rollout_pending {
-            " rollout-pending"
-        } else {
-            ""
-        }
-    ));
     fallback_detailed_tool_output(
         &Value::Object(concise),
         health,
-        lines.join("\n"),
-        None,
         libmcp::SurfaceKind::Ops,
         FaultStage::Host,
         "tools/call:system.health",
     )
 }
 
-fn system_telemetry_output(telemetry: &ServerTelemetry) -> Result<ToolOutput, FaultRecord> {
-    let hot_operations = telemetry
+#[derive(Default, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TelemetryQuery {
+    operation: Option<String>,
+    #[serde(default)]
+    offset: usize,
+    limit: Option<crate::mcp::selection::PageLimit>,
+}
+
+fn system_telemetry_output(
+    telemetry: &ServerTelemetry,
+    query: &TelemetryQuery,
+) -> Result<ToolOutput, FaultRecord> {
+    let mut ranked = telemetry
         .operations
         .iter()
-        .map(|(operation, stats)| {
-            (
-                operation.clone(),
-                stats.requests,
-                stats.errors,
-                stats.retries,
-                stats.last_latency_ms.unwrap_or(0),
-            )
+        .filter(|(name, _)| {
+            query
+                .operation
+                .as_ref()
+                .is_none_or(|filter| filter == *name)
         })
         .collect::<Vec<_>>();
-    let mut hot_operations = hot_operations;
-    hot_operations.sort_by(|left, right| {
-        right
-            .1
-            .cmp(&left.1)
-            .then_with(|| right.2.cmp(&left.2))
-            .then_with(|| right.3.cmp(&left.3))
-            .then_with(|| left.0.cmp(&right.0))
-    });
-    let hot_operations = hot_operations
-        .into_iter()
-        .take(6)
-        .map(|(operation, requests, errors, retries, last_latency_ms)| {
-            json!({
-                "operation": operation,
-                "requests": requests,
-                "errors": errors,
-                "retries": retries,
-                "last_latency_ms": last_latency_ms,
-                "fault_codes": telemetry.operations[&operation].fault_codes,
-            })
-        })
-        .collect::<Vec<_>>();
-
-    let mut concise = Map::new();
-    let _ = concise.insert(
-        "window_started_at".to_owned(),
-        json!(telemetry.window_started_at),
-    );
-    let _ = concise.insert("requests".to_owned(), json!(telemetry.requests));
-    let _ = concise.insert("successes".to_owned(), json!(telemetry.successes));
-    let _ = concise.insert("errors".to_owned(), json!(telemetry.errors));
-    let _ = concise.insert("retries".to_owned(), json!(telemetry.retries));
-    let _ = concise.insert(
-        "worker_restarts".to_owned(),
-        json!(telemetry.worker_restarts),
-    );
-    let _ = concise.insert("host_rollouts".to_owned(), json!(telemetry.host_rollouts));
-    let _ = concise.insert("hot_operations".to_owned(), Value::Array(hot_operations));
-    if let Some(fault) = telemetry.last_fault.as_ref() {
-        let _ = concise.insert(
-            "last_fault".to_owned(),
-            json!({
-                "kind": format!("{:?}", fault.kind).to_ascii_lowercase(),
-                "code": fault.code,
-                "operation": fault.operation,
-                "message": fault.message,
-            }),
-        );
-    }
-
-    let mut lines = vec![format!(
-        "requests={} success={} error={} retry={}",
-        telemetry.requests, telemetry.successes, telemetry.errors, telemetry.retries
-    )];
-    lines.push(format!(
-        "worker_restarts={} host_rollouts={}",
-        telemetry.worker_restarts, telemetry.host_rollouts
-    ));
-    let mut ranked_operations = telemetry.operations.iter().collect::<Vec<_>>();
-    ranked_operations.sort_by(|(left_name, left), (right_name, right)| {
+    ranked.sort_by(|(left_name, left), (right_name, right)| {
         right
             .requests
             .cmp(&left.requests)
@@ -1109,27 +991,54 @@ fn system_telemetry_output(telemetry: &ServerTelemetry) -> Result<ToolOutput, Fa
             .then_with(|| right.retries.cmp(&left.retries))
             .then_with(|| left_name.cmp(right_name))
     });
-    if !ranked_operations.is_empty() {
-        lines.push("hot operations:".to_owned());
-        for (operation, stats) in ranked_operations.into_iter().take(6) {
-            lines.push(format!(
-                "{} req={} err={} retry={} last={}ms",
-                operation,
-                stats.requests,
-                stats.errors,
-                stats.retries,
-                stats.last_latency_ms.unwrap_or(0),
-            ));
+    let total = ranked.len();
+    let limit = query
+        .limit
+        .as_ref()
+        .map_or(6, crate::mcp::selection::PageLimit::get);
+    let operations = ranked
+        .into_iter()
+        .skip(query.offset)
+        .take(limit)
+        .map(|(operation, stats)| {
+            json!({
+                "operation": operation, "requests": stats.requests, "successes": stats.successes,
+                "errors": stats.errors, "retries": stats.retries,
+                "last_latency_ms": stats.last_latency_ms, "fault_codes": stats.fault_codes,
+            })
+        })
+        .collect::<Vec<_>>();
+    let end = query.offset.saturating_add(operations.len());
+    let full = json!({
+        "window_started_at": libmcp::TimestampText::try_from(telemetry.window_started_at)
+            .map_err(|error| FaultRecord::new(FaultKind::Internal, FaultStage::Host, "tools/call:system.telemetry", error.to_string()))?,
+        "requests": telemetry.requests, "successes": telemetry.successes,
+        "errors": telemetry.errors, "retries": telemetry.retries,
+        "worker_restarts": telemetry.worker_restarts, "host_rollouts": telemetry.host_rollouts,
+        "last_fault": telemetry.last_fault, "operations": operations,
+        "page": {"total": total, "offset": query.offset, "count": end - query.offset,
+                 "next_offset": (end < total).then_some(end)},
+    });
+    let mut concise = full.clone();
+    if let Some(fault) = concise["last_fault"].as_object_mut() {
+        fault.retain(|key, _| ["kind", "code", "operation", "message"].contains(&key.as_str()));
+        if let Some(message) = fault
+            .get("message")
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+        {
+            let mut chars = message.chars();
+            let excerpt = chars.by_ref().take(320).collect::<String>();
+            let truncated = chars.next().is_some();
+            let _ = fault.insert("message".to_owned(), json!(excerpt));
+            if truncated {
+                let _ = fault.insert("message_truncated".to_owned(), json!(true));
+            }
         }
     }
-    if let Some(fault) = telemetry.last_fault.as_ref() {
-        lines.push(format!("last fault: {} {}", fault.operation, fault.message));
-    }
     fallback_detailed_tool_output(
-        &Value::Object(concise),
-        telemetry,
-        lines.join("\n"),
-        None,
+        &concise,
+        &full,
         libmcp::SurfaceKind::Ops,
         FaultStage::Host,
         "tools/call:system.telemetry",

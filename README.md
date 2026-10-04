@@ -15,7 +15,7 @@ source tag with Cargo:
 
 ```console
 cargo install --git https://github.com/aoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoa/fidget-spinner.git \
-  --tag v1.0.9 --locked fidget-spinner-cli
+  --tag v2.0.0 --locked fidget-spinner-cli
 fidget-spinner-cli skill install
 ```
 
@@ -89,5 +89,7 @@ design contract lives in [SPEC.md](SPEC.md).
 
 `check` runs the source policy, formatter, Clippy, and Rust tests. `deep` adds
 rustdoc, a real Chromium journey, and isolated install/uninstall verification.
-Version 1.0 freezes the documented CLI, MCP JSON, and store compatibility
-contracts for the 1.x line. Fidget Spinner is MIT-licensed.
+Version 2.0 changes MCP selection defaults and response shapes: bounded pages,
+explicit sections and history snapshots, and identical selected facts in porcelain
+and JSON. CLI and store format 20 remain compatible. See
+[MCP output controls](docs/operations.md#mcp-output-controls). Fidget Spinner is MIT-licensed.

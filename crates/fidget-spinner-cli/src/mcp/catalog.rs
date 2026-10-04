@@ -909,7 +909,7 @@ fn tool_input_schema(name: &str) -> Value {
         "skill.show" => object_schema(&[("name", string_schema("Bundled skill name."))], &[]),
         _ => empty_object_schema(),
     };
-    with_common_presentation(schema)
+    with_common_presentation(crate::mcp::selection::with_content_properties(name, schema))
 }
 
 fn empty_object_schema() -> Value {

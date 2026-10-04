@@ -1,14 +1,11 @@
 use libmcp::{
-    DetailLevel, FallbackJsonProjection, JsonPorcelainConfig, ProjectionError, RenderMode,
+    DetailLevel, FallbackJsonProjection, ProjectionError, RenderMode, StructuredProjection,
     SurfaceKind, ToolProjection, render_json_porcelain, with_presentation_properties,
 };
 use serde::Serialize;
 use serde_json::{Value, json};
 
 use crate::mcp::fault::{FaultKind, FaultRecord, FaultStage};
-
-const FULL_PORCELAIN_MAX_LINES: usize = 40;
-const FULL_PORCELAIN_MAX_INLINE_CHARS: usize = 512;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Presentation {
@@ -18,43 +15,28 @@ pub(crate) struct Presentation {
 
 #[derive(Debug, Clone)]
 pub(crate) struct ToolOutput {
-    concise: Value,
+    concise: Option<Value>,
     full: Value,
-    concise_text: String,
-    full_text: Option<String>,
 }
 
 impl ToolOutput {
     #[must_use]
-    pub(crate) fn from_values(
-        concise: Value,
-        full: Value,
-        concise_text: impl Into<String>,
-        full_text: Option<String>,
-    ) -> Self {
+    pub(crate) fn from_values(concise: Value, full: Value) -> Self {
         Self {
-            concise,
+            concise: Some(concise),
             full,
-            concise_text: concise_text.into(),
-            full_text,
         }
     }
 
     fn structured(&self, detail: DetailLevel) -> &Value {
         match detail {
-            DetailLevel::Concise => &self.concise,
+            DetailLevel::Concise => self.concise.as_ref().unwrap_or(&self.full),
             DetailLevel::Full => &self.full,
         }
     }
 
-    fn porcelain_text(&self, detail: DetailLevel) -> String {
-        match detail {
-            DetailLevel::Concise => self.concise_text.clone(),
-            DetailLevel::Full => self
-                .full_text
-                .clone()
-                .unwrap_or_else(|| render_json_porcelain(&self.full, full_porcelain_config())),
-        }
+    pub(crate) fn into_full(self) -> Value {
+        self.full
     }
 }
 
@@ -99,52 +81,61 @@ pub(crate) fn split_presentation(
 
 pub(crate) fn projected_tool_output(
     projection: &impl ToolProjection,
-    concise_text: impl Into<String>,
-    full_text: Option<String>,
     stage: FaultStage,
     operation: &str,
 ) -> Result<ToolOutput, FaultRecord> {
-    let concise = projection
-        .concise_projection()
-        .map_err(|error| projection_fault(&error, stage, operation))?;
     let full = projection
         .full_projection()
         .map_err(|error| projection_fault(&error, stage, operation))?;
-    Ok(ToolOutput::from_values(
-        concise,
+    Ok(ToolOutput {
+        concise: None,
         full,
-        concise_text,
-        full_text,
-    ))
+    })
 }
 
 pub(crate) fn fallback_detailed_tool_output(
     concise: &impl Serialize,
     full: &impl Serialize,
-    concise_text: impl Into<String>,
-    full_text: Option<String>,
     kind: SurfaceKind,
     stage: FaultStage,
     operation: &str,
 ) -> Result<ToolOutput, FaultRecord> {
     let projection = FallbackJsonProjection::new(concise, full, kind)
         .map_err(|error| projection_fault(&error, stage, operation))?;
-    projected_tool_output(&projection, concise_text, full_text, stage, operation)
+    Ok(ToolOutput::from_values(
+        projection
+            .concise_projection()
+            .map_err(|error| projection_fault(&error, stage, operation))?,
+        projection
+            .full_projection()
+            .map_err(|error| projection_fault(&error, stage, operation))?,
+    ))
 }
 
 pub(crate) fn tool_success(output: &ToolOutput, presentation: Presentation) -> Value {
-    let structured = output.structured(presentation.detail).clone();
-    match presentation.render {
+    selected_success(
+        output.structured(presentation.detail),
+        presentation.render,
+        render_json_porcelain,
+    )
+}
+
+pub(crate) fn selected_success(
+    selected: &Value,
+    render: RenderMode,
+    porcelain: fn(&Value) -> String,
+) -> Value {
+    match render {
         RenderMode::Porcelain => json!({
             "content": [{
                 "type": "text",
-                "text": output.porcelain_text(presentation.detail),
+                "text": porcelain(selected),
             }],
             "isError": false,
         }),
         RenderMode::Json => json!({
             "content": [],
-            "structuredContent": structured,
+            "structuredContent": selected,
             "isError": false,
         }),
     }
@@ -156,13 +147,6 @@ pub(crate) fn with_common_presentation(schema: Value) -> Value {
 
 fn projection_fault(error: &ProjectionError, stage: FaultStage, operation: &str) -> FaultRecord {
     FaultRecord::new(FaultKind::Internal, stage, operation, error.to_string())
-}
-
-fn full_porcelain_config() -> JsonPorcelainConfig {
-    match JsonPorcelainConfig::try_new(FULL_PORCELAIN_MAX_LINES, FULL_PORCELAIN_MAX_INLINE_CHARS) {
-        Ok(config) => config,
-        Err(_) => unreachable!("fixed porcelain bounds must be valid"),
-    }
 }
 
 impl Default for Presentation {

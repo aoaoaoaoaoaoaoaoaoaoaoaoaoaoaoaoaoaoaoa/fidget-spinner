@@ -5,6 +5,7 @@ mod output;
 mod projection;
 mod protocol;
 mod query_output;
+mod selection;
 mod service;
 mod telemetry;
 mod worker;

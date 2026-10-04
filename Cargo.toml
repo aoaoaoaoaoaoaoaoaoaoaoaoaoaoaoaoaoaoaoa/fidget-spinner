@@ -16,7 +16,7 @@ license = "MIT"
 readme = "README.md"
 repository = "https://github.com/aoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoa/fidget-spinner"
 rust-version = "1.98.0"
-version = "1.0.10"
+version = "2.0.0"
 
 [workspace.dependencies]
 anyhow = "1"
@@ -25,6 +25,8 @@ camino = { version = "1", features = ["serde1"] }
 clap = { version = "4.5", features = ["derive"] }
 dirs = "6"
 dunce = "1"
+libmcp = { git = "https://github.com/aoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoa/libmcp.git", rev = "7555b42edbbe0d30c007302115a88ea5a5fb639d" }
+libmcp-testkit = { git = "https://github.com/aoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoa/libmcp.git", rev = "7555b42edbbe0d30c007302115a88ea5a5fb639d", package = "libmcp-testkit" }
 maud = { version = "0.27", features = ["axum"] }
 num-rational = { version = "0.4", features = ["serde"] }
 percent-encoding = "2"

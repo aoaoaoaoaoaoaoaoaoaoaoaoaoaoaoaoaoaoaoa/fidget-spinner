@@ -7,11 +7,11 @@ use fidget_spinner_core::{
 };
 use fidget_spinner_store_sqlite::{
     EntityHistoryEntry, ExperimentDetail, ExperimentNearestHit, ExperimentNearestResult,
-    ExperimentSummary, FrontierOpenProjection, FrontierSummary, HypothesisCurrentState,
-    HypothesisDetail, KpiBestEntry, KpiReferenceSummary, KpiSummary, MetricBestEntry,
-    MetricKeySummary, MetricObservationSummary, ProjectStore, StoreError, VertexSummary,
+    ExperimentSummary, FrontierOpenProjection, FrontierSummary, HypothesisDetail, KpiBestEntry,
+    KpiReferenceSummary, KpiSummary, MetricBestEntry, MetricKeySummary, MetricObservationSummary,
+    ProjectStore, StoreError, VertexSummary,
 };
-use libmcp::{ProjectionError, StructuredProjection, SurfaceKind, SurfacePolicy, TimestampText};
+use libmcp::TimestampText;
 use serde::Serialize;
 use serde_json::Value;
 
@@ -67,7 +67,7 @@ pub(crate) struct FrontierOpenOutput {
     pub(crate) active_tags: Vec<String>,
     pub(crate) kpis: Vec<KpiSummaryProjection>,
     pub(crate) active_metric_keys: Vec<MetricKeySummaryProjection>,
-    pub(crate) worklist_hypotheses: Vec<HypothesisCurrentStateProjection>,
+    pub(crate) worklist_hypotheses: Vec<HypothesisSummaryProjection>,
     pub(crate) open_experiments: Vec<ExperimentSummaryProjection>,
 }
 
@@ -117,68 +117,21 @@ pub(crate) struct HypothesisRecordProjection {
 }
 
 #[derive(Clone, Serialize)]
-pub(crate) struct HypothesisReadRecordProjection {
-    pub(crate) slug: String,
-    pub(crate) title: String,
-    pub(crate) summary: String,
-    pub(crate) expected_yield: String,
-    pub(crate) confidence: String,
-    pub(crate) attention: String,
-    pub(crate) lifecycle: String,
-    pub(crate) tags: Vec<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) worklist_ordinal: Option<u32>,
-    pub(crate) revision: u64,
-    pub(crate) updated_at: TimestampText,
-}
-
-#[derive(Clone, Serialize)]
 pub(crate) struct FrontierLinkProjection {
     pub(crate) slug: String,
     pub(crate) label: String,
     pub(crate) status: String,
 }
 
-#[derive(Clone, Serialize)]
-pub(crate) struct HypothesisDetailConcise {
-    pub(crate) record: HypothesisReadRecordProjection,
-    pub(crate) frontier: FrontierLinkProjection,
-    pub(crate) parents: usize,
-    pub(crate) children: usize,
-    pub(crate) open_experiments: Vec<ExperimentSummaryProjection>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) latest_closed_experiment: Option<ExperimentSummaryProjection>,
-}
-
-#[derive(Clone, Serialize)]
-pub(crate) struct HypothesisDetailFull {
+#[derive(Clone, Serialize, libmcp::ToolProjection)]
+#[libmcp(kind = "read")]
+pub(crate) struct HypothesisDetailOutput {
     pub(crate) record: HypothesisRecordProjection,
     pub(crate) frontier: FrontierLinkProjection,
     pub(crate) parents: Vec<VertexSummaryProjection>,
     pub(crate) children: Vec<VertexSummaryProjection>,
     pub(crate) open_experiments: Vec<ExperimentSummaryProjection>,
     pub(crate) closed_experiments: Vec<ExperimentSummaryProjection>,
-}
-
-pub(crate) struct HypothesisDetailOutput {
-    concise: HypothesisDetailConcise,
-    full: HypothesisDetailFull,
-}
-
-impl StructuredProjection for HypothesisDetailOutput {
-    fn concise_projection(&self) -> Result<Value, ProjectionError> {
-        Ok(serde_json::to_value(&self.concise)?)
-    }
-
-    fn full_projection(&self) -> Result<Value, ProjectionError> {
-        Ok(serde_json::to_value(&self.full)?)
-    }
-}
-
-impl SurfacePolicy for HypothesisDetailOutput {
-    fn projection_policy(&self) -> libmcp::ProjectionPolicy {
-        libmcp::ProjectionPolicy::from_surface(SurfaceKind::Read, true, false)
-    }
 }
 
 #[derive(Clone, Serialize, libmcp::ToolProjection)]
@@ -226,59 +179,14 @@ pub(crate) struct ExperimentRecordProjection {
     pub(crate) updated_at: TimestampText,
 }
 
-#[derive(Clone, Serialize)]
-pub(crate) struct ExperimentReadRecordProjection {
-    pub(crate) slug: String,
-    pub(crate) title: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) summary: Option<String>,
-    pub(crate) tags: Vec<String>,
-    pub(crate) status: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) verdict: Option<String>,
-    pub(crate) revision: u64,
-    pub(crate) updated_at: TimestampText,
-}
-
-#[derive(Clone, Serialize)]
-pub(crate) struct ExperimentDetailConcise {
-    pub(crate) record: ExperimentReadRecordProjection,
-    pub(crate) frontier: FrontierLinkProjection,
-    pub(crate) owning_hypothesis: HypothesisSummaryProjection,
-    pub(crate) parents: usize,
-    pub(crate) children: usize,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) outcome: Option<ExperimentOutcomeProjection>,
-}
-
-#[derive(Clone, Serialize)]
-pub(crate) struct ExperimentDetailFull {
+#[derive(Clone, Serialize, libmcp::ToolProjection)]
+#[libmcp(kind = "read")]
+pub(crate) struct ExperimentDetailOutput {
     pub(crate) record: ExperimentRecordProjection,
     pub(crate) frontier: FrontierLinkProjection,
     pub(crate) owning_hypothesis: HypothesisSummaryProjection,
     pub(crate) parents: Vec<VertexSummaryProjection>,
     pub(crate) children: Vec<VertexSummaryProjection>,
-}
-
-pub(crate) struct ExperimentDetailOutput {
-    concise: ExperimentDetailConcise,
-    full: ExperimentDetailFull,
-}
-
-impl StructuredProjection for ExperimentDetailOutput {
-    fn concise_projection(&self) -> Result<Value, ProjectionError> {
-        Ok(serde_json::to_value(&self.concise)?)
-    }
-
-    fn full_projection(&self) -> Result<Value, ProjectionError> {
-        Ok(serde_json::to_value(&self.full)?)
-    }
-}
-
-impl SurfacePolicy for ExperimentDetailOutput {
-    fn projection_policy(&self) -> libmcp::ProjectionPolicy {
-        libmcp::ProjectionPolicy::from_surface(SurfaceKind::Read, true, false)
-    }
 }
 
 #[derive(Clone, Serialize, libmcp::ToolProjection)]
@@ -292,14 +200,6 @@ pub(crate) struct ExperimentRecordOutput {
 pub(crate) struct ExperimentListOutput {
     pub(crate) count: usize,
     pub(crate) experiments: Vec<ExperimentSummaryProjection>,
-}
-
-#[derive(Clone, Serialize)]
-pub(crate) struct HypothesisCurrentStateProjection {
-    pub(crate) hypothesis: HypothesisSummaryProjection,
-    pub(crate) open_experiments: Vec<ExperimentSummaryProjection>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) latest_closed_experiment: Option<ExperimentSummaryProjection>,
 }
 
 #[derive(Clone, Serialize)]
@@ -319,7 +219,7 @@ pub(crate) struct MetricKeySummaryProjection {
 pub(crate) struct KpiSummaryProjection {
     pub(crate) ordinal: u32,
     pub(crate) metric: MetricKeySummaryProjection,
-    pub(crate) references: Vec<KpiReferenceProjection>,
+    pub(crate) reference_count: usize,
 }
 
 #[derive(Clone, Serialize)]
@@ -636,7 +536,7 @@ pub(crate) fn frontier_open(projection: &FrontierOpenProjection) -> FrontierOpen
         worklist_hypotheses: projection
             .worklist_hypotheses
             .iter()
-            .map(hypothesis_current_state)
+            .map(|state| hypothesis_summary(&state.hypothesis))
             .collect(),
         open_experiments: projection
             .open_experiments
@@ -677,46 +577,20 @@ pub(crate) fn hypothesis_detail(
         status: frontier.status.as_str().to_owned(),
     };
     Ok(HypothesisDetailOutput {
-        concise: HypothesisDetailConcise {
-            record: HypothesisReadRecordProjection {
-                slug: detail.record.slug.to_string(),
-                title: detail.record.title.to_string(),
-                summary: detail.record.summary.to_string(),
-                expected_yield: detail.record.expected_yield.as_str().to_owned(),
-                confidence: detail.record.confidence.as_str().to_owned(),
-                attention: detail.record.attention.as_str().to_owned(),
-                lifecycle: hypothesis_detail_lifecycle(detail).to_owned(),
-                tags: detail.record.tags.iter().map(ToString::to_string).collect(),
-                worklist_ordinal: detail.record.worklist_ordinal,
-                revision: detail.record.revision,
-                updated_at: timestamp_value(detail.record.updated_at),
-            },
-            frontier: frontier.clone(),
-            parents: detail.parents.len(),
-            children: detail.children.len(),
-            open_experiments: detail
-                .open_experiments
-                .iter()
-                .map(experiment_summary)
-                .collect(),
-            latest_closed_experiment: detail.closed_experiments.first().map(experiment_summary),
-        },
-        full: HypothesisDetailFull {
-            record: hypothesis_record_projection(&detail.record),
-            frontier,
-            parents: detail.parents.iter().map(vertex_summary).collect(),
-            children: detail.children.iter().map(vertex_summary).collect(),
-            open_experiments: detail
-                .open_experiments
-                .iter()
-                .map(experiment_summary)
-                .collect(),
-            closed_experiments: detail
-                .closed_experiments
-                .iter()
-                .map(experiment_summary)
-                .collect(),
-        },
+        record: hypothesis_record_projection(&detail.record),
+        frontier,
+        parents: detail.parents.iter().map(vertex_summary).collect(),
+        children: detail.children.iter().map(vertex_summary).collect(),
+        open_experiments: detail
+            .open_experiments
+            .iter()
+            .map(experiment_summary)
+            .collect(),
+        closed_experiments: detail
+            .closed_experiments
+            .iter()
+            .map(experiment_summary)
+            .collect(),
     })
 }
 
@@ -749,34 +623,11 @@ pub(crate) fn experiment_detail(
         status: frontier.status.as_str().to_owned(),
     };
     Ok(ExperimentDetailOutput {
-        concise: ExperimentDetailConcise {
-            record: ExperimentReadRecordProjection {
-                slug: detail.record.slug.to_string(),
-                title: detail.record.title.to_string(),
-                summary: detail.record.summary.as_ref().map(ToString::to_string),
-                tags: detail.record.tags.iter().map(ToString::to_string).collect(),
-                status: detail.record.status.as_str().to_owned(),
-                verdict: detail
-                    .record
-                    .outcome
-                    .as_ref()
-                    .map(|outcome| outcome.verdict.as_str().to_owned()),
-                revision: detail.record.revision,
-                updated_at: timestamp_value(detail.record.updated_at),
-            },
-            frontier: frontier.clone(),
-            owning_hypothesis: hypothesis_summary(&detail.owning_hypothesis),
-            parents: detail.parents.len(),
-            children: detail.children.len(),
-            outcome: detail.record.outcome.as_ref().map(experiment_outcome),
-        },
-        full: ExperimentDetailFull {
-            record: experiment_record_projection(&detail.record),
-            frontier,
-            owning_hypothesis: hypothesis_summary(&detail.owning_hypothesis),
-            parents: detail.parents.iter().map(vertex_summary).collect(),
-            children: detail.children.iter().map(vertex_summary).collect(),
-        },
+        record: experiment_record_projection(&detail.record),
+        frontier,
+        owning_hypothesis: hypothesis_summary(&detail.owning_hypothesis),
+        parents: detail.parents.iter().map(vertex_summary).collect(),
+        children: detail.children.iter().map(vertex_summary).collect(),
     })
 }
 
@@ -1009,31 +860,6 @@ fn experiment_record_projection(
     }
 }
 
-fn hypothesis_detail_lifecycle(detail: &HypothesisDetail) -> &'static str {
-    if !detail.open_experiments.is_empty() {
-        "working"
-    } else if detail.closed_experiments.is_empty() {
-        "fresh"
-    } else {
-        "closed"
-    }
-}
-
-fn hypothesis_current_state(state: &HypothesisCurrentState) -> HypothesisCurrentStateProjection {
-    HypothesisCurrentStateProjection {
-        hypothesis: hypothesis_summary(&state.hypothesis),
-        open_experiments: state
-            .open_experiments
-            .iter()
-            .map(experiment_summary)
-            .collect(),
-        latest_closed_experiment: state
-            .latest_closed_experiment
-            .as_ref()
-            .map(experiment_summary),
-    }
-}
-
 fn metric_key_summary(metric: &MetricKeySummary) -> MetricKeySummaryProjection {
     MetricKeySummaryProjection {
         key: metric.key.to_string(),
@@ -1051,7 +877,7 @@ fn kpi_summary(kpi: &KpiSummary) -> KpiSummaryProjection {
     KpiSummaryProjection {
         ordinal: kpi.ordinal.value(),
         metric: metric_key_summary(&kpi.metric),
-        references: kpi.references.iter().map(kpi_reference).collect(),
+        reference_count: kpi.references.len(),
     }
 }
 

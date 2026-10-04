@@ -23,7 +23,7 @@ assistance; do not rename store directories by hand.
 
 ## Upgrade And Recovery
 
-Version 1.0 writes store format 20 and automatically accepts formats 9 through
+Version 2.0 writes store format 20 and automatically accepts formats 9 through
 19. Each migration changes schema, data, and `PRAGMA user_version` in one SQLite
 transaction. Failed initialization removes its partial database. Initializing
 an existing database is rejected.
@@ -99,14 +99,53 @@ binary rollouts through the private libmcp snapshot capsule and resets on an
 ordinary host restart. These aggregates are the evidence surface for deciding
 whether additive argument tolerance or aliases are warranted.
 
+## MCP Output Controls
+
+`render` selects encoding only: porcelain for model reading, JSON for structured
+consumers. Both preserve all selected facts. `detail=full` adds record text and
+metadata, never extra rows or implicit history snapshots. Mutation receipts are
+compact by default; full detail returns the record.
+
+Lists use `limit` (1–200) and `cursor`, with `page.total`, `page.count`,
+`page.offset` and `page.next_cursor`. Defaults are 20 rows for lists and 10 for
+rankings and history. Repeat the same query to continue; render, detail and limit
+may change. Cursors fingerprint current public results and reject changes. They
+do not retain snapshots. These are output bounds; store reads may still
+materialize complete matching collections.
+
+- `frontier.open` defaults to the brief and 10 rows per section, with continuation
+  metadata under `pages`. Continue one named `section`: `worklist`, `experiments`,
+  `tags`, `metrics` or `kpis`. Worklist rows do not repeat experiment lists.
+- `tag.list` defaults to 20 rows each of tags, families, locks and name history,
+  including policy when there are no tags. Continue `section=tags|families|locks|history`.
+- `hypothesis.read` and `experiment.read` default to `view=record` with relation
+  counts. Use `view=parents|children` for paged neighbours and `experiment.list`
+  with `hypothesis` for owned experiments. Concise hypothesis reads include the
+  summary and body length; full includes the body. Concise experiment reads keep
+  conditions, measured values and rationale; full adds the command and complete
+  analysis.
+- History defaults to revision metadata. `snapshots=true` includes complete
+  selected snapshots; `revision` selects one exact revision.
+- KPI records expose `reference_count`; `kpi.reference.list` pages the lines.
+- `frontier.query.schema` defaults to the view index. `view` selects one exact
+  view and `detail=full` includes column definitions.
+- `system.telemetry` defaults to 6 operation rows. `operation` filters exactly;
+  totals remain unfiltered. `offset`/`limit` page a live ranking, which can change
+  between calls. Concise fault messages are marked exact 320-character prefixes;
+  full retains the same rows with complete faults.
+
 ## Frontier SQL
 
 `frontier.query.sql` opens a separate read-only SQLite connection, exposes only
 the documented `q_*` views, installs an authorizer, and accepts one `SELECT`.
-The default envelope is 200 rows and 250 ms. Hard limits are 1,000 rows, 2 s,
+MCP defaults to 20 rows; CLI defaults to 200. Both default to 250 ms. Hard limits are 1,000 rows, 2 s,
 32 KiB of SQL, and 256 KiB of result data. The deadline includes synthetic
 metric materialization when the selected views require it; unrelated queries
-do not pay that cost. Use `frontier.query.schema` as the column authority.
+do not pay that cost. Use `frontier.query.schema detail=full` as the column
+authority. Narrow SQL projections and explicit `LIMIT`/`OFFSET` select further
+rows; porcelain preserves cell types, delimiters and whitespace.
+SQL row-table headers are zero-based positions in the returned `columns` list,
+so duplicate column labels retain distinct cells.
 
 ## Performance Gate
 

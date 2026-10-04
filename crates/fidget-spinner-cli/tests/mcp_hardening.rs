@@ -161,14 +161,16 @@ fn telemetry_retains_coded_tool_specific_argument_failures() -> TestResult {
     assert!(malformed_text.contains("fault=invalid_protocol_input"));
     assert!(malformed_text.contains("operation=tools/call:frontier.create"));
 
-    let telemetry = harness.call_tool_full(91, "system.telemetry", json!({}))?;
+    let telemetry = harness.call_tool_full(
+        91,
+        "system.telemetry",
+        json!({"operation": "tools/call:frontier.create"}),
+    )?;
     assert_tool_ok(&telemetry);
     let telemetry = tool_content(&telemetry);
     assert!(telemetry["window_started_at"].is_string());
     assert_eq!(
-        telemetry["operations"]["tools/call:frontier.create"]["fault_codes"]
-            ["invalid_protocol_input"]
-            .as_u64(),
+        telemetry["operations"][0]["fault_codes"]["invalid_protocol_input"].as_u64(),
         Some(1)
     );
     Ok(())
@@ -937,24 +939,24 @@ fn kpi_references_are_mcp_settable_normalized_and_queryable() -> TestResult {
     )?;
     assert_tool_ok(&set);
     let set_text = must_some(tool_text(&set), "reference set text")?;
-    assert!(set_text.contains("comparison only"));
-    assert!(set_text.contains("experiment.close"));
-    let kpis = harness.call_tool_full(
+    assert!(set_text.contains("rival"));
+    assert!(set_text.contains("8500"));
+    let references = harness.call_tool_full(
         1164,
-        "kpi.list",
+        "kpi.reference.list",
         json!({"frontier": "kpi-reference-frontier"}),
     )?;
-    assert_tool_ok(&kpis);
+    assert_tool_ok(&references);
     assert_eq!(
-        tool_content(&kpis)["kpis"][0]["references"][0]["value"].as_f64(),
+        tool_content(&references)["references"][0]["value"].as_f64(),
         Some(8500.0)
     );
     assert_eq!(
-        tool_content(&kpis)["kpis"][0]["references"][0]["label"].as_str(),
+        tool_content(&references)["references"][0]["label"].as_str(),
         Some("rival")
     );
     assert_eq!(
-        tool_content(&kpis)["kpis"][0]["references"][0]["canonical_value"].as_f64(),
+        tool_content(&references)["references"][0]["canonical_value"].as_f64(),
         Some(8_500_000_000.0)
     );
 
@@ -980,7 +982,7 @@ fn kpi_references_are_mcp_settable_normalized_and_queryable() -> TestResult {
         json!({"frontier": "kpi-reference-frontier"}),
     )?;
     assert_tool_ok(&references);
-    assert_eq!(tool_content(&references)["count"].as_u64(), Some(1));
+    assert_eq!(tool_content(&references)["page"]["total"].as_u64(), Some(1));
     assert_eq!(
         tool_content(&references)["references"][0]["canonical_value"].as_f64(),
         Some(8_400_000_000.0)
@@ -996,7 +998,9 @@ fn kpi_references_are_mcp_settable_normalized_and_queryable() -> TestResult {
     )?;
     assert_tool_ok(&query);
     let text = must_some(tool_text(&query), "kpi reference query text")?;
-    assert!(text.contains("root_wallclock|rival|8400"));
+    assert!(text.contains("root_wallclock"));
+    assert!(text.contains("rival"));
+    assert!(text.contains("8400"));
     assert!(text.contains("8400000000"));
 
     assert_tool_ok(&harness.call_tool(
@@ -1014,7 +1018,7 @@ fn kpi_references_are_mcp_settable_normalized_and_queryable() -> TestResult {
         json!({"frontier": "kpi-reference-frontier"}),
     )?;
     assert_tool_ok(&empty);
-    assert_eq!(tool_content(&empty)["count"].as_u64(), Some(0));
+    assert_eq!(tool_content(&empty)["page"]["total"].as_u64(), Some(0));
     Ok(())
 }
 
@@ -1292,7 +1296,7 @@ fn mcp_rejects_hypothesis_lifecycle_state() -> TestResult {
         json!({"frontier": "retire-frontier"}),
     )?;
     assert_tool_ok(&initial);
-    assert_eq!(tool_content(&initial)["count"].as_u64(), Some(2));
+    assert_eq!(tool_content(&initial)["page"]["total"].as_u64(), Some(2));
 
     let rejected = harness.call_tool(
         85,

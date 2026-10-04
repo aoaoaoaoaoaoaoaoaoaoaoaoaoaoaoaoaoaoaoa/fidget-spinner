@@ -150,10 +150,17 @@ If you need more context, pull it from:
     `hypothesis.attention.set`; stale cleanup is healthy and does not invalidate
     the experiments it once organized. If it still owns open experiments, close
     or park those experiments first.
-15. Porcelain is the terse triage surface. Use `detail=full` only when concise
-    output stops being decision-sufficient.
+15. Content controls select facts; `render` selects encoding only. Keep porcelain
+    for model reading; JSON is for structured consumers, not fuller access.
+    `detail=full` adds record text and metadata without increasing page sizes.
+    Lists return continuation under `page`; `frontier.open` and `tag.list`
+    return per-section `pages`. Continue one `section` with its `next_cursor`.
+    Entity reads separate `view=record` from paged `parents|children`; use
+    `experiment.list hypothesis=…` for owned experiments. History snapshots
+    require `snapshots=true`, optionally narrowed to one `revision`.
 16. Raw SQL is an escape hatch for trusted, advanced frontier-local inspection,
-    not a second write API. Start with `frontier.query.schema`, query only the
+    not a second write API. Start with `frontier.query.schema`; select a `view`
+    and `detail=full` for its columns. Query only the
     stable `q_*` views, keep result sets narrow, and never expect physical table
     names or cross-frontier data to exist.
 17. When the task becomes a true indefinite optimization push, pair this skill

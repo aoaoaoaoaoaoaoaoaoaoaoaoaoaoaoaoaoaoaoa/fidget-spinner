@@ -1,5 +1,4 @@
 use std::collections::{BTreeMap, BTreeSet};
-use std::fmt::Write as _;
 use std::fs;
 #[cfg(unix)]
 use std::os::unix::fs::MetadataExt;
@@ -30,11 +29,12 @@ use serde_json::{Map, Value, json};
 
 use crate::mcp::fault::{FaultKind, FaultRecord, FaultStage};
 use crate::mcp::output::{
-    ToolOutput, fallback_detailed_tool_output, projected_tool_output, split_presentation,
-    tool_success,
+    ToolOutput, fallback_detailed_tool_output, projected_tool_output, selected_success,
+    split_presentation,
 };
 use crate::mcp::projection;
 use crate::mcp::protocol::{TRANSIENT_ONCE_ENV, TRANSIENT_ONCE_MARKER_ENV, WorkerOperation};
+use crate::mcp::selection::Selection;
 
 pub(crate) struct WorkerService {
     project_root: Utf8PathBuf,
@@ -92,8 +92,10 @@ impl WorkerService {
 
     fn call_tool(&mut self, name: &str, arguments: Value) -> Result<Value, FaultRecord> {
         let operation = format!("tools/call:{name}");
-        let (presentation, arguments) =
+        let (presentation, mut arguments) =
             split_presentation(arguments, &operation, FaultStage::Worker)?;
+        let selection =
+            Selection::read(name, &mut arguments, self.project_root.as_str(), &operation)?;
         macro_rules! lift {
             ($expr:expr) => {
                 with_fault($expr, &operation)?
@@ -212,7 +214,8 @@ impl WorkerService {
                 )?
             }
             "frontier.query.sql" => {
-                let args = deserialize::<FrontierSqlQuery>(arguments, &operation)?;
+                let mut args = deserialize::<FrontierSqlQuery>(arguments, &operation)?;
+                args.max_rows = Some(args.max_rows.unwrap_or(20));
                 let frontier = lift!(self.store.read_frontier(&args.frontier));
                 reject_archived_frontier_for_mcp(&frontier, &operation)?;
                 crate::mcp::query_output::sql_output(
@@ -714,7 +717,14 @@ impl WorkerService {
                 ));
             }
         };
-        Ok(tool_success(&output, presentation))
+        let selected =
+            selection.select(name, output.into_full(), presentation.detail, &operation)?;
+        let porcelain = if name == "frontier.query.sql" {
+            crate::mcp::query_output::sql_porcelain
+        } else {
+            libmcp::render_json_porcelain
+        };
+        Ok(selected_success(&selected, presentation.render, porcelain))
     }
 
     fn read_resource(uri: &str) -> Result<Value, FaultRecord> {
@@ -1372,14 +1382,6 @@ fn json_value_to_condition(value: Value) -> Result<RunDimensionValue, FaultRecor
     }
 }
 
-fn condition_value_text(value: &RunDimensionValue) -> String {
-    match value {
-        RunDimensionValue::String(value) | RunDimensionValue::Timestamp(value) => value.to_string(),
-        RunDimensionValue::Numeric(value) => value.to_string(),
-        RunDimensionValue::Boolean(value) => value.to_string(),
-    }
-}
-
 fn project_status_output(
     status: &ProjectStatus,
     operation: &str,
@@ -1397,19 +1399,6 @@ fn project_status_output(
     fallback_detailed_tool_output(
         &concise,
         status,
-        [
-            format!("project {}", status.display_name),
-            format!("root: {}", status.project_root),
-            format!("state: {}", status.state_root),
-            format!("frontiers: {}", status.frontier_count),
-            format!("hypotheses: {}", status.hypothesis_count),
-            format!(
-                "experiments: {} (open {})",
-                status.experiment_count, status.open_experiment_count
-            ),
-        ]
-        .join("\n"),
-        None,
         libmcp::SurfaceKind::Overview,
         FaultStage::Worker,
         operation,
@@ -1420,51 +1409,15 @@ fn tag_record_output(
     tag: &fidget_spinner_core::TagRecord,
     operation: &str,
 ) -> Result<ToolOutput, FaultRecord> {
-    let projection = projection::tag_record(tag);
-    projected_tool_output(
-        &projection,
-        format!("tag {} — {}", tag.name, tag.description),
-        None,
-        FaultStage::Worker,
-        operation,
-    )
+    projected_tool_output(&projection::tag_record(tag), FaultStage::Worker, operation)
 }
 
 fn tag_registry_output(
     registry: &fidget_spinner_core::TagRegistrySnapshot,
     operation: &str,
 ) -> Result<ToolOutput, FaultRecord> {
-    let projection = projection::tag_registry(registry);
     projected_tool_output(
-        &projection,
-        if registry.tags.is_empty() {
-            "no tags".to_owned()
-        } else {
-            let mut lines = registry
-                .tags
-                .iter()
-                .map(|tag| {
-                    let family = tag
-                        .family
-                        .as_ref()
-                        .map_or(String::new(), |family| format!(" [{family}]"));
-                    format!("{}{} — {}", tag.name, family, tag.description)
-                })
-                .collect::<Vec<_>>();
-            for lock in &registry.locks {
-                lines.push(format!(
-                    "LOCKED {}:{} — {}",
-                    lock.registry,
-                    lock.mode.as_str(),
-                    lock.reason
-                ));
-            }
-            for family in registry.families.iter().filter(|family| family.mandatory) {
-                lines.push(format!("mandatory family {} is active", family.name));
-            }
-            lines.join("\n")
-        },
-        None,
+        &projection::tag_registry(registry),
         FaultStage::Worker,
         operation,
     )
@@ -1474,27 +1427,8 @@ fn frontier_list_output(
     frontiers: &[FrontierSummary],
     operation: &str,
 ) -> Result<ToolOutput, FaultRecord> {
-    let projection = projection::frontier_list(frontiers);
     projected_tool_output(
-        &projection,
-        if frontiers.is_empty() {
-            "no frontiers".to_owned()
-        } else {
-            frontiers
-                .iter()
-                .map(|frontier| {
-                    format!(
-                        "{} — {} | worklist hypotheses {} | open experiments {}",
-                        frontier.slug,
-                        frontier.objective,
-                        frontier.worklist_hypothesis_count,
-                        frontier.open_experiment_count
-                    )
-                })
-                .collect::<Vec<_>>()
-                .join("\n")
-        },
-        None,
+        &projection::frontier_list(frontiers),
         FaultStage::Worker,
         operation,
     )
@@ -1505,31 +1439,8 @@ fn frontier_record_output(
     frontier: &FrontierRecord,
     operation: &str,
 ) -> Result<ToolOutput, FaultRecord> {
-    let projection = projection::frontier_record(store, frontier, operation);
-    let mut lines = vec![format!(
-        "frontier {} — {}",
-        frontier.slug, frontier.objective
-    )];
-    lines.push(format!("status: {}", frontier.status.as_str()));
-    if let Some(situation) = frontier.brief.situation.as_ref() {
-        lines.push(format!("situation: {situation}"));
-    }
-    if !frontier.brief.unknowns.is_empty() {
-        lines.push(format!(
-            "unknowns: {}",
-            frontier
-                .brief
-                .unknowns
-                .iter()
-                .map(ToString::to_string)
-                .collect::<Vec<_>>()
-                .join("; ")
-        ));
-    }
     projected_tool_output(
-        &projection,
-        lines.join("\n"),
-        None,
+        &projection::frontier_record(store, frontier, operation),
         FaultStage::Worker,
         operation,
     )
@@ -1539,84 +1450,8 @@ fn frontier_open_output(
     projection: &FrontierOpenProjection,
     operation: &str,
 ) -> Result<ToolOutput, FaultRecord> {
-    let output_projection = projection::frontier_open(projection);
-    let mut lines = vec![format!(
-        "frontier {} — {}",
-        projection.frontier.slug, projection.frontier.objective
-    )];
-    if let Some(situation) = projection.frontier.brief.situation.as_ref() {
-        lines.push(format!("situation: {situation}"));
-    }
-    if !projection.active_tags.is_empty() {
-        lines.push(format!(
-            "active tags: {}",
-            projection
-                .active_tags
-                .iter()
-                .map(ToString::to_string)
-                .collect::<Vec<_>>()
-                .join(", ")
-        ));
-    }
-    if !projection.active_metric_keys.is_empty() {
-        lines.push(format!(
-            "live metrics: {}",
-            projection
-                .active_metric_keys
-                .iter()
-                .map(|metric| metric.key.to_string())
-                .collect::<Vec<_>>()
-                .join(", ")
-        ));
-    }
-    if !projection.kpis.is_empty() {
-        lines.push(format!(
-            "KPIs: {}",
-            projection
-                .kpis
-                .iter()
-                .map(|kpi| kpi.metric.key.to_string())
-                .collect::<Vec<_>>()
-                .join(", ")
-        ));
-    }
-    if !projection.worklist_hypotheses.is_empty() {
-        lines.push("worklist hypotheses:".to_owned());
-        for state in &projection.worklist_hypotheses {
-            let status = state
-                .latest_closed_experiment
-                .as_ref()
-                .and_then(|experiment| experiment.verdict)
-                .map_or_else(
-                    || "unjudged".to_owned(),
-                    |verdict| verdict.as_str().to_owned(),
-                );
-            lines.push(format!(
-                "  {} — {} | open {} | latest {}",
-                state.hypothesis.slug,
-                state.hypothesis.summary,
-                state.open_experiments.len(),
-                status
-            ));
-        }
-    }
-    if !projection.open_experiments.is_empty() {
-        lines.push("open experiments:".to_owned());
-        for experiment in &projection.open_experiments {
-            lines.push(format!(
-                "  {} — {}",
-                experiment.slug,
-                experiment
-                    .summary
-                    .as_ref()
-                    .map_or_else(|| experiment.title.to_string(), ToString::to_string)
-            ));
-        }
-    }
     projected_tool_output(
-        &output_projection,
-        lines.join("\n"),
-        None,
+        &projection::frontier_open(projection),
         FaultStage::Worker,
         operation,
     )
@@ -1626,11 +1461,8 @@ fn hypothesis_record_output(
     hypothesis: &fidget_spinner_core::HypothesisRecord,
     operation: &str,
 ) -> Result<ToolOutput, FaultRecord> {
-    let projection = projection::hypothesis_record(hypothesis);
     projected_tool_output(
-        &projection,
-        format!("hypothesis {} — {}", hypothesis.slug, hypothesis.summary),
-        None,
+        &projection::hypothesis_record(hypothesis),
         FaultStage::Worker,
         operation,
     )
@@ -1640,31 +1472,8 @@ fn hypothesis_list_output(
     hypotheses: &[HypothesisSummary],
     operation: &str,
 ) -> Result<ToolOutput, FaultRecord> {
-    let projection = projection::hypothesis_list(hypotheses);
     projected_tool_output(
-        &projection,
-        if hypotheses.is_empty() {
-            "no hypotheses".to_owned()
-        } else {
-            hypotheses
-                .iter()
-                .map(|hypothesis| {
-                    let verdict = hypothesis.latest_verdict.map_or_else(
-                        || "unjudged".to_owned(),
-                        |verdict| verdict.as_str().to_owned(),
-                    );
-                    format!(
-                        "{} — {} | open {} | latest {}",
-                        hypothesis.slug,
-                        hypothesis.summary,
-                        hypothesis.open_experiment_count,
-                        verdict
-                    )
-                })
-                .collect::<Vec<_>>()
-                .join("\n")
-        },
-        None,
+        &projection::hypothesis_list(hypotheses),
         FaultStage::Worker,
         operation,
     )
@@ -1675,37 +1484,8 @@ fn hypothesis_detail_output(
     detail: &HypothesisDetail,
     operation: &str,
 ) -> Result<ToolOutput, FaultRecord> {
-    let projection = projection::hypothesis_detail(store, detail, operation)?;
-    let mut lines = vec![
-        format!(
-            "hypothesis {} — {}",
-            detail.record.slug, detail.record.summary
-        ),
-        detail.record.body.to_string(),
-    ];
-    if !detail.record.tags.is_empty() {
-        lines.push(format!(
-            "tags: {}",
-            detail
-                .record
-                .tags
-                .iter()
-                .map(ToString::to_string)
-                .collect::<Vec<_>>()
-                .join(", ")
-        ));
-    }
-    lines.push(format!(
-        "parents: {} | children: {} | open experiments: {} | closed experiments: {}",
-        detail.parents.len(),
-        detail.children.len(),
-        detail.open_experiments.len(),
-        detail.closed_experiments.len()
-    ));
     projected_tool_output(
-        &projection,
-        lines.join("\n"),
-        None,
+        &projection::hypothesis_detail(store, detail, operation)?,
         FaultStage::Worker,
         operation,
     )
@@ -1715,58 +1495,19 @@ fn experiment_record_output(
     experiment: &fidget_spinner_core::ExperimentRecord,
     operation: &str,
 ) -> Result<ToolOutput, FaultRecord> {
-    let projection = projection::experiment_record(experiment);
-    let mut line = format!("experiment {} — {}", experiment.slug, experiment.title);
-    if let Some(outcome) = experiment.outcome.as_ref() {
-        let _ = write!(line, " | {}", outcome.verdict.as_str());
-        if let Some(metric) = outcome.primary_metric.as_ref() {
-            let _ = write!(line, " {}={}", metric.key, metric.value);
-        }
-        if let Some(commit_hash) = outcome.commit_hash.as_ref() {
-            let _ = write!(
-                line,
-                " @{}",
-                &commit_hash.as_str()[..commit_hash.as_str().len().min(12)]
-            );
-        }
-    } else {
-        let _ = write!(line, " | open");
-    }
-    projected_tool_output(&projection, line, None, FaultStage::Worker, operation)
+    projected_tool_output(
+        &projection::experiment_record(experiment),
+        FaultStage::Worker,
+        operation,
+    )
 }
 
 fn experiment_list_output(
     experiments: &[ExperimentSummary],
     operation: &str,
 ) -> Result<ToolOutput, FaultRecord> {
-    let projection = projection::experiment_list(experiments);
     projected_tool_output(
-        &projection,
-        if experiments.is_empty() {
-            "no experiments".to_owned()
-        } else {
-            experiments
-                .iter()
-                .map(|experiment| {
-                    let status = experiment.verdict.map_or_else(
-                        || experiment.status.as_str().to_owned(),
-                        |verdict| verdict.as_str().to_owned(),
-                    );
-                    let metric = experiment
-                        .primary_metric
-                        .as_ref()
-                        .map_or_else(String::new, |metric| {
-                            format!(" | {}={}", metric.key, metric.value)
-                        });
-                    format!(
-                        "{} — {} | {}{}",
-                        experiment.slug, experiment.title, status, metric
-                    )
-                })
-                .collect::<Vec<_>>()
-                .join("\n")
-        },
-        None,
+        &projection::experiment_list(experiments),
         FaultStage::Worker,
         operation,
     )
@@ -1777,37 +1518,8 @@ fn experiment_detail_output(
     detail: &ExperimentDetail,
     operation: &str,
 ) -> Result<ToolOutput, FaultRecord> {
-    let projection = projection::experiment_detail(store, detail, operation)?;
-    let mut lines = vec![format!(
-        "experiment {} — {}",
-        detail.record.slug, detail.record.title
-    )];
-    lines.push(format!("hypothesis: {}", detail.owning_hypothesis.slug));
-    lines.push(format!(
-        "status: {}",
-        detail.record.outcome.as_ref().map_or_else(
-            || "open".to_owned(),
-            |outcome| outcome.verdict.as_str().to_owned()
-        )
-    ));
-    if let Some(outcome) = detail.record.outcome.as_ref() {
-        if let Some(metric) = outcome.primary_metric.as_ref() {
-            lines.push(format!("primary metric: {}={}", metric.key, metric.value));
-        }
-        if let Some(commit_hash) = outcome.commit_hash.as_ref() {
-            lines.push(format!("commit: {commit_hash}"));
-        }
-        lines.push(format!("rationale: {}", outcome.rationale));
-    }
-    lines.push(format!(
-        "parents: {} | children: {}",
-        detail.parents.len(),
-        detail.children.len()
-    ));
     projected_tool_output(
-        &projection,
-        lines.join("\n"),
-        None,
+        &projection::experiment_detail(store, detail, operation)?,
         FaultStage::Worker,
         operation,
     )
@@ -1817,28 +1529,8 @@ fn metric_keys_output(
     keys: &[MetricKeySummary],
     operation: &str,
 ) -> Result<ToolOutput, FaultRecord> {
-    let projection = projection::metric_keys(keys);
     projected_tool_output(
-        &projection,
-        if keys.is_empty() {
-            "no metrics".to_owned()
-        } else {
-            keys.iter()
-                .map(|metric| {
-                    format!(
-                        "{} [{} {} {} {}] refs={}",
-                        metric.key,
-                        metric.kind.as_str(),
-                        metric.dimension,
-                        metric.display_unit.label(),
-                        metric.objective.as_str(),
-                        metric.reference_count
-                    )
-                })
-                .collect::<Vec<_>>()
-                .join("\n")
-        },
-        None,
+        &projection::metric_keys(keys),
         FaultStage::Worker,
         operation,
     )
@@ -1848,18 +1540,8 @@ fn metric_definition_output(
     metric: &fidget_spinner_core::MetricDefinition,
     operation: &str,
 ) -> Result<ToolOutput, FaultRecord> {
-    let projection = projection::metric_definition(metric);
     projected_tool_output(
-        &projection,
-        format!(
-            "metric {} [{} {} {} {}]",
-            metric.key,
-            metric.kind.as_str(),
-            metric.dimension,
-            metric.display_unit.label(),
-            metric.objective.as_str()
-        ),
-        None,
+        &projection::metric_definition(metric),
         FaultStage::Worker,
         operation,
     )
@@ -1869,80 +1551,27 @@ fn metric_best_output(
     entries: &[MetricBestEntry],
     operation: &str,
 ) -> Result<ToolOutput, FaultRecord> {
-    let projection = projection::metric_best(entries);
     projected_tool_output(
-        &projection,
-        if entries.is_empty() {
-            "no matching experiments".to_owned()
-        } else {
-            entries
-                .iter()
-                .enumerate()
-                .map(|(index, entry)| {
-                    format!(
-                        "{}. {} / {} = {} ({})",
-                        index + 1,
-                        entry.experiment.slug,
-                        entry.hypothesis.slug,
-                        entry.value,
-                        entry.experiment.verdict.map_or_else(
-                            || entry.experiment.status.as_str().to_owned(),
-                            |verdict| verdict.as_str().to_owned()
-                        )
-                    )
-                })
-                .collect::<Vec<_>>()
-                .join("\n")
-        },
-        None,
+        &projection::metric_best(entries),
         FaultStage::Worker,
         operation,
     )
 }
 
 fn kpi_record_output(kpi: &KpiSummary, operation: &str) -> Result<ToolOutput, FaultRecord> {
-    let projection = projection::kpi_record(kpi);
-    projected_tool_output(
-        &projection,
-        format!("KPI metric {}", kpi.metric.key),
-        None,
-        FaultStage::Worker,
-        operation,
-    )
+    projected_tool_output(&projection::kpi_record(kpi), FaultStage::Worker, operation)
 }
 
 fn kpi_list_output(kpis: &[KpiSummary], operation: &str) -> Result<ToolOutput, FaultRecord> {
-    let projection = projection::kpi_list(kpis);
-    projected_tool_output(
-        &projection,
-        if kpis.is_empty() {
-            "no KPIs".to_owned()
-        } else {
-            kpis.iter()
-                .map(|kpi| format!("{} [{}]", kpi.metric.key, kpi.metric.objective.as_str()))
-                .collect::<Vec<_>>()
-                .join("\n")
-        },
-        None,
-        FaultStage::Worker,
-        operation,
-    )
+    projected_tool_output(&projection::kpi_list(kpis), FaultStage::Worker, operation)
 }
 
 fn kpi_reference_record_output(
     reference: &KpiReferenceSummary,
     operation: &str,
 ) -> Result<ToolOutput, FaultRecord> {
-    let projection = projection::kpi_reference_record(reference);
     projected_tool_output(
-        &projection,
-        format!(
-            "reference line set: {} = {} {} (comparison only; put fresh hypothesis-driven measurements in experiment.close)",
-            reference.label,
-            reference.value,
-            reference.display_unit.label()
-        ),
-        None,
+        &projection::kpi_reference_record(reference),
         FaultStage::Worker,
         operation,
     )
@@ -1952,70 +1581,24 @@ fn kpi_reference_list_output(
     references: &[KpiReferenceSummary],
     operation: &str,
 ) -> Result<ToolOutput, FaultRecord> {
-    let projection = projection::kpi_reference_list(references);
     projected_tool_output(
-        &projection,
-        if references.is_empty() {
-            "no KPI references".to_owned()
-        } else {
-            references
-                .iter()
-                .map(|reference| {
-                    format!(
-                        "{} = {} {}",
-                        reference.label,
-                        reference.value,
-                        reference.display_unit.label()
-                    )
-                })
-                .collect::<Vec<_>>()
-                .join("\n")
-        },
-        None,
+        &projection::kpi_reference_list(references),
         FaultStage::Worker,
         operation,
     )
 }
 
 fn kpi_reference_delete_output(operation: &str) -> Result<ToolOutput, FaultRecord> {
-    let projection = projection::kpi_reference_deleted();
     projected_tool_output(
-        &projection,
-        "KPI reference deleted",
-        None,
+        &projection::kpi_reference_deleted(),
         FaultStage::Worker,
         operation,
     )
 }
 
 fn kpi_best_output(entries: &[KpiBestEntry], operation: &str) -> Result<ToolOutput, FaultRecord> {
-    let projection = projection::kpi_best(entries);
     projected_tool_output(
-        &projection,
-        if entries.is_empty() {
-            "no matching experiments".to_owned()
-        } else {
-            entries
-                .iter()
-                .enumerate()
-                .map(|(index, entry)| {
-                    format!(
-                        "{}. {} / {} {}={} ({})",
-                        index + 1,
-                        entry.experiment.slug,
-                        entry.hypothesis.slug,
-                        entry.metric_key,
-                        entry.value,
-                        entry.experiment.verdict.map_or_else(
-                            || entry.experiment.status.as_str().to_owned(),
-                            |verdict| verdict.as_str().to_owned()
-                        )
-                    )
-                })
-                .collect::<Vec<_>>()
-                .join("\n")
-        },
-        None,
+        &projection::kpi_best(entries),
         FaultStage::Worker,
         operation,
     )
@@ -2025,63 +1608,8 @@ fn experiment_nearest_output(
     result: &fidget_spinner_store_sqlite::ExperimentNearestResult,
     operation: &str,
 ) -> Result<ToolOutput, FaultRecord> {
-    let projection = projection::experiment_nearest(result);
-    let mut lines = Vec::new();
-    if !result.target_dimensions.is_empty() {
-        lines.push(format!(
-            "target conditions: {}",
-            result
-                .target_dimensions
-                .iter()
-                .map(|(key, value)| format!("{key}={}", condition_value_text(value)))
-                .collect::<Vec<_>>()
-                .join(", ")
-        ));
-    }
-    if let Some(metric) = result.metric.as_ref() {
-        lines.push(format!(
-            "champion metric: {} [{} {} {}]",
-            metric.key,
-            metric.dimension,
-            metric.display_unit.label(),
-            metric.objective.as_str()
-        ));
-    }
-    for (label, hit) in [
-        ("accepted", result.accepted.as_ref()),
-        ("kept", result.kept.as_ref()),
-        ("rejected", result.rejected.as_ref()),
-        ("champion", result.champion.as_ref()),
-    ] {
-        if let Some(hit) = hit {
-            let suffix = hit
-                .metric_value
-                .as_ref()
-                .map_or_else(String::new, |metric| {
-                    format!(" | {}={}", metric.key, metric.value)
-                });
-            lines.push(format!(
-                "{}: {} / {}{}",
-                label, hit.experiment.slug, hit.hypothesis.slug, suffix
-            ));
-            lines.push(format!(
-                "  why: {}",
-                hit.reasons
-                    .iter()
-                    .map(ToString::to_string)
-                    .collect::<Vec<_>>()
-                    .join("; ")
-            ));
-        }
-    }
     projected_tool_output(
-        &projection,
-        if lines.is_empty() {
-            "no comparator candidates".to_owned()
-        } else {
-            lines.join("\n")
-        },
-        None,
+        &projection::experiment_nearest(result),
         FaultStage::Worker,
         operation,
     )
@@ -2091,15 +1619,8 @@ fn condition_definition_output(
     condition: &fidget_spinner_core::RunDimensionDefinition,
     operation: &str,
 ) -> Result<ToolOutput, FaultRecord> {
-    let projection = projection::condition_definition(condition);
     projected_tool_output(
-        &projection,
-        format!(
-            "condition {} [{}]",
-            condition.key,
-            condition.value_type.as_str()
-        ),
-        None,
+        &projection::condition_definition(condition),
         FaultStage::Worker,
         operation,
     )
@@ -2109,29 +1630,8 @@ fn condition_list_output(
     conditions: &[fidget_spinner_core::RunDimensionDefinition],
     operation: &str,
 ) -> Result<ToolOutput, FaultRecord> {
-    let projection = projection::condition_list(conditions);
     projected_tool_output(
-        &projection,
-        if conditions.is_empty() {
-            "no conditions".to_owned()
-        } else {
-            conditions
-                .iter()
-                .map(|condition| {
-                    format!(
-                        "{} [{}]{}",
-                        condition.key,
-                        condition.value_type.as_str(),
-                        condition
-                            .description
-                            .as_ref()
-                            .map_or_else(String::new, |description| format!(" — {description}"))
-                    )
-                })
-                .collect::<Vec<_>>()
-                .join("\n")
-        },
-        None,
+        &projection::condition_list(conditions),
         FaultStage::Worker,
         operation,
     )
@@ -2141,25 +1641,5 @@ fn history_output(
     history: &[EntityHistoryEntry],
     operation: &str,
 ) -> Result<ToolOutput, FaultRecord> {
-    let projection = projection::history(history);
-    projected_tool_output(
-        &projection,
-        if history.is_empty() {
-            "no history".to_owned()
-        } else {
-            history
-                .iter()
-                .map(|entry| {
-                    format!(
-                        "rev {} {} @ {}",
-                        entry.revision, entry.event_kind, entry.occurred_at
-                    )
-                })
-                .collect::<Vec<_>>()
-                .join("\n")
-        },
-        None,
-        FaultStage::Worker,
-        operation,
-    )
+    projected_tool_output(&projection::history(history), FaultStage::Worker, operation)
 }

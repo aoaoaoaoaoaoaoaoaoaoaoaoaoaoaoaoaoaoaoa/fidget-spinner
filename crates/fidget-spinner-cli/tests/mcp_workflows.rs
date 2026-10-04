@@ -168,13 +168,13 @@ fn frontier_open_is_the_grounding_surface_for_live_state() -> TestResult {
     )?;
     assert_eq!(worklist_hypotheses.len(), 1);
     assert_eq!(
-        worklist_hypotheses[0]["hypothesis"]["slug"].as_str(),
+        worklist_hypotheses[0]["slug"].as_str(),
         Some("node-local-loop")
     );
-    assert!(worklist_hypotheses[0]["hypothesis"].get("id").is_none());
+    assert!(worklist_hypotheses[0].get("id").is_none());
     assert_eq!(
-        worklist_hypotheses[0]["latest_closed_experiment"]["slug"].as_str(),
-        Some("baseline-20s")
+        worklist_hypotheses[0]["latest_verdict"].as_str(),
+        Some("kept")
     );
     assert_eq!(
         must_some(
@@ -192,7 +192,7 @@ fn frontier_open_is_the_grounding_surface_for_live_state() -> TestResult {
             .get("hypothesis_id")
             .is_none()
     );
-    assert!(worklist_hypotheses[0]["hypothesis"].get("body").is_none());
+    assert!(worklist_hypotheses[0].get("body").is_none());
     Ok(())
 }
 
@@ -1056,8 +1056,8 @@ fn frontier_query_sql_is_scoped_and_tabular() -> TestResult {
     )?;
     assert_tool_ok(&schema);
     let schema_text = must_some(tool_text(&schema), "frontier query schema text")?;
-    assert!(schema_text.starts_with("view|column|type|description"));
-    assert!(schema_text.contains("q_experiment_metric|metric_key|text|Metric key."));
+    assert!(schema_text.starts_with("views:"));
+    assert!(schema_text.contains("q_experiment_metric"));
     assert!(!schema_text.contains("frontier_id"));
 
     let sql = "select experiment_slug, hypothesis_slug, metric_key, display_value from q_experiment_metric where metric_key = ? order by experiment_slug";
@@ -1072,8 +1072,18 @@ fn frontier_query_sql_is_scoped_and_tabular() -> TestResult {
     )?;
     assert_tool_ok(&query);
     let text = must_some(tool_text(&query), "frontier query table text")?;
-    assert!(text.starts_with("experiment_slug|hypothesis_slug|metric_key|display_value"));
-    assert!(text.contains("query-alpha-run|query-alpha-hypothesis|nodes_solved|111"));
+    for field in [
+        "experiment_slug",
+        "hypothesis_slug",
+        "metric_key",
+        "display_value",
+        "query-alpha-run",
+        "query-alpha-hypothesis",
+        "nodes_solved",
+        "111",
+    ] {
+        assert!(text.contains(field));
+    }
     assert!(!text.contains("query-beta"));
 
     let command = harness.call_tool(
@@ -1087,7 +1097,8 @@ fn frontier_query_sql_is_scoped_and_tabular() -> TestResult {
     )?;
     assert_tool_ok(&command);
     let command_text = must_some(tool_text(&command), "frontier query command text")?;
-    assert_eq!(command_text, "arg\nquery-alpha-command");
+    assert!(command_text.contains("arg"));
+    assert!(command_text.contains("query-alpha-command"));
 
     let query_json = harness.call_tool(
         3063,
