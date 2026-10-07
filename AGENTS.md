@@ -1,29 +1,13 @@
-# Fidget Spinner
+fidget_spinner: local-first, agent-first frontier ledger for autonomous optimization work
 
-Load and follow `$style-doctrine` before meaningful Rust work.
+## invariants
+- No OAuth, hosted control plane, mandatory cloud resources, or managed-compute marketplace in core design
+- Frontier = scope and grounding, not graph vertex; hypotheses and experiments are the vertices
+- Every experiment has exactly one owning hypothesis
+- Per-project state: centralized per-user SQLite under platform state dir (`$XDG_STATE_HOME/fidget-spinner/` on Linux)
+- Frontier brief: the one sanctioned freeform overview; `frontier.open`: the only sanctioned overview surface
+- Slow intentional traversal over giant context dumps
+- Pin exact stable toolchain in `rust-toolchain.toml`
 
-Fidget Spinner is a local-first, agent-first frontier ledger for autonomous
-optimization work.
-
-Constraints that are part of the product:
-
-- no OAuth
-- no hosted control plane
-- no mandatory cloud resources
-- no managed-compute marketplace in the core design
-- frontier is scope and grounding, not a graph vertex
-- hypotheses and experiments are the true graph vertices
-- every experiment has one mandatory owning hypothesis
-- per-project state lives in centralized per-user SQLite under the platform
-  state directory (`$XDG_STATE_HOME/fidget-spinner/` on Linux)
-- the frontier brief is the one sanctioned freeform overview
-- slow intentional traversal beats giant context dumps
-- `frontier.open` is the only sanctioned overview surface
-
-Engineering posture:
-
-- root `Cargo.toml` owns lint policy and canonical check commands
-- every crate opts into `[lints] workspace = true`
-- pin an exact stable toolchain in `rust-toolchain.toml`
-- keep runners thin and orchestration-only
-- prefer precise domain types over loose bags of strings
+## routes
+- Changing MCP output, schemas, serialization, or telemetry → `../mcp_depot/TOKEN_POLICY.md`
