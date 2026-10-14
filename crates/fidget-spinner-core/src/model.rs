@@ -1,4 +1,6 @@
-use crate::{Direction, MetricKey, Ownership, Slug, Unit, Value};
+use crate::{
+    Direction, EpochNumber, FindingId, MetricKey, Ownership, RegimeNumber, Slug, Unit, Value,
+};
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
 use time::OffsetDateTime;
@@ -12,9 +14,9 @@ pub struct Frontier {
     pub(crate) reviews: BTreeMap<Slug, Review>,
     #[serde(serialize_with = "serialize_edges")]
     pub(crate) edges: BTreeMap<(Slug, Slug), Edge>,
-    pub(crate) waivers: BTreeMap<String, String>,
+    pub(crate) waivers: BTreeMap<FindingId, String>,
     pub(crate) epochs: Vec<Epoch>,
-    pub(crate) last_epoch: u64,
+    pub(crate) last_epoch: Option<EpochNumber>,
     pub(crate) conclusion: Option<Lesson>,
 }
 
@@ -48,7 +50,7 @@ impl Frontier {
         &self.edges
     }
     #[must_use]
-    pub fn waivers(&self) -> &BTreeMap<String, String> {
+    pub fn waivers(&self) -> &BTreeMap<FindingId, String> {
         &self.waivers
     }
     #[must_use]
@@ -64,7 +66,8 @@ impl Frontier {
         self.baselines
             .iter()
             .filter(|(_, b)| {
-                b.regime == self.regimes.len()
+                self.current_regime()
+                    .is_some_and(|regime| b.regime == regime.number)
                     && b.void.is_none()
                     && b.disposition
                         .as_ref()
@@ -77,7 +80,7 @@ impl Frontier {
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct Regime {
-    pub number: usize,
+    pub number: RegimeNumber,
     pub gauge: Gauge,
     pub reason: Option<String>,
     pub bridge: Option<Slug>,
@@ -100,20 +103,19 @@ pub struct Metric {
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(tag = "kind", rename_all = "lowercase")]
 pub enum Reading {
-    Listed { value: f64, unit: Unit },
+    Listed { value: f64 },
     Unlisted { value: Value },
 }
 pub type RecordedReadings = BTreeMap<MetricKey, Reading>;
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct Baseline {
-    pub regime: usize,
-    pub epoch: Option<u64>,
+    pub regime: RegimeNumber,
+    pub epoch: Option<EpochNumber>,
     pub artifacts: Vec<String>,
     pub readings: RecordedReadings,
     pub note: Option<String>,
     pub adopts: BTreeSet<Slug>,
-    pub docket: BTreeSet<Slug>,
     pub disposition: Option<Disposition<BaselineDecision>>,
     pub void: Option<String>,
     pub at: OffsetDateTime,
@@ -123,6 +125,7 @@ pub struct Hypothesis {
     pub title: String,
     pub mechanism: Option<String>,
     pub claim: Option<String>,
+    pub docket: Option<Slug>,
     pub trials: BTreeMap<u64, Trial>,
     pub(crate) last_trial: u64,
     pub disposition: Option<Disposition<HypothesisDecision>>,
@@ -131,7 +134,7 @@ pub struct Hypothesis {
 }
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct Trial {
-    pub regime: usize,
+    pub regime: RegimeNumber,
     pub note: String,
     pub readings: RecordedReadings,
     pub against: Option<Slug>,
@@ -184,8 +187,8 @@ pub struct Edge {
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct Epoch {
-    pub number: u64,
-    pub regime: usize,
+    pub number: EpochNumber,
+    pub regime: RegimeNumber,
     pub baseline: Slug,
     pub at: OffsetDateTime,
 }

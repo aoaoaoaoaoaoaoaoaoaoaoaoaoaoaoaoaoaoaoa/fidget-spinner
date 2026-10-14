@@ -1,3 +1,8 @@
+mod finding;
+mod numbers;
+pub use finding::{FindingId, FindingIdError};
+pub use numbers::{EpochNumber, RegimeNumber};
+
 mod analysis;
 mod apply;
 mod cycle;

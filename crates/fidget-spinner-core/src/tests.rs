@@ -86,9 +86,14 @@ fn inquiry_across_epochs_and_regimes() -> Result<(), Box<dyn Error>> {
     assert!(receipt.warnings[&1].iter().any(|w| matches!(w, Warning::DocketMoved { hypotheses, .. } if hypotheses.len() == 1 && hypotheses[0].as_str() == "c")));
     assert_eq!(f.incumbent_baseline(), Some(&"old".parse()?));
     assert_eq!(f.epochs().len(), 2);
+    assert_eq!(f.epochs()[1].number.get(), 2);
+    assert_eq!(
+        f.hypotheses()[&"c".parse()?].docket.as_ref(),
+        Some(&"next".parse()?)
+    );
     assert!(
-        f.baselines()[&"next".parse()?]
-            .docket
+        Assay::new(&f).dockets[&"next".parse()?]
+            .members
             .contains(&"c".parse()?)
     );
     let receipt = patch(
@@ -130,10 +135,12 @@ fn inquiry_across_epochs_and_regimes() -> Result<(), Box<dyn Error>> {
         "unread/third/latency",
         "unaccepted/third/c",
     ] {
-        assert!(assay.findings.contains_key(id));
+        let identity = id.parse::<FindingId>()?;
+        assert_eq!(identity.to_string(), id);
+        assert!(assay.findings.contains_key(&identity));
     }
     assert_eq!(
-        assay.findings["unbacked/a"].waiver.as_deref(),
+        assay.findings[&"unbacked/a".parse()?].as_deref(),
         Some("Known assumption")
     );
     assert!(!assay.comparisons.contains_key(&"c#1".parse()?));
@@ -141,10 +148,10 @@ fn inquiry_across_epochs_and_regimes() -> Result<(), Box<dyn Error>> {
         &mut f,
         r#"[{"op":"void","trial":"c#2","reason":"Invalid sample"}]"#,
     )?;
-    assert!(receipt.cleared.contains_key("unlisted/3/latncy"));
+    assert!(receipt.cleared.contains_key(&"unlisted/3/latncy".parse()?));
     assert!(receipt.warnings[&0].contains(&Warning::ReopenedFrontier));
     let receipt = patch(&mut f, r#"[{"op":"unvoid","trial":"c#2"}]"#)?;
-    assert!(receipt.raised.contains_key("unlisted/3/latncy"));
+    assert!(receipt.raised.contains_key(&"unlisted/3/latncy".parse()?));
     Ok(())
 }
 
@@ -179,6 +186,8 @@ fn refused_patches_are_atomic() -> Result<(), Box<dyn Error>> {
         r#"{"op":"accept","rationale":"No"}"#,
         r#"{"op":"trial","hypothesis":"x","note":"No","unexpected":true}"#,
         r#"{"op":"void","trial":"x#0","reason":"No"}"#,
+        r#"{"op":"waive","finding":"unbridged/0","note":"No"}"#,
+        r#"{"op":"waive","finding":"unlisted/2/key/extra","note":"No"}"#,
     ] {
         assert!(serde_json::from_str::<Op>(malformed).is_err());
     }

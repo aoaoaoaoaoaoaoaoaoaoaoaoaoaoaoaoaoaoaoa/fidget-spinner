@@ -1,9 +1,9 @@
 use crate::{
-    BaselineDecision, Direction, Epoch, Frontier, HypothesisDecision, MetricKey, Reading, Slug,
-    TrialId,
+    BaselineDecision, Direction, Epoch, FindingId, Frontier, HypothesisDecision, MetricKey,
+    Reading, RegimeNumber, Slug, TrialId,
 };
 use serde::Serialize;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -26,7 +26,7 @@ pub type Counts = BTreeMap<State, usize>;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct DocketProgress {
-    pub members: usize,
+    pub members: BTreeSet<Slug>,
     pub settled: usize,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -44,63 +44,21 @@ pub struct Comparison {
     pub movement: Option<Movement>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-#[serde(tag = "kind", rename_all = "lowercase")]
-pub enum FindingKind {
-    Unbacked { hypothesis: Slug },
-    Unbridged { regime: usize },
-    Unlisted { regime: usize, key: MetricKey },
-    Unread { baseline: Slug, key: MetricKey },
-    Unaccepted { baseline: Slug, hypothesis: Slug },
-}
-impl FindingKind {
-    #[must_use]
-    pub fn identity(&self) -> String {
-        match self {
-            Self::Unbacked { hypothesis } => format!("unbacked/{hypothesis}"),
-            Self::Unbridged { regime } => format!("unbridged/{regime}"),
-            Self::Unlisted { regime, key } => format!("unlisted/{regime}/{key}"),
-            Self::Unread { baseline, key } => format!("unread/{baseline}/{key}"),
-            Self::Unaccepted {
-                baseline,
-                hypothesis,
-            } => format!("unaccepted/{baseline}/{hypothesis}"),
-        }
-    }
-}
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-pub struct Finding {
-    pub kind: FindingKind,
-    pub waiver: Option<String>,
-}
-impl Finding {
-    #[must_use]
-    pub fn identity(&self) -> String {
-        self.kind.identity()
-    }
-}
-
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct Assay {
     pub hypotheses: BTreeMap<Slug, State>,
     pub reviews: BTreeMap<Slug, ReviewState>,
     pub incumbent_baseline: Option<Slug>,
     pub epochs: Vec<Epoch>,
-    pub docket_membership: BTreeMap<Slug, Slug>,
     pub dockets: BTreeMap<Slug, DocketProgress>,
     pub comparisons: BTreeMap<TrialId, BTreeMap<MetricKey, Comparison>>,
-    pub findings: BTreeMap<String, Finding>,
+    pub findings: BTreeMap<FindingId, Option<String>>,
     pub counts: Counts,
 }
 
 impl Assay {
     #[must_use]
     pub fn new(frontier: &Frontier) -> Self {
-        let docket_membership: BTreeMap<_, _> = frontier
-            .baselines
-            .iter()
-            .flat_map(|(slug, b)| b.docket.iter().map(move |h| (h.clone(), slug.clone())))
-            .collect();
         let hypotheses: BTreeMap<_, _> = frontier
             .hypotheses
             .iter()
@@ -114,7 +72,7 @@ impl Assay {
                         State::Tested
                     } else if frontier.edges.keys().any(|(from, to)| {
                         to == slug && frontier.hypotheses[from].disposition.is_none()
-                    }) || docket_membership.get(slug).is_some_and(|b| {
+                    }) || h.docket.as_ref().is_some_and(|b| {
                         frontier.baselines[b]
                             .disposition
                             .as_ref()
@@ -147,23 +105,28 @@ impl Assay {
                 (slug.clone(), state)
             })
             .collect();
-        let dockets = frontier
+        let mut dockets: BTreeMap<_, _> = frontier
             .baselines
-            .iter()
-            .map(|(slug, b)| {
+            .keys()
+            .map(|slug| {
                 (
                     slug.clone(),
                     DocketProgress {
-                        members: b.docket.len(),
-                        settled: b
-                            .docket
-                            .iter()
-                            .filter(|h| hypotheses[*h] == State::Settled)
-                            .count(),
+                        members: BTreeSet::new(),
+                        settled: 0,
                     },
                 )
             })
             .collect();
+        for (slug, h) in &frontier.hypotheses {
+            if let Some(baseline) = &h.docket {
+                let docket = dockets.get_mut(baseline).unwrap_or_else(|| {
+                    unreachable!("hypothesis docket references an existing baseline")
+                });
+                let _ = docket.members.insert(slug.clone());
+                docket.settled += usize::from(hypotheses[slug] == State::Settled);
+            }
+        }
         let mut counts: Counts = [
             State::Waiting,
             State::Ready,
@@ -182,7 +145,6 @@ impl Assay {
             reviews,
             counts,
             dockets,
-            docket_membership,
             incumbent_baseline: frontier.incumbent_baseline().cloned(),
             epochs: frontier.epochs.clone(),
             comparisons: BTreeMap::new(),
@@ -209,24 +171,18 @@ impl Assay {
                 if b.void.is_some() || b.regime != trial.regime {
                     continue;
                 }
-                let gauge = &frontier.regimes[trial.regime - 1].gauge;
+                let gauge = &frontier.regimes[trial.regime.index()].gauge;
                 let mut comparisons = BTreeMap::new();
                 for (key, reading) in &trial.readings {
                     let Some(metric) = gauge.metrics.get(key).filter(|m| !m.retired) else {
                         continue;
                     };
-                    let (
-                        Reading::Listed { value: t, unit: tu },
-                        Some(Reading::Listed { value: b, unit: bu }),
-                    ) = (reading, b.readings.get(key))
+                    let (Reading::Listed { value: t }, Some(Reading::Listed { value: b })) =
+                        (reading, b.readings.get(key))
                     else {
                         continue;
                     };
-                    let (Ok(t), Ok(b)) =
-                        (tu.convert(*t, &metric.unit), bu.convert(*b, &metric.unit))
-                    else {
-                        continue;
-                    };
+                    let (t, b) = (*t, *b);
                     let ratio = t / b;
                     let movement = metric.better.map(|direction| {
                         if matches!(t.partial_cmp(&b), Some(std::cmp::Ordering::Equal)) {
@@ -258,10 +214,9 @@ impl Assay {
         }
     }
 
-    fn finding(&mut self, frontier: &Frontier, kind: FindingKind) {
-        let identity = kind.identity();
+    fn finding(&mut self, frontier: &Frontier, identity: FindingId) {
         let waiver = frontier.waivers.get(&identity).cloned();
-        let _ = self.findings.insert(identity, Finding { kind, waiver });
+        let _ = self.findings.insert(identity, waiver);
     }
 
     fn find(&mut self, frontier: &Frontier) {
@@ -277,25 +232,15 @@ impl Assay {
                             .is_none_or(|b| t.against.as_ref() == Some(b))
                 })
             {
-                self.finding(
-                    frontier,
-                    FindingKind::Unbacked {
-                        hypothesis: slug.clone(),
-                    },
-                );
+                self.finding(frontier, FindingId::Unbacked(slug.clone()));
             }
         }
         for regime in &frontier.regimes {
-            if regime.number >= 2 && regime.bridge.is_none() {
-                self.finding(
-                    frontier,
-                    FindingKind::Unbridged {
-                        regime: regime.number,
-                    },
-                );
+            if regime.number != RegimeNumber::FIRST && regime.bridge.is_none() {
+                self.finding(frontier, FindingId::Unbridged(regime.number));
             }
         }
-        let mut unlisted: BTreeMap<(usize, MetricKey), usize> = BTreeMap::new();
+        let mut unlisted: BTreeMap<(RegimeNumber, MetricKey), usize> = BTreeMap::new();
         for trial in frontier
             .hypotheses
             .values()
@@ -310,23 +255,17 @@ impl Assay {
         }
         for ((regime, key), count) in unlisted {
             if count >= 3 {
-                self.finding(frontier, FindingKind::Unlisted { regime, key });
+                self.finding(frontier, FindingId::Unlisted(regime, key));
             }
         }
         if let Some(slug) = frontier.incumbent_baseline() {
             let baseline = &frontier.baselines[slug];
-            for (key, metric) in &frontier.regimes[baseline.regime - 1].gauge.metrics {
+            for (key, metric) in &frontier.regimes[baseline.regime.index()].gauge.metrics {
                 if metric.kpi
                     && !metric.retired
                     && !matches!(baseline.readings.get(key), Some(Reading::Listed { .. }))
                 {
-                    self.finding(
-                        frontier,
-                        FindingKind::Unread {
-                            baseline: slug.clone(),
-                            key: key.clone(),
-                        },
-                    );
+                    self.finding(frontier, FindingId::Unread(slug.clone(), key.clone()));
                 }
             }
         }
@@ -342,13 +281,7 @@ impl Assay {
                         .as_ref()
                         .is_none_or(|d| !d.decision.accepted())
                     {
-                        self.finding(
-                            frontier,
-                            FindingKind::Unaccepted {
-                                baseline: slug.clone(),
-                                hypothesis: h.clone(),
-                            },
-                        );
+                        self.finding(frontier, FindingId::Unaccepted(slug.clone(), h.clone()));
                     }
                 }
             }

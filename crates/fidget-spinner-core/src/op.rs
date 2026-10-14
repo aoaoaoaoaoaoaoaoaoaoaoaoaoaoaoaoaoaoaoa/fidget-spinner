@@ -1,4 +1,4 @@
-use crate::{Slug, Unit};
+use crate::{FindingId, Slug, Unit};
 use serde::{Deserialize, Deserializer, Serialize, de::Error as _};
 use std::{collections::BTreeMap, fmt, str::FromStr};
 use time::OffsetDateTime;
@@ -173,7 +173,7 @@ operations! {
     Unvoid { #[serde(flatten)] target: VoidTarget },
     Remove { #[serde(flatten)] target: RemoveTarget },
     Lesson { review: Slug, text: String },
-    Waive { finding: String, note: String },
+    Waive { finding: FindingId, note: String },
     Assign { #[serde(flatten)] target: WorkTarget, owner: String, #[serde(skip_serializing_if = "Option::is_none")] instructions: Option<String> },
     Release { #[serde(flatten)] target: WorkTarget },
     Start { #[serde(flatten)] target: WorkTarget },

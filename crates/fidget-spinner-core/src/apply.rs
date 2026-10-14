@@ -7,10 +7,10 @@ use time::OffsetDateTime;
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Warning {
     GaugeEdited {
-        regime: usize,
+        regime: RegimeNumber,
     },
     ManyMetrics {
-        regime: usize,
+        regime: RegimeNumber,
         count: usize,
     },
     UnlistedReading {
@@ -74,7 +74,10 @@ pub enum OpRefusal {
     #[error(
         "metric {key} already has readings in regime {regime}; its unit and direction cannot change"
     )]
-    MeaningChanged { regime: usize, key: MetricKey },
+    MeaningChanged {
+        regime: RegimeNumber,
+        key: MetricKey,
+    },
     #[error("duplicate metric {key}")]
     DuplicateMetric { key: MetricKey },
     #[error("invalid reading {value:?}")]
@@ -94,7 +97,7 @@ pub enum OpRefusal {
     #[error("{kind:?} {to} already exists")]
     RenameCollision { kind: RecordKind, to: Slug },
     #[error("finding {finding} is not present")]
-    AbsentFinding { finding: String },
+    AbsentFinding { finding: FindingId },
     #[error("edge closes a cycle: {path:?}")]
     Cycle { path: Vec<Slug> },
     #[error("identity counter exhausted")]
@@ -121,8 +124,8 @@ pub enum Refusal {
 pub struct Patched {
     pub frontier: Frontier,
     pub warnings: BTreeMap<usize, Vec<Warning>>,
-    pub raised: BTreeMap<String, Finding>,
-    pub cleared: BTreeMap<String, Finding>,
+    pub raised: BTreeMap<FindingId, Option<String>>,
+    pub cleared: BTreeMap<FindingId, Option<String>>,
     pub before: Counts,
     pub after: Counts,
 }
@@ -266,7 +269,10 @@ impl Frontier {
                     let metric = Self::metric(spec, None)?;
                     let _ = gauge.metrics.insert(spec.key.clone(), metric);
                 }
-                let number = self.regimes.len() + 1;
+                let number = self
+                    .current_regime()
+                    .map_or(Some(RegimeNumber::FIRST), |r| r.number.next())
+                    .ok_or(OpRefusal::Exhausted)?;
                 self.regimes.push(Regime {
                     number,
                     gauge,
@@ -289,7 +295,7 @@ impl Frontier {
                             readings,
                             note: bridge.note.clone(),
                             adopts: BTreeSet::new(),
-                            docket: BTreeSet::new(),
+
                             disposition: None,
                             void: None,
                             at,
@@ -310,19 +316,16 @@ impl Frontier {
                 retire,
                 restore,
             } => {
-                let regime = self.regimes.len();
-                if regime == 0 {
-                    return Err(OpRefusal::NoGauge);
-                }
+                let regime = self.current_regime().ok_or(OpRefusal::NoGauge)?.number;
                 if let Some(contract) = contract {
                     let contract = required(contract, "contract")?;
-                    if self.regimes[regime - 1].gauge.contract != contract {
+                    if self.regimes[regime.index()].gauge.contract != contract {
                         log.push(Warning::GaugeEdited { regime });
                     }
-                    self.regimes[regime - 1].gauge.contract = contract;
+                    self.regimes[regime.index()].gauge.contract = contract;
                 }
                 for spec in metrics.iter().flatten() {
-                    let previous = self.regimes[regime - 1].gauge.metrics.get(&spec.key);
+                    let previous = self.regimes[regime.index()].gauge.metrics.get(&spec.key);
                     let metric = Self::metric(spec, previous)?;
                     if previous.is_some_and(|old| {
                         (old.unit != metric.unit || old.better != metric.better)
@@ -333,14 +336,14 @@ impl Frontier {
                             key: spec.key.clone(),
                         });
                     }
-                    let _ = self.regimes[regime - 1]
+                    let _ = self.regimes[regime.index()]
                         .gauge
                         .metrics
                         .insert(spec.key.clone(), metric);
                 }
                 for (keys, retired) in [(retire, true), (restore, false)] {
                     for key in keys.iter().flatten() {
-                        self.regimes[regime - 1]
+                        self.regimes[regime.index()]
                             .gauge
                             .metrics
                             .get_mut(key)
@@ -361,10 +364,9 @@ impl Frontier {
                 let regime = self
                     .baselines
                     .get(slug)
-                    .map_or(self.regimes.len(), |b| b.regime);
-                if regime == 0 {
-                    return Err(OpRefusal::NoGauge);
-                }
+                    .map(|b| b.regime)
+                    .or_else(|| self.current_regime().map(|r| r.number))
+                    .ok_or(OpRefusal::NoGauge)?;
                 for h in adopts.iter().flatten().chain(docket.iter().flatten()) {
                     self.ensure_hypothesis(h)?;
                 }
@@ -382,7 +384,7 @@ impl Frontier {
                         readings: BTreeMap::new(),
                         note: None,
                         adopts: BTreeSet::new(),
-                        docket: BTreeSet::new(),
+
                         disposition: None,
                         void: None,
                         at,
@@ -414,11 +416,7 @@ impl Frontier {
                     let _ = baseline.readings.insert(key, reading);
                 }
                 if let Some(docket) = docket {
-                    self.baselines
-                        .get_mut(slug)
-                        .ok_or_else(|| unknown(RecordKind::Baseline, slug))?
-                        .docket
-                        .clear();
+                    self.clear_docket(slug);
                     self.add_to_docket(slug, docket)?;
                 }
             }
@@ -435,12 +433,13 @@ impl Frontier {
                     self.add_to_docket(baseline, add)?;
                 }
                 for h in drop.iter().flatten() {
-                    let _ = self
-                        .baselines
-                        .get_mut(baseline)
-                        .ok_or_else(|| unknown(RecordKind::Baseline, baseline))?
-                        .docket
-                        .remove(h);
+                    let h = self
+                        .hypotheses
+                        .get_mut(h)
+                        .ok_or_else(|| unknown(RecordKind::Hypothesis, h))?;
+                    if h.docket.as_ref() == Some(baseline) {
+                        h.docket = None;
+                    }
                 }
             }
             Op::Hypothesis {
@@ -460,6 +459,7 @@ impl Frontier {
                             title,
                             mechanism: None,
                             claim: None,
+                            docket: None,
                             trials: BTreeMap::new(),
                             last_trial: 0,
                             disposition: None,
@@ -568,9 +568,7 @@ impl Frontier {
                 artifacts,
             } => {
                 self.ensure_hypothesis(hypothesis)?;
-                if self.regimes.is_empty() {
-                    return Err(OpRefusal::NoGauge);
-                }
+                let regime = self.current_regime().ok_or(OpRefusal::NoGauge)?.number;
                 let note = required(note, "note")?;
                 let against = against
                     .clone()
@@ -580,7 +578,7 @@ impl Frontier {
                 }
                 let readings = self.readings(
                     readings.as_ref().unwrap_or(&BTreeMap::new()),
-                    self.regimes.len(),
+                    regime,
                     hypothesis.as_str(),
                     log,
                 )?;
@@ -601,7 +599,7 @@ impl Frontier {
                     }
                 }
                 if let Some(b) = &against
-                    && self.baselines[b].regime != self.regimes.len()
+                    && self.baselines[b].regime != regime
                 {
                     log.push(Warning::CrossRegimeTrial {
                         trial: TrialId {
@@ -614,7 +612,7 @@ impl Frontier {
                 let _ = h.trials.insert(
                     number,
                     Trial {
-                        regime: self.regimes.len(),
+                        regime,
                         note,
                         readings,
                         against,
@@ -792,7 +790,7 @@ impl Frontier {
         }
     }
 
-    fn has_reading(&self, regime: usize, key: &MetricKey) -> bool {
+    fn has_reading(&self, regime: RegimeNumber, key: &MetricKey) -> bool {
         self.baselines
             .values()
             .any(|b| b.regime == regime && b.readings.contains_key(key))
@@ -806,13 +804,13 @@ impl Frontier {
     fn readings(
         &self,
         input: &Readings,
-        regime: usize,
+        regime: RegimeNumber,
         subject: &str,
         log: &mut Vec<Warning>,
     ) -> Result<RecordedReadings, OpRefusal> {
         let gauge = &self
             .regimes
-            .get(regime - 1)
+            .get(regime.index())
             .ok_or(OpRefusal::NoGauge)?
             .gauge;
         input
@@ -849,7 +847,6 @@ impl Frontier {
                         value: unit
                             .as_ref()
                             .map_or(Ok(number), |u| u.convert(number, &metric.unit))?,
-                        unit: metric.unit.clone(),
                     }
                 } else {
                     let closest = gauge
@@ -914,17 +911,27 @@ impl Frontier {
         for h in hypotheses {
             self.ensure_hypothesis(h)?;
         }
-        for b in self.baselines.values_mut() {
-            for h in hypotheses {
-                let _ = b.docket.remove(h);
+        for h in hypotheses {
+            self.hypotheses
+                .get_mut(h)
+                .ok_or_else(|| unknown(RecordKind::Hypothesis, h))?
+                .docket = Some(baseline.clone());
+        }
+        Ok(())
+    }
+    fn clear_docket(&mut self, baseline: &Slug) {
+        for h in self.hypotheses.values_mut() {
+            if h.docket.as_ref() == Some(baseline) {
+                h.docket = None;
             }
         }
-        self.baselines
-            .get_mut(baseline)
-            .ok_or_else(|| unknown(RecordKind::Baseline, baseline))?
-            .docket
-            .extend(hypotheses.iter().cloned());
-        Ok(())
+    }
+    fn unsettled_docket(&self, baseline: &Slug) -> Vec<Slug> {
+        self.hypotheses
+            .iter()
+            .filter(|(_, h)| h.docket.as_ref() == Some(baseline) && h.disposition.is_none())
+            .map(|(slug, _)| slug.clone())
+            .collect()
     }
     fn accept_baseline(
         &mut self,
@@ -934,6 +941,7 @@ impl Frontier {
         outgoing: Option<Slug>,
         log: &mut Vec<Warning>,
     ) -> Result<(), OpRefusal> {
+        let current = self.current_regime().map(|r| r.number);
         let b = self
             .baselines
             .get_mut(baseline)
@@ -943,7 +951,7 @@ impl Frontier {
                 baseline: baseline.clone(),
             });
         }
-        if b.regime != self.regimes.len() {
+        if Some(b.regime) != current {
             return Err(OpRefusal::OldBaseline {
                 baseline: baseline.clone(),
             });
@@ -953,26 +961,25 @@ impl Frontier {
                 subject: baseline.to_string(),
             });
         }
-        self.last_epoch = self.last_epoch.checked_add(1).ok_or(OpRefusal::Exhausted)?;
-        b.epoch = Some(self.last_epoch);
+        let epoch = self
+            .last_epoch
+            .map_or(Some(EpochNumber::FIRST), EpochNumber::next)
+            .ok_or(OpRefusal::Exhausted)?;
+        self.last_epoch = Some(epoch);
+        b.epoch = Some(epoch);
         b.disposition = Some(Disposition {
             decision: BaselineDecision::Accepted,
             rationale: rationale.into(),
             at,
         });
         self.epochs.push(Epoch {
-            number: self.last_epoch,
+            number: epoch,
             regime: b.regime,
             baseline: baseline.clone(),
             at,
         });
         if let Some(from) = outgoing.filter(|b| b != baseline) {
-            let hypotheses: Vec<_> = self.baselines[&from]
-                .docket
-                .iter()
-                .filter(|h| self.hypotheses[*h].disposition.is_none())
-                .cloned()
-                .collect();
+            let hypotheses = self.unsettled_docket(&from);
             if !hypotheses.is_empty() {
                 self.add_to_docket(baseline, &hypotheses)?;
                 log.push(Warning::DocketMoved {
@@ -985,16 +992,8 @@ impl Frontier {
         Ok(())
     }
     fn stranded(&self, baseline: &Slug, log: &mut Vec<Warning>) -> Result<(), OpRefusal> {
-        let b = self
-            .baselines
-            .get(baseline)
-            .ok_or_else(|| unknown(RecordKind::Baseline, baseline))?;
-        let hypotheses: Vec<_> = b
-            .docket
-            .iter()
-            .filter(|h| self.hypotheses[*h].disposition.is_none())
-            .cloned()
-            .collect();
+        self.ensure_baseline(baseline)?;
+        let hypotheses = self.unsettled_docket(baseline);
         if !hypotheses.is_empty() {
             log.push(Warning::DocketStranded {
                 baseline: baseline.clone(),
@@ -1048,7 +1047,6 @@ impl Frontier {
                 let _ = self.hypotheses.remove(h);
                 self.edges.retain(|(from, to), _| from != h && to != h);
                 for b in self.baselines.values_mut() {
-                    let _ = b.docket.remove(h);
                     let _ = b.adopts.remove(h);
                 }
                 for r in self.reviews.values_mut() {
@@ -1066,6 +1064,7 @@ impl Frontier {
                     .baselines
                     .remove(b)
                     .ok_or_else(|| unknown(RecordKind::Baseline, b))?;
+                self.clear_docket(b);
                 self.epochs.retain(|e| &e.baseline != b);
                 for regime in &mut self.regimes {
                     if regime.bridge.as_ref() == Some(b) {
@@ -1115,7 +1114,6 @@ impl Frontier {
                     .map(|((a, b), e)| ((rename(a), rename(b)), e))
                     .collect();
                 for b in self.baselines.values_mut() {
-                    rename_member(&mut b.docket, from, to);
                     rename_member(&mut b.adopts, from, to);
                 }
                 for r in self.reviews.values_mut() {
@@ -1168,6 +1166,9 @@ impl Frontier {
                     }
                 }
                 for h in self.hypotheses.values_mut() {
+                    if h.docket.as_ref() == Some(from) {
+                        h.docket = Some(to.clone());
+                    }
                     for t in h.trials.values_mut() {
                         if t.against.as_ref() == Some(from) {
                             t.against = Some(to.clone());
