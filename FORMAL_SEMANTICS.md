@@ -44,10 +44,12 @@ Conversion is defined within a kind, where 1 = 100 %, and never across kinds.
 
 ## 3. Readings
 
-A reading assigns a key a finite value: a number in the metric's unit, or text of a number followed by a unit. For a
-key that is an unretired metric of the current gauge, a value whose unit has the metric's kind is converted to the
-metric's unit; a unit of another kind is refused. Any other key yields an unlisted reading, stored as given, with a
-warning that names the closest metric key when one is close.
+A reading assigns a key a finite value: a number in the metric's unit, or text of a number followed by a unit. A
+reading is checked against the gauge of the regime its record belongs to: for a trial, the regime current when it is
+recorded; for a baseline, the regime current when the baseline was created. For a key that is an unretired metric of
+that gauge, a value whose unit has the metric's kind is converted to the metric's unit; a unit of another kind is
+refused. Any other key yields an unlisted reading, stored as given, with a warning that names the closest metric key
+when one is close.
 
 ## 4. Baselines, epochs and incumbency
 
@@ -88,9 +90,10 @@ Trials, dispositions and execution ahead of unsettled inputs are permitted.
 
 A trial has a nonempty note, readings, artifacts, a time, and the baseline it is against: the given one, or by
 default the incumbent baseline when the trial is recorded, or none. Trials are never edited; they can be voided,
-unvoided or removed. A trial on a settled hypothesis draws a warning. A trial is compared with its baseline on each
-metric for which both have readings: the ratio of the trial's value to the baseline's, and whether it is better under
-the metric's direction.
+unvoided or removed. A trial on a settled hypothesis draws a warning, and so does a trial against a baseline of
+another regime. A trial is compared with its baseline only when both belong to the same regime, on each metric for
+which both have readings: the ratio of the trial's value to the baseline's, and whether it is better under the
+metric's direction.
 
 ## 7. Dispositions, void and removal
 
