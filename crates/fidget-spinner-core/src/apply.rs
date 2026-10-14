@@ -1,0 +1,1211 @@
+use crate::{cycle::closes_cycle, *};
+use serde::Serialize;
+use std::collections::{BTreeMap, BTreeSet};
+use time::OffsetDateTime;
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum Warning {
+    GaugeEdited {
+        regime: usize,
+    },
+    ManyMetrics {
+        regime: usize,
+        count: usize,
+    },
+    UnlistedReading {
+        subject: String,
+        key: MetricKey,
+        closest: Option<MetricKey>,
+    },
+    AcceptedBaselineReading {
+        baseline: Slug,
+        key: MetricKey,
+    },
+    TrialOnSettled {
+        hypothesis: Slug,
+    },
+    ReplacedDisposition {
+        subject: String,
+    },
+    DocketMoved {
+        from: Slug,
+        to: Slug,
+        hypotheses: Vec<Slug>,
+    },
+    DocketStranded {
+        baseline: Slug,
+        hypotheses: Vec<Slug>,
+    },
+    CrossRegimeTrial {
+        trial: TrialId,
+        baseline: Slug,
+    },
+    ReopenedFrontier,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RecordKind {
+    Hypothesis,
+    Review,
+    Baseline,
+    Trial,
+    Metric,
+}
+#[derive(Clone, Debug, PartialEq, thiserror::Error, Serialize)]
+pub enum OpRefusal {
+    #[error("frontier creation requires a first frontier operation with an objective")]
+    MissingObjective,
+    #[error("{field} must be nonempty")]
+    Empty { field: String },
+    #[error("creation requires {field}")]
+    MissingField { field: String },
+    #[error("unknown {kind:?} {identity}")]
+    Unknown { kind: RecordKind, identity: String },
+    #[error("no gauge is installed")]
+    NoGauge,
+    #[error("regime changes after the first require a reason")]
+    MissingRegimeReason,
+    #[error("a bridge requires an outgoing incumbent baseline")]
+    NoIncumbentBridge,
+    #[error("KPI {key} requires a direction")]
+    KpiDirection { key: MetricKey },
+    #[error(
+        "metric {key} already has readings in regime {regime}; its unit and direction cannot change"
+    )]
+    MeaningChanged { regime: usize, key: MetricKey },
+    #[error("duplicate metric {key}")]
+    DuplicateMetric { key: MetricKey },
+    #[error("invalid reading {value:?}")]
+    InvalidValue { value: Value },
+    #[error(transparent)]
+    Unit(#[from] UnitError),
+    #[error("reference lines must have finite values")]
+    NonfiniteReference,
+    #[error("baseline {baseline} is void")]
+    VoidBaseline { baseline: Slug },
+    #[error("baseline {baseline} belongs to a previous regime")]
+    OldBaseline { baseline: Slug },
+    #[error("review {review} must have at least one member")]
+    EmptyReview { review: Slug },
+    #[error("cannot remove {hypothesis}, the last member of review {review}")]
+    LastMember { hypothesis: Slug, review: Slug },
+    #[error("{kind:?} {to} already exists")]
+    RenameCollision { kind: RecordKind, to: Slug },
+    #[error("finding {finding} is not present")]
+    AbsentFinding { finding: String },
+    #[error("edge closes a cycle: {path:?}")]
+    Cycle { path: Vec<Slug> },
+    #[error("identity counter exhausted")]
+    Exhausted,
+}
+
+#[derive(Clone, Debug, PartialEq, thiserror::Error, Serialize)]
+#[serde(tag = "kind", rename_all = "lowercase")]
+pub enum Refusal {
+    #[error("operation {index} ({op}): {cause}")]
+    Operation {
+        index: usize,
+        op: String,
+        cause: OpRefusal,
+    },
+    #[error("operation {index} ({op}) closes a cycle: {path:?}")]
+    Cycle {
+        index: usize,
+        op: String,
+        path: Vec<Slug>,
+    },
+}
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct Patched {
+    pub frontier: Frontier,
+    pub warnings: BTreeMap<usize, Vec<Warning>>,
+    pub raised: BTreeMap<String, Finding>,
+    pub cleared: BTreeMap<String, Finding>,
+    pub before: Counts,
+    pub after: Counts,
+}
+
+fn required(raw: &str, field: &str) -> Result<String, OpRefusal> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        Err(OpRefusal::Empty {
+            field: field.into(),
+        })
+    } else {
+        Ok(trimmed.into())
+    }
+}
+fn missing(field: &str) -> OpRefusal {
+    OpRefusal::MissingField {
+        field: field.into(),
+    }
+}
+fn unknown(kind: RecordKind, identity: &impl ToString) -> OpRefusal {
+    OpRefusal::Unknown {
+        kind,
+        identity: identity.to_string(),
+    }
+}
+fn empty_ownership() -> Ownership {
+    Ownership {
+        owner: None,
+        started: None,
+    }
+}
+
+impl Frontier {
+    pub fn patched(&self, ops: &[Op], at: OffsetDateTime) -> Result<Patched, Refusal> {
+        if self.objective.is_none() && !matches!(ops.first(), Some(Op::Frontier { .. })) {
+            return Err(Refusal::Operation {
+                index: 0,
+                op: ops.first().map_or_else(|| "patch".into(), Op::name),
+                cause: OpRefusal::MissingObjective,
+            });
+        }
+        let before = Assay::new(self);
+        let mut frontier = self.clone();
+        let mut warnings = BTreeMap::new();
+        let mut reopening = self.conclusion.is_some();
+        for (index, op) in ops.iter().enumerate() {
+            let mut log = Vec::new();
+            if reopening && !matches!(op, Op::Conclude { .. }) {
+                frontier.conclusion = None;
+                reopening = false;
+                log.push(Warning::ReopenedFrontier);
+            }
+            if let Err(cause) = frontier.apply(op, at, &mut log) {
+                let op = op.name();
+                return Err(match cause {
+                    OpRefusal::Cycle { path } => Refusal::Cycle { index, op, path },
+                    cause => Refusal::Operation { index, op, cause },
+                });
+            }
+            if !log.is_empty() {
+                let _ = warnings.insert(index, log);
+            }
+        }
+        let after = Assay::new(&frontier);
+        let raised = after
+            .findings
+            .iter()
+            .filter(|(id, _)| !before.findings.contains_key(*id))
+            .map(|(id, f)| (id.clone(), f.clone()))
+            .collect();
+        let cleared = before
+            .findings
+            .into_iter()
+            .filter(|(id, _)| !after.findings.contains_key(id))
+            .collect();
+        Ok(Patched {
+            frontier,
+            warnings,
+            raised,
+            cleared,
+            before: before.counts,
+            after: after.counts,
+        })
+    }
+
+    pub fn replay(&mut self, ops: &[Op], at: OffsetDateTime) -> Result<(), Refusal> {
+        *self = self.patched(ops, at)?.frontier;
+        Ok(())
+    }
+
+    fn apply(
+        &mut self,
+        op: &Op,
+        at: OffsetDateTime,
+        log: &mut Vec<Warning>,
+    ) -> Result<(), OpRefusal> {
+        match op {
+            Op::Frontier { objective } => self.objective = Some(required(objective, "objective")?),
+            Op::Conclude { lesson } => {
+                self.conclusion = Some(Lesson {
+                    text: required(lesson, "lesson")?,
+                    at,
+                });
+            }
+            Op::Regime {
+                contract,
+                metrics,
+                reason,
+                bridge,
+            } => {
+                let contract = required(contract, "contract")?;
+                let reason = reason
+                    .as_deref()
+                    .map(|r| required(r, "reason"))
+                    .transpose()?;
+                if !self.regimes.is_empty() && reason.is_none() {
+                    return Err(OpRefusal::MissingRegimeReason);
+                }
+                let outgoing = self.incumbent_baseline().cloned();
+                if bridge.is_some() && outgoing.is_none() {
+                    return Err(OpRefusal::NoIncumbentBridge);
+                }
+                if let Some(bridge) = bridge
+                    && self.baselines.contains_key(&bridge.slug)
+                {
+                    return Err(OpRefusal::RenameCollision {
+                        kind: RecordKind::Baseline,
+                        to: bridge.slug.clone(),
+                    });
+                }
+                let mut gauge = Gauge {
+                    contract,
+                    metrics: BTreeMap::new(),
+                };
+                for spec in metrics {
+                    if gauge.metrics.contains_key(&spec.key) {
+                        return Err(OpRefusal::DuplicateMetric {
+                            key: spec.key.clone(),
+                        });
+                    }
+                    let metric = Self::metric(spec, None)?;
+                    let _ = gauge.metrics.insert(spec.key.clone(), metric);
+                }
+                let number = self.regimes.len() + 1;
+                self.regimes.push(Regime {
+                    number,
+                    gauge,
+                    reason: reason.clone(),
+                    bridge: bridge.as_ref().map(|b| b.slug.clone()),
+                    at,
+                });
+                self.gauge_size(log);
+                if let Some(bridge) = bridge {
+                    let outgoing = outgoing.ok_or(OpRefusal::NoIncumbentBridge)?;
+                    let artifacts = self.baselines[&outgoing].artifacts.clone();
+                    let readings =
+                        self.readings(&bridge.readings, number, &bridge.slug.to_string(), log)?;
+                    let _ = self.baselines.insert(
+                        bridge.slug.clone(),
+                        Baseline {
+                            regime: number,
+                            epoch: None,
+                            artifacts,
+                            readings,
+                            note: bridge.note.clone(),
+                            adopts: BTreeSet::new(),
+                            docket: BTreeSet::new(),
+                            disposition: None,
+                            void: None,
+                            at,
+                        },
+                    );
+                    self.accept_baseline(
+                        &bridge.slug,
+                        reason.as_deref().ok_or(OpRefusal::MissingRegimeReason)?,
+                        at,
+                        outgoing.into(),
+                        log,
+                    )?;
+                }
+            }
+            Op::Gauge {
+                contract,
+                metrics,
+                retire,
+                restore,
+            } => {
+                let regime = self.regimes.len();
+                if regime == 0 {
+                    return Err(OpRefusal::NoGauge);
+                }
+                if let Some(contract) = contract {
+                    let contract = required(contract, "contract")?;
+                    if self.regimes[regime - 1].gauge.contract != contract {
+                        log.push(Warning::GaugeEdited { regime });
+                    }
+                    self.regimes[regime - 1].gauge.contract = contract;
+                }
+                for spec in metrics.iter().flatten() {
+                    let previous = self.regimes[regime - 1].gauge.metrics.get(&spec.key);
+                    let metric = Self::metric(spec, previous)?;
+                    if previous.is_some_and(|old| {
+                        (old.unit != metric.unit || old.better != metric.better)
+                            && self.has_reading(regime, &spec.key)
+                    }) {
+                        return Err(OpRefusal::MeaningChanged {
+                            regime,
+                            key: spec.key.clone(),
+                        });
+                    }
+                    let _ = self.regimes[regime - 1]
+                        .gauge
+                        .metrics
+                        .insert(spec.key.clone(), metric);
+                }
+                for (keys, retired) in [(retire, true), (restore, false)] {
+                    for key in keys.iter().flatten() {
+                        self.regimes[regime - 1]
+                            .gauge
+                            .metrics
+                            .get_mut(key)
+                            .ok_or_else(|| unknown(RecordKind::Metric, key))?
+                            .retired = retired;
+                    }
+                }
+                self.gauge_size(log);
+            }
+            Op::Baseline {
+                slug,
+                artifacts,
+                readings,
+                adopts,
+                docket,
+                note,
+            } => {
+                let regime = self
+                    .baselines
+                    .get(slug)
+                    .map_or(self.regimes.len(), |b| b.regime);
+                if regime == 0 {
+                    return Err(OpRefusal::NoGauge);
+                }
+                for h in adopts.iter().flatten().chain(docket.iter().flatten()) {
+                    self.ensure_hypothesis(h)?;
+                }
+                let readings = readings
+                    .as_ref()
+                    .map(|r| self.readings(r, regime, &slug.to_string(), log))
+                    .transpose()?;
+                let baseline = self
+                    .baselines
+                    .entry(slug.clone())
+                    .or_insert_with(|| Baseline {
+                        regime,
+                        epoch: None,
+                        artifacts: Vec::new(),
+                        readings: BTreeMap::new(),
+                        note: None,
+                        adopts: BTreeSet::new(),
+                        docket: BTreeSet::new(),
+                        disposition: None,
+                        void: None,
+                        at,
+                    });
+                if let Some(artifacts) = artifacts {
+                    baseline.artifacts.clone_from(artifacts);
+                }
+                if let Some(note) = note {
+                    baseline.note = Some(note.clone());
+                }
+                if let Some(adopts) = adopts {
+                    baseline.adopts = adopts.iter().cloned().collect();
+                }
+                for (key, reading) in readings.into_iter().flatten() {
+                    if baseline
+                        .disposition
+                        .as_ref()
+                        .is_some_and(|d| d.decision == BaselineDecision::Accepted)
+                        && baseline
+                            .readings
+                            .get(&key)
+                            .is_some_and(|old| old != &reading)
+                    {
+                        log.push(Warning::AcceptedBaselineReading {
+                            baseline: slug.clone(),
+                            key: key.clone(),
+                        });
+                    }
+                    let _ = baseline.readings.insert(key, reading);
+                }
+                if let Some(docket) = docket {
+                    self.baselines
+                        .get_mut(slug)
+                        .ok_or_else(|| unknown(RecordKind::Baseline, slug))?
+                        .docket
+                        .clear();
+                    self.add_to_docket(slug, docket)?;
+                }
+            }
+            Op::Docket {
+                baseline,
+                add,
+                drop,
+            } => {
+                self.ensure_baseline(baseline)?;
+                for h in add.iter().flatten().chain(drop.iter().flatten()) {
+                    self.ensure_hypothesis(h)?;
+                }
+                if let Some(add) = add {
+                    self.add_to_docket(baseline, add)?;
+                }
+                for h in drop.iter().flatten() {
+                    let _ = self
+                        .baselines
+                        .get_mut(baseline)
+                        .ok_or_else(|| unknown(RecordKind::Baseline, baseline))?
+                        .docket
+                        .remove(h);
+                }
+            }
+            Op::Hypothesis {
+                slug,
+                title,
+                mechanism,
+                claim,
+                after,
+                reviews,
+            } => {
+                if !self.hypotheses.contains_key(slug) {
+                    let title =
+                        required(title.as_deref().ok_or_else(|| missing("title"))?, "title")?;
+                    let _ = self.hypotheses.insert(
+                        slug.clone(),
+                        Hypothesis {
+                            title,
+                            mechanism: None,
+                            claim: None,
+                            trials: BTreeMap::new(),
+                            last_trial: 0,
+                            disposition: None,
+                            ownership: empty_ownership(),
+                            at,
+                        },
+                    );
+                }
+                let h = self
+                    .hypotheses
+                    .get_mut(slug)
+                    .ok_or_else(|| unknown(RecordKind::Hypothesis, slug))?;
+                if let Some(title) = title {
+                    h.title = required(title, "title")?;
+                }
+                if let Some(mechanism) = mechanism {
+                    h.mechanism = Some(mechanism.clone());
+                }
+                if let Some(claim) = claim {
+                    h.claim = Some(claim.clone());
+                }
+                for from in after.iter().flatten() {
+                    self.add_edge(from, slug, None)?;
+                }
+                for review in reviews.iter().flatten() {
+                    let _ = self
+                        .reviews
+                        .get_mut(review)
+                        .ok_or_else(|| unknown(RecordKind::Review, review))?
+                        .members
+                        .insert(slug.clone());
+                }
+            }
+            Op::Edge { from, to, carries } => self.add_edge(from, to, carries.as_ref())?,
+            Op::Unedge { from, to } => {
+                self.ensure_hypothesis(from)?;
+                self.ensure_hypothesis(to)?;
+                let _ = self.edges.remove(&(from.clone(), to.clone()));
+            }
+            Op::Review {
+                slug,
+                title,
+                charter,
+                members,
+                add,
+                drop,
+            } => {
+                for h in members
+                    .iter()
+                    .flatten()
+                    .chain(add.iter().flatten())
+                    .chain(drop.iter().flatten())
+                {
+                    self.ensure_hypothesis(h)?;
+                }
+                if !self.reviews.contains_key(slug) {
+                    let title =
+                        required(title.as_deref().ok_or_else(|| missing("title"))?, "title")?;
+                    let charter = required(
+                        charter.as_deref().ok_or_else(|| missing("charter"))?,
+                        "charter",
+                    )?;
+                    if members.is_none() {
+                        return Err(missing("members"));
+                    }
+                    let _ = self.reviews.insert(
+                        slug.clone(),
+                        Review {
+                            title,
+                            charter,
+                            members: BTreeSet::new(),
+                            lesson: None,
+                            ownership: empty_ownership(),
+                            at,
+                        },
+                    );
+                }
+                let r = self
+                    .reviews
+                    .get_mut(slug)
+                    .ok_or_else(|| unknown(RecordKind::Review, slug))?;
+                if let Some(title) = title {
+                    r.title = required(title, "title")?;
+                }
+                if let Some(charter) = charter {
+                    r.charter = required(charter, "charter")?;
+                }
+                if let Some(members) = members {
+                    r.members = members.iter().cloned().collect();
+                }
+                r.members.extend(add.iter().flatten().cloned());
+                for h in drop.iter().flatten() {
+                    let _ = r.members.remove(h);
+                }
+                if r.members.is_empty() {
+                    return Err(OpRefusal::EmptyReview {
+                        review: slug.clone(),
+                    });
+                }
+            }
+            Op::Trial {
+                hypothesis,
+                note,
+                readings,
+                against,
+                artifacts,
+            } => {
+                self.ensure_hypothesis(hypothesis)?;
+                if self.regimes.is_empty() {
+                    return Err(OpRefusal::NoGauge);
+                }
+                let note = required(note, "note")?;
+                let against = against
+                    .clone()
+                    .or_else(|| self.incumbent_baseline().cloned());
+                if let Some(b) = &against {
+                    self.ensure_baseline(b)?;
+                }
+                let readings = self.readings(
+                    readings.as_ref().unwrap_or(&BTreeMap::new()),
+                    self.regimes.len(),
+                    hypothesis.as_str(),
+                    log,
+                )?;
+                let h = self
+                    .hypotheses
+                    .get_mut(hypothesis)
+                    .ok_or_else(|| unknown(RecordKind::Hypothesis, hypothesis))?;
+                if h.disposition.is_some() {
+                    log.push(Warning::TrialOnSettled {
+                        hypothesis: hypothesis.clone(),
+                    });
+                }
+                h.last_trial = h.last_trial.checked_add(1).ok_or(OpRefusal::Exhausted)?;
+                let number = h.last_trial;
+                for warning in log.iter_mut() {
+                    if let Warning::UnlistedReading { subject, .. } = warning {
+                        *subject = format!("{hypothesis}#{number}");
+                    }
+                }
+                if let Some(b) = &against
+                    && self.baselines[b].regime != self.regimes.len()
+                {
+                    log.push(Warning::CrossRegimeTrial {
+                        trial: TrialId {
+                            hypothesis: hypothesis.clone(),
+                            number,
+                        },
+                        baseline: b.clone(),
+                    });
+                }
+                let _ = h.trials.insert(
+                    number,
+                    Trial {
+                        regime: self.regimes.len(),
+                        note,
+                        readings,
+                        against,
+                        artifacts: artifacts.clone().unwrap_or_default(),
+                        at,
+                        void: None,
+                    },
+                );
+            }
+            Op::Accept { target, rationale } | Op::Reject { target, rationale } => {
+                let rationale = required(rationale, "rationale")?;
+                let accept = matches!(op, Op::Accept { .. });
+                match target {
+                    DecisionTarget::Hypothesis(hypothesis) => {
+                        let against = self.incumbent_baseline().cloned();
+                        let h = self
+                            .hypotheses
+                            .get_mut(hypothesis)
+                            .ok_or_else(|| unknown(RecordKind::Hypothesis, hypothesis))?;
+                        if h.disposition.is_some() {
+                            log.push(Warning::ReplacedDisposition {
+                                subject: hypothesis.to_string(),
+                            });
+                        }
+                        h.disposition = Some(Disposition {
+                            decision: if accept {
+                                HypothesisDecision::Accepted { against }
+                            } else {
+                                HypothesisDecision::Rejected
+                            },
+                            rationale,
+                            at,
+                        });
+                    }
+                    DecisionTarget::Baseline(baseline) if accept => {
+                        let outgoing = self.incumbent_baseline().cloned();
+                        self.accept_baseline(baseline, &rationale, at, outgoing, log)?;
+                    }
+                    DecisionTarget::Baseline(baseline) => {
+                        self.stranded(baseline, log)?;
+                        let b = self
+                            .baselines
+                            .get_mut(baseline)
+                            .ok_or_else(|| unknown(RecordKind::Baseline, baseline))?;
+                        if b.disposition.is_some() {
+                            log.push(Warning::ReplacedDisposition {
+                                subject: baseline.to_string(),
+                            });
+                        }
+                        b.disposition = Some(Disposition {
+                            decision: BaselineDecision::Rejected,
+                            rationale,
+                            at,
+                        });
+                    }
+                }
+            }
+            Op::Shelve {
+                hypothesis,
+                rationale,
+            } => {
+                let rationale = required(rationale, "rationale")?;
+                let h = self
+                    .hypotheses
+                    .get_mut(hypothesis)
+                    .ok_or_else(|| unknown(RecordKind::Hypothesis, hypothesis))?;
+                if h.disposition.is_some() {
+                    log.push(Warning::ReplacedDisposition {
+                        subject: hypothesis.to_string(),
+                    });
+                }
+                h.disposition = Some(Disposition {
+                    decision: HypothesisDecision::Shelved,
+                    rationale,
+                    at,
+                });
+            }
+            Op::Reopen { target } => match target {
+                WorkTarget::Hypothesis(h) => {
+                    self.hypotheses
+                        .get_mut(h)
+                        .ok_or_else(|| unknown(RecordKind::Hypothesis, h))?
+                        .disposition = None;
+                }
+                WorkTarget::Review(r) => {
+                    self.reviews
+                        .get_mut(r)
+                        .ok_or_else(|| unknown(RecordKind::Review, r))?
+                        .lesson = None;
+                }
+            },
+            Op::Void { target, reason } => {
+                let reason = required(reason, "reason")?;
+                if let VoidTarget::Baseline(b) = target {
+                    self.stranded(b, log)?;
+                }
+                *self.void_mut(target)? = Some(reason);
+            }
+            Op::Unvoid { target } => *self.void_mut(target)? = None,
+            Op::Remove { target } => self.remove(target)?,
+            Op::Lesson { review, text } => {
+                let lesson = Lesson {
+                    text: required(text, "text")?,
+                    at,
+                };
+                self.reviews
+                    .get_mut(review)
+                    .ok_or_else(|| unknown(RecordKind::Review, review))?
+                    .lesson = Some(lesson);
+            }
+            Op::Waive { finding, note } => {
+                let note = required(note, "note")?;
+                if !Assay::new(self).findings.contains_key(finding) {
+                    return Err(OpRefusal::AbsentFinding {
+                        finding: finding.clone(),
+                    });
+                }
+                let _ = self.waivers.insert(finding.clone(), note);
+            }
+            Op::Assign {
+                target,
+                owner,
+                instructions,
+            } => {
+                let assignment = Assignment {
+                    name: required(owner, "owner")?,
+                    instructions: instructions.clone(),
+                    at,
+                };
+                self.ownership_mut(target)?.owner = Some(assignment);
+            }
+            Op::Release { target } => self.ownership_mut(target)?.owner = None,
+            Op::Start { target } => self.ownership_mut(target)?.started = Some(at),
+            Op::Stop { target } => self.ownership_mut(target)?.started = None,
+            Op::Rename { target, to } => self.rename(target, to)?,
+        }
+        Ok(())
+    }
+
+    fn metric(spec: &MetricSpec, previous: Option<&Metric>) -> Result<Metric, OpRefusal> {
+        let metric = Metric {
+            unit: spec.unit.clone(),
+            better: spec.better.or_else(|| previous.and_then(|m| m.better)),
+            kpi: spec.kpi.unwrap_or_else(|| previous.is_some_and(|m| m.kpi)),
+            about: spec
+                .about
+                .clone()
+                .or_else(|| previous.and_then(|m| m.about.clone())),
+            refs: spec
+                .refs
+                .clone()
+                .unwrap_or_else(|| previous.map_or_else(BTreeMap::new, |m| m.refs.clone())),
+            retired: previous.is_some_and(|m| m.retired),
+        };
+        if metric.kpi && metric.better.is_none() {
+            return Err(OpRefusal::KpiDirection {
+                key: spec.key.clone(),
+            });
+        }
+        if metric.refs.values().any(|v| !v.is_finite()) {
+            return Err(OpRefusal::NonfiniteReference);
+        }
+        Ok(metric)
+    }
+
+    fn gauge_size(&self, log: &mut Vec<Warning>) {
+        if let Some(regime) = self.regimes.last() {
+            let count = regime.gauge.metrics.values().filter(|m| !m.retired).count();
+            if count > 8 {
+                log.push(Warning::ManyMetrics {
+                    regime: regime.number,
+                    count,
+                });
+            }
+        }
+    }
+
+    fn has_reading(&self, regime: usize, key: &MetricKey) -> bool {
+        self.baselines
+            .values()
+            .any(|b| b.regime == regime && b.readings.contains_key(key))
+            || self
+                .hypotheses
+                .values()
+                .flat_map(|h| h.trials.values())
+                .any(|t| t.regime == regime && t.readings.contains_key(key))
+    }
+
+    fn readings(
+        &self,
+        input: &Readings,
+        regime: usize,
+        subject: &str,
+        log: &mut Vec<Warning>,
+    ) -> Result<RecordedReadings, OpRefusal> {
+        let gauge = &self
+            .regimes
+            .get(regime - 1)
+            .ok_or(OpRefusal::NoGauge)?
+            .gauge;
+        input
+            .iter()
+            .map(|(key, value)| {
+                let (number, unit) = match value {
+                    Value::Number(n) if n.is_finite() => (*n, None),
+                    Value::Text(text) => {
+                        let parts: Vec<_> = text.split_whitespace().collect();
+                        let [number, unit] = parts.as_slice() else {
+                            return Err(OpRefusal::InvalidValue {
+                                value: value.clone(),
+                            });
+                        };
+                        let number =
+                            number.parse::<f64>().map_err(|_| OpRefusal::InvalidValue {
+                                value: value.clone(),
+                            })?;
+                        if !number.is_finite() {
+                            return Err(OpRefusal::InvalidValue {
+                                value: value.clone(),
+                            });
+                        }
+                        (number, Some(unit.parse::<Unit>()?))
+                    }
+                    Value::Number(_) => {
+                        return Err(OpRefusal::InvalidValue {
+                            value: value.clone(),
+                        });
+                    }
+                };
+                let reading = if let Some(metric) = gauge.metrics.get(key).filter(|m| !m.retired) {
+                    Reading::Listed {
+                        value: unit
+                            .as_ref()
+                            .map_or(Ok(number), |u| u.convert(number, &metric.unit))?,
+                        unit: metric.unit.clone(),
+                    }
+                } else {
+                    let closest = gauge
+                        .metrics
+                        .keys()
+                        .filter_map(|candidate| {
+                            let distance = edit_distance(key.as_str(), candidate.as_str());
+                            (distance <= 2 && distance > 0).then_some((distance, candidate))
+                        })
+                        .min()
+                        .map(|(_, key)| key.clone());
+                    log.push(Warning::UnlistedReading {
+                        subject: subject.into(),
+                        key: key.clone(),
+                        closest,
+                    });
+                    Reading::Unlisted {
+                        value: value.clone(),
+                    }
+                };
+                Ok((key.clone(), reading))
+            })
+            .collect()
+    }
+
+    fn ensure_hypothesis(&self, slug: &Slug) -> Result<(), OpRefusal> {
+        if self.hypotheses.contains_key(slug) {
+            Ok(())
+        } else {
+            Err(unknown(RecordKind::Hypothesis, slug))
+        }
+    }
+    fn ensure_baseline(&self, slug: &Slug) -> Result<(), OpRefusal> {
+        if self.baselines.contains_key(slug) {
+            Ok(())
+        } else {
+            Err(unknown(RecordKind::Baseline, slug))
+        }
+    }
+    fn add_edge(
+        &mut self,
+        from: &Slug,
+        to: &Slug,
+        carries: Option<&String>,
+    ) -> Result<(), OpRefusal> {
+        self.ensure_hypothesis(from)?;
+        self.ensure_hypothesis(to)?;
+        if let Some(path) = closes_cycle(&self.edges, from, to) {
+            return Err(OpRefusal::Cycle { path });
+        }
+        let edge = self
+            .edges
+            .entry((from.clone(), to.clone()))
+            .or_insert(Edge { carries: None });
+        if let Some(carries) = carries {
+            edge.carries = Some(carries.clone());
+        }
+        Ok(())
+    }
+    fn add_to_docket(&mut self, baseline: &Slug, hypotheses: &[Slug]) -> Result<(), OpRefusal> {
+        self.ensure_baseline(baseline)?;
+        for h in hypotheses {
+            self.ensure_hypothesis(h)?;
+        }
+        for b in self.baselines.values_mut() {
+            for h in hypotheses {
+                let _ = b.docket.remove(h);
+            }
+        }
+        self.baselines
+            .get_mut(baseline)
+            .ok_or_else(|| unknown(RecordKind::Baseline, baseline))?
+            .docket
+            .extend(hypotheses.iter().cloned());
+        Ok(())
+    }
+    fn accept_baseline(
+        &mut self,
+        baseline: &Slug,
+        rationale: &str,
+        at: OffsetDateTime,
+        outgoing: Option<Slug>,
+        log: &mut Vec<Warning>,
+    ) -> Result<(), OpRefusal> {
+        let b = self
+            .baselines
+            .get_mut(baseline)
+            .ok_or_else(|| unknown(RecordKind::Baseline, baseline))?;
+        if b.void.is_some() {
+            return Err(OpRefusal::VoidBaseline {
+                baseline: baseline.clone(),
+            });
+        }
+        if b.regime != self.regimes.len() {
+            return Err(OpRefusal::OldBaseline {
+                baseline: baseline.clone(),
+            });
+        }
+        if b.disposition.is_some() {
+            log.push(Warning::ReplacedDisposition {
+                subject: baseline.to_string(),
+            });
+        }
+        self.last_epoch = self.last_epoch.checked_add(1).ok_or(OpRefusal::Exhausted)?;
+        b.epoch = Some(self.last_epoch);
+        b.disposition = Some(Disposition {
+            decision: BaselineDecision::Accepted,
+            rationale: rationale.into(),
+            at,
+        });
+        self.epochs.push(Epoch {
+            number: self.last_epoch,
+            regime: b.regime,
+            baseline: baseline.clone(),
+            at,
+        });
+        if let Some(from) = outgoing.filter(|b| b != baseline) {
+            let hypotheses: Vec<_> = self.baselines[&from]
+                .docket
+                .iter()
+                .filter(|h| self.hypotheses[*h].disposition.is_none())
+                .cloned()
+                .collect();
+            if !hypotheses.is_empty() {
+                self.add_to_docket(baseline, &hypotheses)?;
+                log.push(Warning::DocketMoved {
+                    from,
+                    to: baseline.clone(),
+                    hypotheses,
+                });
+            }
+        }
+        Ok(())
+    }
+    fn stranded(&self, baseline: &Slug, log: &mut Vec<Warning>) -> Result<(), OpRefusal> {
+        let b = self
+            .baselines
+            .get(baseline)
+            .ok_or_else(|| unknown(RecordKind::Baseline, baseline))?;
+        let hypotheses: Vec<_> = b
+            .docket
+            .iter()
+            .filter(|h| self.hypotheses[*h].disposition.is_none())
+            .cloned()
+            .collect();
+        if !hypotheses.is_empty() {
+            log.push(Warning::DocketStranded {
+                baseline: baseline.clone(),
+                hypotheses,
+            });
+        }
+        Ok(())
+    }
+    fn void_mut(&mut self, target: &VoidTarget) -> Result<&mut Option<String>, OpRefusal> {
+        match target {
+            VoidTarget::Baseline(b) => Ok(&mut self
+                .baselines
+                .get_mut(b)
+                .ok_or_else(|| unknown(RecordKind::Baseline, b))?
+                .void),
+            VoidTarget::Trial(id) => Ok(&mut self
+                .hypotheses
+                .get_mut(&id.hypothesis)
+                .and_then(|h| h.trials.get_mut(&id.number))
+                .ok_or_else(|| unknown(RecordKind::Trial, id))?
+                .void),
+        }
+    }
+    fn ownership_mut(&mut self, target: &WorkTarget) -> Result<&mut Ownership, OpRefusal> {
+        match target {
+            WorkTarget::Hypothesis(h) => Ok(&mut self
+                .hypotheses
+                .get_mut(h)
+                .ok_or_else(|| unknown(RecordKind::Hypothesis, h))?
+                .ownership),
+            WorkTarget::Review(r) => Ok(&mut self
+                .reviews
+                .get_mut(r)
+                .ok_or_else(|| unknown(RecordKind::Review, r))?
+                .ownership),
+        }
+    }
+
+    fn remove(&mut self, target: &RemoveTarget) -> Result<(), OpRefusal> {
+        match target {
+            RemoveTarget::Hypothesis(h) => {
+                self.ensure_hypothesis(h)?;
+                for (slug, r) in &self.reviews {
+                    if r.members.len() == 1 && r.members.contains(h) {
+                        return Err(OpRefusal::LastMember {
+                            hypothesis: h.clone(),
+                            review: slug.clone(),
+                        });
+                    }
+                }
+                let _ = self.hypotheses.remove(h);
+                self.edges.retain(|(from, to), _| from != h && to != h);
+                for b in self.baselines.values_mut() {
+                    let _ = b.docket.remove(h);
+                    let _ = b.adopts.remove(h);
+                }
+                for r in self.reviews.values_mut() {
+                    let _ = r.members.remove(h);
+                }
+            }
+            RemoveTarget::Review(r) => {
+                let _ = self
+                    .reviews
+                    .remove(r)
+                    .ok_or_else(|| unknown(RecordKind::Review, r))?;
+            }
+            RemoveTarget::Baseline(b) => {
+                let _ = self
+                    .baselines
+                    .remove(b)
+                    .ok_or_else(|| unknown(RecordKind::Baseline, b))?;
+                self.epochs.retain(|e| &e.baseline != b);
+                for regime in &mut self.regimes {
+                    if regime.bridge.as_ref() == Some(b) {
+                        regime.bridge = None;
+                    }
+                }
+                for h in self.hypotheses.values_mut() {
+                    for t in h.trials.values_mut() {
+                        if t.against.as_ref() == Some(b) {
+                            t.against = None;
+                        }
+                    }
+                }
+            }
+            RemoveTarget::Trial(id) => {
+                let _ = self
+                    .hypotheses
+                    .get_mut(&id.hypothesis)
+                    .and_then(|h| h.trials.remove(&id.number))
+                    .ok_or_else(|| unknown(RecordKind::Trial, id))?;
+            }
+        }
+        Ok(())
+    }
+
+    fn rename(&mut self, target: &RenameTarget, to: &Slug) -> Result<(), OpRefusal> {
+        match target {
+            RenameTarget::Hypothesis(from) => {
+                self.ensure_hypothesis(from)?;
+                if from == to {
+                    return Ok(());
+                }
+                if self.hypotheses.contains_key(to) {
+                    return Err(OpRefusal::RenameCollision {
+                        kind: RecordKind::Hypothesis,
+                        to: to.clone(),
+                    });
+                }
+                let h = self
+                    .hypotheses
+                    .remove(from)
+                    .ok_or_else(|| unknown(RecordKind::Hypothesis, from))?;
+                let _ = self.hypotheses.insert(to.clone(), h);
+                let rename = |slug: Slug| if &slug == from { to.clone() } else { slug };
+                self.edges = std::mem::take(&mut self.edges)
+                    .into_iter()
+                    .map(|((a, b), e)| ((rename(a), rename(b)), e))
+                    .collect();
+                for b in self.baselines.values_mut() {
+                    rename_member(&mut b.docket, from, to);
+                    rename_member(&mut b.adopts, from, to);
+                }
+                for r in self.reviews.values_mut() {
+                    rename_member(&mut r.members, from, to);
+                }
+            }
+            RenameTarget::Review(from) => {
+                if !self.reviews.contains_key(from) {
+                    return Err(unknown(RecordKind::Review, from));
+                }
+                if from == to {
+                    return Ok(());
+                }
+                if self.reviews.contains_key(to) {
+                    return Err(OpRefusal::RenameCollision {
+                        kind: RecordKind::Review,
+                        to: to.clone(),
+                    });
+                }
+                let r = self
+                    .reviews
+                    .remove(from)
+                    .ok_or_else(|| unknown(RecordKind::Review, from))?;
+                let _ = self.reviews.insert(to.clone(), r);
+            }
+            RenameTarget::Baseline(from) => {
+                self.ensure_baseline(from)?;
+                if from == to {
+                    return Ok(());
+                }
+                if self.baselines.contains_key(to) {
+                    return Err(OpRefusal::RenameCollision {
+                        kind: RecordKind::Baseline,
+                        to: to.clone(),
+                    });
+                }
+                let b = self
+                    .baselines
+                    .remove(from)
+                    .ok_or_else(|| unknown(RecordKind::Baseline, from))?;
+                let _ = self.baselines.insert(to.clone(), b);
+                for e in &mut self.epochs {
+                    if &e.baseline == from {
+                        e.baseline = to.clone();
+                    }
+                }
+                for r in &mut self.regimes {
+                    if r.bridge.as_ref() == Some(from) {
+                        r.bridge = Some(to.clone());
+                    }
+                }
+                for h in self.hypotheses.values_mut() {
+                    for t in h.trials.values_mut() {
+                        if t.against.as_ref() == Some(from) {
+                            t.against = Some(to.clone());
+                        }
+                    }
+                    if let Some(Disposition {
+                        decision: HypothesisDecision::Accepted { against },
+                        ..
+                    }) = &mut h.disposition
+                        && against.as_ref() == Some(from)
+                    {
+                        *against = Some(to.clone());
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+fn rename_member(set: &mut BTreeSet<Slug>, from: &Slug, to: &Slug) {
+    if set.remove(from) {
+        let _ = set.insert(to.clone());
+    }
+}
+
+fn edit_distance(left: &str, right: &str) -> usize {
+    let mut previous: Vec<usize> = (0..=right.len()).collect();
+    for (i, a) in left.bytes().enumerate() {
+        let mut row = vec![i + 1];
+        for (j, b) in right.bytes().enumerate() {
+            row.push(
+                (previous[j] + usize::from(a != b))
+                    .min(previous[j + 1] + 1)
+                    .min(row[j] + 1),
+            );
+        }
+        previous = row;
+    }
+    previous[right.len()]
+}
