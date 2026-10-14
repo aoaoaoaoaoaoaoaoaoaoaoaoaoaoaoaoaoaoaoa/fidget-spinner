@@ -25,7 +25,7 @@ A metric has a unit, an optional direction, a KPI flag, an optional description,
 A KPI requires a direction. Within a regime:
 
 - a metric may be added, retired or restored, and its KPI flag, description and reference lines may change;
-- its unit and direction may change only while no baseline or non-void trial of the regime has a reading for it;
+- its unit and direction may change only while no baseline or trial of the regime, void or not, has a reading for it;
 - the contract text may be edited, with a warning, because only the caller can judge whether the edit affects
   comparability.
 

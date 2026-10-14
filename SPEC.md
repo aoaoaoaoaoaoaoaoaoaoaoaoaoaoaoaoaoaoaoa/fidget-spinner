@@ -61,7 +61,7 @@ value   = number | "number unit"
 ```
 
 - `hypothesis`, `review` and `baseline` create or update; creation requires `title` for a hypothesis, `title`,
-  `charter` and members for a review. Omitted fields are unchanged.
+  `charter` and members for a review. Omitted fields, and fields given as `null`, are unchanged.
 - `hypothesis.after` adds edges from the listed hypotheses; `hypothesis.reviews` adds the hypothesis to the listed
   reviews.
 - `review.members` and `baseline.docket` replace; `add` and `drop` edit. `baseline.adopts` and `artifacts` replace.
