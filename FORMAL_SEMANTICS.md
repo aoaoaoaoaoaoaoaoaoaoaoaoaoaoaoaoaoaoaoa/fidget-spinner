@@ -71,10 +71,11 @@ requires an outgoing incumbent baseline.
 A hypothesis has a title and optionally a mechanism and a claim. Edges form an acyclic graph without self-edges; an
 edge that would close a cycle is refused and the cycle reported.
 
-Each hypothesis is on at most one docket; adding it to a docket removes it from any other. When an accepted baseline
-becomes the incumbent baseline, every unsettled hypothesis on the previous incumbent baseline's docket moves to the
-new one's docket, and the receipt names them. Rejecting or voiding a baseline moves nothing; the receipt names its
-unsettled docket members.
+Each hypothesis is on at most one docket; adding it to a docket removes it from any other. When accepting a baseline
+makes it the incumbent baseline, every unsettled hypothesis on the previous incumbent baseline's docket moves to the
+new one's docket, and the receipt names them. No other change of incumbency moves docket members: rejecting, voiding
+or removing a baseline, and unvoiding one, move nothing, and a receipt for rejecting or voiding names the unsettled
+docket members.
 
 The state of a hypothesis is the first of these that applies:
 
@@ -112,8 +113,9 @@ keeps them, and the slug becomes free.
 ## 8. Reviews
 
 A review has a title, a nonempty charter, a nonempty set of member hypotheses, and an optional lesson. Membership may
-overlap between reviews and creates no precedence. An open review is ready when every member is tested or settled,
-and waiting otherwise. A lesson completes the review; reopening the review clears the lesson.
+overlap between reviews and creates no precedence. An open review is running when an execution start is asserted;
+otherwise it is ready when every member is tested or settled, and waiting when not. A lesson completes the review;
+reopening the review clears the lesson.
 
 ## 9. Ownership
 
