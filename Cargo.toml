@@ -1,10 +1,5 @@
 [workspace]
-members = [
-  "crates/fidget-spinner-core",
-  "crates/fidget-spinner-store-sqlite",
-  "crates/fidget-spinner-cli",
-  "crates/fidget-spinner-portability",
-]
+members = ["crates/fidget-spinner-core"]
 resolver = "3"
 
 [workspace.package]
@@ -16,7 +11,7 @@ license = "MIT"
 readme = "README.md"
 repository = "https://github.com/aoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoa/fidget-spinner"
 rust-version = "1.98.0"
-version = "2.0.0"
+version = "3.0.0"
 
 [workspace.dependencies]
 anyhow = "1"
@@ -132,4 +127,4 @@ install_e2e_command = ["bash", "scripts/install-e2e.sh"]
 [workspace.metadata.rust-starter.source_files]
 max_lines = 2500
 include = ["*.rs", "**/*.rs"]
-exclude = ["crates/fidget-spinner-store-sqlite/src/lib.rs"]
+exclude = []

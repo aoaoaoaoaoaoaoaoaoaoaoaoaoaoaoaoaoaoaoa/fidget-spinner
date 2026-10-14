@@ -1,182 +1,149 @@
-# Fidget Spinner Spec
+# Fidget Spinner interfaces
 
-## Navigator Design Language
+The [glossary](GLOSSARY.md) owns terminology and [formal semantics](FORMAL_SEMANTICS.md) the domain rules. This
+document owns addressing, operations, inspection, presentation, the navigator and persistence. MCP output follows
+`../mcp_depot/TOKEN_POLICY.md`.
 
-The navigator is an austere local-first experiment ledger for a power user who
-already knows the domain. It should read like a dense lab notebook: terse,
-forensic, and structurally navigable. It is not a marketing surface, a general
-dashboard, or a scrapbook.
+## Addressing
 
-## Results Plot
+Every tool takes optional `project` (a path) and `frontier` (a slug). The default project is the server's working
+directory. A path resolves to its project: the nearest ancestor holding `.git`, a linked worktree resolving to its
+main checkout through `commondir`, or the canonical path itself outside Git. `frontier.patch` requires `frontier`. A
+read may omit it only when the project has exactly one active frontier; otherwise the read is refused with the list
+of the project's frontiers. Responses name the frontier, and the project only when it is not the default. Cursors
+belong to their project and frontier.
 
-The plot is a Rust-planned, server-rendered semantic SVG. It must remain useful
-without client scripting: datum hit targets are experiment links, SVG text and
-marks are self-contained, and numeric dimensions preserve PNG export. Client
-scripting may accelerate state changes through an abortable HTML fragment, but
-the URL remains the state authority.
+## Tools
 
-Selected metrics and displayed series are distinct. Metric selection chooses
-at most two quantities; direct legend toggles suppress series without changing
-selection. Horizontal windows persist as experiment-slug endpoints. Axis units
-derive from the visible canonical values. Scuffed records keep their close
-ordinals and table audit trail but never enter plot geometry.
+| Tool | Purpose |
+|---|---|
+| `frontier.patch` | Apply a patch, or rehearse it with `dry_run`, and return the receipt. |
+| `frontier.status` | The summary, list views, prior-art search, and the project's frontiers. |
+| `hypothesis.read` | One hypothesis: claim, trials, disposition, inputs, outputs, reviews, docket and owner. |
+| `review.read` | One review: charter, members, lesson and owner. |
+| `frontier.history` | Patches newest first, or the operations of one patch. |
+| `system.health` | Process and store health. |
 
-The UI optimizes for answer density per viewport. A page should make it cheap to
-answer, in order: what happened, why it happened, what changed, where the
-evidence lives, and what should be inspected next. Space spent on scaffolding,
-empty states, duplicated titles, or low-signal provenance is suspect until
-proven necessary.
+## Operations
 
-The information hierarchy is narrative first, evidence second, provenance last.
-Outcome pages should surface the decision and its rationale before numerical
-ledgers, command recipes, timestamps, backend names, or graph context. Metrics
-are evidence for a claim; they are not the claim. Commit hashes, conditions,
-argv, env, and backend are provenance; they should remain available, but they
-should not seize the first screen.
+A patch is a JSON array of operations, each an object with `op` and its fields. Where a field list says
+`hypothesis | baseline`, exactly one of those keys names the target. Trials are named `slug#n`.
 
-Experiment pages use this order:
+```
+frontier   {objective}
+conclude   {lesson}
+regime     {contract, metrics: [metric], reason?, bridge?: {slug, readings, note?}}
+gauge      {contract?, metrics?: [metric], retire?: [key], restore?: [key]}
+baseline   {slug, artifacts?: [text], readings?: {key: value}, adopts?: [slug], docket?: [slug], note?}
+docket     {baseline, add?: [slug], drop?: [slug]}
+hypothesis {slug, title?, mechanism?, claim?, after?: [slug], reviews?: [slug]}
+edge       {from, to, carries?}
+unedge     {from, to}
+review     {slug, title?, charter?, members?: [slug], add?: [slug], drop?: [slug]}
+trial      {hypothesis, note, readings?: {key: value}, against?: baseline, artifacts?: [text]}
+accept     {hypothesis | baseline, rationale}
+reject     {hypothesis | baseline, rationale}
+shelve     {hypothesis, rationale}
+reopen     {hypothesis | review}
+void       {trial | baseline, reason}
+unvoid     {trial | baseline}
+remove     {hypothesis | review | baseline | trial}
+lesson     {review, text}
+waive      {finding, note}
+assign     {hypothesis | review, owner, instructions?}
+release    {hypothesis | review}
+start      {hypothesis | review}
+stop       {hypothesis | review}
+rename     {hypothesis | review | baseline, to}
 
-1. Compact experiment header: title, owning frontier, owning hypothesis, status,
-   verdict, tags, and a terse summary.
-2. Outcome, when present. Within outcome: verdict, rationale, analysis, metric
-   ledgers, then collapsed provenance.
-3. Influence network, when present.
+metric  = {key, unit, better?: "lower" | "higher", kpi?: bool, about?, refs?: {label: number}}
+value   = number | "number unit"
+```
 
-Use these component primitives consistently:
+- `hypothesis`, `review` and `baseline` create or update; creation requires `title` for a hypothesis, `title`,
+  `charter` and members for a review. Omitted fields are unchanged.
+- `hypothesis.after` adds edges from the listed hypotheses; `hypothesis.reviews` adds the hypothesis to the listed
+  reviews.
+- `review.members` and `baseline.docket` replace; `add` and `drop` edit. `baseline.adopts` and `artifacts` replace.
+- `baseline.readings` and `bridge.readings` merge by key.
+- `gauge.metrics` adds metrics or updates existing ones.
+- `trial.against` defaults to the incumbent baseline.
 
-- Dense fact strips for short metadata runs such as verdict, primary metric,
-  closed timestamp, backend, and commit.
-- Narrative blocks for rationale, analysis summary/body, frontier situation, and
-  hypothesis body.
-- Metric ledgers for primary and supporting metrics.
-- Provenance disclosures for command recipe, conditions, backend, commit, and
-  other recoverability details.
-- Chip rows for tags, status, verdicts, and compact categorical labels.
-- Link chips for traversing to hypotheses and experiments.
-- Section cards only when the section carries real content. Empty sections should
-  usually disappear instead of announcing absence.
+## Receipts
 
-Typography should stay compact. Monospace hierarchy comes from placement,
-weight, and labels more than raw size. Large titles are a liability because they
-consume scarce vertical context. Default grids should not allocate vast empty
-columns around short values; short facts belong in fact strips, not sparse
-four-column panels.
+A receipt reports the sequence number, or that the patch was rehearsed; the warnings of each operation by index; the
+findings the patch raised or cleared; and the frontier's counts of hypotheses by state before and after. A refusal
+names the operation's index and name and the reason, and nothing is applied. Warnings name the subject, and, for an
+unlisted reading, the closest metric key when one is close.
 
-Every new element must pass a friction and grouping review before it lands:
+## Inspection
 
-- Does this control really need a separate confirmation click, or can the
-  user's selection apply immediately with clear feedback?
-- Does this element have a natural semantic sibling it should sit beside
-  instead of below?
-- Is this an edit affordance that belongs directly beside the value being
-  edited instead of in a detached form field?
-- Do we really need to put this on a new line?
-- Does this string convey anything useful that is not already obvious from
-  context?
-- Is the layout spending a full row on something that is only a modifier,
-  status, or secondary action?
+Selection, totals, paging, cursors, `render` (`porcelain` by default, or `json`) and `detail` (`concise` by default,
+or `full`) follow the conventions of Vauban's SPEC, section Inspection: a scope sets denominators and filters select
+rows; pages carry `items`, `total` and `next_cursor`; a cursor continues the same query at the same ledger sequence;
+previews of long text are marked incomplete and name the call that reads them whole.
 
-Prefer reactive controls for low-risk, reversible supervisor actions. Prefer
-same-line semantic clusters when an action qualifies or changes the status
-beside it. New rows are reserved for new ideas, not for mechanically convenient
-buttons. Avoid separate edit fields when a chip or label can become editable in
-place. Prefer symbolic square chips over text buttons for common actions such
-as add, edit, archive, delete, copy, and expand. Delete labels, subtitles, eyebrows,
-and helper copy that merely describe the page the user is already on.
+### Status
 
-### State Bands Over Panels
+`frontier.status` without `view` returns the summary, under 2 KB for a typical frontier:
 
-Page-level counts, locks, toggles, filters, and other global modifiers belong in
-a compact state band, not in section cards. A section card is reserved for a
-content object, narrative block, table, plot, or list that merits its own
-heading. A boolean policy switch almost never earns a card.
+1. the objective;
+2. the current regime: number, first line of the contract, and the KPIs with unit and direction;
+3. the incumbent baseline: slug, epoch, artifacts, and its KPI readings;
+4. docket progress of the incumbent baseline and of each candidate: settled members over members;
+5. running hypotheses and reviews with owners;
+6. tested hypotheses awaiting disposition;
+7. the first ready hypotheses and ready reviews;
+8. the latest dispositions with rationale previews;
+9. the latest lessons;
+10. unwaived findings with their identities.
 
-Before adding a panel, ask:
+Views:
 
-- Is this a distinct content region, or merely state/configuration for the page?
-- Could this live beside the metric/fact it qualifies?
-- Would this still deserve a heading if it had only one value?
-- Is this prose explaining what a terse label plus hover help could explain?
-- Is the UI repeating the same state in a chip, button, and heading?
+| View | Rows |
+|---|---|
+| `hypotheses` | slug, state, disposition, owner, docket, trial count, title |
+| `reviews` | slug, state, owner, members by state, title |
+| `trials` | identity, time, baseline, KPI readings with ratios, note preview |
+| `baselines` | slug, regime, epoch, disposition, artifacts, KPI readings, docket progress |
+| `regimes` | number, reason, bridge, metrics |
+| `findings` | identity, waiver, subject preview |
+| `frontiers` | the project's frontiers: slug, active or concluded, counts by state, objective preview |
 
-Policy controls should be compact inline switches colocated with the facts they
-govern. Use hover help for scope and consequences. Prefer labels that name the
-user-visible effect over implementation categories: `new tags` beats
-`definition`, and `registry edits` beats storage-level lock names. Supervisor
-controls set MCP policy; they must not disable or veto the supervisor UI itself.
+Scope selectors: `under` (a slug and those beneath it at a dot boundary), `review` (its members) and `docket` (a
+baseline's docket). Filters: `state`, `disposition`, `owner`, `lane` and `text`. `text` is a case-insensitive
+substring over titles, mechanisms, claims, trial notes, rationales, charters and lessons; with `scope: "project"` it
+searches every frontier of the project, concluded ones included, and rows name their frontier.
 
-### Text Containment
+### Packets
 
-Text must be contained by default. A component should assume its enclosing
-column may become narrower than its comfortable design width, because the
-navigator is often used in split panes, zoomed browsers, and narrow inspector
-windows.
+`hypothesis.read` sections: `claim` (title, mechanism, claim), `trials` (paged, newest first, each with its readings
+against its baseline), `disposition`, `inputs` and `outputs` (each edge's other end with state, disposition, rationale
+preview and what the edge carries), `reviews` (with lesson previews), `docket` and `owner`. `review.read` sections:
+`charter`, `members` (state, disposition, rationale preview), `lesson` and `owner`.
 
-The default contract:
+### History
 
-- Grid and flex children are shrinkable: `min-width: 0` is part of the
-  primitive, not an afterthought.
-- Auto-fit grid floors must be bounded by the container, e.g.
-  `minmax(min(100%, 260px), 1fr)`, never a naked `minmax(260px, 1fr)`.
-- Human prose, titles, links, list items, identifiers, and chips wrap or break
-  inside their owner with `overflow-wrap: anywhere`.
-- Generic cards do not hide overflow. Clipping is allowed only for explicit
-  truncation or clamping primitives, and those should preserve full text by
-  hover/title or adjacent detail.
-- `white-space: nowrap` is reserved for short bounded atoms. It is not a default
-  style for chips that may contain user, model, metric, tag, or slug text.
-- Page-level overflow hiding is not a layout strategy. It turns broken geometry
-  into invisible amputation.
+`frontier.history` lists patches newest first with sequence, time, operation count and targets. With `seq` and
+`detail: "full"`, it returns that patch's operations. Operations on removed records show only the operation name and
+the record kind.
 
-When text is cut off, treat it as a primitive failure first. Do not patch a
-single card width until the shrink, wrap, grid-floor, and clipping contracts
-have been checked.
+## Navigator
 
-## Supervisory Registry Governance
+`fidget-spinner ui` serves a loopback board. The index lists frontiers grouped by project, each project under a
+heading that folds. A frontier's board uses the shared layout engine: hypotheses are cells grouped by lane, edges are
+drawn, reviews are coloured sets, and each baseline holds its docket the way a Vauban wall holds its nodes. Epoch
+boundaries are thin separators labelled with their baseline; a regime change is a thick separator marked bridged or
+unbridged. Settled hypotheses beyond the horizon are hidden by default. Clicking a cell opens a foreground with its
+trial table.
 
-Driving models should be allowed to explore quickly and leave imperfect
-taxonomy behind. The product should not try to solve this solely by prompt
-discipline. Mature frontiers need supervisor controls that clean, merge,
-normalize, constrain, and eventually lock experimental registries while models
-continue running.
+The header shows the objective and one chart per KPI: baseline readings as steps across epochs, trials as dots
+coloured by disposition, reference lines dashed, the unit on the axis, every point a link to its record. The line
+breaks at an unbridged regime change. Values show three significant figures.
 
-Tags are the first governed registry. The durable direction is documented in
-`docs/supervisory-tag-governance.md`.
+## Store
 
-The core pattern:
-
-- registry cleanup is a supervisor/UI concern, not a normal MCP tool surface
-- model-facing MCP writes obey current registry policy on every call
-- policy lives in SQLite and takes effect without service reload
-- locks distinguish new-entry creation from registry-structure edits
-- tag identity is stable and internal; names are human-facing handles
-- stale model context is answered by aliases or tombstones with clear porcelain
-  errors
-- mandatory families constrain future writes without invalidating history
-
-This pattern should generalize to metrics, conditions, frontier freezing,
-and other mature-frontier cleanup controls. Metrics should not grow generic
-families or retain backend scoreboard pinning; the durable metric contract is a
-frontier-local set of KPI metrics, documented in
-`docs/metric-kpi-governance.md`.
-
-## Archive Semantics
-
-`Archived` is a reserved term of art: only a frontier can be manually archived,
-and only the supervisor surface can do it. Archiving is not a general lifecycle
-state, not a synonym for closed, stale, superseded, deprecated, inactive, or
-hidden, and not a per-entity cleanup knob.
-
-All non-frontier hiding is derived visibility policy. A registry entity such as
-a metric or tag is hidden by default when it appears on at least one frontier and
-every frontier it appears on is archived. A never-recorded registry entity stays
-default-visible so a supervisor can add vocabulary before models use it. Other
-future hiding mechanisms must name their own cause precisely, such as
-`superseded`, `deprecated`, `closed`, or `inactive`, instead of borrowing
-archive vocabulary.
-
-MCP is an active-world interface. It must not expose archive inspection or
-archive manipulation controls, and it must not dump hidden-by-archive entities
-with warning flags. To MCP-using models, archived frontiers and entities visible
-only through archived frontiers behave as absent. Supervisor UI and CLI paths may
-still inspect hidden records for cleanup, merge, rename, or deletion.
+One SQLite store at `$XDG_STATE_HOME/fidget-spinner/ledger.sqlite3` holds every project's frontiers as append-only
+patch logs, each identified by project and slug. A frontier's state is the fold of its patches. Patches replay
+forever: an operation's meaning never changes, and a new meaning requires a new operation or a new store format with
+a migration. Tests use an isolated store and never the live one.
