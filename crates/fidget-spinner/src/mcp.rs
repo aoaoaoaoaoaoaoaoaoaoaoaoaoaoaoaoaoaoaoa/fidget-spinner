@@ -1,3 +1,5 @@
+use fidget_spinner_core::Created;
+
 use std::{
     collections::BTreeMap,
     io,
@@ -393,7 +395,10 @@ impl Server {
             if dry_run {
                 output["rehearsed"] = json!(true);
             }
-            output["created"] = json!(receipt.report.created);
+            output["created"] = json!(receipt.report.created.into_iter().map(|created| match created {
+                Created::Epoch { baseline, at } => json!({"epoch":{"baseline":baseline,"since":inspect::stamp(at,detail==DetailLevel::Full)}}),
+                created => json!(created),
+            }).collect::<Vec<_>>());
             let warnings: Vec<_> = receipt
                 .warnings
                 .into_iter()

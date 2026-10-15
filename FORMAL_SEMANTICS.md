@@ -70,8 +70,8 @@ A baseline belongs to the regime that is current when it is created. It holds ar
 hypotheses it adopts, and a disposition: none (candidate), accepted or rejected, with a rationale. Readings may be
 added or changed at any time; changing a reading of an accepted baseline draws a warning.
 
-Accepting a baseline requires that it belong to the current regime and not be void. Each acceptance opens the next
-epoch. The incumbent baseline is the accepted, non-void baseline of the current regime with the latest epoch; there
+Accepting a baseline requires that it belong to the current regime and not be void. Each acceptance opens an
+epoch named by that baseline, beginning at the acceptance time. The incumbent baseline is the accepted, non-void baseline of the current regime with the latest epoch; there
 may be none. Rejecting, voiding or removing the incumbent baseline reinstates the previous qualifying baseline of the
 regime without opening an epoch.
 
@@ -122,8 +122,7 @@ every view and is excluded from charts, comparisons, incumbency and findings.
 Remove erases a hypothesis, review, baseline or trial and every reference to it, as if the reference had never been
 set. Removing a hypothesis also removes its trials, edges, docket entry, baseline adoptions and review memberships,
 and is refused when it is a review's last member. Removing a baseline clears its docket, trials' comparison baseline,
-acceptances' recorded incumbent baseline and any regime bridge naming it, and erases its epochs without reusing their
-numbers. An acceptance without a recorded incumbent baseline is backed by any non-void trial; a regime without its
+acceptances' recorded incumbent baseline and any regime bridge naming it, and erases its epochs. An acceptance without a recorded incumbent baseline is backed by any non-void trial; a regime without its
 bridge is unbridged. Removal drops waivers whose finding subject was removed. Rename rewrites every reference,
 including waiver identities. History shows operations on removed records redacted; the store keeps them, and the
 slug becomes free.

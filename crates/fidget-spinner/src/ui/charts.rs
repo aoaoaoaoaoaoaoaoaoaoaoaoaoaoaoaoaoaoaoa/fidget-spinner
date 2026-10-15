@@ -75,9 +75,9 @@ pub(super) fn charts(f: &Frontier, s: &Selection) -> Result<Content, crate::mcp:
                     value,
                     record: record("baseline", &epoch.baseline).to_string(),
                     title: format!(
-                        "Epoch {} · {} · {} {}",
-                        epoch.number,
+                        "Baseline {} · since {} · {} {}",
                         epoch.baseline,
+                        crate::inspect::stamp(epoch.at, false),
                         significant(value),
                         metric.unit
                     ),
@@ -246,7 +246,11 @@ pub(super) fn charts(f: &Frontier, s: &Selection) -> Result<Content, crate::mcp:
                     (A::Y, "177".into()),
                     (A::TextAnchor, "middle".into()),
                 ],
-                vec![text(format!("E{}", epoch.number))],
+                vec![text(format!(
+                    "{} · {}",
+                    epoch.baseline,
+                    crate::inspect::stamp(epoch.at, false)
+                ))],
             ));
         }
         charts.push(element(
@@ -286,7 +290,11 @@ pub(super) fn charts(f: &Frontier, s: &Selection) -> Result<Content, crate::mcp:
             T::Li,
             vec![link(
                 format!("{}#{}", url(s), record("baseline", &epoch.baseline)),
-                format!("Epoch {} · {}", epoch.number, epoch.baseline),
+                format!(
+                    "Epoch of {} · since {}",
+                    epoch.baseline,
+                    crate::inspect::stamp(epoch.at, false)
+                ),
             )],
         ));
     }

@@ -141,7 +141,11 @@ pub enum Created {
     Trial(TrialId),
     Baseline(Slug),
     Regime(RegimeNumber),
-    Epoch(EpochNumber),
+    Epoch {
+        baseline: Slug,
+        #[serde(with = "time::serde::rfc3339")]
+        at: OffsetDateTime,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -292,10 +296,15 @@ impl Frontier {
                 }
                 _ => {}
             }
-            if frontier.last_epoch != previous_epoch
-                && let Some(number) = frontier.last_epoch
-            {
-                created.push(Created::Epoch(number));
+            if frontier.last_epoch != previous_epoch {
+                let epoch = frontier
+                    .epochs
+                    .last()
+                    .unwrap_or_else(|| unreachable!("acceptance opens an epoch"));
+                created.push(Created::Epoch {
+                    baseline: epoch.baseline.clone(),
+                    at: epoch.at,
+                });
             }
             if !log.is_empty() {
                 let _ = warnings.insert(index, log);

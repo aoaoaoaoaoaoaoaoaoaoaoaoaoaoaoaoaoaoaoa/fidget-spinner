@@ -24,7 +24,7 @@ persistence. Each term has one meaning in Fidget Spinner.
 | Baseline | A comparison state: artifacts, readings, adopted hypotheses and a docket. |
 | Candidate | A baseline without a disposition. |
 | Incumbent baseline | The accepted baseline of the current regime with the latest epoch that is neither void nor rejected. Trials are compared against it by default. Always written as two words; bare "incumbent" keeps its MIP meaning in solver projects. |
-| Epoch | The tenure of one incumbent baseline. Each baseline acceptance opens the next epoch, numbered from 1 across the frontier. |
+| Epoch | The tenure of one incumbent baseline, named by that baseline. |
 | Regime | The span of epochs under one gauge, numbered from 1. |
 | Regime change | The installation of a new gauge. |
 | Bridge | A regime's first baseline when it remeasures the outgoing incumbent baseline's artifacts under the new gauge. |

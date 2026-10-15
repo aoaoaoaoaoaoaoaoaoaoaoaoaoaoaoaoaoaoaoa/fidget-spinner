@@ -47,7 +47,7 @@ Write each result and its consequences in one `frontier.patch`:
   the gauge is kept on the trial as an unlisted reading and is never charted; when such a key recurs, declare it in
   the gauge or stop recording it.
 - Void a trial or baseline whose evidence is invalid; it stays visible. Remove only mistakes.
-- Rehearse a large patch with `dry_run`. Receipts name created trials, baselines, regimes and epochs. Refusals name
+- Rehearse a large patch with `dry_run`. Receipts name created trials, baselines and regimes, and opened epochs by their baseline and acceptance time. Refusals name
   the operation index, name and field path; repair that operation before retrying the atomic patch.
 - Units normalize common time and byte aliases to `ns`, `µs`, `ms`, `s`, `min`, `h` and `B`. Memory also supports
   decimal `kB/MB/GB/TB` and binary `KiB/MiB/GiB/TiB`; dimensionless readings use `1/%`. Other lowercase words name
@@ -59,7 +59,7 @@ Write each result and its consequences in one `frontier.patch`:
 
 When an integration lands, record it as a baseline with its artifacts, readings and the hypotheses it adopts, and
 accept it: it becomes the incumbent baseline and opens an epoch, and the unsettled hypotheses on the previous docket
-carry over. A baseline's docket lists the hypotheses due against it.
+carry over. An epoch is named by its baseline, not by an ordinal; `since` gives the acceptance time. A baseline's docket lists the hypotheses due against it.
 
 When the measurement contract changes, whether its cohort, machine, limits, protocol or the meaning of a metric,
 install a new regime with a reason and bridge it by remeasuring the incumbent baseline's commit under the new gauge.

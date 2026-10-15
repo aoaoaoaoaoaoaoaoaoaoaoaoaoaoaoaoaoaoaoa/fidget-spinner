@@ -76,7 +76,8 @@ A receipt reports the sequence number, or that the patch was rehearsed; the warn
 findings the patch raised or cleared; and only the hypothesis-state counts that changed, with their before and after
 values. Its porcelain header is `frontier F · seq N`, or `frontier F · rehearsed, not applied` for a dry run; changes
 share one line, such as `ready 0→1 · tested 0→1`. Warnings, raised findings and cleared findings appear only when present.
-Receipts also list created trial identities (`slug#n`), baselines, regimes and opened epochs. A refusal has the form
+Receipts also list created trial identities (`slug#n`), baselines, regimes and opened epochs, named by baseline and acceptance time rather than by an ordinal
+(for example, `opened epoch of baseline e5 · since 2026-10-14 20:43Z`). A refusal has the form
 `operation i (op): path: problem`, and nothing is applied. Unknown operation names suggest nearby operations;
 unknown fields suggest nearby fields and list the operation's fields. Warnings name the subject, and, for an
 unlisted reading, the closest metric key when one is close.
@@ -112,7 +113,7 @@ two, or a unique prefix completion.
 
 1. the objective;
 2. the current regime: number and the first line of the contract, at most 160 characters, with a full-read route;
-3. the incumbent baseline: slug, epoch and artifacts; one KPI table joins keys, units, directions, incumbent readings
+3. the incumbent baseline: slug, acceptance time (`since`) and artifacts; one KPI table joins keys, units, directions, incumbent readings
    and reference lines;
 4. docket progress of the incumbent baseline and of each candidate: settled members over members;
 5. running hypotheses and reviews with owners;
@@ -135,7 +136,7 @@ Views:
 | `hypotheses` | slug, state, disposition, owner, docket, trial count, title |
 | `reviews` | slug, state, owner, members by state, title |
 | `trials` | identity, time, baseline, KPI readings with ratios, note preview |
-| `baselines` | slug, regime, epoch, disposition, artifacts, KPI readings, docket progress |
+| `baselines` | slug, regime, acceptance time (`since`), disposition, artifacts, KPI readings, docket progress |
 | `regimes` | number, reason, bridge, contract, metrics; newest first |
 | `findings` | identity, generated statement, waiver |
 | `frontiers` | the project's frontiers: slug, active or concluded, counts by state, objective preview |
@@ -172,7 +173,7 @@ the record kind.
 `fidget-spinner ui serve --bind 127.0.0.1:8913` serves a loopback board. The index lists frontiers grouped by project, each project under a
 heading that folds. A frontier's board uses the shared layout engine: hypotheses are cells grouped by lane, edges are
 drawn, reviews are coloured sets, and each baseline holds its docket the way a Vauban wall holds its nodes. Epoch
-boundaries are thin separators labelled with their baseline; a regime change is a thick separator marked bridged or
+boundaries are thin separators labelled with their baseline and acceptance time; a regime change is a thick separator marked bridged or
 unbridged. A settled hypothesis belongs to the epoch of its disposition, rather than its creation. By default the horizon
 hides dispositions before the start of the second-latest surviving epoch; unsettled hypotheses always remain visible.
 Recent epochs changes that count, and Show all settled removes the horizon. Clicking a cell opens a foreground with
@@ -180,7 +181,8 @@ its trial table.
 
 The header shows the objective and one chart per KPI: baseline readings as steps across epochs, trials as dots
 coloured by disposition, reference lines dashed, the unit on the axis, every point a link to its record. The line
-breaks at an unbridged regime change. Values show three significant figures.
+breaks at an unbridged regime change. Epochs are named by baseline and acceptance time in chart labels and point
+titles, never by an ordinal. Values show three significant figures.
 
 ## Store
 

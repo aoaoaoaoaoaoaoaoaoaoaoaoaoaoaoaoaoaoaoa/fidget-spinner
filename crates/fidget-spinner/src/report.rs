@@ -96,6 +96,16 @@ fn porcelain(value: &Value) -> String {
     out
 }
 fn field(out: &mut String, key: &str, value: &Value) {
+    if key == "incumbent_baseline"
+        && let Some(fields) = value.as_object()
+    {
+        let _ = write!(out, "incumbent baseline {}", scalar(&value["slug"]));
+        for (key, value) in fields.iter().filter(|(key, _)| key.as_str() != "slug") {
+            let _ = write!(out, " · {key} {}", scalar(value));
+        }
+        routes(out, value);
+        return;
+    }
     if key == "matches" {
         let _ = write!(out, "matches {}", scalar(value));
         return;
@@ -391,6 +401,15 @@ fn receipt(value: &Value) -> String {
 }
 
 fn atom(fields: &Map<String, Value>) -> Option<String> {
+    if fields.len() == 1
+        && let Some(epoch) = fields.get("epoch").and_then(Value::as_object)
+    {
+        return Some(format!(
+            "opened epoch of baseline {} · since {}",
+            scalar(&epoch["baseline"]),
+            scalar(&epoch["since"])
+        ));
+    }
     if fields.contains_key("items") || fields.contains_key("preview") || fields.contains_key("tool")
     {
         return None;

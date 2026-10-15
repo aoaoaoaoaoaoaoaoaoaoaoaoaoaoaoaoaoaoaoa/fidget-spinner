@@ -400,9 +400,18 @@ impl<'a> Lens<'a> {
         "artifacts":t.artifacts,"void":t.void})
     }
 
+    fn since(&self, baseline: &Slug) -> Option<String> {
+        self.frontier
+            .epochs()
+            .iter()
+            .rev()
+            .find(|epoch| &epoch.baseline == baseline)
+            .map(|epoch| stamp(epoch.at, self.full))
+    }
+
     #[must_use]
     pub fn baseline_row(&self, slug: &Slug, b: &Baseline) -> Json {
-        json!({"slug":slug,"regime":b.regime,"epoch":b.epoch,
+        json!({"slug":slug,"regime":b.regime,"since":self.since(slug),
             "disposition":b.disposition.as_ref().map(|d| &d.decision),"artifacts":b.artifacts,
             "readings":self.readings(b.regime,&b.readings,!self.full),"docket":self.docket(slug),"void":b.void,
             "note":b.note.as_deref().map(|s| self.text(s,"frontier.status",json!({"view":"baselines","detail":"full"}))),
@@ -804,8 +813,8 @@ impl<'a> Lens<'a> {
                 });
                 json!({"key":key,"unit":metric.unit,"better":metric.better,"incumbent":incumbent,"refs":metric.refs})
             }).collect(),"regimes",None));
-        let incumbent =
-            baseline.map(|(slug, b)| json!({"slug":slug,"epoch":b.epoch,"artifacts":b.artifacts}));
+        let incumbent = baseline
+            .map(|(slug, b)| json!({"slug":slug,"since":self.since(slug),"artifacts":b.artifacts}));
         let state_h = |state| {
             hs.iter()
                 .filter(|(s, _)| self.assay.hypotheses.get(*s) == Some(&state))

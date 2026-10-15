@@ -323,6 +323,11 @@ impl BoardSource for Navigator {
                 node(T::H2, vec![text(format!("Baseline {slug}"))]),
                 field("Readings", reading(f, b.regime, &b.readings)),
             ];
+            if let Some(epoch) = f.epochs().iter().rev().find(|epoch| epoch.baseline == slug) {
+                scene
+                    .above
+                    .push(field("Since", crate::inspect::stamp(epoch.at, false)));
+            }
             if let Some(note) = &b.note {
                 scene.above.push(node(T::P, vec![text(note)]));
             }
@@ -535,7 +540,7 @@ fn geometry(f: &Frontier, a: &Assay) -> BoardScene {
             },
         );
     }
-    for (slug, b) in f.baselines() {
+    for slug in f.baselines().keys() {
         let mut holds: BTreeSet<_> = a
             .dockets
             .get(slug)
@@ -554,10 +559,20 @@ fn geometry(f: &Frontier, a: &Assay) -> BoardScene {
                     .map(|(h, _)| ids[h]),
             );
         }
-        let title = b.epoch.map_or_else(
-            || format!("Baseline {slug}"),
-            |e| format!("Epoch {e} · {slug}"),
-        );
+        let title = a
+            .epochs
+            .iter()
+            .rev()
+            .find(|epoch| &epoch.baseline == slug)
+            .map_or_else(
+                || format!("Baseline {slug}"),
+                |epoch| {
+                    format!(
+                        "Epoch of {slug} · since {}",
+                        crate::inspect::stamp(epoch.at, false)
+                    )
+                },
+            );
         scene.input.separators.push(Separator {
             index: scene.input.separators.len(),
             holds: holds.into_iter().collect(),
