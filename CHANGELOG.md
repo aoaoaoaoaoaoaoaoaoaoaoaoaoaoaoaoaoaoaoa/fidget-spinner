@@ -1,6 +1,23 @@
 # Changelog
 
-## Unreleased
+## 3.0.0 - 2026-10-14
+
+- Replaces the implementation with a pure domain core and a revision-pinned
+  trebuchet engine for ledger, inspection and navigator mechanisms.
+- Replaces experiments with append-only trials and verdicts with dispositions.
+  Renames measure to reading, break to regime change, current baseline to
+  incumbent baseline, and due to docket membership.
+- Removes situation, walk, experiment open/close, expected yield, confidence,
+  attention, conditions, tags, metric registries and locks, project operations,
+  command/backend capture, clean-worktree capture, SQL, history snapshots and
+  unknowns. Summaries and work states are computed.
+- Replaces the 42-tool MCP surface with six tools: patch, status, hypothesis and
+  review packets, history and health. The CLI binary is `fidget-spinner`.
+- Stores every project's frontiers in one format-21 `ledger.sqlite3`.
+  Old per-project stores are left untouched and are not migrated in place.
+  Timestamped operation logs can be imported into new frontiers.
+- Replaces obsolete browser and portability gates with an isolated CLI proof.
+  Hosted CI is removed while trebuchet remains a local Git dependency.
 
 ## 1.0.9 - 2026-08-24
 

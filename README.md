@@ -1,95 +1,65 @@
 # Fidget Spinner
 
-Fidget Spinner is a local system of record for long-running experimental work.
-A frontier scopes the hill, hypotheses hold KPI-moving ideas, and every
-experiment tests one owning hypothesis. Git owns implementation state; Spinner
-owns experimental truth.
+Fidget Spinner records experimental inquiry in a local, append-only ledger.
+Hypotheses carry claims, trials record evidence, and dispositions settle hypotheses.
+Baselines, epochs and regimes track comparisons under a declared measurement gauge.
+Reviews collect lessons across hypotheses.
 
-It is not a notebook, task tracker, cloud service, or parallel source archive.
+The `fidget-spinner` binary provides a stdio MCP server, a CLI and a loopback
+navigator. The pure Rust core owns the domain rules; the revision-pinned
+`trebuchet` engine supplies shared ledger, inspection and board mechanisms.
+
+## Build and use
+
+The current source depends on a local `trebuchet` Git repository at the path
+declared in `Cargo.toml`. Hosted builds and source installation elsewhere require
+that dependency to be made available first.
+
+```sh
+cargo build --locked --package fidget-spinner
+cargo run --locked --package fidget-spinner -- mcp serve
+```
+
+The CLI accepts JSON operation arrays from a file or stdin:
+
+```sh
+printf '%s\n' '[{"op":"frontier","objective":"Reduce solver latency"}]' |
+  fidget-spinner patch --project . --frontier solver
+fidget-spinner status --project . --frontier solver
+fidget-spinner history --project . --frontier solver
+fidget-spinner ui serve --bind 127.0.0.1:8913
+```
+
+Use `--help` for `read`, `import`, `health` and inspection options.
+The six MCP tools and the operation language are specified in [SPEC.md](SPEC.md);
+[GLOSSARY.md](GLOSSARY.md) and [FORMAL_SEMANTICS.md](FORMAL_SEMANTICS.md) define the domain.
 
 ## Install
 
-Fidget Spinner is release-tested on x86_64 Linux, Apple silicon and Intel Macs,
-and x86_64 Windows. Install the unsigned command-line release from its signed
-source tag with Cargo:
+On Linux, `./scripts/install-local.sh` builds the binary and installs the bundled
+Codex skills and navigator user service. It requires Cargo, Git and `jq`.
+Set `FIDGET_SPINNER_INSTALL_SYSTEMD=0` to omit service integration.
+`./scripts/install-local.sh --uninstall` removes owned installation artifacts
+without deleting ledger state.
 
-```console
-cargo install --git https://github.com/aoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoa/fidget-spinner.git \
-  --tag v2.0.0 --locked fidget-spinner-cli
-fidget-spinner-cli skill install
-```
+## State
 
-The enhanced Linux installer also installs the bundled Codex skills and a
-systemd user service for the navigator. It requires the pinned Rust toolchain,
-Cargo, Git, and `jq`:
+On Linux, all projects share
+`${XDG_STATE_HOME:-~/.local/state}/fidget-spinner/ledger.sqlite3`, in store format 21.
+Other platforms use their native per-user state directory.
+A project's identity is its canonical repository root; linked worktrees share it.
 
-```bash
-./scripts/install-local.sh
-```
-
-It upgrades owned artifacts atomically and refuses foreign paths. State
-survives uninstall:
-
-```bash
-./scripts/install-local.sh --uninstall
-```
-
-Set `FIDGET_SPINNER_INSTALL_SYSTEMD=0` to omit service integration. The
-checked-in `.mcp-depot.toml` provides an optional eager binary path; standalone
-installation remains complete.
-
-## Use
-
-```bash
-fidget-spinner-cli init --project . --name my-project
-fidget-spinner-cli project status --project .
-fidget-spinner-cli mcp serve --project .
-```
-
-An unbound MCP session starts with `system.health`, then `project.bind`. Ground
-through `frontier.open`; use selector reads for detail. The bundled
-[`fidget-spinner`](assets/codex-skills/fidget-spinner/SKILL.md) skill owns the
-agent workflow. [`frontier-loop`](assets/codex-skills/frontier-loop/SKILL.md)
-adds an indefinite measured loop.
-
-The navigator listens at <http://127.0.0.1:8913/>. Run it directly with:
-
-```bash
-fidget-spinner-cli ui serve --bind 127.0.0.1:8913
-```
-
-## State And Authority
-
-Project stores live beneath the operating system's per-user state directory at
-`fidget-spinner/projects/`. On Linux this is
-`${XDG_STATE_HOME:-~/.local/state}/fidget-spinner/projects/`; macOS uses the
-user Application Support directory and Windows uses local AppData.
-`FIDGET_SPINNER_STATE_HOME` accepts an absolute test or deployment root.
-
-Non-scuffed experiment closure requires a clean Git worktree and records
-`HEAD`. Format 20 opens formats 9 through 19 through transactional migrations;
-unknown formats fail closed. Back up `state.sqlite` with Spinner stopped before
-a format upgrade.
-
-The navigator is an unauthenticated supervisor surface. It binds loopback and
-enforces browser origin checks by default. `--allow-remote` adds no
-authentication; use it only behind a trusted access-controlled boundary.
-
-Operator contracts live in [operations](docs/operations.md). Domain policy
-lives in [metric and KPI governance](docs/metric-kpi-governance.md) and
-[supervisory tag governance](docs/supervisory-tag-governance.md). The navigator
-design contract lives in [SPEC.md](SPEC.md).
+Version 3 replaces the previous implementation. Old per-project stores are
+neither opened nor migrated in place. Timestamped `{at,ops}` JSONL can be imported
+into a new frontier with `fidget-spinner import`.
 
 ## Verify
 
-```bash
-./check.py check
-./check.py deep
-```
+The gate script requires `uv`.
 
-`check` runs the source policy, formatter, Clippy, and Rust tests. `deep` adds
-rustdoc, a real Chromium journey, and isolated install/uninstall verification.
-Version 2.0 changes MCP selection defaults and response shapes: bounded pages,
-explicit sections and history snapshots, and identical selected facts in porcelain
-and JSON. CLI and store format 20 remain compatible. See
-[MCP output controls](docs/operations.md#mcp-output-controls). Fidget Spinner is MIT-licensed.
+`./check.py check` (also `verify`) runs formatting, Clippy and Rust tests without
+rewriting sources. `./check.py deep` adds rustdoc and an isolated CLI journey;
+it launches neither a browser nor the installer. `fix` applies the configured
+canonicalization commands; `install` invokes the local installer.
+
+Fidget Spinner is MIT-licensed.
