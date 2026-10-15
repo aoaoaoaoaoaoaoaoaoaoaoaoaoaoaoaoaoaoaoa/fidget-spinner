@@ -193,19 +193,21 @@ struct Toll {
 
 pub struct Server {
     path: PathBuf,
-    default_project: ProjectRoot,
+    default_project: Result<ProjectRoot, String>,
     store: Option<Store>,
     tolls: BTreeMap<(Tool, String, String, String), Toll>,
 }
 
 impl Server {
-    pub fn new(path: PathBuf, project: &Path) -> Result<Self, Fault> {
-        Ok(Self {
+    #[must_use]
+    pub fn new(path: PathBuf, project: &Path) -> Self {
+        Self {
             path,
-            default_project: store::project_root(project)?,
+            default_project: store::project_root(project)
+                .map_err(|error| format!("working directory: {error}")),
             store: None,
             tolls: BTreeMap::new(),
-        })
+        }
     }
 
     fn store(&mut self) -> Result<&mut Store, Fault> {
@@ -219,7 +221,11 @@ impl Server {
 
     fn project(&self, args: &AddressArgs) -> Result<ProjectRoot, Fault> {
         args.project.as_ref().map_or_else(
-            || Ok(self.default_project.clone()),
+            || {
+                self.default_project
+                    .clone()
+                    .map_err(|reason| Fault::Arguments(format!("{reason}; pass project")))
+            },
             |p| Ok(store::project_root(p)?),
         )
     }
@@ -238,7 +244,7 @@ impl Server {
 
     fn context(&self, address: &Address) -> Value {
         let mut context = json!({"frontier":address.slug});
-        if address.project != self.default_project {
+        if self.default_project.as_ref().ok() != Some(&address.project) {
             context["project"] = json!(address.project.as_path());
         }
         context
@@ -317,13 +323,12 @@ impl Server {
     ) -> Result<Value, Fault> {
         if tool == Tool::Health {
             let _: Empty = parse(arguments)?;
-            let project = self.project(args)?;
             let mut result = self.health(detail)?;
             if let Some(frontier) = &args.frontier {
                 result["frontier"] = json!(frontier);
             }
-            if project != self.default_project {
-                result["project"] = json!(project.as_path());
+            if let Some(project) = &args.project {
+                result["project"] = json!(store::project_root(project)?.as_path());
             }
             return Ok(result);
         }
@@ -557,7 +562,7 @@ impl Server {
             )
             .map_err(Fault::Arguments)?;
         let mut result = json!({"seq":high,"scope_total":denominator,"items":page.items,"total":page.total,"next_cursor":page.next_cursor});
-        if project != self.default_project {
+        if self.default_project.as_ref().ok() != Some(&project) {
             result["project"] = json!(project.as_path());
         }
         Ok(result)
@@ -626,7 +631,10 @@ impl Server {
             Ok(None) => (false, None, None),
             Err(e) => (false, None, Some(e.to_string())),
         };
-        let mut result = json!({"version":env!("CARGO_PKG_VERSION"),"process":"ready","store":self.path,
+        let mut result = json!({"default_project": match &self.default_project {
+            Ok(project) => json!(project.as_path()),
+            Err(reason) => json!({"error":reason}),
+        }, "version":env!("CARGO_PKG_VERSION"),"process":"ready","store":self.path,
             "format":21,"available":available,"head":head,"error":error});
         if detail == DetailLevel::Full {
             result["telemetry"] = json!({"lifetime":"process-local; reset on restart","total":self.tolls.len(),"items":self.tolls.iter().map(|((tool,operation,render,detail),t)|json!({

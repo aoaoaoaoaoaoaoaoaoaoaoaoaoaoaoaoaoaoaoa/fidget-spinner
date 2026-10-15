@@ -3,6 +3,8 @@
     reason = "The library target owns the server dependencies."
 )]
 
+use std::path::Path;
+
 use std::{io::Read as _, path::PathBuf, process::ExitCode};
 
 use clap::{Args, Parser, Subcommand};
@@ -168,8 +170,8 @@ fn main() -> ExitCode {
 
 fn run(cli: Cli) -> Result<(), Fault> {
     let path = store::default_path()?;
-    let cwd = std::env::current_dir()?;
-    let mut server = Server::new(path.clone(), &cwd)?;
+    let cwd = Path::new(".");
+    let mut server = Server::new(path.clone(), cwd);
     let (tool, arguments) = match cli.command {
         Command::Mcp {
             command: McpCommand::Serve,
@@ -252,7 +254,14 @@ fn run(cli: Cli) -> Result<(), Fault> {
             let slug = target
                 .frontier
                 .ok_or_else(|| Fault::Arguments("import requires --frontier".into()))?;
-            let project = store::project_root(target.project.as_deref().unwrap_or(&cwd))?;
+            let project = target.project.as_deref().map_or_else(
+                || {
+                    store::project_root(cwd).map_err(|error| {
+                        Fault::Arguments(format!("working directory: {error}; pass project"))
+                    })
+                },
+                |project| Ok(store::project_root(project)?),
+            )?;
             let count = store::import(
                 &path,
                 &Address {

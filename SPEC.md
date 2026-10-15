@@ -11,7 +11,8 @@ directory. A path resolves to its project: the nearest ancestor holding `.git`, 
 main checkout through `commondir`, or the canonical path itself outside Git. `frontier.patch` requires `frontier`. A
 read may omit it only when the project has exactly one active frontier; otherwise the read is refused with the list
 of the project's frontiers. Responses name the frontier, and the project only when it is not the default. Cursors
-belong to their project and frontier.
+belong to their project and frontier. Failure to resolve the working directory does not prevent startup: `system.health`
+reports the reason, and calls that need a project refuse only when `project` is omitted, asking the caller to pass it.
 
 ## Tools
 
