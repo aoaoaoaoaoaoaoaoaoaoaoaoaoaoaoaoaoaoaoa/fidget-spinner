@@ -130,7 +130,7 @@ impl Tool {
                 "scope":{"oneOf":[{"type":"string","enum":["project"]},{"type":"object","additionalProperties":false,"properties":{"under":string,"review":string,"docket":string}}]},
                 "filter":{"type":"object","additionalProperties":false,"properties":{
                     "state":{"type":"array","items":{"type":"string","enum":["waiting","ready","running","tested","settled","completed"]}},
-                    "disposition":{"type":"array","items":{"type":"string","enum":["accepted","rejected","shelved","candidate","open"]}},
+                    "disposition":{"type":"array","items":{"type":"string","enum":["accepted","rejected","shelved","candidate"]}},
                     "owner":string,"lane":string,"text":string}},
                 "limit":limit,"cursor":string}),
                 vec![],
@@ -304,7 +304,7 @@ impl Server {
                 )));
             }
         }
-        let output = self.dispatch(tool, &address, args, detail)?;
+        let output = crate::report::project(self.dispatch(tool, &address, args, detail)?)?;
         Ok((render, output))
     }
 
@@ -350,7 +350,9 @@ impl Server {
                 Decision::Appended(seq) => json!(seq),
                 Decision::Rehearsed => Value::Null,
             };
-            output["rehearsed"] = json!(dry_run);
+            if dry_run {
+                output["rehearsed"] = json!(true);
+            }
             let warnings: Vec<_> = receipt
                 .warnings
                 .into_iter()
@@ -362,11 +364,36 @@ impl Server {
                     })
                 })
                 .collect();
-            output["warnings"] = json!({"total":warnings.len(),"items":warnings});
-            output["raised"] = json!({"items":receipt.report.raised.iter().map(|(identity,waiver)|json!({"identity":identity,"waiver":waiver})).collect::<Vec<_>>(),"total":receipt.report.raised.len()});
-            output["cleared"] = json!({"items":receipt.report.cleared.iter().map(|(identity,waiver)|json!({"identity":identity,"waiver":waiver})).collect::<Vec<_>>(),"total":receipt.report.cleared.len()});
-            output["before"] = json!(receipt.report.before);
-            output["after"] = json!(receipt.report.after);
+            if !warnings.is_empty() {
+                output["warnings"] = json!({"total":warnings.len(),"items":warnings});
+            }
+            for (key, findings) in [
+                ("raised", receipt.report.raised),
+                ("cleared", receipt.report.cleared),
+            ] {
+                if !findings.is_empty() {
+                    output[key] = json!({"items":findings.iter().map(|(identity,waiver)|json!({"identity":identity,"waiver":waiver})).collect::<Vec<_>>(),"total":findings.len()});
+                }
+            }
+            let mut changes = serde_json::Map::new();
+            for state in receipt
+                .report
+                .before
+                .keys()
+                .chain(receipt.report.after.keys())
+                .copied()
+                .collect::<std::collections::BTreeSet<_>>()
+            {
+                let before = receipt.report.before.get(&state).copied().unwrap_or(0);
+                let after = receipt.report.after.get(&state).copied().unwrap_or(0);
+                if before != after {
+                    let key = serde_json::from_value::<String>(serde_json::to_value(state)?)?;
+                    let _ = changes.insert(key, json!({"before":before,"after":after}));
+                }
+            }
+            if !changes.is_empty() {
+                output["changes"] = Value::Object(changes);
+            }
             return Ok(output);
         }
         let cursor = arguments.get("cursor").and_then(Value::as_str);

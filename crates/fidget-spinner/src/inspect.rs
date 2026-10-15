@@ -51,7 +51,6 @@ pub enum DecisionName {
     Rejected,
     Shelved,
     Candidate,
-    Open,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord)]
@@ -238,7 +237,7 @@ impl<'a> Lens<'a> {
         }) && filter
             .disposition
             .as_ref()
-            .is_none_or(|xs| xs.contains(&hypothesis_decision(h)))
+            .is_none_or(|xs| hypothesis_decision(h).is_some_and(|d| xs.contains(&d)))
             && filter
                 .owner
                 .as_ref()
@@ -692,35 +691,68 @@ impl<'a> Lens<'a> {
                 ),
             )
         };
-        let regime=self.frontier.current_regime().map(|r| {
-        let first=r.gauge.contract.lines().next().unwrap_or("");
-        let contract=if first==r.gauge.contract {json!(first)} else {json!(trebuchet::inspect::Text::Preview{
-            preview:first.into(),full_read:self.route("frontier.status",json!({"view":"regimes","detail":"full"}))})};
-        json!({"number":r.number,"contract":contract,
-            "kpis":list(r.gauge.metrics.iter().filter(|(_,m)|m.kpi&&!m.retired)
-                .map(|(k,m)|json!({"key":k,"unit":m.unit,"better":m.better})).collect(),"regimes",None)})
-    });
-        let incumbent=self.assay.incumbent_baseline.as_ref().and_then(|s|self.frontier.baselines().get(s).map(|b|
-        json!({"slug":s,"epoch":b.epoch,"artifacts":b.artifacts,"readings":self.readings(b.regime,&b.readings,true)})));
+        let baseline = self
+            .assay
+            .incumbent_baseline
+            .as_ref()
+            .and_then(|s| self.frontier.baselines().get(s).map(|b| (s, b)));
+        let regime = self.frontier.current_regime().map(|r| {
+            let first = r.gauge.contract.lines().next().unwrap_or("");
+            let contract = if first == r.gauge.contract {
+                json!(first)
+            } else {
+                json!(trebuchet::inspect::Text::Preview {
+                    preview: first.into(),
+                    full_read: self
+                        .route("frontier.status", json!({"view":"regimes","detail":"full"}))
+                })
+            };
+            json!({"number":r.number,"contract":contract})
+        });
+        let kpis=self.frontier.current_regime().map(|r|list(
+            r.gauge.metrics.iter().filter(|(_,m)|m.kpi&&!m.retired).map(|(key,metric)| {
+                let incumbent=baseline.and_then(|(_,b)|b.readings.get(key)).and_then(|reading|match reading {
+                    Reading::Listed{value}=>Some(*value),Reading::Unlisted{..}=>None,
+                });
+                json!({"key":key,"unit":metric.unit,"better":metric.better,"incumbent":incumbent,"refs":metric.refs})
+            }).collect(),"regimes",None));
+        let incumbent =
+            baseline.map(|(slug, b)| json!({"slug":slug,"epoch":b.epoch,"artifacts":b.artifacts}));
         let state_h = |state| {
             hs.iter()
                 .filter(|(s, _)| self.assay.hypotheses.get(*s) == Some(&state))
-                .map(|(s, h)| self.hypothesis_row(s, h))
+                .map(|(s, h)| {
+                    let mut row = self.hypothesis_row(s, h);
+                    if let Some(fields) = row.as_object_mut() {
+                        let _ = fields.shift_remove("state");
+                        let _ = fields.shift_remove("disposition");
+                        if state == State::Ready {
+                            let _ = fields.shift_remove("trials");
+                        }
+                    }
+                    row
+                })
                 .collect::<Vec<_>>()
         };
         let state_r = |state| {
             reviews
                 .iter()
                 .filter(|(s, _)| self.assay.reviews.get(*s) == Some(&state))
-                .map(|(s, r)| self.review_row(s, r))
+                .map(|(s, r)| {
+                    let mut row = self.review_row(s, r);
+                    if let Some(fields) = row.as_object_mut() {
+                        let _ = fields.shift_remove("state");
+                    }
+                    row
+                })
                 .collect::<Vec<_>>()
         };
         Ok(
             json!({"objective":self.text(self.frontier.objective().unwrap_or(""),"frontier.status",json!({"detail":"full"})),
         "conclusion":self.frontier.conclusion().map(|l|self.text(&l.text,"frontier.status",json!({"detail":"full"}))),
-        "counts":counts,"regime":regime,"incumbent_baseline":incumbent,
+        "counts":counts,"regime":regime,"incumbent_baseline":incumbent,"kpis":kpis,
         "dockets":list(self.frontier.baselines().iter().filter(|(s,b)|(b.disposition.is_none()||self.assay.incumbent_baseline.as_ref()==Some(*s))&&self.baseline_selected(s,&selected,args.scope.as_ref()))
-            .map(|(s,_)|json!({"baseline":s,"progress":self.docket(s)})).collect(),"baselines",None),
+            .filter(|(s,_)|self.assay.dockets.get(*s).is_some_and(|d|!d.members.is_empty())).map(|(s,_)|json!({"baseline":s,"progress":self.docket(s)})).collect(),"baselines",None),
         "running":{"hypotheses":list(state_h(State::Running),"hypotheses",Some("running")),"reviews":list(state_r(ReviewState::Running),"reviews",Some("running"))},
         "tested":list(state_h(State::Tested),"hypotheses",Some("tested")),
         "ready":{"hypotheses":list(state_h(State::Ready),"hypotheses",Some("ready")),"reviews":list(state_r(ReviewState::Ready),"reviews",Some("ready"))},
@@ -856,14 +888,12 @@ impl<'a> Lens<'a> {
     }
 }
 
-fn hypothesis_decision(h: &Hypothesis) -> DecisionName {
-    h.disposition
-        .as_ref()
-        .map_or(DecisionName::Open, |d| match d.decision {
-            HypothesisDecision::Accepted { .. } => DecisionName::Accepted,
-            HypothesisDecision::Rejected => DecisionName::Rejected,
-            HypothesisDecision::Shelved => DecisionName::Shelved,
-        })
+fn hypothesis_decision(h: &Hypothesis) -> Option<DecisionName> {
+    h.disposition.as_ref().map(|d| match d.decision {
+        HypothesisDecision::Accepted { .. } => DecisionName::Accepted,
+        HypothesisDecision::Rejected => DecisionName::Rejected,
+        HypothesisDecision::Shelved => DecisionName::Shelved,
+    })
 }
 fn baseline_decision(b: &Baseline) -> DecisionName {
     b.disposition

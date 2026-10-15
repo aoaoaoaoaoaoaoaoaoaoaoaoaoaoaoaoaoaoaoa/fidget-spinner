@@ -72,8 +72,10 @@ value   = number | "number unit"
 ## Receipts
 
 A receipt reports the sequence number, or that the patch was rehearsed; the warnings of each operation by index; the
-findings the patch raised or cleared; and the frontier's counts of hypotheses by state before and after. A refusal
-names the operation's index and name and the reason, and nothing is applied. Warnings name the subject, and, for an
+findings the patch raised or cleared; and only the hypothesis-state counts that changed, with their before and after
+values. Its porcelain header is `frontier F · seq N`, or `frontier F · rehearsed, not applied` for a dry run; changes
+share one line, such as `ready 0→1 · tested 0→1`. Warnings, raised findings and cleared findings appear only when present.
+A refusal names the operation's index and name and the reason, and nothing is applied. Warnings name the subject, and, for an
 unlisted reading, the closest metric key when one is close.
 
 ## Inspection
@@ -86,13 +88,21 @@ previews of long text are marked incomplete and name the call that reads them wh
 A removal after a cursor's snapshot invalidates non-history continuations; the refusal asks the caller to rerun the
 query without the cursor. History continuations remain usable and apply current removal redaction.
 
+Projections omit absent fields; an unsettled hypothesis has no disposition. Porcelain omits empty collections and
+zero counts, and uses `—` for absent table cells. JSON may retain empty collections and zero counts. Tables omit
+columns already fixed by their enclosing list: tested hypotheses omit state and disposition; ready hypotheses also
+omit trial count. Readings use `key value unit`, with numbers printed by f64 Display. The summary joins KPI definitions,
+reference lines and incumbent-baseline readings in one table: `key | unit | better | incumbent | refs`. Full history
+operations preserve asserted empty arrays and nulls because they are part of the operation payload.
+
 ### Status
 
 `frontier.status` without `view` returns the summary, under 2 KB for a typical frontier:
 
 1. the objective;
-2. the current regime: number, first line of the contract, and the KPIs with unit and direction;
-3. the incumbent baseline: slug, epoch, artifacts, and its KPI readings;
+2. the current regime: number and first line of the contract;
+3. the incumbent baseline: slug, epoch and artifacts; one KPI table joins keys, units, directions, incumbent readings
+   and reference lines;
 4. docket progress of the incumbent baseline and of each candidate: settled members over members;
 5. running hypotheses and reviews with owners;
 6. tested hypotheses awaiting disposition;

@@ -142,7 +142,7 @@ fn mcp_inquiry_session() -> Result {
         {"op":"remove","hypothesis":"renamed"},
         {"op":"hypothesis","slug":"renamed","title":"A distinct record"}
     ]}))?;
-    assert_eq!(patched["after"]["tested"], 1);
+    assert_eq!(patched["changes"]["tested"]["after"], 1);
     let status = session.json("frontier.status", json!({}))?;
     assert_eq!(status["frontier"], "latency");
     assert_eq!(status["counts"]["tested"], 1);
