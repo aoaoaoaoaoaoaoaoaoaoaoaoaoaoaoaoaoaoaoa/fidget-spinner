@@ -9,19 +9,22 @@ profile = "portable-cli"
 [coordinates]
 release-tested = [
   "linux-x86_64",
-  "macos-aarch64",
-  "macos-x86_64",
-  "windows-x86_64",
 ]
 
 [delivery]
 linux = "cargo"
-macos = "cargo"
-windows = "cargo"
 
-[trust]
-macos = "unsigned-incubation"
-windows = "unsigned-incubation"
+[[exclusions]]
+coordinate = "macos-aarch64"
+reason = "Version 3 ships a Linux installer and a local Git engine dependency; macOS qualification is deferred."
+
+[[exclusions]]
+coordinate = "macos-x86_64"
+reason = "Version 3 ships a Linux installer and a local Git engine dependency; macOS qualification is deferred."
+
+[[exclusions]]
+coordinate = "windows-x86_64"
+reason = "Version 3 ships a Linux installer and a local Git engine dependency; Windows qualification is deferred."
 
 [[proofs]]
 name = "source"
@@ -43,12 +46,16 @@ timeout-minutes = 45
 
 [[proofs]]
 name = "runtime"
-laws = ["host", "lifecycle"]
+laws = ["host"]
 run = ["bash", "scripts/prove-runtime"]
 coordinates = [
   "linux-x86_64",
-  "macos-aarch64",
-  "macos-x86_64",
-  "windows-x86_64",
 ]
+timeout-minutes = 90
+
+[[proofs]]
+name = "lifecycle"
+laws = ["lifecycle"]
+run = ["bash", "scripts/install-e2e.sh"]
+coordinates = ["linux-x86_64"]
 timeout-minutes = 90

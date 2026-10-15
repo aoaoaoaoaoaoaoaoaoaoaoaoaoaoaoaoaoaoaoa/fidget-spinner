@@ -6,11 +6,11 @@ cell=$(mktemp -d "${TMPDIR:-/tmp}/fidget-spinner-package.XXXXXX")
 trap 'rm -rf -- "$cell"' EXIT HUP INT TERM
 cd "$root"
 
-cargo install --locked --force --path crates/fidget-spinner-cli --root "$cell/prefix"
-binary="$cell/prefix/bin/fidget-spinner-cli"
+cargo install --locked --path crates/fidget-spinner --root "$cell/prefix"
+binary="$cell/prefix/bin/fidget-spinner"
 if [ "${OS:-}" = Windows_NT ]; then
     binary=$binary.exe
 fi
 "$binary" --version
-cargo uninstall --root "$cell/prefix" fidget-spinner-cli
+cargo uninstall --root "$cell/prefix" fidget-spinner
 test ! -e "$binary"

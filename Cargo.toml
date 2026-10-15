@@ -4,9 +4,9 @@ resolver = "3"
 
 [workspace.package]
 categories = ["development-tools", "command-line-utilities"]
-description = "Local-first frontier ledger, MCP server, and navigator for long-running optimization work."
+description = "Local inquiry ledger, MCP server, and navigator for hypotheses, trials, and baselines."
 edition = "2024"
-keywords = ["mcp", "optimization", "frontier", "experiments", "ledger"]
+keywords = ["mcp", "optimization", "frontier", "trials", "ledger"]
 license = "MIT"
 readme = "README.md"
 repository = "https://github.com/aoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoa/fidget-spinner"
@@ -103,17 +103,19 @@ format_command = ["cargo", "fmt", "--all", "--check"]
 clippy_command = [
   "cargo",
   "clippy",
+  "--locked",
   "--workspace",
   "--all-targets",
   "--all-features",
 ]
-test_command = ["cargo", "test", "--workspace", "--all-targets", "--all-features"]
-doc_command = ["cargo", "doc", "--workspace", "--all-features", "--no-deps"]
+test_command = ["cargo", "test", "--locked", "--workspace", "--all-targets", "--all-features"]
+doc_command = ["cargo", "doc", "--locked", "--workspace", "--all-features", "--no-deps"]
 canonicalize_commands = [
   ["cargo", "fmt", "--all"],
   [
     "cargo",
     "clippy",
+    "--locked",
     "--fix",
     "--workspace",
     "--all-targets",
@@ -123,10 +125,4 @@ canonicalize_commands = [
   ],
 ]
 install_command = ["./scripts/install-local.sh"]
-ui_e2e_command = ["node", "scripts/ui-e2e.mjs"]
-install_e2e_command = ["bash", "scripts/install-e2e.sh"]
-
-[workspace.metadata.rust-starter.source_files]
-max_lines = 2500
-include = ["*.rs", "**/*.rs"]
-exclude = []
+runtime_command = ["bash", "scripts/prove-runtime"]

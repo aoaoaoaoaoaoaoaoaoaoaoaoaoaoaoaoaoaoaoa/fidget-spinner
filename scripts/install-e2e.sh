@@ -4,11 +4,10 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 INSTALLER="${ROOT_DIR}/scripts/install-local.sh"
 HOST_CARGO_HOME="${CARGO_HOME:-${HOME}/.cargo}"
-HOST_CARGO_TARGET_DIR="$(
-  cargo metadata --format-version 1 --no-deps --manifest-path "${ROOT_DIR}/Cargo.toml" |
-    jq -er '.target_directory'
-)"
+HOST_HOME="${HOME}"
+HOST_CARGO="$(command -v cargo)"
 SANDBOX="$(mktemp -d "${TMPDIR:-/tmp}/fidget-spinner-install-e2e.XXXXXX")"
+trap 'rm -rf -- "${SANDBOX}"' EXIT
 HOME_ROOT="${SANDBOX}/home with %"
 LOCAL_ROOT="${HOME_ROOT}/local root"
 SKILL_ROOT="${HOME_ROOT}/codex skills"
@@ -18,14 +17,9 @@ FAKE_BIN="${SANDBOX}/fake-bin"
 SYSTEMCTL_LOG="${SANDBOX}/systemctl.log"
 SERVICE_PATH="${XDG_CONFIG_ROOT}/systemd/user/fidget-spinner-ui.service"
 EXPECTED_VERSION="$(
-  cargo metadata --format-version 1 --no-deps --manifest-path "${ROOT_DIR}/Cargo.toml" |
-    jq -er '.packages[] | select(.name == "fidget-spinner-cli") | .version'
+  cargo metadata --locked --format-version 1 --no-deps --manifest-path "${ROOT_DIR}/Cargo.toml" |
+    jq -er '.packages[] | select(.name == "fidget-spinner") | .version'
 )"
-
-cleanup() {
-  rm -rf -- "${SANDBOX}"
-}
-trap cleanup EXIT
 
 fail() {
   printf 'install E2E failure: %s\n' "$1" >&2
@@ -41,13 +35,21 @@ run_installer() {
     XDG_RUNTIME_DIR="${SANDBOX}/runtime" \
     DBUS_SESSION_BUS_ADDRESS= \
     SYSTEMCTL_LOG="${SYSTEMCTL_LOG}" \
+    HOST_HOME="${HOST_HOME}" \
+    HOST_CARGO="${HOST_CARGO}" \
+    FIDGET_SPINNER_INSTALL_SYSTEMD=1 \
     FIDGET_SPINNER_UI_BIND="${TEST_UI_BIND:-127.0.0.1:0}" \
     CARGO_HOME="${HOST_CARGO_HOME}" \
-    CARGO_TARGET_DIR="${HOST_CARGO_TARGET_DIR}" \
     "${INSTALLER}" "$@"
 }
 
 mkdir -p "${FAKE_BIN}" "${HOME_ROOT}" "${XDG_CONFIG_ROOT}/systemd/user" "${SANDBOX}/runtime"
+cat > "${FAKE_BIN}/cargo" <<'CARGO'
+#!/usr/bin/env bash
+set -euo pipefail
+# Restore the build host's HOME for its toolchain and resource-policy wrapper.
+exec env HOME="${HOST_HOME}" "${HOST_CARGO}" "$@"
+CARGO
 cat > "${FAKE_BIN}/systemctl" <<'SYSTEMCTL'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "${SYSTEMCTL_LOG}"
@@ -55,7 +57,7 @@ if [[ "$*" == *" is-enabled "* ]]; then
   exit 1
 fi
 SYSTEMCTL
-chmod 0755 "${FAKE_BIN}/systemctl"
+chmod 0755 "${FAKE_BIN}/cargo" "${FAKE_BIN}/systemctl"
 
 if TEST_UI_BIND=0.0.0.0:8913 run_installer "${LOCAL_ROOT}" "${SKILL_ROOT}" >/dev/null 2>&1; then
   fail "service installer accepted a non-loopback bind"
@@ -66,22 +68,22 @@ if run_installer "${LOCAL_ROOT}" "${SKILL_ROOT}" >/dev/null 2>&1; then
   fail "installer replaced an unowned service"
 fi
 [[ "$(<"${SERVICE_PATH}")" == "foreign unit" ]] || fail "unowned service bytes changed"
-[[ ! -e "${LOCAL_ROOT}/bin/fidget-spinner-cli" ]] || fail "preflight failure left a binary"
+[[ ! -e "${LOCAL_ROOT}/bin/fidget-spinner" ]] || fail "preflight failure left a binary"
 [[ ! -e "${SKILL_ROOT}/fidget-spinner" ]] || fail "preflight failure left a skill"
 rm -f "${SERVICE_PATH}"
 
-mkdir -p "${XDG_STATE_ROOT}/fidget-spinner/projects/sentinel"
-printf 'ledger\n' > "${XDG_STATE_ROOT}/fidget-spinner/projects/sentinel/state.sqlite"
+mkdir -p "${XDG_STATE_ROOT}/fidget-spinner"
+printf 'ledger\n' > "${XDG_STATE_ROOT}/fidget-spinner/ledger.sqlite3"
 run_installer "${LOCAL_ROOT}" "${SKILL_ROOT}"
 
-"${LOCAL_ROOT}/bin/fidget-spinner-cli" --version | grep -Fqx "fidget-spinner-cli ${EXPECTED_VERSION}" \
+"${LOCAL_ROOT}/bin/fidget-spinner" --version | grep -Fqx "fidget-spinner ${EXPECTED_VERSION}" \
   || fail "installed binary has the wrong identity"
-first_binary_inode="$(stat -c '%i' "${LOCAL_ROOT}/bin/fidget-spinner-cli")"
+first_binary_inode="$(stat -c '%i' "${LOCAL_ROOT}/bin/fidget-spinner")"
 run_installer "${LOCAL_ROOT}" "${SKILL_ROOT}"
-second_binary_inode="$(stat -c '%i' "${LOCAL_ROOT}/bin/fidget-spinner-cli")"
+second_binary_inode="$(stat -c '%i' "${LOCAL_ROOT}/bin/fidget-spinner")"
 [[ "${first_binary_inode}" != "${second_binary_inode}" ]] \
   || fail "binary upgrade did not publish a new inode"
-if compgen -G "${LOCAL_ROOT}/bin/.fidget-spinner-cli.??????" >/dev/null; then
+if compgen -G "${LOCAL_ROOT}/bin/.fidget-spinner.??????" >/dev/null; then
   fail "binary upgrade left a staged executable"
 fi
 for skill in fidget-spinner frontier-loop; do
@@ -98,11 +100,11 @@ systemd-analyze verify "${SERVICE_PATH}" || fail "generated service fails the re
 printf 'preserve me\n' > "${SKILL_ROOT}/fidget-spinner/user-note"
 run_installer --uninstall "${LOCAL_ROOT}" "${SKILL_ROOT}"
 
-[[ ! -e "${LOCAL_ROOT}/bin/fidget-spinner-cli" ]] || fail "binary survived uninstall"
+[[ ! -e "${LOCAL_ROOT}/bin/fidget-spinner" ]] || fail "binary survived uninstall"
 [[ ! -e "${SERVICE_PATH}" ]] || fail "owned service survived uninstall"
 [[ -f "${SKILL_ROOT}/fidget-spinner/user-note" ]] || fail "uninstall removed user material"
 [[ ! -e "${SKILL_ROOT}/fidget-spinner/SKILL.md" ]] || fail "owned skill file survived uninstall"
-[[ -f "${XDG_STATE_ROOT}/fidget-spinner/projects/sentinel/state.sqlite" ]] \
+[[ -f "${XDG_STATE_ROOT}/fidget-spinner/ledger.sqlite3" ]] \
   || fail "uninstall removed ledger state"
 
 printf 'foreign unit after uninstall\n' > "${SERVICE_PATH}"

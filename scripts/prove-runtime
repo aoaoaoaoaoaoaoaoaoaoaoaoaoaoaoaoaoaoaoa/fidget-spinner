@@ -2,7 +2,51 @@
 set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cell="$(mktemp -d "${TMPDIR:-/tmp}/fidget-spinner-runtime.XXXXXX")"
+trap 'rm -rf -- "$cell"' EXIT
 cd "$root"
 
-cargo test --locked --workspace --all-targets --all-features
-cargo run --locked --release --package fidget-spinner-portability -- lifecycle
+cargo build --locked --package fidget-spinner
+target="$(cargo metadata --locked --format-version 1 --no-deps | jq -er '.target_directory')"
+binary="$target/debug/fidget-spinner"
+export XDG_STATE_HOME="$cell/state"
+mkdir -p "$cell/project"
+
+"$binary" --version
+"$binary" ui serve --help >/dev/null
+"$binary" mcp serve --help >/dev/null
+
+cat >"$cell/patch.json" <<'JSON'
+[
+  {"op":"frontier","objective":"Runtime acceptance"},
+  {"op":"regime","contract":"Isolated CLI fixture","metrics":[{"key":"latency","unit":"ms","better":"lower","kpi":true}]},
+  {"op":"baseline","slug":"base","readings":{"latency":10}},
+  {"op":"accept","baseline":"base","rationale":"Initial comparison"},
+  {"op":"hypothesis","slug":"faster","title":"Reduce latency"},
+  {"op":"review","slug":"program","title":"Latency program","charter":"Assess latency","members":["faster"]},
+  {"op":"trial","hypothesis":"faster","note":"Measured fixture","readings":{"latency":"9 ms"}},
+  {"op":"accept","hypothesis":"faster","rationale":"Lower latency"}
+]
+JSON
+
+spinner() {
+  "$binary" "$1" --project "$cell/project" --frontier fixture "${@:2}"
+}
+
+spinner patch "$cell/patch.json" --dry-run --render json | jq -e '.rehearsed == true and .seq == null' >/dev/null
+if spinner status >/dev/null 2>&1; then
+  printf 'dry-run persisted the frontier\n' >&2
+  exit 1
+fi
+spinner patch "$cell/patch.json" >/dev/null
+spinner status --render json | jq -e '. != null' >/dev/null
+spinner read faster --detail full | grep -Fq 'Measured fixture'
+spinner read program --review --detail full | grep -Fq 'Assess latency'
+spinner history --seq 1 --detail full | grep -Fq 'Runtime acceptance'
+"$binary" health --render json | jq -e '. != null' >/dev/null
+
+printf '%s\n' '{"at":"2026-10-14T00:00:00Z","ops":[{"op":"frontier","objective":"Imported fixture"}]}' >"$cell/import.jsonl"
+"$binary" import --project "$cell/project" --frontier imported "$cell/import.jsonl" >/dev/null
+"$binary" status --project "$cell/project" --frontier imported | grep -Fq 'Imported fixture'
+
+printf 'isolated CLI runtime proof passed\n'

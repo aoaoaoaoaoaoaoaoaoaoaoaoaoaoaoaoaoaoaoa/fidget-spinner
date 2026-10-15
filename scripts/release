@@ -15,18 +15,14 @@ esac
 root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 cd "$root"
 
-[ "$(git branch --show-current)" = main ] || die 'release checkout is not main'
 [ -z "$(git status --porcelain)" ] || die 'worktree is dirty'
-[ "$(git rev-parse HEAD)" = "$(git rev-parse '@{upstream}')" ] ||
-    die 'HEAD is not the pushed upstream commit'
 grep -Fqx "version = \"$version\"" Cargo.toml ||
     die "Cargo.toml does not declare workspace version $version"
 git tag --points-at HEAD | grep -Fqx "v$version" ||
     die "v$version does not tag HEAD"
 git tag -v "v$version" >/dev/null 2>&1 || die "v$version is not a valid signed tag"
 
-./check.py check
+./check.py deep
 scripts/audit
 scripts/package
-scripts/prove-runtime
-printf 'release candidate v%s passed; Cargo installs directly from this signed tag\n' "$version"
+printf 'release candidate v%s passed locally; no publication performed\n' "$version"

@@ -372,7 +372,7 @@ CARGO_TARGET_DIR="$(
 
 mkdir -p "${LOCAL_BIN_DIR}"
 
-cargo build --release -p fidget-spinner --manifest-path "${ROOT_DIR}/Cargo.toml"
+cargo build --locked --release -p fidget-spinner --manifest-path "${ROOT_DIR}/Cargo.toml"
 "${CARGO_TARGET_DIR}/release/fidget-spinner" ui serve --bind "${UI_BIND}" --help >/dev/null
 install_binary
 install_skill "fidget-spinner"
