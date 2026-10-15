@@ -1072,6 +1072,14 @@ impl Frontier {
                     }
                 }
                 for h in self.hypotheses.values_mut() {
+                    if let Some(Disposition {
+                        decision: HypothesisDecision::Accepted { against },
+                        ..
+                    }) = &mut h.disposition
+                        && against.as_ref() == Some(b)
+                    {
+                        *against = None;
+                    }
                     for t in h.trials.values_mut() {
                         if t.against.as_ref() == Some(b) {
                             t.against = None;
@@ -1087,6 +1095,8 @@ impl Frontier {
                     .ok_or_else(|| unknown(RecordKind::Trial, id))?;
             }
         }
+        self.waivers
+            .retain(|finding, _| !finding.has_subject(target));
         Ok(())
     }
 
@@ -1185,6 +1195,10 @@ impl Frontier {
                 }
             }
         }
+        self.waivers = std::mem::take(&mut self.waivers)
+            .into_iter()
+            .map(|(finding, note)| (finding.renamed(target, to), note))
+            .collect();
         Ok(())
     }
 }

@@ -105,10 +105,14 @@ Accepting a hypothesis records the incumbent baseline of that moment.
 Void marks a trial or baseline invalid with a nonempty reason, and unvoid clears the mark. A void record stays in
 every view and is excluded from charts, comparisons, incumbency and findings.
 
-Remove erases a hypothesis, review, baseline or trial. Removing a hypothesis also removes its trials, edges, docket
-entry and review memberships, and is refused when it is a review's last member. Removing a baseline clears its docket
-and leaves trials against it without a baseline. History shows operations on removed records redacted; the store
-keeps them, and the slug becomes free.
+Remove erases a hypothesis, review, baseline or trial and every reference to it, as if the reference had never been
+set. Removing a hypothesis also removes its trials, edges, docket entry, baseline adoptions and review memberships,
+and is refused when it is a review's last member. Removing a baseline clears its docket, trials' comparison baseline,
+acceptances' recorded incumbent baseline and any regime bridge naming it, and erases its epochs without reusing their
+numbers. An acceptance without a recorded incumbent baseline is backed by any non-void trial; a regime without its
+bridge is unbridged. Removal drops waivers whose finding subject was removed. Rename rewrites every reference,
+including waiver identities. History shows operations on removed records redacted; the store keeps them, and the
+slug becomes free.
 
 ## 8. Reviews
 

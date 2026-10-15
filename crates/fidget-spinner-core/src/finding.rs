@@ -12,6 +12,40 @@ pub enum FindingId {
     Unaccepted(Slug, Slug),
 }
 
+impl FindingId {
+    pub(crate) fn has_subject(&self, target: &crate::RemoveTarget) -> bool {
+        use crate::RemoveTarget::{Baseline, Hypothesis, Review, Trial};
+        match self {
+            Self::Unbacked(h) => matches!(target,Hypothesis(removed) if h==removed),
+            Self::Unread(b, _) => matches!(target,Baseline(removed) if b==removed),
+            Self::Unaccepted(b, h) => match target {
+                Baseline(removed) => b == removed,
+                Hypothesis(removed) => h == removed,
+                Review(_) | Trial(_) => false,
+            },
+            Self::Unbridged(_) | Self::Unlisted(_, _) => false,
+        }
+    }
+
+    pub(crate) fn renamed(self, target: &crate::RenameTarget, to: &Slug) -> Self {
+        let hypothesis = |slug| match target {
+            crate::RenameTarget::Hypothesis(from) if &slug == from => to.clone(),
+            _ => slug,
+        };
+        let baseline = |slug| match target {
+            crate::RenameTarget::Baseline(from) if &slug == from => to.clone(),
+            _ => slug,
+        };
+        match self {
+            Self::Unbacked(h) => Self::Unbacked(hypothesis(h)),
+            Self::Unread(b, k) => Self::Unread(baseline(b), k),
+            Self::Unaccepted(b, h) => Self::Unaccepted(baseline(b), hypothesis(h)),
+            Self::Unbridged(n) => Self::Unbridged(n),
+            Self::Unlisted(n, k) => Self::Unlisted(n, k),
+        }
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 #[error("invalid finding identity {0:?}")]
 pub struct FindingIdError(String);

@@ -152,6 +152,66 @@ fn inquiry_across_epochs_and_regimes() -> Result<(), Box<dyn Error>> {
     assert!(receipt.warnings[&0].contains(&Warning::ReopenedFrontier));
     let receipt = patch(&mut f, r#"[{"op":"unvoid","trial":"c#2"}]"#)?;
     assert!(receipt.raised.contains_key(&"unlisted/3/latncy".parse()?));
+    // Waivers and historical acceptance baselines follow record identity,
+    // not a reusable slug. Removal must not manufacture an unbacked claim.
+    let _ = patch(
+        &mut f,
+        r#"[
+        {"op":"waive","finding":"unread/third/latency","note":"Pending remeasurement"},
+        {"op":"waive","finding":"unaccepted/third/c","note":"Provisional adoption"},
+        {"op":"rename","hypothesis":"a","to":"renamed.a"},
+        {"op":"rename","hypothesis":"c","to":"renamed.c"},
+        {"op":"rename","baseline":"third","to":"final"},
+        {"op":"rename","review":"audit","to":"audit.final"}
+    ]"#,
+    )?;
+    for identity in [
+        "unbacked/renamed.a",
+        "unread/final/latency",
+        "unaccepted/final/renamed.c",
+    ] {
+        assert!(f.waivers().contains_key(&identity.parse()?));
+    }
+    assert!(
+        f.reviews()[&"audit.final".parse()?]
+            .members
+            .contains(&"renamed.a".parse()?)
+    );
+    let _ = patch(
+        &mut f,
+        r#"[
+        {"op":"remove","hypothesis":"renamed.a"},
+        {"op":"remove","hypothesis":"renamed.c"},
+        {"op":"remove","baseline":"old"},
+        {"op":"remove","baseline":"bridge"},
+        {"op":"remove","baseline":"final"}
+    ]"#,
+    )?;
+    assert!(f.waivers().is_empty());
+    let b = &f.hypotheses()[&"b".parse()?];
+    assert!(b.trials[&1].against.is_none());
+    assert!(matches!(
+        b.disposition.as_ref().map(|d| &d.decision),
+        Some(HypothesisDecision::Accepted { against: None })
+    ));
+    let assay = Assay::new(&f);
+    assert!(!assay.findings.contains_key(&"unbacked/b".parse()?));
+    assert!(assay.findings.contains_key(&"unbridged/2".parse()?));
+    assert_eq!(f.epochs().len(), 1);
+    let _ = patch(
+        &mut f,
+        r#"[
+        {"op":"baseline","slug":"fresh","readings":{"latency":5}},
+        {"op":"accept","baseline":"fresh","rationale":"New measurement"},
+        {"op":"remove","review":"audit.final"},
+        {"op":"remove","trial":"b#1"}
+    ]"#,
+    )?;
+    assert_eq!(
+        f.baselines()[&"fresh".parse()?].epoch.map(EpochNumber::get),
+        Some(5)
+    );
+    assert!(Assay::new(&f).findings.contains_key(&"unbacked/b".parse()?));
     Ok(())
 }
 
