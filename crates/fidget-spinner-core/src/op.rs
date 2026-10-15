@@ -147,7 +147,43 @@ macro_rules! operations {
             fn from(op: WireOp) -> Self { match op { $(WireOp::$variant { $($field),* } => Self::$variant { $($field),* }),* } }
         }
         impl Op {
-            const fn fields(&self) -> &'static [&'static str] { match self { $(Self::$variant { .. } => &[$(stringify!($field)),*]),* } }
+            pub fn names() -> Vec<String> { vec![$(stringify!($variant).to_ascii_lowercase()),*] }
+            pub fn fields_for(name: &str) -> Option<Vec<&'static str>> {
+                let mut fields = match name {
+                    $(name if name == stringify!($variant).to_ascii_lowercase() => vec![$(stringify!($field)),*],)*
+                    _ => return None,
+                };
+                fields.retain(|field| *field != "target");
+                fields.extend(Self::targets(name));
+                Some(fields)
+            }
+            fn validate_fields(name: &str, object: &serde_json::Map<String, serde_json::Value>) -> Result<(), String> {
+                match name {
+                    $(name if name == stringify!($variant).to_ascii_lowercase() => {
+                        $(if stringify!($field) != "target" {
+                            if let Some(value) = object.get(stringify!($field)) {
+                                let _: $ty = serde_path_to_error::deserialize(value.clone()).map_err(|error| {
+                                    let path = error.path().to_string();
+                                    let suffix = if path.is_empty() || path == "." { String::new() } else { format!(".{path}") };
+                                    format!("{}{suffix}: {}", stringify!($field), error.inner())
+                                })?;
+                            }
+                        })*
+                        Ok(())
+                    },)*
+                    _ => Err("op: unknown operation".into()),
+                }
+            }
+            fn targets(name: &str) -> &'static [&'static str] {
+                match name {
+                    "accept" | "reject" => &["hypothesis", "baseline"],
+                    "reopen" | "assign" | "release" | "start" | "stop" => &["hypothesis", "review"],
+                    "void" | "unvoid" => &["trial", "baseline"],
+                    "remove" => &["hypothesis", "review", "baseline", "trial"],
+                    "rename" => &["hypothesis", "review", "baseline"],
+                    _ => &[],
+                }
+            }
             #[must_use]
             pub fn name(&self) -> String { match self { $(Self::$variant { .. } => stringify!($variant)),* }.to_ascii_lowercase() }
         }
@@ -186,19 +222,31 @@ impl<'de> Deserialize<'de> for Op {
         let value = serde_json::Value::deserialize(deserializer)?;
         let object = value
             .as_object()
-            .ok_or_else(|| D::Error::custom("operation must be an object"))?;
+            .ok_or_else(|| D::Error::custom("op: operation must be an object"))?;
         let name = object
             .get("op")
             .and_then(serde_json::Value::as_str)
             .unwrap_or("");
-        let targets: &[&str] = match name {
-            "accept" | "reject" => &["hypothesis", "baseline"],
-            "reopen" | "assign" | "release" | "start" | "stop" => &["hypothesis", "review"],
-            "void" | "unvoid" => &["trial", "baseline"],
-            "remove" => &["hypothesis", "review", "baseline", "trial"],
-            "rename" => &["hypothesis", "review", "baseline"],
-            _ => &[],
-        };
+        let fields = Self::fields_for(name).ok_or_else(|| {
+            let names = Self::names();
+            let nearby = crate::slug::nearest(name, names.iter().map(String::as_str));
+            D::Error::custom(format!(
+                "op: {}",
+                crate::slug::suggestion(&format!("operation {name:?}"), &nearby)
+            ))
+        })?;
+        if let Some(key) = object
+            .keys()
+            .find(|key| key.as_str() != "op" && !fields.contains(&key.as_str()))
+        {
+            let nearby = crate::slug::nearest(key, fields.iter().copied());
+            return Err(D::Error::custom(format!(
+                "{key}: {}; fields: {}",
+                crate::slug::suggestion(&format!("field {key:?}"), &nearby),
+                fields.join(", ")
+            )));
+        }
+        let targets = Self::targets(name);
         if !targets.is_empty()
             && targets
                 .iter()
@@ -207,23 +255,31 @@ impl<'de> Deserialize<'de> for Op {
                 != 1
         {
             return Err(D::Error::custom(format!(
-                "{name} requires exactly one of {}",
+                "target: requires exactly one of {}",
                 targets.join(", ")
             )));
         }
-        let op =
-            Self::from(serde_json::from_value::<WireOp>(value.clone()).map_err(D::Error::custom)?);
-        let canonical = serde_json::to_value(&op).map_err(D::Error::custom)?;
-        let fields = canonical
-            .as_object()
-            .ok_or_else(|| D::Error::custom("invalid operation representation"))?;
-        if let Some(key) = object.keys().find(|key| {
-            !fields.contains_key(*key)
-                && (key.as_str() == "target" || !op.fields().contains(&key.as_str()))
-        }) {
-            return Err(D::Error::custom(format!("unknown field {key:?} in {name}")));
+        Self::validate_fields(name, object).map_err(D::Error::custom)?;
+        for target in targets {
+            if let Some(value) = object.get(*target) {
+                let result = if *target == "trial" {
+                    serde_json::from_value::<TrialId>(value.clone()).map(|_| ())
+                } else {
+                    serde_json::from_value::<Slug>(value.clone()).map(|_| ())
+                };
+                result.map_err(|error| D::Error::custom(format!("{target}: {error}")))?;
+            }
         }
-        Ok(op)
+        serde_json::from_value::<WireOp>(value)
+            .map(Self::from)
+            .map_err(|error| {
+                let message = error.to_string();
+                let path = message
+                    .strip_prefix("missing field `")
+                    .and_then(|rest| rest.split('`').next())
+                    .unwrap_or("op");
+                D::Error::custom(format!("{path}: {message}"))
+            })
     }
 }
 

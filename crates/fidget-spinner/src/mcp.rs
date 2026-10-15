@@ -42,7 +42,7 @@ void {trial|baseline,reason}; unvoid {trial|baseline}; remove {hypothesis|review
 lesson {review,text}; waive {finding,note}; assign {hypothesis|review,owner,instructions?}
 release/start/stop {hypothesis|review}; rename {hypothesis|review|baseline,to}
 metric={key,unit,better?:lower|higher,kpi?:bool,about?,refs?:{label:number}}; value=number|'number unit'.
-Separate targets with | require exactly one key. Trials use slug#n. Upserts preserve omitted/null fields; new hypotheses require title; new reviews require title,charter,members. Gauge metrics update by key. Baseline readings merge; artifacts/adopts/docket and review members replace. after/reviews and add/drop edit. Unknown frontier requires first op frontier.";
+Units: ns/µs/us/ms/s/min/h (time); B/kB/MB/GB/TB/KiB/MiB/GiB/TiB (memory); 1/%; other lowercase words are count labels.\nSeparate targets with | require exactly one key. Trials use slug#n. Upserts preserve omitted/null fields; new hypotheses require title; new reviews require title,charter,members. Gauge metrics update by key. Baseline readings merge; artifacts/adopts/docket and review members replace. after/reviews and add/drop edit. Unknown frontier requires first op frontier.";
 
 #[derive(Debug, Error)]
 pub enum Fault {
@@ -100,7 +100,7 @@ impl Tool {
         match self {
             Self::Patch => OPS_GRAMMAR,
             Self::Status => {
-                "Summary or paged hypotheses, reviews, trials, baselines, regimes, findings and project frontiers. Scope selects the denominator; filter selects rows. scope=project with filter.text searches all project frontiers, concluded included. Counts and readiness remain globally derived."
+                "Summary or paged hypotheses, reviews, trials, baselines, regimes, findings and project frontiers. Scope selects the denominator; filter selects rows. scope=project with filter.text searches all project frontiers, concluded included: frontier | record | field | excerpt. Read slug#n via hypothesis.read trials; other slugs via hypothesis.read, review.read or the baselines view. Regimes are newest first. Inapplicable filters/scopes warn and are ignored. Counts and readiness remain globally derived."
             }
             Self::Hypothesis => {
                 "One hypothesis packet: claim, trials, disposition, inputs, outputs, reviews, docket, owner. Own text is exact; related text and trial notes preview with full-read routes. Collections page independently."
@@ -176,9 +176,23 @@ pub struct AddressArgs {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PatchArgs {
+    #[serde(deserialize_with = "parse_ops")]
     pub ops: Vec<Op>,
     #[serde(default)]
     pub dry_run: bool,
+}
+
+fn parse_ops<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Vec<Op>, D::Error> {
+    use serde::de::Error as _;
+    Vec::<Value>::deserialize(deserializer)?
+        .into_iter()
+        .enumerate()
+        .map(|(index, value)| {
+            let name = value["op"].as_str().unwrap_or("?").to_owned();
+            serde_json::from_value(value)
+                .map_err(|error| D::Error::custom(format!("operation {index} ({name}): {error}")))
+        })
+        .collect()
 }
 
 #[derive(Default)]
@@ -257,19 +271,38 @@ impl Server {
         address: &Address,
         cursor: Option<&str>,
         tool: Tool,
+        arguments: &Value,
     ) -> Result<Ledger<Frontier>, Fault> {
         let mut current = Ledger::default();
         self.store()?.refresh(address, &mut current)?;
         if let Some(cursor) = cursor {
-            let cursor = Cursor::decode(cursor).map_err(Fault::Arguments)?;
+            let key = SnapshotKey {
+                address: json!({"project":address.project.as_path(),"frontier":address.slug}),
+                seq: current.seq(),
+                attachment: None,
+            };
+            let (query, collections) = continuation_query(tool, arguments)?;
+            let cursor = Cursor::decode(
+                cursor,
+                |collection| key.digest(&query, collection),
+                inspect::COLLECTIONS,
+            )
+            .map_err(Fault::Arguments)?;
+            if !collections.contains(&cursor.collection.as_str()) {
+                return Err(Fault::Arguments(
+                    "cursor belongs to another query; rerun without it".into(),
+                ));
+            }
             if cursor.seq > current.seq() {
-                return Err(Fault::Arguments("cursor sequence is in the future".into()));
+                return Err(Fault::Arguments(
+                    "cursor sequence is in the future; rerun without it".into(),
+                ));
             }
             if tool != Tool::History {
                 self.check_retention(&current, cursor.seq)?;
             }
             self.store()?.snapshot(address, cursor.seq)?.ok_or_else(|| {
-                Fault::Arguments("cursor sequence does not belong to this frontier".into())
+                Fault::Arguments("cursor belongs to another query; rerun without it".into())
             })
         } else {
             Ok(current)
@@ -304,14 +337,9 @@ impl Server {
     fn project_call(&mut self, tool: Tool, arguments: Value) -> Result<(RenderMode, Value), Fault> {
         let (render, detail, address, args) = split(arguments)?;
         let schema = tool.describe();
-        for key in args.as_object().into_iter().flat_map(|o| o.keys()) {
-            if schema["inputSchema"]["properties"].get(key).is_none() {
-                return Err(Fault::Arguments(format!(
-                    "unknown argument {key:?} for {}",
-                    tool.name()
-                )));
-            }
-        }
+        let mut paths = Vec::new();
+        argument_paths(&schema["inputSchema"], "", &mut paths);
+        check_arguments(&args, &schema["inputSchema"], "", &paths, tool)?;
         let output = crate::report::project(self.dispatch(tool, &address, args, detail)?)?;
         Ok((render, output))
     }
@@ -335,9 +363,14 @@ impl Server {
             return Ok(result);
         }
         if tool == Tool::Status {
-            let status: StatusArgs = parse(arguments.clone())?;
+            let mut status: StatusArgs = parse(arguments.clone())?;
+            let warnings = status.normalize();
             if status.view == View::Frontiers || matches!(status.scope, Some(Scope::Project(_))) {
-                return self.project_status(args, &status, detail);
+                let mut result = self.project_status(args, &status, detail)?;
+                if !warnings.is_empty() {
+                    result["ignored"] = json!(warnings);
+                }
+                return Ok(result);
             }
         }
         let address = self.address(args, tool == Tool::Patch)?;
@@ -360,6 +393,7 @@ impl Server {
             if dry_run {
                 output["rehearsed"] = json!(true);
             }
+            output["created"] = json!(receipt.report.created);
             let warnings: Vec<_> = receipt
                 .warnings
                 .into_iter()
@@ -404,11 +438,15 @@ impl Server {
             return Ok(output);
         }
         let cursor = arguments.get("cursor").and_then(Value::as_str);
-        let ledger = self.snapshot(&address, cursor, tool)?;
+        let ledger = self.snapshot(&address, cursor, tool, &arguments)?;
         if ledger.id().is_none() {
-            return Err(Fault::Arguments(format!(
-                "unknown frontier {}",
-                address.slug
+            let listings = self.store()?.listings_of(&address.project)?;
+            return Err(Fault::Arguments(fidget_spinner_core::slug::suggestion(
+                &format!("frontier {}", address.slug),
+                &fidget_spinner_core::slug::nearest(
+                    address.slug.as_str(),
+                    listings.iter().map(|row| row.address.slug.as_str()),
+                ),
             )));
         }
         let key = SnapshotKey {
@@ -416,7 +454,7 @@ impl Server {
             seq: ledger.seq(),
             attachment: None,
         };
-        let paging = Paging::new(&key);
+        let paging = Paging::new(&key).with_collections(inspect::COLLECTIONS);
         let lens = Lens::new(ledger.state(), context.clone(), detail);
         let output = match tool {
             Tool::Status => lens
@@ -458,7 +496,22 @@ impl Server {
             .window
             .cursor
             .as_deref()
-            .map(Cursor::decode)
+            .map(|token| {
+                let key = SnapshotKey {
+                    address: json!({"project":project.as_path()}),
+                    seq: head,
+                    attachment: None,
+                };
+                let cursor = Cursor::decode(
+                    token,
+                    |collection| key.digest(&inspect::semantic(status), collection),
+                    inspect::COLLECTIONS,
+                )?;
+                if cursor.collection != "project" {
+                    return Err("cursor belongs to another query; rerun without it".into());
+                }
+                Ok(cursor)
+            })
             .transpose()
             .map_err(Fault::Arguments)?
             .map_or(head, |c| c.seq);
@@ -502,12 +555,16 @@ impl Server {
                     "objective":trebuchet::inspect::preview(objective,detail==DetailLevel::Full,160,||
                         trebuchet::inspect::Route{tool:"frontier.status".into(),arguments:json!({"project":project.as_path(),"frontier":listing.address.slug,"detail":"full"})})}));
             } else if status.view == View::Summary {
-                denominator += ledger.state().hypotheses().len()
+                denominator += ledger
+                    .state()
+                    .hypotheses()
+                    .values()
+                    .map(|hypothesis| 1 + hypothesis.trials.len())
+                    .sum::<usize>()
                     + ledger.state().reviews().len()
                     + ledger.state().baselines().len();
-                for mut row in lens.search(&status.filter) {
-                    row["frontier"] = json!(listing.address.slug);
-                    rows.push(row);
+                for row in lens.search(&status.filter) {
+                    rows.push(json!({"frontier":listing.address.slug,"record":row["record"],"field":row["field"],"excerpt":row["excerpt"]}));
                 }
             } else {
                 let local = StatusArgs {
@@ -526,7 +583,10 @@ impl Server {
                 let mut local = local;
                 loop {
                     let result = lens
-                        .status(&local, &Paging::new(&key))
+                        .status(
+                            &local,
+                            &Paging::new(&key).with_collections(inspect::COLLECTIONS),
+                        )
                         .map_err(Fault::Arguments)?;
                     if local.window.cursor.is_none() {
                         denominator += usize::try_from(result["scope_total"].as_u64().unwrap_or(0))
@@ -554,6 +614,7 @@ impl Server {
             attachment: None,
         };
         let page = Paging::new(&key)
+            .with_collections(inspect::COLLECTIONS)
             .page(
                 rows,
                 &inspect::semantic(status),
@@ -615,7 +676,7 @@ impl Server {
             );
         }
         let rows:Vec<_>=all.iter().filter(|e|e.seq<=ledger.seq()).map(|e|json!({"seq":e.seq,
-            "at":inspect::stamp(e.at),"operations":e.ops.len(),
+            "at":inspect::stamp(e.at,detail==DetailLevel::Full),"operations":e.ops.len(),
             "targets":redacted.get(&e.seq).map(|ops|ops.iter().map(history::targets).collect::<Vec<_>>())})).collect();
         let page = paging
             .page(rows, &json!({}), "history", &args.window, 20, |r| r)
@@ -665,7 +726,17 @@ impl Server {
             "tools/call" => {
                 let name = params["name"].as_str().unwrap_or_default();
                 let Some(tool) = Tool::parse(name) else {
-                    return Some(rpc_error(id, -32602, &format!("unknown tool {name:?}")));
+                    return Some(rpc_error(
+                        id,
+                        -32602,
+                        &fidget_spinner_core::slug::suggestion(
+                            &format!("tool {name:?}"),
+                            &fidget_spinner_core::slug::nearest(
+                                name,
+                                Tool::ALL.iter().map(|tool| tool.name()),
+                            ),
+                        ),
+                    ));
                 };
                 let arguments = params
                     .get("arguments")
@@ -828,6 +899,112 @@ fn label(arguments: &Value, key: &str, valid: &[&str], default: &str) -> String 
         .as_str()
         .map_or(default, |s| if valid.contains(&s) { s } else { "invalid" })
         .into()
+}
+fn argument_properties(schema: &Value) -> Option<&serde_json::Map<String, Value>> {
+    schema["properties"].as_object().or_else(|| {
+        schema["oneOf"]
+            .as_array()?
+            .iter()
+            .find_map(|variant| variant["properties"].as_object())
+    })
+}
+fn argument_paths(schema: &Value, prefix: &str, paths: &mut Vec<String>) {
+    if let Some(properties) = argument_properties(schema) {
+        for (key, value) in properties {
+            let path = if prefix.is_empty() {
+                key.clone()
+            } else {
+                format!("{prefix}.{key}")
+            };
+            paths.push(path.clone());
+            argument_paths(value, &path, paths);
+        }
+    }
+}
+fn check_arguments(
+    arguments: &Value,
+    schema: &Value,
+    prefix: &str,
+    paths: &[String],
+    tool: Tool,
+) -> Result<(), Fault> {
+    let Some(properties) = argument_properties(schema) else {
+        return Ok(());
+    };
+    for (key, value) in arguments
+        .as_object()
+        .into_iter()
+        .flat_map(|fields| fields.iter())
+    {
+        let path = if prefix.is_empty() {
+            key.clone()
+        } else {
+            format!("{prefix}.{key}")
+        };
+        if let Some(schema) = properties.get(key) {
+            check_arguments(value, schema, &path, paths, tool)?;
+        } else {
+            let exact: Vec<_> = paths
+                .iter()
+                .filter(|candidate| candidate.rsplit('.').next() == Some(key.as_str()))
+                .take(3)
+                .cloned()
+                .collect();
+            let nearby = if exact.is_empty() {
+                fidget_spinner_core::slug::nearest(&path, paths.iter().map(String::as_str))
+            } else {
+                exact
+            };
+            return Err(Fault::Arguments(format!(
+                "{} for {}",
+                fidget_spinner_core::slug::suggestion(&format!("argument {path:?}"), &nearby),
+                tool.name()
+            )));
+        }
+    }
+    Ok(())
+}
+fn continuation_query(tool: Tool, arguments: &Value) -> Result<(Value, Vec<&'static str>), Fault> {
+    match tool {
+        Tool::Status => {
+            let mut args: StatusArgs = parse(arguments.clone())?;
+            let _ = args.normalize();
+            Ok((inspect::semantic(&args), vec!["status"]))
+        }
+        Tool::Hypothesis => {
+            let args: ReadArgs = parse(arguments.clone())?;
+            let collections = if let Some(sections) = args.sections {
+                sections
+                    .into_iter()
+                    .map(|section| trebuchet::inspect::Part::name(section))
+                    .collect()
+            } else {
+                vec!["trials", "inputs", "outputs", "reviews"]
+            };
+            Ok((json!({"hypothesis":args.hypothesis}), collections))
+        }
+        Tool::Review => {
+            let args: ReviewArgs = parse(arguments.clone())?;
+            let collections = if let Some(sections) = args.sections {
+                sections
+                    .into_iter()
+                    .map(|section| trebuchet::inspect::Part::name(section))
+                    .collect()
+            } else {
+                vec!["members"]
+            };
+            Ok((json!({"review":args.review}), collections))
+        }
+        Tool::History => {
+            let args: HistoryArgs = parse(arguments.clone())?;
+            Ok(if let Some(seq) = args.seq {
+                (json!({"seq":seq}), vec!["ops"])
+            } else {
+                (json!({}), vec!["history"])
+            })
+        }
+        Tool::Patch | Tool::Health => unreachable!(),
+    }
 }
 fn rpc_error(id: &Value, code: i64, message: &str) -> Value {
     json!({"jsonrpc":"2.0","id":id,"error":{"code":code,"message":message}})

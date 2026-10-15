@@ -25,6 +25,7 @@ pub struct Report {
     pub cleared: BTreeMap<FindingId, Option<String>>,
     pub before: Counts,
     pub after: Counts,
+    pub created: Vec<fidget_spinner_core::Created>,
 }
 
 impl Ontology for Spinner {
@@ -46,6 +47,7 @@ impl Ontology for Spinner {
             cleared,
             before,
             after,
+            created,
         } = state.patched(ops, at)?;
         Ok(Applied {
             state: frontier,
@@ -58,6 +60,7 @@ impl Ontology for Spinner {
                 cleared,
                 before,
                 after,
+                created,
             },
         })
     }

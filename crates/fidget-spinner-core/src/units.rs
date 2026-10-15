@@ -4,12 +4,23 @@ use std::{fmt, str::FromStr};
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Unit(Box<str>);
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub enum QuantityKind {
     Time,
     Memory,
     Dimensionless,
     Count(String),
+}
+
+impl fmt::Display for QuantityKind {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Time => formatter.write_str("time"),
+            Self::Memory => formatter.write_str("memory"),
+            Self::Dimensionless => formatter.write_str("dimensionless"),
+            Self::Count(label) => write!(formatter, "count ({label})"),
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error, Serialize)]
@@ -74,7 +85,16 @@ impl Unit {
 impl FromStr for Unit {
     type Err = UnitError;
     fn from_str(raw: &str) -> Result<Self, Self::Err> {
-        let unit = if raw == "us" { "µs" } else { raw };
+        let unit = match raw {
+            "s" | "sec" | "secs" | "second" | "seconds" => "s",
+            "ms" | "msec" | "millisecond" | "milliseconds" => "ms",
+            "us" | "µs" | "microsecond" | "microseconds" => "µs",
+            "ns" | "nanosecond" | "nanoseconds" => "ns",
+            "min" | "minute" | "minutes" => "min",
+            "h" | "hr" | "hour" | "hours" => "h",
+            "B" | "byte" | "bytes" => "B",
+            unit => unit,
+        };
         if matches!(
             unit,
             "µs" | "B" | "kB" | "MB" | "GB" | "TB" | "KiB" | "MiB" | "GiB" | "TiB" | "1" | "%"

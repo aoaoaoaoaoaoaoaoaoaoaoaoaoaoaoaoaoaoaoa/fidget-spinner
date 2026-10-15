@@ -2,6 +2,60 @@ use std::{fmt, str::FromStr};
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error as _};
 
+#[must_use]
+pub fn nearest<'a>(name: &str, candidates: impl IntoIterator<Item = &'a str>) -> Vec<String> {
+    let candidates: Vec<_> = candidates
+        .into_iter()
+        .filter(|candidate| *candidate != name)
+        .collect();
+    let prefixes: Vec<_> = candidates
+        .iter()
+        .filter(|candidate| candidate.starts_with(name))
+        .collect();
+    if let [candidate] = prefixes.as_slice() {
+        return vec![(***candidate).to_owned()];
+    }
+    let mut ranked: Vec<_> = candidates
+        .into_iter()
+        .filter_map(|candidate| {
+            let distance = edit_distance(name, candidate);
+            (distance <= 2).then_some((distance, candidate))
+        })
+        .collect();
+    ranked.sort_unstable();
+    ranked
+        .into_iter()
+        .take(3)
+        .map(|(_, candidate)| candidate.to_owned())
+        .collect()
+}
+
+#[must_use]
+pub fn suggestion(name: &str, candidates: &[String]) -> String {
+    if candidates.is_empty() {
+        format!("unknown {name}")
+    } else {
+        format!("unknown {name}; nearest: {}", candidates.join(", "))
+    }
+}
+
+fn edit_distance(left: &str, right: &str) -> usize {
+    let right: Vec<_> = right.chars().collect();
+    let mut row: Vec<_> = (0..=right.len()).collect();
+    for (i, l) in left.chars().enumerate() {
+        let mut next = vec![i + 1];
+        for (j, r) in right.iter().enumerate() {
+            next.push(
+                (next[j] + 1)
+                    .min(row[j + 1] + 1)
+                    .min(row[j] + usize::from(l != *r)),
+            );
+        }
+        row = next;
+    }
+    row[right.len()]
+}
+
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Slug(Box<str>);
 

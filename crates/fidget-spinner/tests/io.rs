@@ -122,6 +122,84 @@ fn wire_rendering_is_exclusive() -> Result {
     Ok(())
 }
 
+// Nested evidence appears across packets, summaries and list views. The wire
+// renderer must preserve those facts without leaking structural JSON into cells.
+#[test]
+fn porcelain_cells_are_not_json() -> Result {
+    let mut session = Session::new()?;
+    let _=session.json("frontier.patch",json!({"frontier":"fixture","ops":[
+        {"op":"frontier","objective":"fixture"},
+        {"op":"regime","contract":"fixture protocol","metrics":[{"key":"elapsed","unit":"s","better":"lower","kpi":true,"refs":{"target":1}}]},
+        {"op":"baseline","slug":"initial","artifacts":["commit","evidence"],"readings":{"elapsed":10}},
+        {"op":"accept","baseline":"initial","rationale":"starting point"},
+        {"op":"hypothesis","slug":"cache","title":"Cache","mechanism":"reuse","claim":"less work"},
+        {"op":"trial","hypothesis":"cache","note":"fixture result","readings":{"elapsed":8},"artifacts":["trial evidence","{\"nested\":true}"]},
+        {"op":"accept","hypothesis":"cache","rationale":"fixture rationale"},
+        {"op":"hypothesis","slug":"ready","title":"Next"},
+        {"op":"edge","from":"cache","to":"ready","carries":"evidence"},
+        {"op":"review","slug":"program","title":"Program","charter":"fixture charter","members":["cache","ready"]},
+        {"op":"lesson","review":"program","text":"fixture lesson"},
+        {"op":"regime","contract":"new fixture protocol","reason":"new fixture","metrics":[{"key":"elapsed","unit":"s","better":"lower","kpi":true}]}
+    ]}))?;
+    for detail in ["concise", "full"] {
+        let mut calls = Vec::new();
+        for view in [
+            "summary",
+            "hypotheses",
+            "reviews",
+            "trials",
+            "baselines",
+            "regimes",
+            "findings",
+            "frontiers",
+        ] {
+            calls.push(("frontier.status", json!({"view":view,"detail":detail})));
+        }
+        calls.extend([
+            (
+                "frontier.status",
+                json!({"scope":"project","filter":{"text":"fixture"},"detail":detail}),
+            ),
+            (
+                "hypothesis.read",
+                json!({"hypothesis":"cache","detail":detail}),
+            ),
+            (
+                "hypothesis.read",
+                json!({"hypothesis":"ready","detail":detail}),
+            ),
+            ("review.read", json!({"review":"program","detail":detail})),
+            ("frontier.history", json!({"detail":detail})),
+            ("system.health", json!({"detail":detail})),
+        ]);
+        calls.push(("frontier.history", json!({"seq":1,"detail":"full"})));
+        for (name, arguments) in calls {
+            let table = name == "frontier.status"
+                && arguments.get("view").is_some_and(|view| view != "summary");
+            let result = session.call(name, arguments)?;
+            assert_eq!(result["isError"], false, "{name}: {result}");
+            assert!(result.get("structuredContent").is_none());
+            let text = result["content"][0]["text"]
+                .as_str()
+                .ok_or("missing text")?;
+            if table {
+                assert!(
+                    text.lines().any(|line| line.contains(" | ")),
+                    "{name}: {text}"
+                );
+            }
+            for line in text.lines().filter(|line| line.contains(" | ")) {
+                for cell in line.split(" | ") {
+                    if let Ok(value) = serde_json::from_str::<Value>(cell.trim()) {
+                        assert!(!value.is_array() && !value.is_object(), "{name}: {line}");
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 #[test]
 fn mcp_inquiry_session() -> Result {
     let mut session = Session::new()?;
@@ -195,7 +273,7 @@ fn mcp_inquiry_session() -> Result {
         json!({"scope":"project","filter":{"text":"Cache"}}),
     )?;
     assert_eq!(search["items"][0]["frontier"], "latency");
-    assert_eq!(search["items"][0]["kind"], "hypothesis");
+    assert_eq!(search["items"][0]["record"], "parse.cache");
     Ok(())
 }
 

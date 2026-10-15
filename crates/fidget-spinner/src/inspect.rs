@@ -9,6 +9,10 @@ use trebuchet::inspect::{Part, Route, Window, parts, preview};
 
 pub use trebuchet::inspect::{Cursor, Paging, SnapshotKey};
 
+pub const COLLECTIONS: &[&str] = &[
+    "status", "project", "trials", "inputs", "outputs", "reviews", "members", "ops", "history",
+];
+
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, ValueEnum, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum View {
@@ -85,6 +89,56 @@ pub struct StatusArgs {
     pub filter: Filter,
     #[serde(flatten)]
     pub window: Window,
+}
+
+impl StatusArgs {
+    pub fn normalize(&mut self) -> Vec<String> {
+        let mut warnings = Vec::new();
+        let view = self.view;
+        let name = serde_json::to_value(view)
+            .ok()
+            .and_then(|v| v.as_str().map(str::to_owned))
+            .unwrap_or_default();
+        let fields: [(&str, bool); 5] = [
+            (
+                "state",
+                matches!(view, View::Regimes | View::Baselines | View::Frontiers),
+            ),
+            (
+                "disposition",
+                matches!(view, View::Reviews | View::Regimes | View::Frontiers),
+            ),
+            (
+                "owner",
+                matches!(view, View::Regimes | View::Baselines | View::Frontiers),
+            ),
+            ("lane", matches!(view, View::Regimes | View::Frontiers)),
+            ("text", view == View::Regimes),
+        ];
+        for (key, ignored) in fields {
+            if !ignored {
+                continue;
+            }
+            let present = match key {
+                "state" => self.filter.state.take().is_some(),
+                "disposition" => self.filter.disposition.take().is_some(),
+                "owner" => self.filter.owner.take().is_some(),
+                "lane" => self.filter.lane.take().is_some(),
+                "text" => self.filter.text.take().is_some(),
+                _ => unreachable!(),
+            };
+            if present {
+                warnings.push(format!("filter.{key} does not apply to {name}; ignored"));
+            }
+        }
+        if (view == View::Regimes && self.scope.is_some())
+            || (view == View::Frontiers && matches!(self.scope, Some(Scope::Selected(_))))
+        {
+            self.scope = None;
+            warnings.push(format!("scope does not apply to {name}; ignored"));
+        }
+        warnings
+    }
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, ValueEnum, PartialEq, Eq, PartialOrd, Ord)]
@@ -202,7 +256,15 @@ impl<'a> Lens<'a> {
                 .reviews()
                 .get(review)
                 .map(|r| r.members.clone())
-                .ok_or_else(|| format!("unknown review {review}"));
+                .ok_or_else(|| {
+                    slug::suggestion(
+                        &format!("review {review}"),
+                        &slug::nearest(
+                            review.as_str(),
+                            self.frontier.reviews().keys().map(Slug::as_str),
+                        ),
+                    )
+                });
         }
         if let Some(docket) = &selection.docket {
             return self
@@ -210,7 +272,15 @@ impl<'a> Lens<'a> {
                 .dockets
                 .get(docket)
                 .map(|d| d.members.clone())
-                .ok_or_else(|| format!("unknown baseline {docket}"));
+                .ok_or_else(|| {
+                    slug::suggestion(
+                        &format!("baseline {docket}"),
+                        &slug::nearest(
+                            docket.as_str(),
+                            self.frontier.baselines().keys().map(Slug::as_str),
+                        ),
+                    )
+                });
         }
         Ok(self
             .frontier
@@ -252,7 +322,7 @@ impl<'a> Lens<'a> {
     pub fn hypothesis_row(&self, slug: &Slug, h: &Hypothesis) -> Json {
         json!({"slug":slug,"state":self.assay.hypotheses.get(slug),"disposition":hypothesis_decision(h),
             "owner":h.ownership.owner.as_ref().map(|o| &o.name),"docket":h.docket,
-            "trials":h.trials.len(),"title":self.text(&h.title,"hypothesis.read",json!({"hypothesis":slug,"sections":["claim"],"detail":"full"}))})
+            "trials":h.trials.len(),"trials_regime":h.trials.values().filter(|t|t.void.is_none()).map(|t|t.regime).max().filter(|n|Some(*n)!=self.frontier.current_regime().map(|r|r.number)),"title":self.text(&h.title,"hypothesis.read",json!({"hypothesis":slug,"sections":["claim"],"detail":"full"}))})
     }
 
     #[must_use]
@@ -270,7 +340,7 @@ impl<'a> Lens<'a> {
 
     fn disposition(&self, slug: &Slug, h: &Hypothesis) -> Json {
         h.disposition.as_ref().map_or(Json::Null, |d| json!({
-            "decision":d.decision,"at":stamp(d.at),
+            "decision":d.decision,"at":stamp(d.at,self.full),
             "rationale":self.text(&d.rationale,"hypothesis.read",json!({"hypothesis":slug,"sections":["disposition"],"detail":"full"}))
         }))
     }
@@ -315,9 +385,15 @@ impl<'a> Lens<'a> {
                                     .is_some_and(|m| m.kpi && !m.retired)
                             })
                 })
+                .map(|(key, comparison)| {
+                    (
+                        key,
+                        json!({"ratio":comparison.ratio,"movement":comparison.movement}),
+                    )
+                })
                 .collect::<std::collections::BTreeMap<_, _>>()
         });
-        json!({"trial":id,"at":stamp(t.at),"regime":t.regime,"against":t.against,
+        json!({"trial":id,"at":stamp(t.at,self.full),"regime":t.regime,"against":t.against,
         "readings":self.readings(t.regime,&t.readings,!packet&&!self.full),
         "comparisons":comparisons,
         "note":self.text(&t.note,"hypothesis.read",json!({"hypothesis":slug,"sections":["trials"],"detail":"full"})),
@@ -365,44 +441,69 @@ impl<'a> Lens<'a> {
 
     #[must_use]
     pub fn search(&self, filter: &Filter) -> Vec<Json> {
+        let Some(query) = filter.text.as_deref() else {
+            return Vec::new();
+        };
         let mut rows = Vec::new();
+        let mut hit = |record: String, field: &str, body: &str| {
+            if let Some(excerpt) = excerpt(body, query) {
+                rows.push(json!({"record":record,"field":field,"excerpt":excerpt}));
+                true
+            } else {
+                false
+            }
+        };
+        let mut selection = filter.clone();
+        selection.text = None;
         for (slug, h) in self.frontier.hypotheses() {
-            if self.hypothesis_matches(slug, h, filter) {
-                let mut row = self.hypothesis_row(slug, h);
-                row["kind"] = json!("hypothesis");
-                row["read"] = json!(self.route("hypothesis.read", json!({"hypothesis":slug})));
-                rows.push(row);
+            if !self.hypothesis_matches(slug, h, &selection) {
+                continue;
             }
-        }
-        for (slug, r) in self.frontier.reviews() {
-            if self.review_matches(slug, r, filter) {
-                let mut row = self.review_row(slug, r);
-                row["kind"] = json!("review");
-                row["read"] = json!(self.route("review.read", json!({"review":slug})));
-                rows.push(row);
-            }
-        }
-        if filter.state.is_none() && filter.owner.is_none() {
-            for (slug, b) in self.frontier.baselines() {
-                if filter.lane.as_ref().is_none_or(|l| slug.lane() == l)
-                    && filter
-                        .disposition
-                        .as_ref()
-                        .is_none_or(|xs| xs.contains(&baseline_decision(b)))
-                    && filter.text.as_ref().is_none_or(|q| {
-                        b.disposition
-                            .as_ref()
-                            .is_some_and(|d| contains(&d.rationale, q))
-                    })
+            for (field, body) in [
+                ("title", Some(h.title.as_str())),
+                ("mechanism", h.mechanism.as_deref()),
+                ("claim", h.claim.as_deref()),
+                (
+                    "rationale",
+                    h.disposition.as_ref().map(|d| d.rationale.as_str()),
+                ),
+            ] {
+                if let Some(body) = body
+                    && hit(slug.to_string(), field, body)
                 {
-                    let mut row = self.baseline_row(slug, b);
-                    row["kind"] = json!("baseline");
-                    row["read"] = json!(self.route(
-                        "frontier.status",
-                        json!({"view":"baselines","detail":"full"})
-                    ));
-                    rows.push(row);
+                    break;
                 }
+            }
+            for (n, trial) in &h.trials {
+                let _ = hit(format!("{slug}#{n}"), "note", &trial.note);
+            }
+        }
+        selection.disposition = None;
+        for (slug, r) in self.frontier.reviews() {
+            if !self.review_matches(slug, r, &selection) {
+                continue;
+            }
+            for (field, body) in [
+                ("title", Some(r.title.as_str())),
+                ("charter", Some(r.charter.as_str())),
+                ("lesson", r.lesson.as_ref().map(|l| l.text.as_str())),
+            ] {
+                if let Some(body) = body
+                    && hit(slug.to_string(), field, body)
+                {
+                    break;
+                }
+            }
+        }
+        for (slug, b) in self.frontier.baselines() {
+            if filter.lane.as_ref().is_none_or(|l| slug.lane() == l)
+                && filter
+                    .disposition
+                    .as_ref()
+                    .is_none_or(|xs| xs.contains(&baseline_decision(b)))
+                && let Some(disposition) = &b.disposition
+            {
+                let _ = hit(slug.to_string(), "rationale", &disposition.rationale);
             }
         }
         rows
@@ -444,44 +545,20 @@ impl<'a> Lens<'a> {
     }
 
     fn finding_row(&self, id: &FindingId, waiver: Option<&str>) -> Json {
-        let subject = if let Some((slug, h)) = self.finding_hypothesis(id) {
-            self.text(
-                &h.title,
-                "hypothesis.read",
-                json!({"hypothesis":slug,"sections":["claim"],"detail":"full"}),
-            )
-        } else if let Some((slug, b)) = self.finding_baseline(id) {
-            b.note.as_deref().map_or_else(
-                || json!(slug),
-                |s| {
-                    self.text(
-                        s,
-                        "frontier.status",
-                        json!({"view":"baselines","detail":"full"}),
-                    )
-                },
-            )
-        } else {
-            let number = match id {
-                FindingId::Unbridged(n) | FindingId::Unlisted(n, _) => Some(*n),
-                _ => None,
-            };
-            self.frontier
-                .regimes()
-                .iter()
-                .find(|r| Some(r.number) == number)
-                .map_or_else(
-                    || json!(id),
-                    |r| {
-                        self.text(
-                            &r.gauge.contract,
-                            "frontier.status",
-                            json!({"view":"regimes","detail":"full"}),
-                        )
-                    },
-                )
+        let statement = match id {
+            FindingId::Unbacked(h) => format!("accepted hypothesis {h} has no backing trial"),
+            FindingId::Unbridged(n) => format!("regime {n} has no bridge"),
+            FindingId::Unlisted(n, key) => {
+                format!("regime {n} has at least three trials with unlisted reading {key}")
+            }
+            FindingId::Unread(b, key) => {
+                format!("incumbent baseline {b} has no reading for KPI {key}")
+            }
+            FindingId::Unaccepted(b, h) => {
+                format!("accepted baseline {b} adopts unaccepted hypothesis {h}")
+            }
         };
-        json!({"identity":id,"waiver":waiver.map(|s|self.text(s,"frontier.status",json!({"view":"findings","detail":"full"}))),"subject":subject})
+        json!({"identity":id,"statement":statement,"waiver":waiver.map(|s|self.text(s,"frontier.status",json!({"view":"findings","detail":"full"})))})
     }
 
     fn finding_selected(
@@ -525,9 +602,16 @@ impl<'a> Lens<'a> {
     }
 
     pub fn status(&self, args: &StatusArgs, paging: &Paging<'_>) -> Result<Json, String> {
+        let mut normalized = args.clone();
+        let warnings = normalized.normalize();
+        let args = &normalized;
         if args.view == View::Summary {
             args.window.validate(false)?;
-            return self.summary(args);
+            let mut result = self.summary(args)?;
+            if !warnings.is_empty() {
+                result["ignored"] = json!(warnings);
+            }
+            return Ok(result);
         }
         if args.view == View::Frontiers {
             return Err("frontiers is a project view".into());
@@ -617,7 +701,7 @@ impl<'a> Lens<'a> {
             }
             View::Regimes => {
                 denominator = self.frontier.regimes().len();
-                rows=self.frontier.regimes().iter().map(|r|json!({"number":r.number,
+                rows=self.frontier.regimes().iter().rev().map(|r|json!({"number":r.number,
                     "reason":r.reason.as_deref().map(|s|self.text(s,"frontier.status",json!({"view":"regimes","detail":"full"}))),
                     "bridge":r.bridge,"contract":self.text(&r.gauge.contract,"frontier.status",json!({"view":"regimes","detail":"full"})),
                     "metrics":r.gauge.metrics})).collect();
@@ -641,7 +725,7 @@ impl<'a> Lens<'a> {
         let query = semantic(args);
         let page = paging.page(rows, &query, "status", &args.window, 20, |r| r)?;
         Ok(
-            json!({"scope_total":denominator,"items":page.items,"total":page.total,"next_cursor":page.next_cursor}),
+            json!({"scope_total":denominator,"items":page.items,"total":page.total,"next_cursor":page.next_cursor,"ignored":warnings}),
         )
     }
 
@@ -698,13 +782,17 @@ impl<'a> Lens<'a> {
             .and_then(|s| self.frontier.baselines().get(s).map(|b| (s, b)));
         let regime = self.frontier.current_regime().map(|r| {
             let first = r.gauge.contract.lines().next().unwrap_or("");
-            let contract = if first == r.gauge.contract {
+            let contract = if self.full {
+                json!(r.gauge.contract)
+            } else if first == r.gauge.contract && first.chars().count() <= 160 {
                 json!(first)
             } else {
                 json!(trebuchet::inspect::Text::Preview {
-                    preview: first.into(),
-                    full_read: self
-                        .route("frontier.status", json!({"view":"regimes","detail":"full"}))
+                    preview: first.chars().take(160).collect(),
+                    full_read: self.route(
+                        "frontier.status",
+                        json!({"view":"regimes","limit":1,"detail":"full"})
+                    )
                 })
             };
             json!({"number":r.number,"contract":contract})
@@ -756,8 +844,8 @@ impl<'a> Lens<'a> {
         "running":{"hypotheses":list(state_h(State::Running),"hypotheses",Some("running")),"reviews":list(state_r(ReviewState::Running),"reviews",Some("running"))},
         "tested":list(state_h(State::Tested),"hypotheses",Some("tested")),
         "ready":{"hypotheses":list(state_h(State::Ready),"hypotheses",Some("ready")),"reviews":list(state_r(ReviewState::Ready),"reviews",Some("ready"))},
-        "dispositions":list(dispositions.into_iter().map(|(s,h,_)|json!({"hypothesis":s,"disposition":self.disposition(s,h)})).collect(),"hypotheses",None),
-        "lessons":list(lessons.into_iter().map(|(s,l)|json!({"review":s,"at":stamp(l.at),
+        "dispositions":list(dispositions.into_iter().map(|(s,h,d)|json!({"hypothesis":s,"disposition":hypothesis_decision(h),"rationale":preview(&d.rationale,self.full,120,||self.route("hypothesis.read",json!({"hypothesis":s,"sections":["disposition"]})))})).collect(),"hypotheses",None),
+        "lessons":list(lessons.into_iter().map(|(s,l)|json!({"review":s,"at":stamp(l.at,self.full),
             "text":self.text(&l.text,"review.read",json!({"review":s,"sections":["lesson"],"detail":"full"}))})).collect(),"reviews",Some("completed")),
         "findings":list(self.assay.findings.iter().filter(|(id,w)|w.is_none()&&self.finding_selected(id,&selected,args.scope.as_ref())&&self.finding_matches(id,&args.filter)).map(|(id,_)|self.finding_row(id,None)).collect(),"findings",None)}),
         )
@@ -768,7 +856,15 @@ impl<'a> Lens<'a> {
             .frontier
             .hypotheses()
             .get(&args.hypothesis)
-            .ok_or_else(|| format!("unknown hypothesis {}", args.hypothesis))?;
+            .ok_or_else(|| {
+                slug::suggestion(
+                    &format!("hypothesis {}", args.hypothesis),
+                    &slug::nearest(
+                        args.hypothesis.as_str(),
+                        self.frontier.hypotheses().keys().map(Slug::as_str),
+                    ),
+                )
+            })?;
         let defaults = [
             Section::Claim,
             Section::Trials,
@@ -779,7 +875,7 @@ impl<'a> Lens<'a> {
             Section::Docket,
             Section::Owner,
         ];
-        let sections = parts(args.sections.as_ref(), &defaults, &args.window)?;
+        let sections = parts(args.sections.as_ref(), &defaults, &args.window, COLLECTIONS)?;
         if sections.iter().any(|s| !defaults.contains(s)) {
             return Err("invalid hypothesis section".into());
         }
@@ -790,9 +886,9 @@ impl<'a> Lens<'a> {
                 Section::Claim => json!({"title":h.title,"mechanism":h.mechanism,"claim":h.claim}),
                 Section::Disposition => h.disposition.as_ref().map_or(
                     Json::Null,
-                    |d| json!({"decision":d.decision,"rationale":d.rationale,"at":stamp(d.at)}),
+                    |d| json!({"decision":d.decision,"rationale":d.rationale,"at":stamp(d.at,self.full)}),
                 ),
-                Section::Owner => ownership(&h.ownership),
+                Section::Owner => ownership(&h.ownership,self.full),
                 Section::Docket => h.docket.as_ref().map_or(
                     Json::Null,
                     |b| json!({"baseline":b,"progress":self.docket(b)}),
@@ -844,18 +940,22 @@ impl<'a> Lens<'a> {
     }
 
     pub fn review(&self, args: &ReviewArgs, paging: &Paging<'_>) -> Result<Json, String> {
-        let r = self
-            .frontier
-            .reviews()
-            .get(&args.review)
-            .ok_or_else(|| format!("unknown review {}", args.review))?;
+        let r = self.frontier.reviews().get(&args.review).ok_or_else(|| {
+            slug::suggestion(
+                &format!("review {}", args.review),
+                &slug::nearest(
+                    args.review.as_str(),
+                    self.frontier.reviews().keys().map(Slug::as_str),
+                ),
+            )
+        })?;
         let defaults = [
             Section::Charter,
             Section::Members,
             Section::Lesson,
             Section::Owner,
         ];
-        let sections = parts(args.sections.as_ref(), &defaults, &args.window)?;
+        let sections = parts(args.sections.as_ref(), &defaults, &args.window, COLLECTIONS)?;
         if sections.iter().any(|s| !defaults.contains(s)) {
             return Err("invalid review section".into());
         }
@@ -863,14 +963,14 @@ impl<'a> Lens<'a> {
         for section in sections {
             let value = match section {
                 Section::Charter => json!({"title":r.title,"charter":r.charter}),
-                Section::Lesson => r
-                    .lesson
-                    .as_ref()
-                    .map_or(Json::Null, |l| json!({"text":l.text,"at":stamp(l.at)})),
-                Section::Owner => ownership(&r.ownership),
+                Section::Lesson => r.lesson.as_ref().map_or(
+                    Json::Null,
+                    |l| json!({"text":l.text,"at":stamp(l.at,self.full)}),
+                ),
+                Section::Owner => ownership(&r.ownership, self.full),
                 Section::Members => {
                     let rows:Vec<_>=r.members.iter().filter_map(|s|self.frontier.hypotheses().get(s).map(|h|
-                        json!({"hypothesis":s,"state":self.assay.hypotheses.get(s),"disposition":self.disposition(s,h)}))).collect();
+                        json!({"slug":s,"state":self.assay.hypotheses.get(s),"disposition":hypothesis_decision(h),"rationale":h.disposition.as_ref().map(|d|preview(&d.rationale,self.full,120,||self.route("hypothesis.read",json!({"hypothesis":s,"sections":["disposition"],"detail":"full"}))))}))).collect();
                     json!(paging.page(
                         rows,
                         &json!({"review":args.review}),
@@ -914,32 +1014,69 @@ fn hypothesis_text(h: &Hypothesis, q: &str) -> bool {
 fn contains(body: &str, query: &str) -> bool {
     body.to_lowercase().contains(&query.to_lowercase())
 }
+fn excerpt(body: &str, query: &str) -> Option<String> {
+    let mut folded = String::new();
+    let mut positions = Vec::new();
+    for (index, ch) in body.chars().enumerate() {
+        for lower in ch.to_lowercase() {
+            folded.push(lower);
+            positions.extend(std::iter::repeat_n(index, lower.len_utf8()));
+        }
+    }
+    let at = folded.find(&query.to_lowercase())?;
+    let before = positions.get(at).copied().unwrap_or(0);
+    let chars: Vec<_> = body.chars().collect();
+    let margin = (120 - query.chars().count().min(120)) / 2;
+    let start = before.saturating_sub(margin);
+    Some(
+        chars[start..(start + 120).min(chars.len())]
+            .iter()
+            .collect(),
+    )
+}
 
 #[must_use]
 pub fn semantic(args: &StatusArgs) -> Json {
     json!({"view":args.view,"scope":args.scope,"filter":args.filter})
 }
 
-fn ownership(ownership: &Ownership) -> Json {
-    json!({"owner":ownership.owner.as_ref().map(|a|json!({"name":a.name,"instructions":a.instructions,"at":stamp(a.at)})),
-        "started":ownership.started.map(stamp)})
+fn ownership(ownership: &Ownership, full: bool) -> Json {
+    json!({"owner":ownership.owner.as_ref().map(|a|json!({"name":a.name,"instructions":a.instructions,"at":stamp(a.at,full)})),
+        "started":ownership.started.map(|at|stamp(at,full))})
 }
 
 #[must_use]
 #[expect(
     clippy::expect_used,
-    reason = "Every IO timestamp is validated by the ledger's RFC3339 format."
+    reason = "Persisted timestamps enter through RFC3339 or current UTC."
 )]
-pub fn stamp(at: time::OffsetDateTime) -> String {
-    at.format(&time::format_description::well_known::Rfc3339)
-        .expect("ledger timestamp must fit RFC3339")
+pub fn stamp(at: time::OffsetDateTime, full: bool) -> String {
+    if full {
+        at.format(&time::format_description::well_known::Rfc3339)
+            .expect("ledger timestamp must fit RFC3339")
+    } else {
+        let at = at.to_offset(time::UtcOffset::UTC);
+        format!(
+            "{:04}-{:02}-{:02} {:02}:{:02}Z",
+            at.year(),
+            u8::from(at.month()),
+            at.day(),
+            at.hour(),
+            at.minute()
+        )
+    }
 }
 
 fn summary_list(mut items: Vec<Json>, read: Route) -> Json {
     let total = items.len();
-    items.truncate(5);
+    let limit = match read.arguments["view"].as_str() {
+        Some("regimes") => 8,
+        Some("findings") => 3,
+        _ => 2,
+    };
+    items.truncate(limit);
     let mut result = json!({"items":items,"total":total});
-    if total > 5 {
+    if total > limit {
         let Route { tool, arguments } = read;
         result["read"] = json!({"tool":tool,"arguments":arguments});
     }

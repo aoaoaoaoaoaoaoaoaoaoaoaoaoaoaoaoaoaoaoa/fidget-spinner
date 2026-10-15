@@ -111,6 +111,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "base64"
+version = "0.23.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ac07cdecf99051d9a5238b80f35af32cdeba5b336e55d957b318b50137e18da5"
+
+[[package]]
 name = "bitflags"
 version = "2.13.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -332,6 +338,7 @@ version = "3.0.0"
 dependencies = [
  "serde",
  "serde_json",
+ "serde_path_to_error",
  "thiserror",
  "time",
 ]
@@ -1363,9 +1370,10 @@ dependencies = [
 [[package]]
 name = "trebuchet"
 version = "0.1.0"
-source = "git+file:///home/main/programming/projects/mcps/trebuchet?rev=ab7fc0ddc16cdcc51dcd4053d29c3068c8d68473#ab7fc0ddc16cdcc51dcd4053d29c3068c8d68473"
+source = "git+file:///home/main/programming/projects/mcps/trebuchet?rev=91a558d53c2b0794f67592b9d2f020a76accc4da#91a558d53c2b0794f67592b9d2f020a76accc4da"
 dependencies = [
  "axum",
+ "base64",
  "clap",
  "libmcp",
  "maud",

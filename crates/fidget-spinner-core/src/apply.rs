@@ -55,53 +55,68 @@ pub enum RecordKind {
 }
 #[derive(Clone, Debug, PartialEq, thiserror::Error, Serialize)]
 pub enum OpRefusal {
-    #[error("frontier creation requires a first frontier operation with an objective")]
+    #[error("objective: frontier creation requires a first frontier operation")]
     MissingObjective,
-    #[error("{field} must be nonempty")]
+    #[error("{field}: must be nonempty")]
     Empty { field: String },
-    #[error("creation requires {field}")]
+    #[error("{field}: required for creation")]
     MissingField { field: String },
-    #[error("unknown {kind:?} {identity}")]
-    Unknown { kind: RecordKind, identity: String },
-    #[error("no gauge is installed")]
+    #[error("{kind:?}: unknown {identity}{suggestions}")]
+    Unknown {
+        kind: RecordKind,
+        identity: String,
+        suggestions: String,
+    },
+    #[error("gauge: no gauge is installed")]
     NoGauge,
-    #[error("regime changes after the first require a reason")]
+    #[error("reason: required after the first regime")]
     MissingRegimeReason,
-    #[error("a bridge requires an outgoing incumbent baseline")]
+    #[error("bridge: requires an outgoing incumbent baseline")]
     NoIncumbentBridge,
-    #[error("KPI {key} requires a direction")]
+    #[error("metrics.{key}.better: KPI requires a direction")]
     KpiDirection { key: MetricKey },
     #[error(
-        "metric {key} already has readings in regime {regime}; its unit and direction cannot change"
+        "metrics.{key}: already has readings in regime {regime}; its unit and direction cannot change"
     )]
     MeaningChanged {
         regime: RegimeNumber,
         key: MetricKey,
     },
-    #[error("duplicate metric {key}")]
+    #[error("metrics.{key}: duplicate metric")]
     DuplicateMetric { key: MetricKey },
-    #[error("invalid reading {value:?}")]
+    #[error("readings: invalid reading {value:?}")]
     InvalidValue { value: Value },
-    #[error(transparent)]
+    #[error("readings: {0}")]
     Unit(#[from] UnitError),
-    #[error("reference lines must have finite values")]
+    #[error("refs: reference lines must have finite values")]
     NonfiniteReference,
-    #[error("baseline {baseline} is void")]
+    #[error("baseline: {baseline} is void")]
     VoidBaseline { baseline: Slug },
-    #[error("baseline {baseline} belongs to a previous regime")]
+    #[error("baseline: {baseline} belongs to a previous regime")]
     OldBaseline { baseline: Slug },
-    #[error("review {review} must have at least one member")]
+    #[error("members: review {review} must have at least one member")]
     EmptyReview { review: Slug },
-    #[error("cannot remove {hypothesis}, the last member of review {review}")]
+    #[error("hypothesis: cannot remove {hypothesis}, the last member of review {review}")]
     LastMember { hypothesis: Slug, review: Slug },
-    #[error("{kind:?} {to} already exists")]
+    #[error("to: {kind:?} {to} already exists")]
     RenameCollision { kind: RecordKind, to: Slug },
-    #[error("finding {finding} is not present")]
-    AbsentFinding { finding: FindingId },
-    #[error("edge closes a cycle: {path:?}")]
+    #[error("finding: {finding} is not present{suggestions}")]
+    AbsentFinding {
+        finding: FindingId,
+        suggestions: String,
+    },
+    #[error("edge: closes a cycle: {path:?}")]
     Cycle { path: Vec<Slug> },
-    #[error("identity counter exhausted")]
+    #[error("identity: counter exhausted")]
     Exhausted,
+    #[error("readings.{key}: {from} is {from_kind}; metric {key} is {to_kind} ({to})")]
+    ReadingUnit {
+        key: MetricKey,
+        from: Unit,
+        from_kind: QuantityKind,
+        to: Unit,
+        to_kind: QuantityKind,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, thiserror::Error, Serialize)]
@@ -111,15 +126,24 @@ pub enum Refusal {
     Operation {
         index: usize,
         op: String,
-        cause: OpRefusal,
+        cause: Box<OpRefusal>,
     },
-    #[error("operation {index} ({op}) closes a cycle: {path:?}")]
+    #[error("operation {index} ({op}): edge: closes a cycle: {path:?}")]
     Cycle {
         index: usize,
         op: String,
         path: Vec<Slug>,
     },
 }
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Created {
+    Trial(TrialId),
+    Baseline(Slug),
+    Regime(RegimeNumber),
+    Epoch(EpochNumber),
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct Patched {
     pub frontier: Frontier,
@@ -128,6 +152,7 @@ pub struct Patched {
     pub cleared: BTreeMap<FindingId, Option<String>>,
     pub before: Counts,
     pub after: Counts,
+    pub created: Vec<Created>,
 }
 
 fn required(raw: &str, field: &str) -> Result<String, OpRefusal> {
@@ -149,6 +174,7 @@ fn unknown(kind: RecordKind, identity: &impl ToString) -> OpRefusal {
     OpRefusal::Unknown {
         kind,
         identity: identity.to_string(),
+        suggestions: String::new(),
     }
 }
 fn empty_ownership() -> Ownership {
@@ -164,26 +190,112 @@ impl Frontier {
             return Err(Refusal::Operation {
                 index: 0,
                 op: ops.first().map_or_else(|| "patch".into(), Op::name),
-                cause: OpRefusal::MissingObjective,
+                cause: Box::new(OpRefusal::MissingObjective),
             });
         }
         let before = Assay::new(self);
         let mut frontier = self.clone();
         let mut warnings = BTreeMap::new();
         let mut reopening = self.conclusion.is_some();
+        let mut created = Vec::new();
         for (index, op) in ops.iter().enumerate() {
             let mut log = Vec::new();
+            let previous_epoch = frontier.last_epoch;
+            let new_baseline = match op {
+                Op::Baseline { slug, .. } => !frontier.baselines.contains_key(slug),
+                _ => false,
+            };
             if reopening && !matches!(op, Op::Conclude { .. }) {
                 frontier.conclusion = None;
                 reopening = false;
                 log.push(Warning::ReopenedFrontier);
             }
-            if let Err(cause) = frontier.apply(op, at, &mut log) {
+            if let Err(mut cause) = frontier.apply(op, at, &mut log) {
+                let candidates: Vec<String> = match &cause {
+                    OpRefusal::Unknown { kind, .. } => match kind {
+                        RecordKind::Hypothesis => frontier
+                            .hypotheses
+                            .keys()
+                            .map(ToString::to_string)
+                            .collect(),
+                        RecordKind::Review => {
+                            frontier.reviews.keys().map(ToString::to_string).collect()
+                        }
+                        RecordKind::Baseline => {
+                            frontier.baselines.keys().map(ToString::to_string).collect()
+                        }
+                        RecordKind::Trial => frontier
+                            .hypotheses
+                            .iter()
+                            .flat_map(|(slug, h)| {
+                                h.trials.keys().map(move |n| format!("{slug}#{n}"))
+                            })
+                            .collect(),
+                        RecordKind::Metric => frontier
+                            .current_regime()
+                            .map(|r| r.gauge.metrics.keys().map(ToString::to_string).collect())
+                            .unwrap_or_default(),
+                    },
+                    OpRefusal::AbsentFinding { .. } => Assay::new(&frontier)
+                        .findings
+                        .keys()
+                        .map(ToString::to_string)
+                        .collect(),
+                    _ => Vec::new(),
+                };
+                if let OpRefusal::Unknown {
+                    identity,
+                    suggestions,
+                    ..
+                } = &mut cause
+                {
+                    let names = slug::nearest(identity, candidates.iter().map(String::as_str));
+                    if !names.is_empty() {
+                        *suggestions = format!("; nearest: {}", names.join(", "));
+                    }
+                } else if let OpRefusal::AbsentFinding {
+                    finding,
+                    suggestions,
+                } = &mut cause
+                {
+                    let names =
+                        slug::nearest(&finding.to_string(), candidates.iter().map(String::as_str));
+                    if !names.is_empty() {
+                        *suggestions = format!("; nearest: {}", names.join(", "));
+                    }
+                }
                 let op = op.name();
                 return Err(match cause {
                     OpRefusal::Cycle { path } => Refusal::Cycle { index, op, path },
-                    cause => Refusal::Operation { index, op, cause },
+                    cause => Refusal::Operation {
+                        index,
+                        op,
+                        cause: Box::new(cause),
+                    },
                 });
+            }
+            match op {
+                Op::Trial { hypothesis, .. } => created.push(Created::Trial(TrialId {
+                    hypothesis: hypothesis.clone(),
+                    number: frontier.hypotheses[hypothesis].last_trial,
+                })),
+                Op::Baseline { slug, .. } if new_baseline => {
+                    created.push(Created::Baseline(slug.clone()));
+                }
+                Op::Regime { bridge, .. } => {
+                    created.push(Created::Regime(
+                        frontier.regimes[frontier.regimes.len() - 1].number,
+                    ));
+                    if let Some(bridge) = bridge {
+                        created.push(Created::Baseline(bridge.slug.clone()));
+                    }
+                }
+                _ => {}
+            }
+            if frontier.last_epoch != previous_epoch
+                && let Some(number) = frontier.last_epoch
+            {
+                created.push(Created::Epoch(number));
             }
             if !log.is_empty() {
                 let _ = warnings.insert(index, log);
@@ -206,6 +318,7 @@ impl Frontier {
             warnings,
             raised,
             cleared,
+            created,
             before: before.counts,
             after: after.counts,
         })
@@ -728,6 +841,7 @@ impl Frontier {
                 if !Assay::new(self).findings.contains_key(finding) {
                     return Err(OpRefusal::AbsentFinding {
                         finding: finding.clone(),
+                        suggestions: String::new(),
                     });
                 }
                 let _ = self.waivers.insert(finding.clone(), note);
@@ -844,20 +958,30 @@ impl Frontier {
                 };
                 let reading = if let Some(metric) = gauge.metrics.get(key).filter(|m| !m.retired) {
                     Reading::Listed {
-                        value: unit
-                            .as_ref()
-                            .map_or(Ok(number), |u| u.convert(number, &metric.unit))?,
+                        value: unit.as_ref().map_or(Ok(number), |u| {
+                            u.convert(number, &metric.unit)
+                                .map_err(|error| match error {
+                                    UnitError::Incompatible { from, to } => {
+                                        OpRefusal::ReadingUnit {
+                                            key: key.clone(),
+                                            from_kind: from.kind(),
+                                            to_kind: to.kind(),
+                                            from,
+                                            to,
+                                        }
+                                    }
+                                    error => OpRefusal::Unit(error),
+                                })
+                        })?,
                     }
                 } else {
-                    let closest = gauge
-                        .metrics
-                        .keys()
-                        .filter_map(|candidate| {
-                            let distance = edit_distance(key.as_str(), candidate.as_str());
-                            (distance <= 2 && distance > 0).then_some((distance, candidate))
-                        })
-                        .min()
-                        .map(|(_, key)| key.clone());
+                    let closest =
+                        slug::nearest(key.as_str(), gauge.metrics.keys().map(MetricKey::as_str))
+                            .first()
+                            .and_then(|closest| {
+                                gauge.metrics.keys().find(|key| key.as_str() == closest)
+                            })
+                            .cloned();
                     log.push(Warning::UnlistedReading {
                         subject: subject.into(),
                         key: key.clone(),
@@ -1207,20 +1331,4 @@ fn rename_member(set: &mut BTreeSet<Slug>, from: &Slug, to: &Slug) {
     if set.remove(from) {
         let _ = set.insert(to.clone());
     }
-}
-
-fn edit_distance(left: &str, right: &str) -> usize {
-    let mut previous: Vec<usize> = (0..=right.len()).collect();
-    for (i, a) in left.bytes().enumerate() {
-        let mut row = vec![i + 1];
-        for (j, b) in right.bytes().enumerate() {
-            row.push(
-                (previous[j] + usize::from(a != b))
-                    .min(previous[j + 1] + 1)
-                    .min(row[j] + 1),
-            );
-        }
-        previous = row;
-    }
-    previous[right.len()]
 }
