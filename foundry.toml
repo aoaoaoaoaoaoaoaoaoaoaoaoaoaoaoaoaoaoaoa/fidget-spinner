@@ -2,8 +2,8 @@ schema = 1
 
 [product]
 name = "Fidget Spinner"
-package = "fidget-spinner-cli"
-binary = "fidget-spinner-cli"
+package = "fidget-spinner"
+binary = "fidget-spinner"
 profile = "portable-cli"
 
 [coordinates]

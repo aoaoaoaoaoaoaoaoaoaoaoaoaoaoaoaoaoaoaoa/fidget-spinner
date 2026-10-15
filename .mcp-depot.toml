@@ -1,11 +1,12 @@
 schema = 1
 name = "fidget-spinner"
-package = "fidget-spinner-cli"
-binary = "fidget-spinner-cli"
+package = "fidget-spinner"
+binary = "fidget-spinner"
 arguments = ["mcp", "serve"]
 gate = ["./check.py", "check"]
 
 [state]
 mode = "versioned"
-readable = [9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]
-writable = 20
+# Epoch 20 is the old implementation's per-project layout; this release neither reads nor modifies it.
+readable = [20, 21]
+writable = 21

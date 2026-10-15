@@ -83,6 +83,9 @@ or `full`) follow the conventions of Vauban's SPEC, section Inspection: a scope 
 rows; pages carry `items`, `total` and `next_cursor`; a cursor continues the same query at the same ledger sequence;
 previews of long text are marked incomplete and name the call that reads them whole.
 
+A removal after a cursor's snapshot invalidates non-history continuations; the refusal asks the caller to rerun the
+query without the cursor. History continuations remain usable and apply current removal redaction.
+
 ### Status
 
 `frontier.status` without `view` returns the summary, under 2 KB for a typical frontier:
