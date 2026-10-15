@@ -29,7 +29,7 @@ pulldown-cmark = "0.13"
 rusqlite = { version = "0.40.1", features = ["bundled", "hooks", "limits", "time"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1"
-trebuchet = { git = "file:///home/main/programming/projects/mcps/trebuchet", rev = "0b44f4a3074dcbdbe5dd61d32b063f78ab572bca", features = ["ledger", "inspect", "board"] }
+trebuchet = { git = "file:///home/main/programming/projects/mcps/trebuchet", rev = "ab7fc0ddc16cdcc51dcd4053d29c3068c8d68473", features = ["ledger", "inspect", "board"] }
 thiserror = "2"
 tempfile = "3"
 time = { version = "0.3", features = ["formatting", "macros", "parsing", "serde"] }
