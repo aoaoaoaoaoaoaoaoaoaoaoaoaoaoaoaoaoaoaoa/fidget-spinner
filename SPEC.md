@@ -76,7 +76,9 @@ A receipt reports the sequence number, or that the patch was rehearsed; the warn
 findings the patch raised or cleared; and only the hypothesis-state counts that changed, with their before and after
 values. Its porcelain header is `frontier F · seq N`, or `frontier F · rehearsed, not applied` for a dry run; changes
 share one line, such as `ready 0→1 · tested 0→1`. Warnings, raised findings and cleared findings appear only when present.
-A refusal names the operation's index and name and the reason, and nothing is applied. Warnings name the subject, and, for an
+Receipts also list created trial identities (`slug#n`), baselines, regimes and opened epochs. A refusal has the form
+`operation i (op): path: problem`, and nothing is applied. Unknown operation names suggest nearby operations;
+unknown fields suggest nearby fields and list the operation's fields. Warnings name the subject, and, for an
 unlisted reading, the closest metric key when one is close.
 
 ## Inspection
@@ -84,7 +86,9 @@ unlisted reading, the closest metric key when one is close.
 Selection, totals, paging, cursors, `render` (`porcelain` by default, or `json`) and `detail` (`concise` by default,
 or `full`) follow the conventions of Vauban's SPEC, section Inspection: a scope sets denominators and filters select
 rows; pages carry `items`, `total` and `next_cursor`; a cursor continues the same query at the same ledger sequence;
-previews of long text are marked incomplete and name the call that reads them whole.
+previews of long text are marked incomplete and name the call that reads them whole. Cursors are compact opaque
+base64url tokens. Query, collection and address are checked before sequence; a mismatch says
+`cursor belongs to another query; rerun without it`.
 
 A removal after a cursor's snapshot invalidates non-history continuations; the refusal asks the caller to rerun the
 query without the cursor. History continuations remain usable and apply current removal redaction.
@@ -94,14 +98,20 @@ zero counts, and uses `—` for absent table cells. JSON may retain empty collec
 columns already fixed by their enclosing list: tested hypotheses omit state and disposition; ready hypotheses also
 omit trial count. Readings use `key value unit`, with numbers printed by f64 Display. The summary joins KPI definitions,
 reference lines and incumbent-baseline readings in one table: `key | unit | better | incumbent | refs`. Full history
-operations preserve asserted empty arrays and nulls because they are part of the operation payload.
+operations preserve asserted empty arrays and nulls because they are part of the operation payload. Porcelain table
+cells never contain JSON objects or arrays. Routes are labelled `more:`; a route template such as
+`hypothesis=<slug>` substitutes the named column of its table. Concise timestamps have minute precision
+(`2026-10-15 00:25Z`); full detail retains exact timestamps. A primary result without rows reports `matches 0/N`.
+Unknown argument names suggest their nearest valid paths, including nested paths such as `filter.text`. Unknown
+frontier, hypothesis, review, baseline, trial, finding and tool names suggest at most three names within edit distance
+two, or a unique prefix completion.
 
 ### Status
 
 `frontier.status` without `view` returns the summary, under 2 KB for a typical frontier:
 
 1. the objective;
-2. the current regime: number and first line of the contract;
+2. the current regime: number and the first line of the contract, at most 160 characters, with a full-read route;
 3. the incumbent baseline: slug, epoch and artifacts; one KPI table joins keys, units, directions, incumbent readings
    and reference lines;
 4. docket progress of the incumbent baseline and of each candidate: settled members over members;
@@ -110,7 +120,13 @@ operations preserve asserted empty arrays and nulls because they are part of the
 7. the first ready hypotheses and ready reviews;
 8. the latest dispositions with rationale previews;
 9. the latest lessons;
-10. unwaived findings with their identities.
+10. unwaived findings as `identity | statement | waiver`, with statements derived from finding identities rather
+    than copied from record text.
+
+Summary collections show their totals and a bounded prefix: up to eight KPIs, three findings and two rows in other
+collections, with a full-list route when more exist. Disposition rows are `hypothesis | disposition | rationale`,
+with rationale previews of at most 120 characters. Tested rows whose non-void trials all precede the current regime
+annotate the count with the latest trial regime, for example `2 (regime 3)`.
 
 Views:
 
@@ -120,21 +136,30 @@ Views:
 | `reviews` | slug, state, owner, members by state, title |
 | `trials` | identity, time, baseline, KPI readings with ratios, note preview |
 | `baselines` | slug, regime, epoch, disposition, artifacts, KPI readings, docket progress |
-| `regimes` | number, reason, bridge, metrics |
-| `findings` | identity, waiver, subject preview |
+| `regimes` | number, reason, bridge, contract, metrics; newest first |
+| `findings` | identity, generated statement, waiver |
 | `frontiers` | the project's frontiers: slug, active or concluded, counts by state, objective preview |
 
 Scope selectors: `under` (a slug and those beneath it at a dot boundary), `review` (its members) and `docket` (a
 baseline's docket). Filters: `state`, `disposition`, `owner`, `lane` and `text`. `text` is a case-insensitive
 substring over titles, mechanisms, claims, trial notes, rationales, charters and lessons; with `scope: "project"` it
-searches every frontier of the project, concluded ones included, and rows name their frontier.
+searches every frontier of the project, concluded ones included. Prior-art rows are
+`frontier | record | field | excerpt`: one matching field per record, with trials identified as `slug#n`, and at most
+120 characters around its first match. The denominator counts searchable hypotheses, trials, reviews and baselines.
+Read a trial through its hypothesis's trials section; read other slugs through `hypothesis.read`, `review.read`, or
+the baselines view. The tool description gives these routes once rather than repeating them in every row.
+
+An inapplicable filter or scope is ignored with a warning naming it. Regimes ignore all filters and scopes; frontiers
+ignore non-project scopes and filters other than text; reviews ignore disposition; baselines ignore state and owner.
+Other views retain their applicable selectors.
 
 ### Packets
 
 `hypothesis.read` sections: `claim` (title, mechanism, claim), `trials` (paged, newest first, each with its readings
 against its baseline), `disposition`, `inputs` and `outputs` (each edge's other end with state, disposition, rationale
 preview and what the edge carries), `reviews` (with lesson previews), `docket` and `owner`. `review.read` sections:
-`charter`, `members` (state, disposition, rationale preview), `lesson` and `owner`.
+`charter`, `members` (`slug | state | disposition | rationale`, with rationale previews at most 120 characters),
+`lesson` and `owner`. Trial comparison cells use `elapsed 0.8× better` notation.
 
 ### History
 

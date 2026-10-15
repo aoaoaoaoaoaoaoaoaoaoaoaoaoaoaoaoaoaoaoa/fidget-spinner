@@ -18,8 +18,12 @@ progress, running and tested work, ready hypotheses, recent dispositions and les
 or review only when the next decision depends on it. The project defaults to the working directory; name the frontier
 when the project has several.
 
-Before recording a new idea, search for prior art: `frontier.status` with `filter: {"text": "…"}` and `scope: "project"` searches every
-frontier of the project, concluded ones included.
+Before recording a new idea, search for prior art with `frontier.status`
+`{"scope":"project","filter":{"text":"LNS"}}`. This searches every frontier of the project, concluded ones included.
+Hits identify the frontier, record, matching field and an excerpt. Read `slug#n` through the hypothesis's trials
+section; other slugs use `hypothesis.read`, `review.read`, or the baselines view. Summary lists show bounded prefixes
+and `more:` routes. Regimes are newest first. A tested count such as `2 (regime 3)` means its non-void trials all
+precede the current regime; it does not establish current-regime evidence.
 
 ## Record
 
@@ -43,7 +47,13 @@ Write each result and its consequences in one `frontier.patch`:
   the gauge is kept on the trial as an unlisted reading and is never charted; when such a key recurs, declare it in
   the gauge or stop recording it.
 - Void a trial or baseline whose evidence is invalid; it stays visible. Remove only mistakes.
-- Rehearse a large patch with `dry_run`.
+- Rehearse a large patch with `dry_run`. Receipts name created trials, baselines, regimes and epochs. Refusals name
+  the operation index, name and field path; repair that operation before retrying the atomic patch.
+- Units normalize common time and byte aliases to `ns`, `µs`, `ms`, `s`, `min`, `h` and `B`. Memory also supports
+  decimal `kB/MB/GB/TB` and binary `KiB/MiB/GiB/TiB`; dimensionless readings use `1/%`. Other lowercase words name
+  distinct count kinds. Alias words never name counts.
+- Inapplicable filters and scopes are ignored with warnings. Reuse a cursor only for its original query; on a
+  cursor refusal, rerun without it.
 
 ## Baselines, epochs and regimes
 

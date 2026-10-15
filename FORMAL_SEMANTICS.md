@@ -35,12 +35,25 @@ Units belong to quantity kinds:
 
 | Kind | Units |
 |---|---|
-| time | ns, µs (also us), ms, s, min, h |
+| time | ns, µs, ms, s, min, h |
 | memory | B, kB, MB, GB, TB, KiB, MiB, GiB, TiB |
 | dimensionless | 1, % |
 | count | any other lowercase word; each word is its own kind |
 
-Conversion is defined within a kind, where 1 = 100 %, and never across kinds.
+Units are stored canonically. Aliases normalize as follows and cannot denote count kinds:
+
+| Canonical unit | Aliases |
+|---|---|
+| s | sec, secs, second, seconds |
+| ms | msec, millisecond, milliseconds |
+| µs | us, microsecond, microseconds |
+| ns | nanosecond, nanoseconds |
+| min | minute, minutes |
+| h | hr, hour, hours |
+| B | byte, bytes |
+
+Conversion is defined within a kind, where 1 = 100 %, and never across kinds. A conversion refusal names the
+reading key, the supplied unit and kind, and the metric's unit and kind.
 
 ## 3. Readings
 
@@ -85,7 +98,8 @@ The state of a hypothesis is the first of these that applies:
 4. waiting: an edge source is unsettled, or it is on the docket of a baseline that is not accepted;
 5. ready.
 
-Trials, dispositions and execution ahead of unsettled inputs are permitted.
+Trials, dispositions and execution ahead of unsettled inputs are permitted. A tested hypothesis remains tested
+when all its non-void trials precede the current regime; inspection identifies the latest such trial regime.
 
 ## 6. Trials
 

@@ -23,7 +23,9 @@ Continue until the user or a real external constraint stops the work. One plausi
 or a progress report is no reason to stop; end the turn only when blocked or told to stop.
 
 1. Start from the incumbent baseline or the most credible live line.
-2. Study the evidence: the status summary, the related hypotheses, and prior art across the project.
+2. Study the evidence: the status summary, the related hypotheses, and prior art across the project with
+   `frontier.status {"scope":"project","filter":{"text":"LNS"}}`. Old-regime trial counts are labelled; remeasure
+   when the next decision requires current-regime evidence.
 3. Search outward, through documentation, papers, source code and competing implementations, when the local frontier
    looks exhausted or the steps are getting small.
 4. Record promising mechanisms as hypotheses as soon as they appear.
