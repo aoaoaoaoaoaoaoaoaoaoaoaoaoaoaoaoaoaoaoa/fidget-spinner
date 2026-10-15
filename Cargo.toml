@@ -29,7 +29,7 @@ pulldown-cmark = "0.13"
 rusqlite = { version = "0.40.1", features = ["bundled", "hooks", "limits", "time"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1"
-trebuchet = { git = "file:///home/main/programming/projects/mcps/trebuchet", rev = "1d8fbe9d5b6b5767e8acf756478a723b219ecbeb", features = ["ledger", "inspect"] }
+trebuchet = { git = "file:///home/main/programming/projects/mcps/trebuchet", rev = "0b44f4a3074dcbdbe5dd61d32b063f78ab572bca", features = ["ledger", "inspect", "board"] }
 thiserror = "2"
 tempfile = "3"
 time = { version = "0.3", features = ["formatting", "macros", "parsing", "serde"] }
@@ -75,6 +75,7 @@ too_many_lines = "allow"
 disallowed_names = "allow"
 enum_variant_names = "allow"
 similar_names = "allow"
+many_single_char_names = "allow"
 struct_field_names = "allow"
 upper_case_acronyms = "allow"
 

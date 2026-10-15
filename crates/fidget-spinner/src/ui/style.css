@@ -1,0 +1,29 @@
+header { flex-wrap: wrap; }
+.overview { padding: 10px 14px; border-bottom: 1px solid var(--rule); }
+.overview h2 { margin: 0 0 8px; font-size: 16px; }
+.charts { display:flex; gap:16px; flex-wrap:wrap; align-items:start; }
+.kpi { flex:1 1 320px; max-width:580px; }
+.kpi svg { width:100%; display:block; overflow:visible; }
+.kpi svg text { fill:var(--fg); font:10px var(--mono); }
+.kpi svg line, .kpi svg path { stroke:var(--line); fill:none; }
+.kpi .reference { opacity:.5; }
+.kpi .baseline { fill:var(--fg); }
+.kpi .accepted { fill:var(--done-line); }
+.kpi .rejected { fill:#cf4a4a; }
+.kpi .shelved { fill:var(--muted); }
+.kpi .tested { fill:#3487c8; }
+.cell.ready .box { fill:var(--ready); stroke:var(--ready-line); }
+.cell.running .box { fill:var(--run); stroke:var(--run-line); }
+.cell.tested .box { fill:var(--ready); stroke:#3487c8; stroke-width:2; }
+.cell.accepted .box { fill:var(--done); stroke:var(--done-line); }
+.cell.rejected .box { stroke:#cf4a4a; }
+.cell.shelved { opacity:.55; }
+.separator.epoch polyline { stroke-width:1; stroke-dasharray:none; }
+.separator.regime polyline { stroke-width:4; stroke-dasharray:none; }
+main > details { margin:12px 16px; }
+summary { cursor:pointer; }
+.sheet { padding:16px; }
+.sheet table { border-collapse:collapse; margin:12px 0; }
+.sheet td,.sheet th { padding:5px 10px; text-align:left; border-bottom:1px solid var(--rule); max-width:38em; overflow-wrap:anywhere; }
+.sheet .selected { background:var(--ready); }
+.sheet h2 { margin-top:0; }

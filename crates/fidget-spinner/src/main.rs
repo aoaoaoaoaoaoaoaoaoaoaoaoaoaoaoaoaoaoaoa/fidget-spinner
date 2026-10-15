@@ -151,6 +151,19 @@ enum Command {
         #[command(flatten)]
         target: Target,
     },
+    /// Serve the loopback navigator.
+    Ui {
+        #[command(subcommand)]
+        command: UiCommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum UiCommand {
+    Serve {
+        #[arg(long, default_value = "127.0.0.1:8913")]
+        bind: std::net::SocketAddr,
+    },
 }
 
 #[derive(Subcommand)]
@@ -173,6 +186,9 @@ fn run(cli: Cli) -> Result<(), Fault> {
     let cwd = Path::new(".");
     let mut server = Server::new(path.clone(), cwd);
     let (tool, arguments) = match cli.command {
+        Command::Ui {
+            command: UiCommand::Serve { bind },
+        } => return fidget_spinner::ui::serve(path, bind),
         Command::Mcp {
             command: McpCommand::Serve,
         } => return Ok(server.serve()?),

@@ -8,7 +8,8 @@ description: Record an open-ended, measured inquiry in Fidget Spinner: frontiers
 A frontier is an objective pursued under a gauge, the measurement contract. Hypotheses are claims; trials test them
 against the incumbent baseline; dispositions settle them with a rationale; reviews study sets of hypotheses and end in
 lessons. Accepting a baseline opens an epoch; changing the gauge opens a regime. The tool descriptions define the
-arguments.
+arguments. `frontier.patch` requires a frontier slug; every tool accepts an explicit project path. Porcelain is the
+default; request `render: "json"` only when structured output is needed.
 
 ## Resume
 
@@ -17,17 +18,19 @@ progress, running and tested work, ready hypotheses, recent dispositions and les
 or review only when the next decision depends on it. The project defaults to the working directory; name the frontier
 when the project has several.
 
-Before recording a new idea, search for prior art: `frontier.status` with `text` and `scope: "project"` searches every
+Before recording a new idea, search for prior art: `frontier.status` with `filter: {"text": "…"}` and `scope: "project"` searches every
 frontier of the project, concluded ones included.
 
 ## Record
 
 Write each result and its consequences in one `frontier.patch`:
 
-```jsonl
-{"op":"trial","hypothesis":"lp.lattice-guard","note":"R77v2: cost ratio 0.976; closures unchanged; no case slower than 2x.","readings":{"r77_ratio":0.976},"artifacts":["7fec404f","/data/main/libgrid-evidence/lp-20261015/r77"]}
-{"op":"accept","hypothesis":"lp.lattice-guard","rationale":"A 2.4% gain exceeds twice the margin with closures unchanged."}
+```json
+[
+{"op":"trial","hypothesis":"lp.lattice-guard","note":"R77v2: cost ratio 0.976; closures unchanged; no case slower than 2x.","readings":{"r77_ratio":0.976},"artifacts":["7fec404f","/data/main/libgrid-evidence/lp-20261015/r77"]},
+{"op":"accept","hypothesis":"lp.lattice-guard","rationale":"A 2.4% gain exceeds twice the margin with closures unchanged."},
 {"op":"hypothesis","slug":"lp.lattice-guard-tighten","title":"Tighten clause-2 bounds with the measured lattice error","claim":"rocII-5-11's primal gap falls below 0.3 with no R77 closure lost.","after":["lp.lattice-guard"]}
+]
 ```
 
 - A trial's note states what ran and what happened, with the numbers that matter; its artifacts cite the commit and
@@ -56,3 +59,9 @@ Adding a metric is not a regime change.
 
 Findings are reminders computed from the state; they never block. Resolve one by recording what it reports missing,
 or waive it with a note when the situation is intended.
+
+## Navigator
+
+`fidget-spinner ui serve --bind 127.0.0.1:8913` serves the local, read-only navigator. The board hides settlements
+older than the latest two epochs; increase Recent epochs or choose Show all settled to inspect older work. Clicking a
+hypothesis or a chart point opens its evidence.

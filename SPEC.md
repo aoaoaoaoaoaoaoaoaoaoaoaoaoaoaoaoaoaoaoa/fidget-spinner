@@ -144,12 +144,14 @@ the record kind.
 
 ## Navigator
 
-`fidget-spinner ui` serves a loopback board. The index lists frontiers grouped by project, each project under a
+`fidget-spinner ui serve --bind 127.0.0.1:8913` serves a loopback board. The index lists frontiers grouped by project, each project under a
 heading that folds. A frontier's board uses the shared layout engine: hypotheses are cells grouped by lane, edges are
 drawn, reviews are coloured sets, and each baseline holds its docket the way a Vauban wall holds its nodes. Epoch
 boundaries are thin separators labelled with their baseline; a regime change is a thick separator marked bridged or
-unbridged. Settled hypotheses beyond the horizon are hidden by default. Clicking a cell opens a foreground with its
-trial table.
+unbridged. A settled hypothesis belongs to the epoch of its disposition, rather than its creation. By default the horizon
+hides dispositions before the start of the second-latest surviving epoch; unsettled hypotheses always remain visible.
+Recent epochs changes that count, and Show all settled removes the horizon. Clicking a cell opens a foreground with
+its trial table.
 
 The header shows the objective and one chart per KPI: baseline readings as steps across epochs, trials as dots
 coloured by disposition, reference lines dashed, the unit on the axis, every point a link to its record. The line

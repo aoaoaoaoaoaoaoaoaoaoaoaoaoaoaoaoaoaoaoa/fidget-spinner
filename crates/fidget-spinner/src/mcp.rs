@@ -58,6 +58,8 @@ pub enum Fault {
     Refused(#[from] Refusal),
     #[error("{0}")]
     Json(#[from] serde_json::Error),
+    #[error("{0}")]
+    Navigator(#[from] trebuchet::board::ServeError),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]

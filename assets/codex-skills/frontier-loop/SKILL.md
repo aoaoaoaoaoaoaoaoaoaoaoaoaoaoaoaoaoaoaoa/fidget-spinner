@@ -14,7 +14,8 @@ record; frontier state belongs there, not in prose or memory.
 The objective, the gauge (what is measured, how, and on what) and the incumbent baseline must be clear. Infer them
 from context when they are; otherwise settle them first, because a reading is comparable only within its regime.
 
-Read `frontier.status` before the first iteration and again after any interruption or compaction.
+Read `frontier.status` before the first iteration and again after any interruption or compaction. Pass the project
+when the server is elsewhere, and name the frontier when the project has several.
 
 ## Loop
 

@@ -23,7 +23,7 @@ UI_BIND="${FIDGET_SPINNER_UI_BIND:-127.0.0.1:8913}"
 INSTALL_SYSTEMD="${FIDGET_SPINNER_INSTALL_SYSTEMD:-1}"
 OWNERSHIP_MARKER="managed by fidget-spinner installer"
 SKILL_MARKER_NAME=".fidget-spinner-owned"
-BINARY_MARKER="${LOCAL_BIN_DIR}/.fidget-spinner-cli.eternalist-owned"
+BINARY_MARKER="${LOCAL_BIN_DIR}/.fidget-spinner.eternalist-owned"
 
 for path in "${HOME}" "${LOCAL_ROOT}" "${SKILL_DEST_ROOT}" "${SYSTEMD_USER_DIR}"; do
   if [[ "${path}" != /* ]]; then
@@ -62,7 +62,7 @@ owned_service() {
   local path="$1"
   [[ -f "${path}" && ! -L "${path}" ]] || return 1
   head -n 1 "${path}" | grep -Fqx "# ${OWNERSHIP_MARKER}" \
-    || grep -Eq '^ExecStart=.*fidget-spinner-cli.*ui serve' "${path}"
+    || grep -Eq '^ExecStart=.*fidget-spinner.*ui serve' "${path}"
 }
 
 legacy_owned_skill() {
@@ -127,7 +127,7 @@ uninstall_skill() {
 }
 
 install_binary() {
-  local binary="${LOCAL_BIN_DIR}/fidget-spinner-cli"
+  local binary="${LOCAL_BIN_DIR}/fidget-spinner"
   local staged_binary
   if [[ -e "${binary}" || -L "${binary}" ]] && [[ ! -f "${binary}" || -L "${binary}" ]]; then
     printf 'refusing non-regular binary path: %s\n' "${binary}" >&2
@@ -140,14 +140,14 @@ install_binary() {
     }
   elif [[ -e "${binary}" || -L "${binary}" ]]; then
     if [[ -L "${binary}" || ! -x "${binary}" ]] \
-      || [[ "$("${binary}" --version 2>/dev/null || true)" != fidget-spinner-cli\ * ]]; then
+      || [[ "$("${binary}" --version 2>/dev/null || true)" != fidget-spinner\ * ]]; then
       printf 'refusing to replace unowned binary path: %s\n' "${binary}" >&2
       return 1
     fi
   fi
-  staged_binary="$(mktemp "${LOCAL_BIN_DIR}/.fidget-spinner-cli.XXXXXX")"
+  staged_binary="$(mktemp "${LOCAL_BIN_DIR}/.fidget-spinner.XXXXXX")"
   if ! install -m 0755 \
-    "${CARGO_TARGET_DIR}/release/fidget-spinner-cli" \
+    "${CARGO_TARGET_DIR}/release/fidget-spinner" \
     "${staged_binary}"; then
     rm -f "${staged_binary}"
     return 1
@@ -162,12 +162,12 @@ install_binary() {
 }
 
 uninstall_binary() {
-  local binary="${LOCAL_BIN_DIR}/fidget-spinner-cli"
+  local binary="${LOCAL_BIN_DIR}/fidget-spinner"
   if owned_marker "${BINARY_MARKER}"; then
     rm -f "${binary}" "${BINARY_MARKER}"
     printf 'removed binary: %s\n' "${binary}"
   elif [[ -x "${binary}" && ! -L "${binary}" ]] \
-    && [[ "$("${binary}" --version 2>/dev/null || true)" == fidget-spinner-cli\ * ]]; then
+    && [[ "$("${binary}" --version 2>/dev/null || true)" == fidget-spinner\ * ]]; then
     rm -f "${binary}"
     printf 'removed legacy installer binary: %s\n' "${binary}"
   elif [[ -e "${binary}" || -L "${binary}" || -e "${BINARY_MARKER}" || -L "${BINARY_MARKER}" ]]; then
@@ -176,7 +176,7 @@ uninstall_binary() {
 }
 
 preflight_install() {
-  local binary="${LOCAL_BIN_DIR}/fidget-spinner-cli"
+  local binary="${LOCAL_BIN_DIR}/fidget-spinner"
   if [[ -e "${BINARY_MARKER}" || -L "${BINARY_MARKER}" ]]; then
     owned_marker "${BINARY_MARKER}" || {
       printf 'refusing invalid binary ownership marker: %s\n' "${BINARY_MARKER}" >&2
@@ -188,7 +188,7 @@ preflight_install() {
     fi
   elif [[ -e "${binary}" || -L "${binary}" ]]; then
     if [[ -L "${binary}" || ! -x "${binary}" ]] \
-      || [[ "$("${binary}" --version 2>/dev/null || true)" != fidget-spinner-cli\ * ]]; then
+      || [[ "$("${binary}" --version 2>/dev/null || true)" != fidget-spinner\ * ]]; then
       printf 'refusing to replace unowned binary path: %s\n' "${binary}" >&2
       return 1
     fi
@@ -241,7 +241,7 @@ evict_conflicting_navigator() {
   fi
   local cmd
   cmd="$(ps -p "${pid}" -o args= || true)"
-  if [[ "${cmd}" == *"fidget-spinner-cli ui serve"* ]]; then
+  if [[ "${cmd}" == *"fidget-spinner ui serve"* ]]; then
     kill "${pid}"
     for _ in {1..20}; do
       if ! kill -0 "${pid}" 2>/dev/null; then
@@ -372,11 +372,11 @@ CARGO_TARGET_DIR="$(
 
 mkdir -p "${LOCAL_BIN_DIR}"
 
-cargo build --release -p fidget-spinner-cli --manifest-path "${ROOT_DIR}/Cargo.toml"
-"${CARGO_TARGET_DIR}/release/fidget-spinner-cli" ui serve --bind "${UI_BIND}" --help >/dev/null
+cargo build --release -p fidget-spinner --manifest-path "${ROOT_DIR}/Cargo.toml"
+"${CARGO_TARGET_DIR}/release/fidget-spinner" ui serve --bind "${UI_BIND}" --help >/dev/null
 install_binary
 install_skill "fidget-spinner"
 install_skill "frontier-loop"
 install_ui_service
 
-printf 'mcp command: %s\n' "${LOCAL_BIN_DIR}/fidget-spinner-cli mcp serve"
+printf 'mcp command: %s\n' "${LOCAL_BIN_DIR}/fidget-spinner mcp serve"
