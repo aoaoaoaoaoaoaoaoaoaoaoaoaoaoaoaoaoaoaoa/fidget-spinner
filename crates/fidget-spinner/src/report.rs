@@ -149,11 +149,17 @@ fn table(out: &mut String, key: &str, rows: &[Value], page: &Map<String, Value>)
         page.get("total")
             .map_or_else(|| rows.len().to_string(), scalar)
     );
-    let mut columns = Vec::new();
+    // Rows omit absent fields, so a column first seen in a later row is placed
+    // after its predecessor there, not appended, to keep the projection's order.
+    let mut columns: Vec<String> = Vec::new();
     for row in rows.iter().filter_map(Value::as_object) {
+        let mut at = 0;
         for name in row.keys() {
-            if !columns.contains(name) {
-                columns.push(name.clone());
+            if let Some(index) = columns.iter().position(|column| column == name) {
+                at = index + 1;
+            } else {
+                columns.insert(at, name.clone());
+                at += 1;
             }
         }
     }

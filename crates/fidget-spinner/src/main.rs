@@ -83,10 +83,16 @@ struct Lens {
 
 impl Lens {
     fn insert(self, args: &mut Value) {
-        args["scope"] = self.scope.map_or_else(
-            || json!({"under":self.under,"review":self.review,"docket":self.docket}),
-            Value::String,
-        );
+        if self.scope.is_some()
+            || self.under.is_some()
+            || self.review.is_some()
+            || self.docket.is_some()
+        {
+            args["scope"] = self.scope.map_or_else(
+                || json!({"under":self.under,"review":self.review,"docket":self.docket}),
+                Value::String,
+            );
+        }
         args["filter"] = json!({"state":self.state,"disposition":self.disposition,
             "owner":self.owner,"lane":self.lane,"text":self.text});
     }
