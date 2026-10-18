@@ -92,5 +92,5 @@ or waive it with a note when the situation is intended.
 ## Navigator
 
 The read-only navigator at http://127.0.0.1:8913/ shows each frontier's board and KPI charts. The board hides
-settlements older than the latest two epochs; increase Recent epochs or choose Show all settled to inspect older work.
-Clicking a hypothesis or a chart point opens its evidence.
+settlements older than the latest two epochs; widen Settled to inspect older work. Clicking a hypothesis or a chart
+point opens its evidence.

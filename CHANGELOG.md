@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+- Dresses the navigator in the board chrome it shares with Vauban: a favicon, the
+  product header and place, a landing table of frontiers with settlement bars and
+  counts, state colours, hover cards and foreground records.
+- Repairs frontier boards that stayed at "laying out…": their board requests carried
+  a doubled query mark. A board that cannot load now shows the refusal.
+- Titles cells by hypothesis and counts their trials; shows KPI tiles with the
+  incumbent value, charts only from two readings on, and trial readings with their
+  change against the baseline.
+- Replaces Recent epochs and Show all settled with one Settled control.
+
 ## 3.0.0 - 2026-10-14
 
 - Replaces the implementation with a pure domain core and a revision-pinned

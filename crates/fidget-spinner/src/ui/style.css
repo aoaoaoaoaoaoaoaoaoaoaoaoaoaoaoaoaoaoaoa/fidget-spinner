@@ -1,29 +1,60 @@
-header { flex-wrap: wrap; }
-.overview { padding: 10px 14px; border-bottom: 1px solid var(--rule); }
-.overview h2 { margin: 0 0 8px; font-size: 16px; }
-.charts { display:flex; gap:16px; flex-wrap:wrap; align-items:start; }
-.kpi { flex:1 1 320px; max-width:580px; }
-.kpi svg { width:100%; display:block; overflow:visible; }
-.kpi svg text { fill:var(--fg); font:10px var(--mono); }
-.kpi svg line, .kpi svg path { stroke:var(--line); fill:none; }
-.kpi .reference { opacity:.5; }
-.kpi .baseline { fill:var(--fg); }
-.kpi .accepted { fill:var(--done-line); }
-.kpi .rejected { fill:#cf4a4a; }
-.kpi .shelved { fill:var(--muted); }
-.kpi .tested { fill:#3487c8; }
-.cell.ready .box { fill:var(--ready); stroke:var(--ready-line); }
-.cell.running .box { fill:var(--run); stroke:var(--run-line); }
-.cell.tested .box { fill:var(--ready); stroke:#3487c8; stroke-width:2; }
-.cell.accepted .box { fill:var(--done); stroke:var(--done-line); }
-.cell.rejected .box { stroke:#cf4a4a; }
-.cell.shelved { opacity:.55; }
-.separator.epoch polyline { stroke-width:1; stroke-dasharray:none; }
-.separator.regime polyline { stroke-width:4; stroke-dasharray:none; }
-main > details { margin:12px 16px; }
-summary { cursor:pointer; }
-.sheet { padding:16px; }
-.sheet table { border-collapse:collapse; margin:12px 0; }
-.sheet td,.sheet th { padding:5px 10px; text-align:left; border-bottom:1px solid var(--rule); max-width:38em; overflow-wrap:anywhere; }
-.sheet .selected { background:var(--ready); }
-.sheet h2 { margin-top:0; }
+:root { --reject-line: #a8322b; --reject-fill: #f1dcd6; --reject-bar: #d49a90; --test-line: #2a6cb0; }
+@media (prefers-color-scheme: dark) { :root { --reject-line: #f0857c; --reject-fill: #3a2523; --reject-bar: #8f4f47; --test-line: #6fb0ea; } }
+
+/* Hypothesis liveries beyond the shared done, running and ready skins. */
+.accepted { --state-fill: var(--done); --state-line: var(--done-line); }
+.rejected { --state-fill: var(--reject-fill); --state-line: var(--reject-line); }
+.shelved { --state-line: var(--wait-line); }
+.tested { --state-fill: var(--ready); --state-line: var(--test-line); --state-weight: 2; }
+.count.shelved::before, .cell.shelved .box { stroke-dasharray: 3 2; border-style: dashed; }
+/* Rejections stay lighter than acceptances, so the bar reads without hue. */
+.bar .fill.rejected { background: var(--reject-bar); }
+.bar .fill.shelved { background: var(--wait-line); }
+.cell.shelved { opacity: .6; }
+.cell.waiting text, .cell.shelved text { fill: var(--muted); }
+
+.separator.epoch polyline { stroke-width: 1; stroke-dasharray: none; stroke-opacity: .6; }
+.separator.regime polyline { stroke: var(--test-line); stroke-width: 2.5; stroke-dasharray: none; }
+.separator.regime text { fill: var(--test-line); }
+
+.stats .prose { margin: 2px 0; max-width: 120ch; color: var(--muted); overflow: hidden; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; }
+.stats .prose b { color: var(--fg); font-weight: 600; }
+.stats a.review { text-decoration: none; font-size: 12px; }
+.stats a.review:hover { text-decoration: underline; }
+.stats a.review::before { content: ""; display: inline-block; width: 8px; height: 8px; margin-right: 5px; border-radius: 50%; vertical-align: 0;
+  border: 1.5px solid var(--set, var(--wait-line)); }
+.stats a.review.completed::before { background: var(--set, var(--wait-line)); }
+
+.kpi { padding: 4px 0 2px; }
+.kpi .head { display: flex; gap: 6px; align-items: baseline; font: 12px var(--mono); }
+.kpi .head b { font-weight: 600; }
+.kpi .unit, .kpi .better { color: var(--muted); }
+.kpi .value { margin-left: auto; font-weight: 600; }
+.kpi .none { margin: 6px 0; color: var(--muted); font-size: 12px; }
+.kpi svg { display: block; overflow: visible; }
+.kpi .tick, .kpi .reference { font: 9px var(--mono); fill: var(--muted); }
+.kpi .reference { fill: var(--line); }
+.kpi line.frame { stroke: var(--rule); }
+.kpi line.epoch { stroke: var(--rule); stroke-dasharray: 2 2; }
+.kpi line.reference { stroke: var(--line); stroke-dasharray: 5 3; stroke-opacity: .6; }
+.kpi .steps { fill: none; stroke: var(--fg); stroke-width: 2; }
+.kpi .point { fill: var(--state-line, var(--wait-line)); stroke: var(--bg); stroke-width: 1; }
+.kpi .point.baseline { fill: var(--fg); }
+.kpi a:hover .point { stroke: var(--fg); stroke-width: 2; }
+
+.sheet { display: flex; flex-direction: column; gap: 12px; align-items: center; }
+.sheet .record { width: min(760px, 100%); box-shadow: 3px 3px 0 rgba(0, 0, 0, .18); }
+.sheet .record .field div { white-space: pre-wrap; }
+.reading { display: block; font: 11px var(--mono); }
+.reading.better { color: var(--done-line); }
+.reading.worse { color: var(--reject-line); }
+.reading.unlisted { color: var(--muted); }
+.note { display: block; }
+table.trials { border-collapse: collapse; background: var(--box); border: 1px solid var(--line); box-shadow: 3px 3px 0 rgba(0, 0, 0, .18); max-width: min(1200px, 100%); }
+table.trials th { padding: 5px 10px; text-align: left; font-size: 9.5px; letter-spacing: .12em; text-transform: uppercase; color: var(--strip-fg); background: var(--strip); }
+table.trials td { padding: 5px 10px; vertical-align: top; border-top: 1px solid var(--rule); max-width: 38em; overflow-wrap: anywhere; }
+table.trials td:first-child, table.trials td:nth-child(2) { font: 11px var(--mono); white-space: nowrap; }
+table.trials tr.selected { background: var(--ready); }
+table.trials tr.void { color: var(--muted); }
+table.trials tr.void td:first-child { text-decoration: line-through; }
+table.trials .artifact { display: block; font: 11px var(--mono); color: var(--muted); }

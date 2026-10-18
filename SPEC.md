@@ -170,19 +170,31 @@ the record kind.
 
 ## Navigator
 
-`fidget-spinner ui serve --bind 127.0.0.1:8913` serves a loopback board. The index lists frontiers grouped by project, each project under a
-heading that folds. A frontier's board uses the shared layout engine: hypotheses are cells grouped by lane, edges are
-drawn, reviews are coloured sets, and each baseline holds its docket the way a Vauban wall holds its nodes. Epoch
-boundaries are thin separators labelled with their baseline and acceptance time; a regime change is a thick separator marked bridged or
-unbridged. A settled hypothesis belongs to the epoch of its disposition, rather than its creation. By default the horizon
-hides dispositions before the start of the second-latest surviving epoch; unsettled hypotheses always remain visible.
-Recent epochs changes that count, and Show all settled removes the horizon. Clicking a cell opens a foreground with
-its trial table.
+`fidget-spinner ui serve --bind 127.0.0.1:8913` serves a loopback board. The index lists active frontiers before
+concluded ones, newest patch first within each: each frontier over its project, a bar of its settled hypotheses
+(accepted, rejected and shelved, with running ones hatched), its hypotheses counted by decision or state, its latest
+patch and whether it is concluded. A frontier's name shows its objective on hover.
 
-The header shows the objective and one chart per KPI: baseline readings as steps across epochs, trials as dots
-coloured by disposition, reference lines dashed, the unit on the axis, every point a link to its record. The line
-breaks at an unbridged regime change. Epochs are named by baseline and acceptance time in chart labels and point
-titles, never by an ordinal. Values show three significant figures.
+A frontier's board uses the shared layout engine: hypotheses are cells titled by their titles, grouped by lane and
+showing their trial counts; edges are drawn, reviews are coloured sets, and each baseline holds its docket the way a
+Vauban wall holds its nodes. Epoch boundaries are thin separators labelled with their baseline and acceptance time.
+Once a frontier has changed gauge, each regime begins at a thick separator marked bridged or unbridged. A settled
+hypothesis belongs to the epoch of its disposition, rather than its creation. The Settled control keeps dispositions
+since the latest epoch or the last 2, 3 or 5 epochs began, none or all; by default the last 2. Unsettled hypotheses
+always remain visible.
+
+Above the board, the frontier's counts, regime and incumbent baseline lead its objective, its conclusion, one tile per
+KPI and its reviews in their board colours. A tile names the KPI, its better direction, its unit and the incumbent
+baseline's value. From two readings on, it charts baseline readings as steps across epochs, trials as dots coloured by decision
+or state and reference lines dashed, every point a link to its record; otherwise it lists the reference lines. The
+line breaks at an unbridged regime change. Epochs are named by baseline, never by an ordinal: a chart labels epoch
+boundaries with their baselines where they fit and titles them with their acceptance times. Values show three
+significant figures.
+
+Hovering a cell shows its state, claim, mechanism, rationale, latest trial, reviews and neighbours. Clicking it opens a
+foreground with the whole record, its neighbourhood and its trial table, whose readings show their change against the
+trial's baseline. Trials, baselines and reviews open the same way from charts, tables and the review list: a trial
+marks its row, a baseline draws its docket and a review its members.
 
 ## Store
 

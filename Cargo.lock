@@ -1370,11 +1370,12 @@ dependencies = [
 [[package]]
 name = "trebuchet"
 version = "0.1.0"
-source = "git+file:///home/main/programming/projects/mcps/trebuchet?rev=37efd33201f3caae878e3ab0cbd5826f605503d6#37efd33201f3caae878e3ab0cbd5826f605503d6"
+source = "git+file:///home/main/programming/projects/mcps/trebuchet?rev=0e40ac68ad53054460690af24e5f5fc6bf32d99a#0e40ac68ad53054460690af24e5f5fc6bf32d99a"
 dependencies = [
  "axum",
  "base64",
  "clap",
+ "form_urlencoded",
  "libmcp",
  "maud",
  "rusqlite",
