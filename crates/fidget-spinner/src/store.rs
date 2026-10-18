@@ -8,7 +8,9 @@ use std::{
 use time::OffsetDateTime;
 use trebuchet::ledger::{Applied, ApplyResult, Ontology, SqlNames, StoreFormat};
 
-pub use trebuchet::ledger::{Address, Decision, Entry, Ledger, Listing, ProjectRoot, StoreError};
+pub use trebuchet::ledger::{
+    Address, Decision, Entry, Ledger, Listing, ProjectRoot, Standing, StoreError,
+};
 
 pub struct Spinner;
 pub type Store = trebuchet::ledger::Store<Spinner>;
@@ -31,7 +33,7 @@ pub struct Report {
 impl Ontology for Spinner {
     const ADDRESS_TERMS: trebuchet::ledger::AddressTerms = trebuchet::ledger::AddressTerms {
         noun: "frontier",
-        candidates: "frontiers",
+        candidates: "unarchived frontiers",
     };
     type State = Frontier;
     type Op = Op;

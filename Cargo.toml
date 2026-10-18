@@ -30,7 +30,7 @@ rusqlite = { version = "0.40.1", features = ["bundled", "hooks", "limits", "time
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1"
 serde_path_to_error = "0.1"
-trebuchet = { git = "file:///home/main/programming/projects/mcps/trebuchet", rev = "0e40ac68ad53054460690af24e5f5fc6bf32d99a", features = ["ledger", "inspect", "board"] }
+trebuchet = { git = "file:///home/main/programming/projects/mcps/trebuchet", rev = "de51dda4bf121d41cf52f7a60764c3703f364526", features = ["ledger", "inspect", "board"] }
 thiserror = "2"
 tempfile = "3"
 time = { version = "0.3", features = ["formatting", "macros", "parsing", "serde"] }

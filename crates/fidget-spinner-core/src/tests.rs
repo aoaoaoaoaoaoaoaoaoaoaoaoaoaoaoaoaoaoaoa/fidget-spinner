@@ -278,3 +278,31 @@ fn cycles_refuse_the_whole_patch() -> Result<(), Box<dyn Error>> {
     }
     Ok(())
 }
+
+// A patch reopens a concluded frontier at its first operation other than
+// conclude or archive. Were archive one of them, it would reopen the frontier
+// it archives and then refuse it as active.
+#[test]
+fn archive_lasts_until_the_frontier_reopens() -> Result<(), Box<dyn Error>> {
+    let mut f = Frontier::default();
+    let _ = patch(
+        &mut f,
+        r#"[{"op":"frontier","objective":"Archivable inquiry"}]"#,
+    )?;
+    let archive = serde_json::from_str::<Vec<Op>>(r#"[{"op":"archive"}]"#)?;
+    assert!(matches!(
+        f.patched(&archive, OffsetDateTime::UNIX_EPOCH),
+        Err(Refusal::Operation { cause, .. }) if *cause == OpRefusal::PrematureArchive
+    ));
+    let _ = patch(&mut f, r#"[{"op":"conclude","lesson":"First"}]"#)?;
+    assert!(patch(&mut f, r#"[{"op":"archive"}]"#)?.warnings.is_empty());
+    let _ = patch(&mut f, r#"[{"op":"conclude","lesson":"Revised"}]"#)?;
+    assert!(
+        f.conclusion()
+            .is_some_and(|c| c.archived && c.lesson.text == "Revised")
+    );
+    let reopened = patch(&mut f, r#"[{"op":"hypothesis","slug":"x","title":"More"}]"#)?;
+    assert_eq!(reopened.warnings[&0], vec![Warning::ReopenedFrontier]);
+    assert!(f.conclusion().is_none());
+    Ok(())
+}

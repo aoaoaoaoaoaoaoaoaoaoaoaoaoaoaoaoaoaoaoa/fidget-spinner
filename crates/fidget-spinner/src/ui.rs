@@ -2,12 +2,12 @@
 use crate::{
     inspect::stamp,
     mcp::Fault,
-    store::{self, Ledger, Listing, Store},
+    store::{self, Ledger, Listing, Store, StoreError},
 };
 use fidget_spinner_core::{
-    Assay, Baseline, BaselineDecision, Comparison, Frontier, Hypothesis, HypothesisDecision,
-    MetricKey, Movement, Reading, RecordedReadings, RegimeNumber, Review, Slug,
-    State as HypothesisState, TrialId, Value,
+    Assay, Baseline, BaselineDecision, Comparison, Conclusion, Frontier, Hypothesis,
+    HypothesisDecision, MetricKey, Movement, Op, Reading, RecordedReadings, RegimeNumber, Review,
+    Slug, State as HypothesisState, TrialId, Value,
 };
 use std::{
     cmp::Reverse,
@@ -16,11 +16,12 @@ use std::{
     path::PathBuf,
     sync::{Mutex, PoisonError},
 };
+use time::OffsetDateTime;
 use trebuchet::{
     board::{
-        self, Attribute as A, BoardRoutes, BoardScene, BoardSource, Card, Content as C, Field,
-        IndexRow, IndexScene, Marker, Place, Query, RouteTarget, SetStyle, Tag as T, Theme, count,
-        meter, stats,
+        self, ActionResult, Attribute as A, BoardRoutes, BoardScene, BoardSource, Card,
+        Content as C, Field, IndexRow, IndexScene, Marker, Place, Query, RouteTarget, SetStyle,
+        StatusCode, Tag as T, Theme, button, count, meter, stats,
     },
     layout::{Cell, CellSet, LayoutInput, Occupant, Separator, elide, focused, foreground},
 };
@@ -267,7 +268,7 @@ fn stat(text: String) -> C {
 fn plural(n: usize, noun: &str) -> String {
     format!("{n} {noun}{}", if n == 1 { "" } else { "s" })
 }
-fn placed_at(h: &Hypothesis) -> time::OffsetDateTime {
+fn placed_at(h: &Hypothesis) -> OffsetDateTime {
     h.disposition.as_ref().map_or(h.at, |d| d.at)
 }
 
@@ -307,6 +308,36 @@ impl BoardSource for Navigator {
             "no such frontier"
         }
     }
+    fn action(&self, s: &Selection, action: &str) -> Result<Option<ActionResult>, Fault> {
+        if action != "archive" {
+            return Ok(None);
+        }
+        let Some(listing) = self
+            .store()?
+            .map(|store| store.listing(s.id))
+            .transpose()?
+            .flatten()
+        else {
+            return Ok(Some(ActionResult::Reply {
+                status: StatusCode::NOT_FOUND,
+                text: "No such frontier.".into(),
+            }));
+        };
+        match store::open(&self.path)?.commit(
+            &listing.address,
+            &mut Ledger::default(),
+            &[Op::Archive {}],
+            OffsetDateTime::now_utc(),
+            false,
+        ) {
+            Ok(_) => Ok(Some(ActionResult::Redirect("/".into()))),
+            Err(StoreError::Refused(refusal)) => Ok(Some(ActionResult::Reply {
+                status: StatusCode::CONFLICT,
+                text: refusal.to_string(),
+            })),
+            Err(error) => Err(error.into()),
+        }
+    }
     fn index(&self) -> Result<IndexScene, Fault> {
         let mut rows = Vec::new();
         if let Some(store) = self.store()? {
@@ -315,8 +346,11 @@ impl BoardSource for Navigator {
                 let ledger = ledgers.entry(listing.id).or_default();
                 store.refresh(&listing.address, ledger)?;
                 let f = ledger.state();
+                let concluded = match f.conclusion() {
+                    Some(Conclusion { archived: true, .. }) => continue,
+                    conclusion => conclusion.is_some(),
+                };
                 let tally = Tally::new(f, &Assay::new(f));
-                let concluded = f.conclusion().is_some();
                 rows.push((
                     (concluded, Reverse(listing.updated)),
                     IndexRow {
@@ -326,7 +360,15 @@ impl BoardSource for Navigator {
                         columns: vec![tally.meter(), tally.counts()],
                         updated: listing.updated,
                         action: if concluded {
-                            vec![stat("concluded".into())]
+                            vec![
+                                stat("concluded".into()),
+                                button(
+                                    format!("/frontier/{}/archive", listing.id),
+                                    "Archive",
+                                    "Archiving…",
+                                    "Hide this frontier; keep all data",
+                                ),
+                            ]
                         } else {
                             Vec::new()
                         },
@@ -338,7 +380,7 @@ impl BoardSource for Navigator {
         Ok(IndexScene {
             rows: rows.into_iter().map(|(_, row)| row).collect(),
             empty:
-                "No frontiers yet. Start one with frontier.patch through the Fidget Spinner MCP."
+                "No visible frontiers. Start one with frontier.patch through the Fidget Spinner MCP."
                     .into(),
         })
     }
@@ -542,7 +584,7 @@ fn overview(f: &Frontier, a: &Assay, s: &Selection) -> Result<Vec<C>, Fault> {
     if let Some(objective) = f.objective() {
         lines.push(vec![prose("Objective ".into(), objective)]);
     }
-    if let Some(lesson) = f.conclusion() {
+    if let Some(Conclusion { lesson, .. }) = f.conclusion() {
         lines.push(vec![prose(
             format!("Concluded {} ", stamp(lesson.at, false)),
             &lesson.text,

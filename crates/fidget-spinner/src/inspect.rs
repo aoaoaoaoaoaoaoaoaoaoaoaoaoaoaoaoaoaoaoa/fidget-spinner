@@ -846,7 +846,8 @@ impl<'a> Lens<'a> {
         };
         Ok(
             json!({"objective":self.text(self.frontier.objective().unwrap_or(""),"frontier.status",json!({"detail":"full"})),
-        "conclusion":self.frontier.conclusion().map(|l|self.text(&l.text,"frontier.status",json!({"detail":"full"}))),
+        "conclusion":self.frontier.conclusion().map(|c|self.text(&c.lesson.text,"frontier.status",json!({"detail":"full"}))),
+        "archived":self.frontier.conclusion().and_then(|c|c.archived.then_some(true)),
         "counts":counts,"regime":regime,"incumbent_baseline":incumbent,"kpis":kpis,
         "dockets":list(self.frontier.baselines().iter().filter(|(s,b)|(b.disposition.is_none()||self.assay.incumbent_baseline.as_ref()==Some(*s))&&self.baseline_selected(s,&selected,args.scope.as_ref()))
             .filter(|(s,_)|self.assay.dockets.get(*s).is_some_and(|d|!d.members.is_empty())).map(|(s,_)|json!({"baseline":s,"progress":self.docket(s)})).collect(),"baselines",None),

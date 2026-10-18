@@ -10,9 +10,10 @@ Every tool takes optional `project` (a path) and `frontier` (a slug). The defaul
 directory. A path resolves to its project: the nearest ancestor holding `.git`, a linked worktree resolving to its
 main checkout through `commondir`, or the canonical path itself outside Git. `frontier.patch` requires `frontier`. A
 read may omit it only when the project has exactly one active frontier; otherwise the read is refused with the list
-of the project's frontiers. Responses name the frontier, and the project only when it is not the default. Cursors
-belong to their project and frontier. Failure to resolve the working directory does not prevent startup: `system.health`
-reports the reason, and calls that need a project refuse only when `project` is omitted, asking the caller to pass it.
+of the project's unarchived frontiers, each marked active or concluded. Responses name the frontier, and the project
+only when it is not the default. Cursors belong to their project and frontier. Failure to resolve the working
+directory does not prevent startup: `system.health` reports the reason, and calls that need a project refuse only
+when `project` is omitted, asking the caller to pass it.
 
 ## Tools
 
@@ -33,6 +34,7 @@ A patch is a JSON array of operations, each an object with `op` and its fields. 
 ```
 frontier   {objective}
 conclude   {lesson}
+archive    {}
 regime     {contract, metrics: [metric], reason?, bridge?: {slug, readings, note?}}
 gauge      {contract?, metrics?: [metric], retire?: [key], restore?: [key]}
 baseline   {slug, artifacts?: [text], readings?: {key: value}, adopts?: [slug], docket?: [slug], note?}
@@ -111,7 +113,7 @@ two, or a unique prefix completion.
 
 `frontier.status` without `view` returns the summary, under 2 KB for a typical frontier:
 
-1. the objective;
+1. the objective, and the lesson of a concluded frontier, marked when archived;
 2. the current regime: number and the first line of the contract, at most 160 characters, with a full-read route;
 3. the incumbent baseline: slug, acceptance time (`since`) and artifacts; one KPI table joins keys, units, directions, incumbent readings
    and reference lines;
@@ -139,7 +141,7 @@ Views:
 | `baselines` | slug, regime, acceptance time (`since`), disposition, artifacts, KPI readings, docket progress |
 | `regimes` | number, reason, bridge, contract, metrics; newest first |
 | `findings` | identity, generated statement, waiver |
-| `frontiers` | the project's frontiers: slug, active or concluded, counts by state, objective preview |
+| `frontiers` | the project's frontiers: slug, standing (active, concluded or archived), counts by state, objective preview |
 
 Scope selectors: `under` (a slug and those beneath it at a dot boundary), `review` (its members) and `docket` (a
 baseline's docket). Filters: `state`, `disposition`, `owner`, `lane` and `text`. `text` is a case-insensitive
@@ -173,7 +175,9 @@ the record kind.
 `fidget-spinner ui serve --bind 127.0.0.1:8913` serves a loopback board. The index lists active frontiers before
 concluded ones, newest patch first within each: each frontier over its project, a bar of its settled hypotheses
 (accepted, rejected and shelved, with running ones hatched), its hypotheses counted by decision or state, its latest
-patch and whether it is concluded. A frontier's name shows its objective on hover.
+patch and whether it is concluded, with an Archive button when it is. It omits archived frontiers, whose boards keep
+their addresses. A frontier's name shows its objective on hover. An archive POST requires a matching Origin and
+appends an `archive` patch through the transactional writer.
 
 A frontier's board uses the shared layout engine: hypotheses are cells titled by their titles, grouped by lane and
 showing their trial counts; edges are drawn, reviews are coloured sets, and each baseline holds its docket the way a

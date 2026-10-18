@@ -11,6 +11,10 @@
   incumbent value, charts only from two readings on, and trial readings with their
   change against the baseline.
 - Replaces Recent epochs and Show all settled with one Settled control.
+- Archives concluded frontiers, through an `archive` operation or the index's Archive
+  button: an archived frontier leaves the index and the candidates for an omitted
+  frontier until it reopens, and keeps its records. Refusals of an omitted frontier
+  mark each candidate active or concluded.
 
 ## 3.0.0 - 2026-10-14
 

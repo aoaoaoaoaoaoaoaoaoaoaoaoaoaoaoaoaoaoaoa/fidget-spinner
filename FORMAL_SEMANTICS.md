@@ -157,11 +157,13 @@ A waiver attaches a note to the identity of a present finding and applies whenev
 
 A patch applies its operations in order to a copy of the state and commits only if every operation succeeds. Each
 reference must resolve when its operation applies. Refusals protect representation: malformed operations; invalid
-slugs, keys, units or values; empty required text; unknown references; cycles and self-edges; rename collisions;
-a unit of the wrong kind; a change of meaning after a metric's first reading; acceptance of a void baseline or one
+slugs, keys, units or values; empty required text; unknown references; cycles and self-edges; rename collisions; a
+unit of the wrong kind; a change of meaning after a metric's first reading; acceptance of a void baseline or one
 outside the current regime; a bridge without an incumbent baseline; an empty review; removal of a review's last
-member; and a waiver of an absent finding. Every other operation is accepted, with the warnings sections 2 to 7 name.
+member; an archive of an active frontier; and a waiver of an absent finding. Every other operation is accepted, with
+the warnings sections 2 to 7 name.
 
 A patch to an unknown frontier creates it when its first operation is `frontier` with an objective, and is refused
-otherwise. `conclude` records the frontier's lesson; a later patch with any other operation reopens the frontier,
-with a warning.
+otherwise. `conclude` records or replaces the frontier's lesson, and `archive` archives a concluded frontier. A later
+patch reopens the frontier at its first operation other than these two, with a warning; reopening discards the lesson
+and the archive.

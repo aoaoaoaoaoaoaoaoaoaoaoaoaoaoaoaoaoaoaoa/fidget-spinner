@@ -57,6 +57,8 @@ pub enum RecordKind {
 pub enum OpRefusal {
     #[error("objective: frontier creation requires a first frontier operation")]
     MissingObjective,
+    #[error("frontier: only a concluded frontier can be archived")]
+    PrematureArchive,
     #[error("{field}: must be nonempty")]
     Empty { field: String },
     #[error("{field}: required for creation")]
@@ -209,7 +211,7 @@ impl Frontier {
                 Op::Baseline { slug, .. } => !frontier.baselines.contains_key(slug),
                 _ => false,
             };
-            if reopening && !matches!(op, Op::Conclude { .. }) {
+            if reopening && !matches!(op, Op::Conclude { .. } | Op::Archive {}) {
                 frontier.conclusion = None;
                 reopening = false;
                 log.push(Warning::ReopenedFrontier);
@@ -347,10 +349,19 @@ impl Frontier {
         match op {
             Op::Frontier { objective } => self.objective = Some(required(objective, "objective")?),
             Op::Conclude { lesson } => {
-                self.conclusion = Some(Lesson {
-                    text: required(lesson, "lesson")?,
-                    at,
+                self.conclusion = Some(Conclusion {
+                    lesson: Lesson {
+                        text: required(lesson, "lesson")?,
+                        at,
+                    },
+                    archived: self.conclusion.as_ref().is_some_and(|c| c.archived),
                 });
+            }
+            Op::Archive {} => {
+                self.conclusion
+                    .as_mut()
+                    .ok_or(OpRefusal::PrematureArchive)?
+                    .archived = true;
             }
             Op::Regime {
                 contract,

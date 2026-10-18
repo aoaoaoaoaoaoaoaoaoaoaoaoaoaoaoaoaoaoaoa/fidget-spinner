@@ -1,5 +1,3 @@
-use fidget_spinner_core::Created;
-
 use std::{
     collections::BTreeMap,
     io,
@@ -7,7 +5,7 @@ use std::{
     time::Instant,
 };
 
-use fidget_spinner_core::{Frontier, Op, Refusal};
+use fidget_spinner_core::{Conclusion, Created, Frontier, Op, Refusal};
 use libmcp::{
     DetailLevel, FrameLimit, FrameReadOutcome, RenderMode, read_frame_blocking,
     write_frame_blocking,
@@ -23,15 +21,15 @@ use crate::{
         self, Cursor, HistoryArgs, Lens, Paging, ReadArgs, ReviewArgs, Scope, SnapshotKey,
         StatusArgs, View,
     },
-    store::{self, Address, Decision, Ledger, ProjectRoot, Store, StoreError},
+    store::{self, Address, Decision, Ledger, ProjectRoot, Standing, Store, StoreError},
 };
 
 const FRAME_LIMIT: usize = 16 << 20;
 const PROTOCOL_VERSION: &str = "2025-11-25";
 const VERSIONS: [&str; 4] = ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"];
-const INSTRUCTIONS: &str = "Fidget Spinner records assertions about an inquiry; it never runs experiments or verifies evidence. Each call addresses optional project (default: server working directory) and frontier. Patch requires frontier. Reads may omit frontier only when exactly one frontier is active; otherwise candidates are returned in the refusal. Project paths resolve through linked Git worktrees to their main checkout. Frontier is an objective under a gauge; hypotheses are claims; trials are measurements; baselines are comparison states; reviews teach lessons over members. A patch is atomic. Findings never block operations. Read slowly through status and individual packets. Render selects representation, detail selects text completeness, and cursors freeze the ledger sequence. Removed records are redacted even in old history.";
+const INSTRUCTIONS: &str = "Fidget Spinner records assertions about an inquiry; it never runs experiments or verifies evidence. Each call addresses optional project (default: server working directory) and frontier. Patch requires frontier. Reads may omit frontier only when exactly one frontier is active; otherwise the refusal lists unarchived candidates. Project paths resolve through linked Git worktrees to their main checkout. Frontier is an objective under a gauge; hypotheses are claims; trials are measurements; baselines are comparison states; reviews teach lessons over members. A patch is atomic. Findings never block operations. Read slowly through status and individual packets. Render selects representation, detail selects text completeness, and cursors freeze the ledger sequence. Removed records are redacted even in old history.";
 pub const OPS_GRAMMAR: &str = "Apply ordered ops atomically; dry_run rehearses. Each object has op and fields:
-frontier {objective}; conclude {lesson}; regime {contract,metrics:[metric],reason?,bridge?:{slug,readings,note?}}
+frontier {objective}; conclude {lesson}; archive {}; regime {contract,metrics:[metric],reason?,bridge?:{slug,readings,note?}}
 gauge {contract?,metrics?:[metric],retire?:[key],restore?:[key]}
 baseline {slug,artifacts?:[text],readings?:{key:value},adopts?:[slug],docket?:[slug],note?}
 docket {baseline,add?:[slug],drop?:[slug]}
@@ -44,7 +42,7 @@ void {trial|baseline,reason}; unvoid {trial|baseline}; remove {hypothesis|review
 lesson {review,text}; waive {finding,note}; assign {hypothesis|review,owner,instructions?}
 release/start/stop {hypothesis|review}; rename {hypothesis|review|baseline,to}
 metric={key,unit,better?:lower|higher,kpi?:bool,about?,refs?:{label:number}}; value=number|'number unit'.
-Units: ns/µs/us/ms/s/min/h (time); B/kB/MB/GB/TB/KiB/MiB/GiB/TiB (memory); 1/%; other lowercase words are count labels.\nSeparate targets with | require exactly one key. Trials use slug#n. Upserts preserve omitted/null fields; new hypotheses require title; new reviews require title,charter,members. Gauge metrics update by key. Baseline readings merge; artifacts/adopts/docket and review members replace. after/reviews and add/drop edit. Unknown frontier requires first op frontier.";
+Units: ns/µs/us/ms/s/min/h (time); B/kB/MB/GB/TB/KiB/MiB/GiB/TiB (memory); 1/%; other lowercase words are count labels.\nSeparate targets with | require exactly one key. Trials use slug#n. Upserts preserve omitted/null fields; new hypotheses require title; new reviews require title,charter,members. Gauge metrics update by key. Baseline readings merge; artifacts/adopts/docket and review members replace. after/reviews and add/drop edit. Unknown frontier requires first op frontier. archive hides a concluded frontier from the navigator index and omitted-frontier candidates until it reopens.";
 
 #[derive(Debug, Error)]
 pub enum Fault {
@@ -255,8 +253,15 @@ impl Server {
         let project = self.project(args)?;
         Ok(self
             .store()?
-            .resolve(&project, args.frontier.as_ref(), |f| {
-                f.conclusion().is_none()
+            .resolve(&project, args.frontier.as_ref(), |address, f| {
+                match f.conclusion() {
+                    Some(Conclusion { archived: true, .. }) => None,
+                    conclusion => Some(Standing {
+                        address,
+                        live: conclusion.is_none(),
+                        description: standing(f).into(),
+                    }),
+                }
             })?)
     }
 
@@ -555,7 +560,7 @@ impl Server {
                     continue;
                 }
                 rows.push(json!({"frontier":listing.address.slug,
-                    "standing":if ledger.state().conclusion().is_some(){"concluded"}else{"active"},
+                    "standing":standing(ledger.state()),
                     "counts":lens.assay.counts,
                     "objective":trebuchet::inspect::preview(objective,detail==DetailLevel::Full,160,||
                         trebuchet::inspect::Route{tool:"frontier.status".into(),arguments:json!({"project":project.as_path(),"frontier":listing.address.slug,"detail":"full"})})}));
@@ -898,6 +903,13 @@ fn split(arguments: Value) -> Result<(RenderMode, DetailLevel, AddressArgs, Valu
 }
 fn parse<T: DeserializeOwned>(arguments: Value) -> Result<T, Fault> {
     serde_json::from_value(arguments).map_err(|e| Fault::Arguments(e.to_string()))
+}
+fn standing(f: &Frontier) -> &'static str {
+    match f.conclusion() {
+        None => "active",
+        Some(Conclusion { archived: true, .. }) => "archived",
+        Some(_) => "concluded",
+    }
 }
 fn label(arguments: &Value, key: &str, valid: &[&str], default: &str) -> String {
     arguments[key]

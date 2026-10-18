@@ -17,7 +17,7 @@ pub struct Frontier {
     pub(crate) waivers: BTreeMap<FindingId, String>,
     pub(crate) epochs: Vec<Epoch>,
     pub(crate) last_epoch: Option<EpochNumber>,
-    pub(crate) conclusion: Option<Lesson>,
+    pub(crate) conclusion: Option<Conclusion>,
 }
 
 impl Frontier {
@@ -58,7 +58,7 @@ impl Frontier {
         &self.epochs
     }
     #[must_use]
-    pub fn conclusion(&self) -> Option<&Lesson> {
+    pub fn conclusion(&self) -> Option<&Conclusion> {
         self.conclusion.as_ref()
     }
     #[must_use]
@@ -155,6 +155,11 @@ pub struct Review {
 pub struct Lesson {
     pub text: String,
     pub at: OffsetDateTime,
+}
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct Conclusion {
+    pub lesson: Lesson,
+    pub archived: bool,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct Disposition<D> {
