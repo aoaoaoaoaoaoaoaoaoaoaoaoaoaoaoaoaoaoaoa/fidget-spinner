@@ -2,7 +2,6 @@ use std::{fmt, str::FromStr};
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error as _};
 
-#[must_use]
 pub fn nearest<'a>(name: &str, candidates: impl IntoIterator<Item = &'a str>) -> Vec<String> {
     let candidates: Vec<_> = candidates
         .into_iter()
@@ -30,7 +29,6 @@ pub fn nearest<'a>(name: &str, candidates: impl IntoIterator<Item = &'a str>) ->
         .collect()
 }
 
-#[must_use]
 pub fn suggestion(name: &str, candidates: &[String]) -> String {
     if candidates.is_empty() {
         format!("unknown {name}")
@@ -66,12 +64,10 @@ pub struct Slug(Box<str>);
 pub struct SlugError(String);
 
 impl Slug {
-    #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
     }
 
-    #[must_use]
     pub fn lane(&self) -> &str {
         self.0.split_once('.').map_or(&*self.0, |(lane, _)| lane)
     }

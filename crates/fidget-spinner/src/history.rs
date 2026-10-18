@@ -20,14 +20,14 @@ impl Lineage {
         if create && !self.live.contains_key(&key) {
             let id = self.next;
             self.next += 1;
-            let _ = self.live.insert(key.clone(), id);
+            self.live.insert(key.clone(), id);
         }
         self.live.get(&key).copied()
     }
 
     fn remove(&mut self, kind: &'static str, name: &str) {
         if let Some(id) = self.live.remove(&(kind, name.to_owned())) {
-            let _ = self.dead.insert(id);
+            self.dead.insert(id);
         }
         if kind == "hypothesis" {
             let prefix = format!("{name}#");
@@ -39,7 +39,7 @@ impl Lineage {
                 .collect();
             for key in keys {
                 if let Some(id) = self.live.remove(&key) {
-                    let _ = self.dead.insert(id);
+                    self.dead.insert(id);
                 }
             }
         }
@@ -47,7 +47,7 @@ impl Lineage {
 
     fn rename(&mut self, kind: &'static str, from: &str, to: &str) {
         if let Some(id) = self.live.remove(&(kind, from.to_owned())) {
-            let _ = self.live.insert((kind, to.to_owned()), id);
+            self.live.insert((kind, to.to_owned()), id);
         }
         if kind == "hypothesis" {
             let prefix = format!("{from}#");
@@ -60,7 +60,7 @@ impl Lineage {
             for key in keys {
                 if let Some(id) = self.live.remove(&key) {
                     let suffix = &key.1[from.len()..];
-                    let _ = self.live.insert(("trial", format!("{to}{suffix}")), id);
+                    self.live.insert(("trial", format!("{to}{suffix}")), id);
                 }
             }
         }

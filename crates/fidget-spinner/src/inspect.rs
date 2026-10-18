@@ -213,7 +213,6 @@ pub struct Lens<'a> {
 }
 
 impl<'a> Lens<'a> {
-    #[must_use]
     pub fn new(frontier: &'a Frontier, address: Json, detail: DetailLevel) -> Self {
         Self {
             frontier,
@@ -318,14 +317,12 @@ impl<'a> Lens<'a> {
             })
     }
 
-    #[must_use]
     pub fn hypothesis_row(&self, slug: &Slug, h: &Hypothesis) -> Json {
         json!({"slug":slug,"state":self.assay.hypotheses.get(slug),"disposition":hypothesis_decision(h),
             "owner":h.ownership.owner.as_ref().map(|o| &o.name),"docket":h.docket,
             "trials":h.trials.len(),"trials_regime":h.trials.values().filter(|t|t.void.is_none()).map(|t|t.regime).max().filter(|n|Some(*n)!=self.frontier.current_regime().map(|r|r.number)),"title":self.text(&h.title,"hypothesis.read",json!({"hypothesis":slug,"sections":["claim"],"detail":"full"}))})
     }
 
-    #[must_use]
     pub fn review_row(&self, slug: &Slug, r: &Review) -> Json {
         let mut counts = Counts::new();
         for h in &r.members {
@@ -362,7 +359,6 @@ impl<'a> Lens<'a> {
         }).collect())
     }
 
-    #[must_use]
     pub fn trial_row(&self, slug: &Slug, n: u64, t: &Trial, packet: bool) -> Json {
         let id = TrialId {
             hypothesis: slug.clone(),
@@ -409,7 +405,6 @@ impl<'a> Lens<'a> {
             .map(|epoch| stamp(epoch.at, self.full))
     }
 
-    #[must_use]
     pub fn baseline_row(&self, slug: &Slug, b: &Baseline) -> Json {
         json!({"slug":slug,"regime":b.regime,"since":self.since(slug),
             "disposition":b.disposition.as_ref().map(|d| &d.decision),"artifacts":b.artifacts,
@@ -448,7 +443,6 @@ impl<'a> Lens<'a> {
             })
     }
 
-    #[must_use]
     pub fn search(&self, filter: &Filter) -> Vec<Json> {
         let Some(query) = filter.text.as_deref() else {
             return Vec::new();
@@ -484,7 +478,7 @@ impl<'a> Lens<'a> {
                 }
             }
             for (n, trial) in &h.trials {
-                let _ = hit(format!("{slug}#{n}"), "note", &trial.note);
+                hit(format!("{slug}#{n}"), "note", &trial.note);
             }
         }
         selection.disposition = None;
@@ -512,7 +506,7 @@ impl<'a> Lens<'a> {
                     .is_none_or(|xs| xs.contains(&baseline_decision(b)))
                 && let Some(disposition) = &b.disposition
             {
-                let _ = hit(slug.to_string(), "rationale", &disposition.rationale);
+                hit(slug.to_string(), "rationale", &disposition.rationale);
             }
         }
         rows
@@ -821,10 +815,10 @@ impl<'a> Lens<'a> {
                 .map(|(s, h)| {
                     let mut row = self.hypothesis_row(s, h);
                     if let Some(fields) = row.as_object_mut() {
-                        let _ = fields.shift_remove("state");
-                        let _ = fields.shift_remove("disposition");
+                        fields.shift_remove("state");
+                        fields.shift_remove("disposition");
                         if state == State::Ready {
-                            let _ = fields.shift_remove("trials");
+                            fields.shift_remove("trials");
                         }
                     }
                     row
@@ -838,7 +832,7 @@ impl<'a> Lens<'a> {
                 .map(|(s, r)| {
                     let mut row = self.review_row(s, r);
                     if let Some(fields) = row.as_object_mut() {
-                        let _ = fields.shift_remove("state");
+                        fields.shift_remove("state");
                     }
                     row
                 })
@@ -1045,7 +1039,6 @@ fn excerpt(body: &str, query: &str) -> Option<String> {
     )
 }
 
-#[must_use]
 pub fn semantic(args: &StatusArgs) -> Json {
     json!({"view":args.view,"scope":args.scope,"filter":args.filter})
 }
@@ -1055,7 +1048,6 @@ fn ownership(ownership: &Ownership, full: bool) -> Json {
         "started":ownership.started.map(|at|stamp(at,full))})
 }
 
-#[must_use]
 #[expect(
     clippy::expect_used,
     reason = "Persisted timestamps enter through RFC3339 or current UTC."

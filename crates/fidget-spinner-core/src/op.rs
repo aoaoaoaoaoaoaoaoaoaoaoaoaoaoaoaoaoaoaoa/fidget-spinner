@@ -8,7 +8,6 @@ use time::OffsetDateTime;
 pub struct MetricKey(String);
 
 impl MetricKey {
-    #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
     }
@@ -184,7 +183,6 @@ macro_rules! operations {
                     _ => &[],
                 }
             }
-            #[must_use]
             pub fn name(&self) -> String { match self { $(Self::$variant { .. } => stringify!($variant)),* }.to_ascii_lowercase() }
         }
     }

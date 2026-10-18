@@ -14,7 +14,7 @@ fn clean(value: Value) -> Result<Option<Value>, serde_json::Error> {
             let mut present = Map::new();
             for (key, value) in fields {
                 if let Some(value) = clean(value)? {
-                    let _ = present.insert(key, value);
+                    present.insert(key, value);
                 }
             }
             (!present.is_empty()).then_some(Value::Object(present))
@@ -271,7 +271,7 @@ fn implied_routes(value: &mut Value, context: &Map<String, Value>) {
             {
                 for (key, value) in context {
                     if arguments.get(key) == Some(value) {
-                        let _ = arguments.shift_remove(key);
+                        arguments.shift_remove(key);
                     }
                 }
             }
@@ -342,7 +342,7 @@ fn thin(value: Value, key: &str) -> Option<Value> {
                                 | "micros"
                         ));
                 if !zero_count && let Some(value) = thin(value, &key) {
-                    let _ = present.insert(key, value);
+                    present.insert(key, value);
                 }
             }
             (!present.is_empty()).then_some(Value::Object(present))

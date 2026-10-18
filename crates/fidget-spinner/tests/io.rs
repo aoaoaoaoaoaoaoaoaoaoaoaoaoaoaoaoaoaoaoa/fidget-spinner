@@ -127,7 +127,7 @@ fn wire_rendering_is_exclusive() -> Result {
 #[test]
 fn porcelain_cells_are_not_json() -> Result {
     let mut session = Session::new()?;
-    let _=session.json("frontier.patch",json!({"frontier":"fixture","ops":[
+    session.json("frontier.patch",json!({"frontier":"fixture","ops":[
         {"op":"frontier","objective":"fixture"},
         {"op":"regime","contract":"fixture protocol","metrics":[{"key":"elapsed","unit":"s","better":"lower","kpi":true,"refs":{"target":1}}]},
         {"op":"baseline","slug":"initial","artifacts":["commit","evidence"],"readings":{"elapsed":10}},
@@ -248,7 +248,7 @@ fn mcp_inquiry_session() -> Result {
     let history_cursor = history_page["next_cursor"]
         .as_str()
         .ok_or("missing history cursor")?;
-    let _ = session.json(
+    session.json(
         "frontier.patch",
         json!({"frontier":"latency","ops":[{"op":"remove","hypothesis":"renamed"}]}),
     )?;
@@ -267,7 +267,7 @@ fn mcp_inquiry_session() -> Result {
         json!({"limit":1,"cursor":history_cursor}),
     )?;
     assert_eq!(old_history["items"][0]["seq"], 1);
-    let _=session.json("frontier.patch",json!({"frontier":"latency","ops":[{"op":"conclude","lesson":"Cache parsing avoids repeated work"}]}))?;
+    session.json("frontier.patch",json!({"frontier":"latency","ops":[{"op":"conclude","lesson":"Cache parsing avoids repeated work"}]}))?;
     let search = session.json(
         "frontier.status",
         json!({"scope":"project","filter":{"text":"Cache"}}),

@@ -81,7 +81,6 @@ impl Tool {
         Self::History,
         Self::Health,
     ];
-    #[must_use]
     pub const fn name(self) -> &'static str {
         match self {
             Self::Patch => "frontier.patch",
@@ -92,7 +91,6 @@ impl Tool {
             Self::Health => "system.health",
         }
     }
-    #[must_use]
     pub fn parse(name: &str) -> Option<Self> {
         Self::ALL.into_iter().find(|t| t.name() == name)
     }
@@ -116,7 +114,6 @@ impl Tool {
             }
         }
     }
-    #[must_use]
     pub fn describe(self) -> Value {
         let string = json!({"type":"string"});
         let limit =
@@ -215,7 +212,6 @@ pub struct Server {
 }
 
 impl Server {
-    #[must_use]
     pub fn new(path: PathBuf, project: &Path) -> Self {
         Self {
             path,
@@ -439,7 +435,7 @@ impl Server {
                 let after = receipt.report.after.get(&state).copied().unwrap_or(0);
                 if before != after {
                     let key = serde_json::from_value::<String>(serde_json::to_value(state)?)?;
-                    let _ = changes.insert(key, json!({"before":before,"after":after}));
+                    changes.insert(key, json!({"before":before,"after":after}));
                 }
             }
             if !changes.is_empty() {
@@ -985,7 +981,7 @@ fn continuation_query(tool: Tool, arguments: &Value) -> Result<(Value, Vec<&'sta
     match tool {
         Tool::Status => {
             let mut args: StatusArgs = parse(arguments.clone())?;
-            let _ = args.normalize();
+            args.normalize();
             Ok((inspect::semantic(&args), vec!["status"]))
         }
         Tool::Hypothesis => {

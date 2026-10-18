@@ -315,6 +315,6 @@ fn source(file: Option<PathBuf>) -> Result<String, Fault> {
         return Ok(std::fs::read_to_string(file)?);
     }
     let mut source = String::new();
-    let _ = std::io::stdin().read_to_string(&mut source)?;
+    std::io::stdin().read_to_string(&mut source)?;
     Ok(source)
 }

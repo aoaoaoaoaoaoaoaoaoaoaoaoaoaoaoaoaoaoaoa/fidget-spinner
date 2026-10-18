@@ -54,7 +54,7 @@ fn unit_conversion_table() -> Result<(), Box<dyn Error>> {
 #[test]
 fn inquiry_across_epochs_and_regimes() -> Result<(), Box<dyn Error>> {
     let mut f = Frontier::default();
-    let _ = patch(
+    patch(
         &mut f,
         r#"[
         {"op":"frontier","objective":"Reduce latency"},
@@ -126,7 +126,7 @@ fn inquiry_across_epochs_and_regimes() -> Result<(), Box<dyn Error>> {
     assert!(receipt.warnings[&6].iter().any(|w| matches!(w, Warning::UnlistedReading { closest: Some(key), subject, .. } if key.as_str() == "latency" && subject == "c#2")));
     let assay = Assay::new(&f);
     assert_eq!(f.baselines()[&"bridge".parse()?].artifacts, ["commit:old"]);
-    let _ = serde_json::to_value(&f)?;
+    serde_json::to_value(&f)?;
     assert_eq!(assay.findings.len(), 5);
     for id in [
         "unbacked/a",
@@ -154,7 +154,7 @@ fn inquiry_across_epochs_and_regimes() -> Result<(), Box<dyn Error>> {
     assert!(receipt.raised.contains_key(&"unlisted/3/latncy".parse()?));
     // Waivers and historical acceptance baselines follow record identity,
     // not a reusable slug. Removal must not manufacture an unbacked claim.
-    let _ = patch(
+    patch(
         &mut f,
         r#"[
         {"op":"waive","finding":"unread/third/latency","note":"Pending remeasurement"},
@@ -177,7 +177,7 @@ fn inquiry_across_epochs_and_regimes() -> Result<(), Box<dyn Error>> {
             .members
             .contains(&"renamed.a".parse()?)
     );
-    let _ = patch(
+    patch(
         &mut f,
         r#"[
         {"op":"remove","hypothesis":"renamed.a"},
@@ -198,7 +198,7 @@ fn inquiry_across_epochs_and_regimes() -> Result<(), Box<dyn Error>> {
     assert!(!assay.findings.contains_key(&"unbacked/b".parse()?));
     assert!(assay.findings.contains_key(&"unbridged/2".parse()?));
     assert_eq!(f.epochs().len(), 1);
-    let _ = patch(
+    patch(
         &mut f,
         r#"[
         {"op":"baseline","slug":"fresh","readings":{"latency":5}},
@@ -218,7 +218,7 @@ fn inquiry_across_epochs_and_regimes() -> Result<(), Box<dyn Error>> {
 #[test]
 fn refused_patches_are_atomic() -> Result<(), Box<dyn Error>> {
     let mut f = Frontier::default();
-    let _ = patch(
+    patch(
         &mut f,
         r#"[{"op":"frontier","objective":"Original"},{"op":"hypothesis","slug":"x","title":"Existing"}]"#,
     )?;
@@ -257,7 +257,7 @@ fn refused_patches_are_atomic() -> Result<(), Box<dyn Error>> {
 #[test]
 fn cycles_refuse_the_whole_patch() -> Result<(), Box<dyn Error>> {
     let mut f = Frontier::default();
-    let _ = patch(
+    patch(
         &mut f,
         r#"[
         {"op":"frontier","objective":"Acyclic inquiry"},
@@ -285,7 +285,7 @@ fn cycles_refuse_the_whole_patch() -> Result<(), Box<dyn Error>> {
 #[test]
 fn archive_lasts_until_the_frontier_reopens() -> Result<(), Box<dyn Error>> {
     let mut f = Frontier::default();
-    let _ = patch(
+    patch(
         &mut f,
         r#"[{"op":"frontier","objective":"Archivable inquiry"}]"#,
     )?;
@@ -294,9 +294,9 @@ fn archive_lasts_until_the_frontier_reopens() -> Result<(), Box<dyn Error>> {
         f.patched(&archive, OffsetDateTime::UNIX_EPOCH),
         Err(Refusal::Operation { cause, .. }) if *cause == OpRefusal::PrematureArchive
     ));
-    let _ = patch(&mut f, r#"[{"op":"conclude","lesson":"First"}]"#)?;
+    patch(&mut f, r#"[{"op":"conclude","lesson":"First"}]"#)?;
     assert!(patch(&mut f, r#"[{"op":"archive"}]"#)?.warnings.is_empty());
-    let _ = patch(&mut f, r#"[{"op":"conclude","lesson":"Revised"}]"#)?;
+    patch(&mut f, r#"[{"op":"conclude","lesson":"Revised"}]"#)?;
     assert!(
         f.conclusion()
             .is_some_and(|c| c.archived && c.lesson.text == "Revised")

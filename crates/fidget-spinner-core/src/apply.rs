@@ -309,7 +309,7 @@ impl Frontier {
                 });
             }
             if !log.is_empty() {
-                let _ = warnings.insert(index, log);
+                warnings.insert(index, log);
             }
         }
         let after = Assay::new(&frontier);
@@ -400,7 +400,7 @@ impl Frontier {
                         });
                     }
                     let metric = Self::metric(spec, None)?;
-                    let _ = gauge.metrics.insert(spec.key.clone(), metric);
+                    gauge.metrics.insert(spec.key.clone(), metric);
                 }
                 let number = self
                     .current_regime()
@@ -419,7 +419,7 @@ impl Frontier {
                     let artifacts = self.baselines[&outgoing].artifacts.clone();
                     let readings =
                         self.readings(&bridge.readings, number, &bridge.slug.to_string(), log)?;
-                    let _ = self.baselines.insert(
+                    self.baselines.insert(
                         bridge.slug.clone(),
                         Baseline {
                             regime: number,
@@ -469,7 +469,7 @@ impl Frontier {
                             key: spec.key.clone(),
                         });
                     }
-                    let _ = self.regimes[regime.index()]
+                    self.regimes[regime.index()]
                         .gauge
                         .metrics
                         .insert(spec.key.clone(), metric);
@@ -546,7 +546,7 @@ impl Frontier {
                             key: key.clone(),
                         });
                     }
-                    let _ = baseline.readings.insert(key, reading);
+                    baseline.readings.insert(key, reading);
                 }
                 if let Some(docket) = docket {
                     self.clear_docket(slug);
@@ -586,7 +586,7 @@ impl Frontier {
                 if !self.hypotheses.contains_key(slug) {
                     let title =
                         required(title.as_deref().ok_or_else(|| missing("title"))?, "title")?;
-                    let _ = self.hypotheses.insert(
+                    self.hypotheses.insert(
                         slug.clone(),
                         Hypothesis {
                             title,
@@ -618,8 +618,7 @@ impl Frontier {
                     self.add_edge(from, slug, None)?;
                 }
                 for review in reviews.iter().flatten() {
-                    let _ = self
-                        .reviews
+                    self.reviews
                         .get_mut(review)
                         .ok_or_else(|| unknown(RecordKind::Review, review))?
                         .members
@@ -630,7 +629,7 @@ impl Frontier {
             Op::Unedge { from, to } => {
                 self.ensure_hypothesis(from)?;
                 self.ensure_hypothesis(to)?;
-                let _ = self.edges.remove(&(from.clone(), to.clone()));
+                self.edges.remove(&(from.clone(), to.clone()));
             }
             Op::Review {
                 slug,
@@ -658,7 +657,7 @@ impl Frontier {
                     if members.is_none() {
                         return Err(missing("members"));
                     }
-                    let _ = self.reviews.insert(
+                    self.reviews.insert(
                         slug.clone(),
                         Review {
                             title,
@@ -685,7 +684,7 @@ impl Frontier {
                 }
                 r.members.extend(add.iter().flatten().cloned());
                 for h in drop.iter().flatten() {
-                    let _ = r.members.remove(h);
+                    r.members.remove(h);
                 }
                 if r.members.is_empty() {
                     return Err(OpRefusal::EmptyReview {
@@ -742,7 +741,7 @@ impl Frontier {
                         baseline: b.clone(),
                     });
                 }
-                let _ = h.trials.insert(
+                h.trials.insert(
                     number,
                     Trial {
                         regime,
@@ -864,7 +863,7 @@ impl Frontier {
                         suggestions: String::new(),
                     });
                 }
-                let _ = self.waivers.insert(finding.clone(), note);
+                self.waivers.insert(finding.clone(), note);
             }
             Op::Assign {
                 target,
@@ -1188,24 +1187,22 @@ impl Frontier {
                         });
                     }
                 }
-                let _ = self.hypotheses.remove(h);
+                self.hypotheses.remove(h);
                 self.edges.retain(|(from, to), _| from != h && to != h);
                 for b in self.baselines.values_mut() {
-                    let _ = b.adopts.remove(h);
+                    b.adopts.remove(h);
                 }
                 for r in self.reviews.values_mut() {
-                    let _ = r.members.remove(h);
+                    r.members.remove(h);
                 }
             }
             RemoveTarget::Review(r) => {
-                let _ = self
-                    .reviews
+                self.reviews
                     .remove(r)
                     .ok_or_else(|| unknown(RecordKind::Review, r))?;
             }
             RemoveTarget::Baseline(b) => {
-                let _ = self
-                    .baselines
+                self.baselines
                     .remove(b)
                     .ok_or_else(|| unknown(RecordKind::Baseline, b))?;
                 self.clear_docket(b);
@@ -1232,8 +1229,7 @@ impl Frontier {
                 }
             }
             RemoveTarget::Trial(id) => {
-                let _ = self
-                    .hypotheses
+                self.hypotheses
                     .get_mut(&id.hypothesis)
                     .and_then(|h| h.trials.remove(&id.number))
                     .ok_or_else(|| unknown(RecordKind::Trial, id))?;
@@ -1261,7 +1257,7 @@ impl Frontier {
                     .hypotheses
                     .remove(from)
                     .ok_or_else(|| unknown(RecordKind::Hypothesis, from))?;
-                let _ = self.hypotheses.insert(to.clone(), h);
+                self.hypotheses.insert(to.clone(), h);
                 let rename = |slug: Slug| if &slug == from { to.clone() } else { slug };
                 self.edges = std::mem::take(&mut self.edges)
                     .into_iter()
@@ -1291,7 +1287,7 @@ impl Frontier {
                     .reviews
                     .remove(from)
                     .ok_or_else(|| unknown(RecordKind::Review, from))?;
-                let _ = self.reviews.insert(to.clone(), r);
+                self.reviews.insert(to.clone(), r);
             }
             RenameTarget::Baseline(from) => {
                 self.ensure_baseline(from)?;
@@ -1308,7 +1304,7 @@ impl Frontier {
                     .baselines
                     .remove(from)
                     .ok_or_else(|| unknown(RecordKind::Baseline, from))?;
-                let _ = self.baselines.insert(to.clone(), b);
+                self.baselines.insert(to.clone(), b);
                 for e in &mut self.epochs {
                     if &e.baseline == from {
                         e.baseline = to.clone();
@@ -1349,6 +1345,6 @@ impl Frontier {
 
 fn rename_member(set: &mut BTreeSet<Slug>, from: &Slug, to: &Slug) {
     if set.remove(from) {
-        let _ = set.insert(to.clone());
+        set.insert(to.clone());
     }
 }

@@ -57,7 +57,6 @@ pub struct Assay {
 }
 
 impl Assay {
-    #[must_use]
     pub fn new(frontier: &Frontier) -> Self {
         let hypotheses: BTreeMap<_, _> = frontier
             .hypotheses
@@ -123,7 +122,7 @@ impl Assay {
                 let docket = dockets.get_mut(baseline).unwrap_or_else(|| {
                     unreachable!("hypothesis docket references an existing baseline")
                 });
-                let _ = docket.members.insert(slug.clone());
+                docket.members.insert(slug.clone());
                 docket.settled += usize::from(hypotheses[slug] == State::Settled);
             }
         }
@@ -193,7 +192,7 @@ impl Assay {
                             Movement::Worse
                         }
                     });
-                    let _ = comparisons.insert(
+                    comparisons.insert(
                         key.clone(),
                         Comparison {
                             trial: t,
@@ -203,7 +202,7 @@ impl Assay {
                         },
                     );
                 }
-                let _ = self.comparisons.insert(
+                self.comparisons.insert(
                     TrialId {
                         hypothesis: slug.clone(),
                         number: *number,
@@ -216,7 +215,7 @@ impl Assay {
 
     fn finding(&mut self, frontier: &Frontier, identity: FindingId) {
         let waiver = frontier.waivers.get(&identity).cloned();
-        let _ = self.findings.insert(identity, waiver);
+        self.findings.insert(identity, waiver);
     }
 
     fn find(&mut self, frontier: &Frontier) {

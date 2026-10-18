@@ -21,47 +21,36 @@ pub struct Frontier {
 }
 
 impl Frontier {
-    #[must_use]
     pub fn objective(&self) -> Option<&str> {
         self.objective.as_deref()
     }
-    #[must_use]
     pub fn regimes(&self) -> &[Regime] {
         &self.regimes
     }
-    #[must_use]
     pub fn current_regime(&self) -> Option<&Regime> {
         self.regimes.last()
     }
-    #[must_use]
     pub fn baselines(&self) -> &BTreeMap<Slug, Baseline> {
         &self.baselines
     }
-    #[must_use]
     pub fn hypotheses(&self) -> &BTreeMap<Slug, Hypothesis> {
         &self.hypotheses
     }
-    #[must_use]
     pub fn reviews(&self) -> &BTreeMap<Slug, Review> {
         &self.reviews
     }
-    #[must_use]
     pub fn edges(&self) -> &BTreeMap<(Slug, Slug), Edge> {
         &self.edges
     }
-    #[must_use]
     pub fn waivers(&self) -> &BTreeMap<FindingId, String> {
         &self.waivers
     }
-    #[must_use]
     pub fn epochs(&self) -> &[Epoch] {
         &self.epochs
     }
-    #[must_use]
     pub fn conclusion(&self) -> Option<&Conclusion> {
         self.conclusion.as_ref()
     }
-    #[must_use]
     pub fn incumbent_baseline(&self) -> Option<&Slug> {
         self.baselines
             .iter()
@@ -181,7 +170,6 @@ pub enum HypothesisDecision {
     Shelved,
 }
 impl HypothesisDecision {
-    #[must_use]
     pub const fn accepted(&self) -> bool {
         matches!(self, Self::Accepted { .. })
     }

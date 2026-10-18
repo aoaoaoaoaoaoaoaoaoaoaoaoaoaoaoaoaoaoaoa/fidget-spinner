@@ -34,11 +34,9 @@ pub enum UnitError {
 }
 
 impl Unit {
-    #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
     }
-    #[must_use]
     pub fn kind(&self) -> QuantityKind {
         self.scale().0
     }

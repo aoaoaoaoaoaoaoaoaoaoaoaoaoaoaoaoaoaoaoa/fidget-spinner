@@ -649,8 +649,8 @@ fn geometry(f: &Frontier, a: &Assay) -> BoardScene {
         });
         scene.input.rank.push(ranks[slug]);
         let card = card(f, a, slug, h, Depth::Hover);
-        let _ = scene.cell_classes.insert(id, card.class.clone());
-        let _ = scene.cards.insert(id, card);
+        scene.cell_classes.insert(id, card.class.clone());
+        scene.cards.insert(id, card);
     }
     scene.input.lanes = lanes.into_values().collect();
     scene.input.precedence = f
@@ -669,7 +669,7 @@ fn geometry(f: &Frontier, a: &Assay) -> BoardScene {
                 .filter_map(|h| ids.get(h).copied())
                 .collect(),
         });
-        let _ = scene.set_styles.insert(
+        scene.set_styles.insert(
             key,
             SetStyle {
                 class: if r.lesson.is_some() {
@@ -741,7 +741,7 @@ fn geometry(f: &Frontier, a: &Assay) -> BoardScene {
         } else {
             "unbridged"
         };
-        let _ = scene.separator_tooltips.insert(
+        scene.separator_tooltips.insert(
             separator,
             format!(
                 "Regime {} · {bridge} · since {}\n{}",
@@ -771,7 +771,7 @@ fn aggregates(f: &Frontier, scene: &mut BoardScene) {
             if members.len() > CARD_LINKS {
                 tip.push(format!("+{} more", members.len() - CARD_LINKS));
             }
-            let _ = scene.cell_tooltips.insert(members[0], tip.join("\n"));
+            scene.cell_tooltips.insert(members[0], tip.join("\n"));
         }
     }
 }

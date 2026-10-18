@@ -15,18 +15,15 @@ macro_rules! number {
 
         impl $name {
             pub const FIRST: Self = Self(<$nonzero>::MIN);
-            #[must_use]
             pub const fn new(value: $primitive) -> Option<Self> {
                 match <$nonzero>::new(value) {
                     Some(value) => Some(Self(value)),
                     None => None,
                 }
             }
-            #[must_use]
             pub const fn get(self) -> $primitive {
                 self.0.get()
             }
-            #[must_use]
             pub fn next(self) -> Option<Self> {
                 self.get().checked_add(1).and_then(Self::new)
             }
