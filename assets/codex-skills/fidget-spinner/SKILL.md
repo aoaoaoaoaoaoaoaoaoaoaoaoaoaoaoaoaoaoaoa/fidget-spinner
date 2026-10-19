@@ -1,6 +1,6 @@
 ---
 name: fidget-spinner
-description: Record an open-ended, measured inquiry in Fidget Spinner: frontiers, hypotheses, trials against the incumbent baseline, dispositions, reviews and baselines. Use when a project keeps its experimental record there, and with frontier-loop for autonomous research loops.
+description: Record an open-ended, measured inquiry in Fidget Spinner: frontiers, hypotheses, trials against the incumbent baseline, dispositions, reviews and baselines. Use when a project keeps its experimental record there.
 ---
 
 # Fidget Spinner

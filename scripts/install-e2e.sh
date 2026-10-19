@@ -74,6 +74,10 @@ rm -f "${SERVICE_PATH}"
 
 mkdir -p "${XDG_STATE_ROOT}/fidget-spinner"
 printf 'ledger\n' > "${XDG_STATE_ROOT}/fidget-spinner/ledger.sqlite3"
+mkdir -p "${SKILL_ROOT}/retired" "${SKILL_ROOT}/foreign"
+printf 'managed by fidget-spinner installer\n' > "${SKILL_ROOT}/retired/.fidget-spinner-owned"
+printf 'retired\n' > "${SKILL_ROOT}/retired/SKILL.md"
+printf 'foreign\n' > "${SKILL_ROOT}/foreign/SKILL.md"
 run_installer "${LOCAL_ROOT}" "${SKILL_ROOT}"
 
 "${LOCAL_ROOT}/bin/fidget-spinner" --version | grep -Fqx "fidget-spinner ${EXPECTED_VERSION}" \
@@ -86,11 +90,11 @@ second_binary_inode="$(stat -c '%i' "${LOCAL_ROOT}/bin/fidget-spinner")"
 if compgen -G "${LOCAL_ROOT}/bin/.fidget-spinner.??????" >/dev/null; then
   fail "binary upgrade left a staged executable"
 fi
-for skill in fidget-spinner frontier-loop; do
-  [[ -f "${SKILL_ROOT}/${skill}/SKILL.md" ]] || fail "${skill} was not copied"
-  [[ ! -L "${SKILL_ROOT}/${skill}" ]] || fail "${skill} still depends on the source checkout"
-  [[ -f "${SKILL_ROOT}/${skill}/.fidget-spinner-owned" ]] || fail "${skill} lacks ownership proof"
-done
+[[ -f "${SKILL_ROOT}/fidget-spinner/SKILL.md" ]] || fail "skill was not copied"
+[[ ! -L "${SKILL_ROOT}/fidget-spinner" ]] || fail "skill still depends on the source checkout"
+[[ -f "${SKILL_ROOT}/fidget-spinner/.fidget-spinner-owned" ]] || fail "skill lacks ownership proof"
+[[ ! -e "${SKILL_ROOT}/retired" ]] || fail "installer kept an owned skill it no longer ships"
+[[ -f "${SKILL_ROOT}/foreign/SKILL.md" ]] || fail "installer removed an unowned skill"
 [[ -f "${SERVICE_PATH}" ]] || fail "service ignored absolute XDG_CONFIG_HOME"
 head -n 1 "${SERVICE_PATH}" | grep -Fqx '# managed by fidget-spinner installer' \
   || fail "service lacks ownership proof"

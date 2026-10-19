@@ -8,6 +8,11 @@ if [[ "${1:-}" == "--uninstall" ]]; then
   shift
 fi
 SKILL_SOURCE_ROOT="${ROOT_DIR}/assets/codex-skills"
+SKILLS=()
+for skill_file in "${SKILL_SOURCE_ROOT}"/*/SKILL.md; do
+  skill_file="${skill_file%/SKILL.md}"
+  SKILLS+=("${skill_file##*/}")
+done
 SYSTEMD_TEMPLATE_ROOT="${ROOT_DIR}/assets/systemd"
 LOCAL_ROOT="${1:-$HOME/.local}"
 SKILL_DEST_ROOT="${2:-$HOME/.codex/skills}"
@@ -126,6 +131,17 @@ uninstall_skill() {
   fi
 }
 
+retire_unshipped_skills() {
+  local marker name
+  for marker in "${SKILL_DEST_ROOT}"/*/"${SKILL_MARKER_NAME}"; do
+    name="${marker%/*}"
+    name="${name##*/}"
+    if [[ -e "${marker}" && ! -f "${SKILL_SOURCE_ROOT}/${name}/SKILL.md" ]]; then
+      uninstall_skill "${name}"
+    fi
+  done
+}
+
 install_binary() {
   local binary="${LOCAL_BIN_DIR}/fidget-spinner"
   local staged_binary
@@ -195,7 +211,7 @@ preflight_install() {
   fi
 
   local name source_dir dest_dir
-  for name in fidget-spinner frontier-loop; do
+  for name in "${SKILLS[@]}"; do
     source_dir="${SKILL_SOURCE_ROOT}/${name}"
     dest_dir="${SKILL_DEST_ROOT}/${name}"
     if [[ -L "${dest_dir}" && "$(readlink "${dest_dir}")" == "${source_dir}" ]]; then
@@ -348,8 +364,11 @@ uninstall_local() {
     systemctl --user daemon-reload >/dev/null 2>&1 || true
   fi
   uninstall_binary
-  uninstall_skill "fidget-spinner"
-  uninstall_skill "frontier-loop"
+  local name
+  for name in "${SKILLS[@]}"; do
+    uninstall_skill "${name}"
+  done
+  retire_unshipped_skills
   printf 'removed Fidget Spinner programs; ledger state under the XDG state root was preserved\n'
 }
 
@@ -375,8 +394,10 @@ mkdir -p "${LOCAL_BIN_DIR}"
 cargo build --locked --release -p fidget-spinner --manifest-path "${ROOT_DIR}/Cargo.toml"
 "${CARGO_TARGET_DIR}/release/fidget-spinner" ui serve --bind "${UI_BIND}" --help >/dev/null
 install_binary
-install_skill "fidget-spinner"
-install_skill "frontier-loop"
+for name in "${SKILLS[@]}"; do
+  install_skill "${name}"
+done
+retire_unshipped_skills
 install_ui_service
 
 printf 'mcp command: %s\n' "${LOCAL_BIN_DIR}/fidget-spinner mcp serve"
