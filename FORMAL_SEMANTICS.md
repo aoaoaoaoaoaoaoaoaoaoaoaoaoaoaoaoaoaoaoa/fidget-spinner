@@ -160,10 +160,11 @@ reference must resolve when its operation applies. Refusals protect representati
 slugs, keys, units or values; empty required text; unknown references; cycles and self-edges; rename collisions; a
 unit of the wrong kind; a change of meaning after a metric's first reading; acceptance of a void baseline or one
 outside the current regime; a bridge without an incumbent baseline; an empty review; removal of a review's last
-member; an archive of an active frontier; and a waiver of an absent finding. Every other operation is accepted, with
-the warnings sections 2 to 7 name.
+member; an archive of an active frontier or an unarchive of an unarchived one; and a waiver of an absent finding.
+One refusal is administrative: an archived frontier refuses every operation but `unarchive`. Every other operation
+is accepted, with the warnings sections 2 to 7 name.
 
 A patch to an unknown frontier creates it when its first operation is `frontier` with an objective, and is refused
-otherwise. `conclude` records or replaces the frontier's lesson, and `archive` archives a concluded frontier. A later
-patch reopens the frontier at its first operation other than these two, with a warning; reopening discards the lesson
-and the archive.
+otherwise. `conclude` records or replaces the frontier's lesson; `archive` archives a concluded frontier, and
+`unarchive` returns it to concluded. A later patch reopens a concluded frontier at its first operation other than
+these three, with a warning; reopening discards the lesson.

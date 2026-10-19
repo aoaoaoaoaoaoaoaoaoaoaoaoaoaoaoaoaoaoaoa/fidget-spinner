@@ -11,10 +11,12 @@
   incumbent value, charts only from two readings on, and trial readings with their
   change against the baseline.
 - Replaces Recent epochs and Show all settled with one Settled control.
-- Archives concluded frontiers, through an `archive` operation or the index's Archive
-  button: an archived frontier leaves the index and the candidates for an omitted
-  frontier until it reopens, and keeps its records. Refusals of an omitted frontier
-  mark each candidate active or concluded.
+- Archives concluded frontiers from the navigator's Archive button, the owner's alone:
+  a patch carrying `archive` or `unarchive` is refused. An archived frontier refuses
+  every operation, folds under the index's closed Archived list, whose Unarchive
+  button returns it, and leaves the candidates for an omitted frontier; its records
+  stay readable. Refusals of an omitted frontier mark each candidate active or
+  concluded.
 - Retires the frontier-loop skill. The installer ships each skill under
   `assets/codex-skills` and removes the skills it installed that it no longer ships.
 

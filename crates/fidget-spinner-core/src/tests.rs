@@ -279,27 +279,49 @@ fn cycles_refuse_the_whole_patch() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-// A patch reopens a concluded frontier at its first operation other than
-// conclude or archive. Were archive one of them, it would reopen the frontier
-// it archives and then refuse it as active.
+// An archived frontier refuses every operation but unarchive, ahead of the
+// reopening that would discard its archive; conclude, archive and unarchive
+// never reopen a frontier.
 #[test]
-fn archive_lasts_until_the_frontier_reopens() -> Result<(), Box<dyn Error>> {
+fn archive_refuses_writes_until_unarchived() -> Result<(), Box<dyn Error>> {
+    let refusal = |f: &Frontier, ops: &str| -> Result<Option<OpRefusal>, Box<dyn Error>> {
+        let ops = serde_json::from_str::<Vec<Op>>(ops)?;
+        Ok(match f.patched(&ops, OffsetDateTime::UNIX_EPOCH) {
+            Err(Refusal::Operation { cause, .. }) => Some(*cause),
+            _ => None,
+        })
+    };
     let mut f = Frontier::default();
     patch(
         &mut f,
         r#"[{"op":"frontier","objective":"Archivable inquiry"}]"#,
     )?;
-    let archive = serde_json::from_str::<Vec<Op>>(r#"[{"op":"archive"}]"#)?;
-    assert!(matches!(
-        f.patched(&archive, OffsetDateTime::UNIX_EPOCH),
-        Err(Refusal::Operation { cause, .. }) if *cause == OpRefusal::PrematureArchive
-    ));
+    assert_eq!(
+        refusal(&f, r#"[{"op":"archive"}]"#)?,
+        Some(OpRefusal::PrematureArchive)
+    );
     patch(&mut f, r#"[{"op":"conclude","lesson":"First"}]"#)?;
     assert!(patch(&mut f, r#"[{"op":"archive"}]"#)?.warnings.is_empty());
-    patch(&mut f, r#"[{"op":"conclude","lesson":"Revised"}]"#)?;
+    for ops in [
+        r#"[{"op":"conclude","lesson":"Revised"}]"#,
+        r#"[{"op":"hypothesis","slug":"x","title":"More"}]"#,
+    ] {
+        assert_eq!(refusal(&f, ops)?, Some(OpRefusal::Archived));
+    }
+    let unarchive = serde_json::from_str::<Vec<Op>>(r#"[{"op":"unarchive"}]"#)?;
+    assert!(bar_owner_acts(&unarchive).is_err());
+    assert!(
+        patch(&mut f, r#"[{"op":"unarchive"}]"#)?
+            .warnings
+            .is_empty()
+    );
     assert!(
         f.conclusion()
-            .is_some_and(|c| c.archived && c.lesson.text == "Revised")
+            .is_some_and(|c| !c.archived && c.lesson.text == "First")
+    );
+    assert_eq!(
+        refusal(&f, r#"[{"op":"unarchive"}]"#)?,
+        Some(OpRefusal::NotArchived)
     );
     let reopened = patch(&mut f, r#"[{"op":"hypothesis","slug":"x","title":"More"}]"#)?;
     assert_eq!(reopened.warnings[&0], vec![Warning::ReopenedFrontier]);

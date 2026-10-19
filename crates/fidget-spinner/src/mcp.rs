@@ -29,7 +29,7 @@ const PROTOCOL_VERSION: &str = "2025-11-25";
 const VERSIONS: [&str; 4] = ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"];
 const INSTRUCTIONS: &str = "Fidget Spinner records assertions about an inquiry; it never runs experiments or verifies evidence. Each call addresses optional project (default: server working directory) and frontier. Patch requires frontier. Reads may omit frontier only when exactly one frontier is active; otherwise the refusal lists unarchived candidates. Project paths resolve through linked Git worktrees to their main checkout. Frontier is an objective under a gauge; hypotheses are claims; trials are measurements; baselines are comparison states; reviews teach lessons over members. A patch is atomic. Findings never block operations. Read slowly through status and individual packets. Render selects representation, detail selects text completeness, and cursors freeze the ledger sequence. Removed records are redacted even in old history.";
 pub const OPS_GRAMMAR: &str = "Apply ordered ops atomically; dry_run rehearses. Each object has op and fields:
-frontier {objective}; conclude {lesson}; archive {}; regime {contract,metrics:[metric],reason?,bridge?:{slug,readings,note?}}
+frontier {objective}; conclude {lesson}; regime {contract,metrics:[metric],reason?,bridge?:{slug,readings,note?}}
 gauge {contract?,metrics?:[metric],retire?:[key],restore?:[key]}
 baseline {slug,artifacts?:[text],readings?:{key:value},adopts?:[slug],docket?:[slug],note?}
 docket {baseline,add?:[slug],drop?:[slug]}
@@ -42,7 +42,7 @@ void {trial|baseline,reason}; unvoid {trial|baseline}; remove {hypothesis|review
 lesson {review,text}; waive {finding,note}; assign {hypothesis|review,owner,instructions?}
 release/start/stop {hypothesis|review}; rename {hypothesis|review|baseline,to}
 metric={key,unit,better?:lower|higher,kpi?:bool,about?,refs?:{label:number}}; value=number|'number unit'.
-Units: ns/µs/us/ms/s/min/h (time); B/kB/MB/GB/TB/KiB/MiB/GiB/TiB (memory); 1/%; other lowercase words are count labels.\nSeparate targets with | require exactly one key. Trials use slug#n. Upserts preserve omitted/null fields; new hypotheses require title; new reviews require title,charter,members. Gauge metrics update by key. Baseline readings merge; artifacts/adopts/docket and review members replace. after/reviews and add/drop edit. Unknown frontier requires first op frontier. archive hides a concluded frontier from the navigator index and omitted-frontier candidates until it reopens.";
+Units: ns/µs/us/ms/s/min/h (time); B/kB/MB/GB/TB/KiB/MiB/GiB/TiB (memory); 1/%; other lowercase words are count labels.\nSeparate targets with | require exactly one key. Trials use slug#n. Upserts preserve omitted/null fields; new hypotheses require title; new reviews require title,charter,members. Gauge metrics update by key. Baseline readings merge; artifacts/adopts/docket and review members replace. after/reviews and add/drop edit. Unknown frontier requires first op frontier. An archived frontier refuses every op; archiving and unarchiving are the owner's, in the navigator.";
 
 #[derive(Debug, Error)]
 pub enum Fault {
@@ -380,6 +380,7 @@ impl Server {
         let context = self.context(&address);
         if tool == Tool::Patch {
             let PatchArgs { ops, dry_run } = parse(arguments)?;
+            fidget_spinner_core::bar_owner_acts(&ops)?;
             let mut ledger = Ledger::default();
             let receipt = self.store()?.commit(
                 &address,

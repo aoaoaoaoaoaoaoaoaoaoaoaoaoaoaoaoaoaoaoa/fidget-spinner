@@ -34,7 +34,6 @@ A patch is a JSON array of operations, each an object with `op` and its fields. 
 ```
 frontier   {objective}
 conclude   {lesson}
-archive    {}
 regime     {contract, metrics: [metric], reason?, bridge?: {slug, readings, note?}}
 gauge      {contract?, metrics?: [metric], retire?: [key], restore?: [key]}
 baseline   {slug, artifacts?: [text], readings?: {key: value}, adopts?: [slug], docket?: [slug], note?}
@@ -175,9 +174,11 @@ the record kind.
 `fidget-spinner ui serve --bind 127.0.0.1:8913` serves a loopback board. The index lists active frontiers before
 concluded ones, newest patch first within each: each frontier over its project, a bar of its settled hypotheses
 (accepted, rejected and shelved, with running ones hatched), its hypotheses counted by decision or state, its latest
-patch and whether it is concluded, with an Archive button when it is. It omits archived frontiers, whose boards keep
-their addresses. A frontier's name shows its objective on hover. An archive POST requires a matching Origin and
-appends an `archive` patch through the transactional writer.
+patch and whether it is concluded, with an Archive button when it is. Archived frontiers follow under a closed
+Archived disclosure, each with an Unarchive button, and their boards keep their addresses. A frontier's name shows
+its objective on hover. An archive or unarchive POST requires a matching Origin and appends that operation through
+the transactional writer. Archive and unarchive are the owner's: a patch carrying either is refused, and an archived
+frontier refuses every operation but unarchive.
 
 A frontier's board uses the shared layout engine: hypotheses are cells titled by their titles, grouped by lane and
 showing their trial counts; edges are drawn, reviews are coloured sets, and each baseline holds its docket the way a

@@ -20,8 +20,8 @@ use time::OffsetDateTime;
 use trebuchet::{
     board::{
         self, ActionResult, Attribute as A, BoardRoutes, BoardScene, BoardSource, Card,
-        Content as C, Field, IndexRow, IndexScene, Marker, Place, Query, RouteTarget, SetStyle,
-        StatusCode, Tag as T, Theme, button, count, meter, stats,
+        Content as C, Field, Fold, IndexRow, IndexScene, Marker, Place, Query, RouteTarget,
+        SetStyle, StatusCode, Tag as T, Theme, button, count, meter, stats,
     },
     layout::{Cell, CellSet, LayoutInput, Occupant, Separator, elide, focused, foreground},
 };
@@ -309,9 +309,11 @@ impl BoardSource for Navigator {
         }
     }
     fn action(&self, s: &Selection, action: &str) -> Result<Option<ActionResult>, Fault> {
-        if action != "archive" {
-            return Ok(None);
-        }
+        let op = match action {
+            "archive" => Op::Archive {},
+            "unarchive" => Op::Unarchive {},
+            _ => return Ok(None),
+        };
         let Some(listing) = self
             .store()?
             .map(|store| store.listing(s.id))
@@ -326,7 +328,7 @@ impl BoardSource for Navigator {
         match store::open(&self.path)?.commit(
             &listing.address,
             &mut Ledger::default(),
-            &[Op::Archive {}],
+            &[op],
             OffsetDateTime::now_utc(),
             false,
         ) {
@@ -340,45 +342,56 @@ impl BoardSource for Navigator {
     }
     fn index(&self) -> Result<IndexScene, Fault> {
         let mut rows = Vec::new();
+        let mut folded = Vec::new();
         if let Some(store) = self.store()? {
             let mut ledgers = self.ledgers.lock().unwrap_or_else(PoisonError::into_inner);
             for listing in store.listings()? {
                 let ledger = ledgers.entry(listing.id).or_default();
                 store.refresh(&listing.address, ledger)?;
                 let f = ledger.state();
-                let concluded = match f.conclusion() {
-                    Some(Conclusion { archived: true, .. }) => continue,
-                    conclusion => conclusion.is_some(),
-                };
                 let tally = Tally::new(f, &Assay::new(f));
-                rows.push((
-                    (concluded, Reverse(listing.updated)),
-                    IndexRow {
-                        href: format!("/frontier/{}", listing.id),
-                        place: place(&listing),
-                        about: f.objective().map(str::to_owned),
-                        columns: vec![tally.meter(), tally.counts()],
-                        updated: listing.updated,
-                        action: if concluded {
-                            vec![
-                                stat("concluded".into()),
-                                button(
-                                    format!("/frontier/{}/archive", listing.id),
-                                    "Archive",
-                                    "Archiving…",
-                                    "Hide this frontier; keep all data",
-                                ),
-                            ]
-                        } else {
-                            Vec::new()
-                        },
-                    },
-                ));
+                let mut row = IndexRow {
+                    href: format!("/frontier/{}", listing.id),
+                    place: place(&listing),
+                    about: f.objective().map(str::to_owned),
+                    columns: vec![tally.meter(), tally.counts()],
+                    updated: listing.updated,
+                    action: Vec::new(),
+                };
+                match f.conclusion() {
+                    Some(Conclusion { archived: true, .. }) => {
+                        row.action = vec![button(
+                            format!("/frontier/{}/unarchive", listing.id),
+                            "Unarchive",
+                            "Unarchiving…",
+                            "Return this frontier to the index and accept its writes",
+                        )];
+                        folded.push((Reverse(listing.updated), row));
+                    }
+                    Some(_) => {
+                        row.action = vec![
+                            stat("concluded".into()),
+                            button(
+                                format!("/frontier/{}/archive", listing.id),
+                                "Archive",
+                                "Archiving…",
+                                "Hide this frontier and refuse its writes; keep all data",
+                            ),
+                        ];
+                        rows.push(((true, Reverse(listing.updated)), row));
+                    }
+                    None => rows.push(((false, Reverse(listing.updated)), row)),
+                }
             }
         }
         rows.sort_by_key(|(order, _)| *order);
+        folded.sort_by_key(|(order, _)| *order);
         Ok(IndexScene {
             rows: rows.into_iter().map(|(_, row)| row).collect(),
+            fold: Fold {
+                label: "Archived".into(),
+                rows: folded.into_iter().map(|(_, row)| row).collect(),
+            },
             empty:
                 "No visible frontiers. Start one with frontier.patch through the Fidget Spinner MCP."
                     .into(),

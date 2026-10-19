@@ -191,6 +191,7 @@ operations! {
     Frontier { objective: String },
     Conclude { lesson: String },
     Archive {},
+    Unarchive {},
     Regime { contract: String, metrics: Vec<MetricSpec>, #[serde(skip_serializing_if = "Option::is_none")] reason: Option<String>, #[serde(skip_serializing_if = "Option::is_none")] bridge: Option<Bridge> },
     Gauge { #[serde(skip_serializing_if = "Option::is_none")] contract: Option<String>, #[serde(skip_serializing_if = "Option::is_none")] metrics: Option<Vec<MetricSpec>>, #[serde(skip_serializing_if = "Option::is_none")] retire: Option<Vec<MetricKey>>, #[serde(skip_serializing_if = "Option::is_none")] restore: Option<Vec<MetricKey>> },
     Baseline { slug: Slug, #[serde(skip_serializing_if = "Option::is_none")] artifacts: Option<Vec<String>>, #[serde(skip_serializing_if = "Option::is_none")] readings: Option<Readings>, #[serde(skip_serializing_if = "Option::is_none")] adopts: Option<Vec<Slug>>, #[serde(skip_serializing_if = "Option::is_none")] docket: Option<Vec<Slug>>, #[serde(skip_serializing_if = "Option::is_none")] note: Option<String> },

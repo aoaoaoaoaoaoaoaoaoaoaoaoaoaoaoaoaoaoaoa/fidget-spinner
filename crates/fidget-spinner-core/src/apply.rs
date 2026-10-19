@@ -59,6 +59,12 @@ pub enum OpRefusal {
     MissingObjective,
     #[error("frontier: only a concluded frontier can be archived")]
     PrematureArchive,
+    #[error("frontier: archived; only its owner can unarchive it, in the navigator")]
+    Archived,
+    #[error("frontier: only an archived frontier can be unarchived")]
+    NotArchived,
+    #[error("op: archive and unarchive are the owner's, in the navigator")]
+    OwnerOnly,
     #[error("{field}: must be nonempty")]
     Empty { field: String },
     #[error("{field}: required for creation")]
@@ -119,6 +125,24 @@ pub enum OpRefusal {
         to: Unit,
         to_kind: QuantityKind,
     },
+}
+
+/// Refuses the owner's administrative operations, archive and unarchive, which agents never send.
+///
+/// # Errors
+///
+/// The first such operation, as an operation refusal.
+pub fn bar_owner_acts(ops: &[Op]) -> Result<(), Refusal> {
+    ops.iter()
+        .enumerate()
+        .find(|(_, op)| matches!(op, Op::Archive {} | Op::Unarchive {}))
+        .map_or(Ok(()), |(index, op)| {
+            Err(Refusal::Operation {
+                index,
+                op: op.name(),
+                cause: Box::new(OpRefusal::OwnerOnly),
+            })
+        })
 }
 
 #[derive(Clone, Debug, PartialEq, thiserror::Error, Serialize)]
@@ -211,7 +235,16 @@ impl Frontier {
                 Op::Baseline { slug, .. } => !frontier.baselines.contains_key(slug),
                 _ => false,
             };
-            if reopening && !matches!(op, Op::Conclude { .. } | Op::Archive {}) {
+            if frontier.conclusion.as_ref().is_some_and(|c| c.archived)
+                && !matches!(op, Op::Unarchive {})
+            {
+                return Err(Refusal::Operation {
+                    index,
+                    op: op.name(),
+                    cause: Box::new(OpRefusal::Archived),
+                });
+            }
+            if reopening && !matches!(op, Op::Conclude { .. } | Op::Archive {} | Op::Unarchive {}) {
                 frontier.conclusion = None;
                 reopening = false;
                 log.push(Warning::ReopenedFrontier);
@@ -354,7 +387,7 @@ impl Frontier {
                         text: required(lesson, "lesson")?,
                         at,
                     },
-                    archived: self.conclusion.as_ref().is_some_and(|c| c.archived),
+                    archived: false,
                 });
             }
             Op::Archive {} => {
@@ -362,6 +395,13 @@ impl Frontier {
                     .as_mut()
                     .ok_or(OpRefusal::PrematureArchive)?
                     .archived = true;
+            }
+            Op::Unarchive {} => {
+                self.conclusion
+                    .as_mut()
+                    .filter(|c| c.archived)
+                    .ok_or(OpRefusal::NotArchived)?
+                    .archived = false;
             }
             Op::Regime {
                 contract,

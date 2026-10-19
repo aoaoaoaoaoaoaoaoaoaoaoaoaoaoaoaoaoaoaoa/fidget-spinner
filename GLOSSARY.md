@@ -59,6 +59,6 @@ persistence. Each term has one meaning in Fidget Spinner.
 | Waiver | A note that dismisses one finding. |
 | Owner | The agent named as pursuing a hypothesis or review. |
 | Concluded | Of a frontier: ended by a lesson. |
-| Archived | Of a concluded frontier: hidden from the navigator's index and from the candidates for an omitted frontier until it reopens, its records kept. |
+| Archived | Of a concluded frontier: read-only until its owner unarchives it in the navigator, folded under the index's Archived list and absent from the candidates for an omitted frontier, its records kept. |
 | Patch | An ordered list of operations applied atomically. |
 | Receipt | The response to a patch: its sequence number, warnings, and the findings it raised or cleared. |

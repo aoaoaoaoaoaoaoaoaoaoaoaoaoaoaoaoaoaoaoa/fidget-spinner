@@ -12,7 +12,7 @@ pub mod slug;
 pub mod units;
 
 pub use analysis::*;
-pub use apply::{Created, OpRefusal, Patched, RecordKind, Refusal, Warning};
+pub use apply::{Created, OpRefusal, Patched, RecordKind, Refusal, Warning, bar_owner_acts};
 pub use model::*;
 pub use op::*;
 pub use slug::{Slug, SlugError};
