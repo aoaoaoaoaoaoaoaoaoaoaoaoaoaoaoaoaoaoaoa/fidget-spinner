@@ -185,10 +185,11 @@ work waiting on a void input stays waiting until its inputs are changed by hand.
 
 ## 8. Baselines and elections
 
-A **baseline** is a comparison state: artifacts and configuration (its identity), readings, a note, and the regime
-current at its creation. A **candidate** is a baseline never elected. A baseline's identity freezes at its first
-election or first use as a report's control or treatment, and its readings freeze when an election, or a report's
-control without supplied control readings, consumes them; frozen parts never change.
+A **baseline** is a comparison state: its **identity**, the artifacts that name what it is (commits, configurations,
+evidence paths); readings; a note; and the regime current at its creation. A **candidate** is a baseline never elected.
+A baseline's identity freezes at its first election or first use as a report's control or treatment, and its readings
+freeze when an election, or a report's control without supplied control readings, consumes them. Frozen parts never
+change; the note never freezes.
 
 `elect` names a baseline, a rationale and optional adopted isets. It requires a non-void baseline of the current regime
 and opens an **epoch**; electing a baseline again opens another. The **incumbent baseline** is the baseline of the

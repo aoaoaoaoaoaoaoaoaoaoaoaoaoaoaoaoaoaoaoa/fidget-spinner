@@ -52,7 +52,7 @@ record with `record.read` only when the next decision depends on it. The project
 name the frontier when the project has several unconcluded ones.
 
 Before recording a new question, search for prior art: `frontier.status` with
-`{"scope":"project","filter":{"text":"LNS"}}` searches every frontier of the project, concluded ones included.
+`{"scope":"project","filter":{"text":"cache"}}` searches every frontier of the project, concluded ones included.
 `filter.under` scopes list views to an iset's members at any depth. Reuse a cursor only for its original query; on a
 cursor refusal, rerun without it.
 
@@ -63,14 +63,15 @@ before it ran:
 
 ```json
 [
-{"op":"iset","slug":"lp.lattice-guard","schema":"hypothesis","data":{"claim":"Guarding clause-2 bounds by the measured lattice error keeps R77 closures and cuts cost."}},
-{"op":"plan","into":["lp.lattice-guard"],"schema":"attempt","data":{"change":"Apply the guard in the LP kernel at 7fec404f."}},
-{"op":"assign","work":"lp.lattice-guard#1","owner":"worker-3","instructions":"R77v2 protocol; report cost ratio and closures."}
+{"op":"iset","slug":"cache.templates","schema":"hypothesis","data":{"claim":"Caching parsed templates cuts p50 latency without changing responses."}},
+{"op":"plan","into":["cache.templates"],"schema":"attempt","data":{"change":"Memoize template parsing per worker."}},
+{"op":"assign","work":"cache.templates#1","owner":"worker-2","instructions":"Run the requests-v1 protocol; report p50_latency and any response diffs."}
 ]
 ```
 
 - A trial without a name joins its first `into` iset and is named `slug#n`; the receipt names it. Its control
-  defaults to the incumbent baseline; `control` names another.
+  defaults to the incumbent baseline; `control` names another, and `treatment` may name what ran: a baseline or an
+  opaque identity such as a commit.
 - `edit` amends an open trial's plan, and every revision stays readable. Editing work that existed before the patch
   names its `rev`, which reads show; a stale `rev` is refused with the actual revision.
 - `start` and `stop` assert execution. `assign` binds an owner to the work's current revision; a later write raises
@@ -89,16 +90,17 @@ before it ran:
 ## Correct and sweep
 
 Nothing resolved is rewritten. A misrecorded report takes a new trial whose data cites its predecessor, as in
-`{"$fs":"ref","kind":"trial","id":"lp.lattice-guard#1"}`; new understanding takes a new iset containing the old answer
+`{"$fs":"ref","kind":"trial","id":"cache.templates#1"}`; new understanding takes a new iset containing the old answer
 and the new evidence. Void invalid evidence with a reason: the receipt lists the resolutions resting on it and the
 work waiting on it. Whoever voids sweeps, by judging a successor iset over the survivors or voiding what falls. A void
 reaches one hop and its marks never clear. Remove only mistakes; history redacts removed records.
 
 ## Baselines and regimes
 
-When an integration lands, record it as a baseline with its artifacts and readings and `elect` it, adopting the isets
-it carries: it becomes the incumbent and opens an epoch, named by its baseline and election time. A baseline's
-readings freeze once a report's control or an election consumes them.
+When an integration lands, record it as a baseline with its artifacts and readings and `elect` it, adopting the isets it
+carries: it becomes the incumbent and opens an epoch, named by its baseline and election time. A baseline's artifacts
+freeze at its first election or first use as a report's control or treatment; its readings freeze once an election, or a
+report's control without `control_readings`, consumes them. The note never freezes.
 
 When the measurement contract changes, whether its cohort, machine, limits, protocol or a metric's meaning, install a
 new regime with a reason and a bridge: the incumbent's artifacts remeasured under the new gauge. Adding a metric is a
