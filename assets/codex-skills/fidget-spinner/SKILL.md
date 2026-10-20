@@ -69,9 +69,12 @@ before it ran:
 ]
 ```
 
-- A trial without a name joins its first `into` iset and is named `slug#n`; the receipt names it. Its control
-  defaults to the incumbent baseline; `control` names another, and `treatment` may name what ran: a baseline or an
-  opaque identity such as a commit.
+- A trial without a name joins its first `into` iset and is named `slug#n`; the receipt names it. Trial numbers
+  count records, not experiments: FS infers no multiplicity, so report data states how many runs a result rests on.
+- Under a regime, a trial's control defaults to the incumbent baseline at planning; `control` names another. Without
+  a regime or an incumbent there is no control unless one is named. Unmeasured work reports without readings; under
+  a regime it still records a defaulted control, and its `superseded` finding after an election can stand.
+  `treatment` may name what ran: a baseline or an opaque identity such as a commit.
 - `edit` amends an open trial's plan, and every revision stays readable. Editing work that existed before the patch
   names its `rev`, which reads show; a stale `rev` is refused with the actual revision.
 - `start` and `stop` assert execution. `assign` binds an owner to the work's current revision; a later write raises
@@ -91,8 +94,9 @@ before it ran:
 
 Nothing resolved is rewritten. A misrecorded report takes a new trial whose data cites its predecessor, as in
 `{"$fs":"ref","kind":"trial","id":"cache.templates#1"}`; new understanding takes a new iset containing the old answer
-and the new evidence. Void invalid evidence with a reason: the receipt lists the resolutions resting on it and the
-work waiting on it. Whoever voids sweeps, by judging a successor iset over the survivors or voiding what falls. A void
+and the new evidence. Void invalid evidence with a reason: the receipt lists the resolutions resting on it and the work
+waiting on it. Whoever voids sweeps, by judging a successor iset over the survivors or voiding what falls. A marked
+answer that still holds is not voided: judge a reassessment iset containing it that says why, and the mark stays. A void
 reaches one hop and its marks never clear. Remove only mistakes; history redacts removed records.
 
 ## Baselines and regimes
