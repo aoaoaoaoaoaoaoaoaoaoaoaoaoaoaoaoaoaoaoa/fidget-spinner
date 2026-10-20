@@ -1,103 +1,86 @@
-use crate::{MetricKey, RegimeNumber, Slug};
-use serde::{Deserialize, Serialize};
-use std::{fmt, str::FromStr};
+use crate::{Frontier, Id, MetricKey, RegimeNumber};
 
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-#[serde(try_from = "String", into = "String")]
-pub enum FindingId {
-    Unbacked(Slug),
+/// A rule's present violation, identified by rule and subject incarnations.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Finding {
+    Unsettled(Id),
+    Unjudged(Id, Id),
+    Nonconforming(Id),
+    Unvalidated(Id),
+    Stale(Id),
+    Superseded(Id),
     Unbridged(RegimeNumber),
     Unlisted(RegimeNumber, MetricKey),
-    Unread(Slug, MetricKey),
-    Unaccepted(Slug, Slug),
+    Unread(Id, MetricKey),
 }
 
-impl FindingId {
-    pub(crate) fn has_subject(&self, target: &crate::RemoveTarget) -> bool {
-        use crate::RemoveTarget::{Baseline, Hypothesis, Review, Trial};
+impl Finding {
+    pub const fn rule(&self) -> &'static str {
         match self {
-            Self::Unbacked(h) => matches!(target,Hypothesis(removed) if h==removed),
-            Self::Unread(b, _) => matches!(target,Baseline(removed) if b==removed),
-            Self::Unaccepted(b, h) => match target {
-                Baseline(removed) => b == removed,
-                Hypothesis(removed) => h == removed,
-                Review(_) | Trial(_) => false,
-            },
-            Self::Unbridged(_) | Self::Unlisted(_, _) => false,
+            Self::Unsettled(_) => "unsettled",
+            Self::Unjudged(..) => "unjudged",
+            Self::Nonconforming(_) => "nonconforming",
+            Self::Unvalidated(_) => "unvalidated",
+            Self::Stale(_) => "stale",
+            Self::Superseded(_) => "superseded",
+            Self::Unbridged(_) => "unbridged",
+            Self::Unlisted(..) => "unlisted",
+            Self::Unread(..) => "unread",
         }
     }
 
-    pub(crate) fn renamed(self, target: &crate::RenameTarget, to: &Slug) -> Self {
-        let hypothesis = |slug| match target {
-            crate::RenameTarget::Hypothesis(from) if &slug == from => to.clone(),
-            _ => slug,
+    pub fn identity(&self, frontier: &Frontier) -> String {
+        let name = |id: &Id| frontier.name_of(*id).unwrap_or_else(|| "-".into());
+        let rule = self.rule();
+        match self {
+            Self::Unsettled(id)
+            | Self::Nonconforming(id)
+            | Self::Unvalidated(id)
+            | Self::Stale(id)
+            | Self::Superseded(id) => format!("{rule}/{}", name(id)),
+            Self::Unjudged(baseline, iset) => format!("{rule}/{}/{}", name(baseline), name(iset)),
+            Self::Unbridged(k) => format!("{rule}/{k}"),
+            Self::Unlisted(k, key) => format!("{rule}/{k}/{key}"),
+            Self::Unread(baseline, key) => format!("{rule}/{}/{key}", name(baseline)),
+        }
+    }
+
+    pub fn statement(&self, frontier: &Frontier) -> String {
+        let name = |id: &Id| {
+            frontier
+                .name_of(*id)
+                .unwrap_or_else(|| "a removed record".into())
         };
-        let baseline = |slug| match target {
-            crate::RenameTarget::Baseline(from) if &slug == from => to.clone(),
-            _ => slug,
-        };
         match self {
-            Self::Unbacked(h) => Self::Unbacked(hypothesis(h)),
-            Self::Unread(b, k) => Self::Unread(baseline(b), k),
-            Self::Unaccepted(b, h) => Self::Unaccepted(baseline(b), hypothesis(h)),
-            Self::Unbridged(n) => Self::Unbridged(n),
-            Self::Unlisted(n, k) => Self::Unlisted(n, k),
-        }
-    }
-}
-
-#[derive(Debug, thiserror::Error)]
-#[error("invalid finding identity {0:?}")]
-pub struct FindingIdError(String);
-
-impl fmt::Display for FindingId {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Unbacked(hypothesis) => write!(formatter, "unbacked/{hypothesis}"),
-            Self::Unbridged(regime) => write!(formatter, "unbridged/{regime}"),
-            Self::Unlisted(regime, key) => write!(formatter, "unlisted/{regime}/{key}"),
-            Self::Unread(baseline, key) => write!(formatter, "unread/{baseline}/{key}"),
-            Self::Unaccepted(baseline, hypothesis) => {
-                write!(formatter, "unaccepted/{baseline}/{hypothesis}")
+            Self::Unsettled(id) => format!(
+                "{} is judged with an open member or an input not done",
+                name(id)
+            ),
+            Self::Unjudged(baseline, iset) => {
+                format!(
+                    "the incumbent baseline {} adopted {}, which is neither judged nor void",
+                    name(baseline),
+                    name(iset)
+                )
             }
-        }
-    }
-}
-
-impl FromStr for FindingId {
-    type Err = FindingIdError;
-    fn from_str(raw: &str) -> Result<Self, Self::Err> {
-        let invalid = || FindingIdError(raw.to_owned());
-        match raw.split('/').collect::<Vec<_>>().as_slice() {
-            ["unbacked", hypothesis] => {
-                Ok(Self::Unbacked(hypothesis.parse().map_err(|_| invalid())?))
+            Self::Nonconforming(id) => format!("{} violates its schema binding", name(id)),
+            Self::Unvalidated(id) => format!(
+                "{} requests a schema definition that does not exist",
+                name(id)
+            ),
+            Self::Stale(id) => format!("{} changed after its assignment was bound", name(id)),
+            Self::Superseded(id) => format!(
+                "{}'s defaulted control is no longer the incumbent baseline",
+                name(id)
+            ),
+            Self::Unbridged(k) => format!("regime {k} has no bridge"),
+            Self::Unlisted(k, key) => {
+                format!("three or more trials of regime {k} carry the unlisted reading {key}")
             }
-            ["unbridged", regime] => Ok(Self::Unbridged(regime.parse().map_err(|_| invalid())?)),
-            ["unlisted", regime, key] => Ok(Self::Unlisted(
-                regime.parse().map_err(|_| invalid())?,
-                key.parse().map_err(|_| invalid())?,
-            )),
-            ["unread", baseline, key] => Ok(Self::Unread(
-                baseline.parse().map_err(|_| invalid())?,
-                key.parse().map_err(|_| invalid())?,
-            )),
-            ["unaccepted", baseline, hypothesis] => Ok(Self::Unaccepted(
-                baseline.parse().map_err(|_| invalid())?,
-                hypothesis.parse().map_err(|_| invalid())?,
-            )),
-            _ => Err(invalid()),
+            Self::Unread(baseline, key) => format!(
+                "the incumbent baseline {} has no reading for KPI {key}",
+                name(baseline)
+            ),
         }
-    }
-}
-
-impl TryFrom<String> for FindingId {
-    type Error = FindingIdError;
-    fn try_from(raw: String) -> Result<Self, Self::Error> {
-        raw.parse()
-    }
-}
-impl From<FindingId> for String {
-    fn from(identity: FindingId) -> Self {
-        identity.to_string()
     }
 }

@@ -1,96 +1,116 @@
 ---
 name: fidget-spinner
-description: Record an open-ended, measured inquiry in Fidget Spinner: frontiers, hypotheses, trials against the incumbent baseline, dispositions, reviews and baselines. Use when a project keeps its experimental record there.
+description: Keep an inquiry's record in Fidget Spinner across sessions: frontiers, isets (questions judged once), trials (attempts planned, then reported once against a control baseline), schemas, baselines and supervision. Use when a project keeps its research or experimental record there.
 ---
 
 # Fidget Spinner
 
-A frontier is an objective pursued under a gauge, the measurement contract. Hypotheses are claims; trials test them
-against the incumbent baseline; dispositions settle them with a rationale; reviews study sets of hypotheses and end in
-lessons. Accepting a baseline opens an epoch; changing the gauge opens a regime. The tool descriptions define the
-arguments. `frontier.patch` requires a frontier slug; every tool accepts an explicit project path. Porcelain is the
-default; request `render: "json"` only when structured output is needed.
+Fidget Spinner is an inquiry's memory across compactions, handoffs and sessions: what is open, who pursues it, what
+was judged over which evidence, and why. It records; it never runs experiments, verifies evidence or blocks method.
+Refusals protect only the record's representation; warnings and findings flag drift and never block. Admissibility of
+evidence and method are project policy.
+
+Work is trials and isets. A trial is an attempt: planned, amended by `edit`, and reported once against a control
+baseline. An iset (integration set) poses a question over member work and is judged once; its answer may land either
+way. Inputs (`after`) order work; membership is not dependency. Every record resolves at most once and is voided at
+most once: nothing is reopened, corrected or unvoided, and a later answer is a new iset.
+
+The tool descriptions define the operations; `schema.read` without `schema` gives the definition grammar.
+`frontier.patch` requires a frontier slug; every tool accepts an explicit project path. Porcelain is the default;
+request `render: "json"` only for structured input.
 
 ## Start a frontier
 
-A patch whose first operation is `frontier` creates the frontier. Install the gauge with `regime` and record the first
-baseline in the same patch:
+A patch whose first operation is `frontier` creates it. Measurement is optional; when work is measured, install the
+gauge and the first baseline in the same patch, and define the schemas the frontier's work will use:
 
 ```json
 [
 {"op":"frontier","objective":"Halve cold-start latency of the request path without changing responses."},
 {"op":"regime","contract":"Corpus fixtures/requests-v1, 200 requests, one worker, release build, median of 5 runs.","metrics":[{"key":"p50_latency","unit":"ms","better":"lower","kpi":true}]},
 {"op":"baseline","slug":"b1","artifacts":["a1b2c3d"],"readings":{"p50_latency":"84 ms"}},
-{"op":"accept","baseline":"b1","rationale":"First measurement of main."}
+{"op":"elect","baseline":"b1","rationale":"First measurement of main."},
+{"op":"define","schema":"hypothesis","definition":{"carrier":"iset","title":"Hypothesis",
+  "data":{"claim":{"type":"text","presence":"required","show":"headline"},"mechanism":{"type":"text","presence":"optional"}},
+  "answer":{"verdict":{"type":{"enum":["holds","fails","unclear"]},"presence":"required","show":"badge"},"rationale":{"type":"text","presence":"required"}}}},
+{"op":"define","schema":"attempt","definition":{"carrier":"trial","title":"Attempt",
+  "plan":{"change":{"type":"text","presence":"required","show":"headline"}},
+  "report":{"outcome":{"type":"text","presence":"required"}}}}
 ]
 ```
 
-The contract names everything a reading depends on: cohort, envelope and protocol. Declare only the metrics that
-decisions use; a KPI is charted and needs a direction.
+The contract names everything a reading depends on: cohort, envelope and protocol. Declare only the metrics decisions
+use; a KPI is charted and needs a direction. The hypothesis schema is a template for frontiers that want a
+conventional verdict; FS reads no verdict from any answer. Untyped work is allowed; a schema makes data checkable and
+gives the navigator headlines and badges.
 
 ## Resume
 
-Call `frontier.status` once. Its summary is the frontier's situation: the incumbent baseline and its readings, docket
-progress, running and tested work, ready hypotheses, recent dispositions and lessons, and findings. Read a hypothesis
-or review only when the next decision depends on it. The project defaults to the working directory; name the frontier
-when the project has several.
+Call `frontier.status` once; it is the memory. The summary gives the incumbent baseline and its KPIs, counts by
+state, running work with owners, tested isets awaiting judgment, ready work, recent judgments and findings. Read a
+record with `record.read` only when the next decision depends on it. The project defaults to the working directory;
+name the frontier when the project has several unconcluded ones.
 
-Before recording a new idea, search for prior art with `frontier.status`
-`{"scope":"project","filter":{"text":"LNS"}}`. This searches every frontier of the project, concluded ones included.
-Hits identify the frontier, record, matching field and an excerpt. Read `slug#n` through the hypothesis's trials
-section; other slugs use `hypothesis.read`, `review.read`, or the baselines view. Summary lists show bounded prefixes
-and `more:` routes. Regimes are newest first. A tested count such as `2 (regime 3)` means its non-void trials all
-precede the current regime; it does not establish current-regime evidence.
+Before recording a new question, search for prior art: `frontier.status` with
+`{"scope":"project","filter":{"text":"LNS"}}` searches every frontier of the project, concluded ones included.
+`filter.under` scopes list views to an iset's members at any depth. Reuse a cursor only for its original query; on a
+cursor refusal, rerun without it.
 
-## Record
+## Plan, report, judge
 
-Write each result and its consequences in one `frontier.patch`:
+Plan before work leaves the context, at a dispatch, handoff or compaction, so the record shows what was intended
+before it ran:
 
 ```json
 [
-{"op":"trial","hypothesis":"lp.lattice-guard","note":"R77v2: cost ratio 0.976; closures unchanged; no case slower than 2x.","readings":{"r77_ratio":0.976},"artifacts":["7fec404f","/data/main/libgrid-evidence/lp-20261015/r77"]},
-{"op":"accept","hypothesis":"lp.lattice-guard","rationale":"A 2.4% gain exceeds twice the margin with closures unchanged."},
-{"op":"hypothesis","slug":"lp.lattice-guard-tighten","title":"Tighten clause-2 bounds with the measured lattice error","claim":"rocII-5-11's primal gap falls below 0.3 with no R77 closure lost.","after":["lp.lattice-guard"]}
+{"op":"iset","slug":"lp.lattice-guard","schema":"hypothesis","data":{"claim":"Guarding clause-2 bounds by the measured lattice error keeps R77 closures and cuts cost."}},
+{"op":"plan","into":["lp.lattice-guard"],"schema":"attempt","data":{"change":"Apply the guard in the LP kernel at 7fec404f."}},
+{"op":"assign","work":"lp.lattice-guard#1","owner":"worker-3","instructions":"R77v2 protocol; report cost ratio and closures."}
 ]
 ```
 
-- A trial's note states what ran and what happened, with the numbers that matter; its artifacts cite the commit and
-  the evidence path. The trial is compared with the incumbent baseline unless `against` names another baseline.
-- A rationale states why the disposition follows from the evidence. Reject what failed and shelve what is no longer
-  worth pursuing; both are information.
-- Record hypotheses as soon as they appear. A title suffices; a mechanism and a claim make one testable.
-- An edge, through `after` or `edge`, makes its target wait until its source is settled.
-- Readings use the gauge's metric keys. A value may carry a unit, such as `"1500 ms"`, and is converted. A key outside
-  the gauge is kept on the trial as an unlisted reading and is never charted; when such a key recurs, declare it in
-  the gauge or stop recording it.
-- Void a trial or baseline whose evidence is invalid; it stays visible. Remove only mistakes.
-- Rehearse a large patch with `dry_run`. Receipts name created trials, baselines and regimes, and opened epochs by
-  their baseline and acceptance time. Refusals name the operation index, name and field path; repair that operation
-  before retrying the atomic patch.
-- Units normalize common time and byte aliases to `ns`, `µs`, `ms`, `s`, `min`, `h` and `B`. Memory also supports
-  decimal `kB/MB/GB/TB` and binary `KiB/MiB/GiB/TiB`; dimensionless readings use `1/%`. Other lowercase words name
-  distinct count kinds. Alias words never name counts.
-- Inapplicable filters and scopes are ignored with warnings. Reuse a cursor only for its original query; on a
-  cursor refusal, rerun without it.
+- A trial without a name joins its first `into` iset and is named `slug#n`; the receipt names it. Its control
+  defaults to the incumbent baseline; `control` names another.
+- `edit` amends an open trial's plan, and every revision stays readable. Editing work that existed before the patch
+  names its `rev`, which reads show; a stale `rev` is refused with the actual revision.
+- `start` and `stop` assert execution. `assign` binds an owner to the work's current revision; a later write raises
+  `stale` until the work is reassigned.
+- `report` resolves a trial once with readings, artifacts (commit and evidence path) and data. Reporting a name that
+  names no trial records a retrospective trial. Name the plan revision executed when it is not the current one, or
+  `"unknown"`.
+- `judge` answers an iset once, over the done work its membership reaches. Pass `seen` with the seq you read: the
+  judgment is refused if anything it consumes changed since, and reads show it as guarded. Judging while members are
+  open draws a warning.
+- Readings use the gauge's keys; a value may carry a unit, such as `"1500 ms"`, converted within its kind. Other keys
+  are kept as unlisted readings and never charted.
+- Rehearse a large patch with `dry_run`. A refusal names the operation index, name and field; nothing applies until
+  the whole patch does.
 
-## Baselines, epochs and regimes
+## Correct and sweep
 
-When an integration lands, record it as a baseline with its artifacts, readings and the hypotheses it adopts, and
-accept it: it becomes the incumbent baseline and opens an epoch, and the unsettled hypotheses on the previous docket
-carry over. An epoch is named by its baseline, not by an ordinal; `since` gives the acceptance time. A baseline's
-docket lists the hypotheses due against it.
+Nothing resolved is rewritten. A misrecorded report takes a new trial whose data cites its predecessor, as in
+`{"$fs":"ref","kind":"trial","id":"lp.lattice-guard#1"}`; new understanding takes a new iset containing the old answer
+and the new evidence. Void invalid evidence with a reason: the receipt lists the resolutions resting on it and the
+work waiting on it. Whoever voids sweeps, by judging a successor iset over the survivors or voiding what falls. A void
+reaches one hop and its marks never clear. Remove only mistakes; history redacts removed records.
 
-When the measurement contract changes, whether its cohort, machine, limits, protocol or the meaning of a metric,
-install a new regime with a reason and bridge it by remeasuring the incumbent baseline's commit under the new gauge.
-Adding a metric is not a regime change.
+## Baselines and regimes
 
-## Findings
+When an integration lands, record it as a baseline with its artifacts and readings and `elect` it, adopting the isets
+it carries: it becomes the incumbent and opens an epoch, named by its baseline and election time. A baseline's
+readings freeze once a report's control or an election consumes them.
 
-Findings are reminders computed from the state; they never block. Resolve one by recording what it reports missing,
-or waive it with a note when the situation is intended.
+When the measurement contract changes, whether its cohort, machine, limits, protocol or a metric's meaning, install a
+new regime with a reason and a bridge: the incumbent's artifacts remeasured under the new gauge. Adding a metric is a
+`gauge` edit, not a regime.
 
-## Navigator
+## Findings and conclusion
 
-The read-only navigator at http://127.0.0.1:8913/ shows each frontier's board and KPI charts. The board hides
-settlements older than the latest two epochs; widen Settled to inspect older work. Clicking a hypothesis or a chart
-point opens its evidence.
+Findings are facts computed from the state: unsettled or unjudged isets, nonconforming or unvalidated data, stale
+assignments, superseded defaulted controls, unbridged regimes, recurring unlisted readings, and an incumbent missing a
+KPI reading. They never block and clear when their condition ends; resolve one by recording what it reports missing,
+or let an intended exception stand.
+
+`conclude` records the frontier's lesson once; afterwards only `void`, `remove` and `rename` apply. Archiving is the
+owner's, in the navigator at http://127.0.0.1:8913/, which draws each frontier's isets and trials, its epochs and
+regimes, and one chart per KPI.

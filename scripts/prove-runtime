@@ -21,11 +21,11 @@ cat >"$cell/patch.json" <<'JSON'
   {"op":"frontier","objective":"Runtime acceptance"},
   {"op":"regime","contract":"Isolated CLI fixture","metrics":[{"key":"latency","unit":"ms","better":"lower","kpi":true}]},
   {"op":"baseline","slug":"base","readings":{"latency":10}},
-  {"op":"accept","baseline":"base","rationale":"Initial comparison"},
-  {"op":"hypothesis","slug":"faster","title":"Reduce latency"},
-  {"op":"review","slug":"program","title":"Latency program","charter":"Assess latency","members":["faster"]},
-  {"op":"trial","hypothesis":"faster","note":"Measured fixture","readings":{"latency":"9 ms"}},
-  {"op":"accept","hypothesis":"faster","rationale":"Lower latency"}
+  {"op":"elect","baseline":"base","rationale":"Initial comparison"},
+  {"op":"iset","slug":"faster","data":{"question":"Does the change reduce latency?"}},
+  {"op":"iset","slug":"program","data":{"charter":"Assess latency"},"members":["faster"]},
+  {"op":"report","into":["faster"],"data":{"note":"Measured fixture"},"readings":{"latency":"9 ms"}},
+  {"op":"judge","iset":"faster","answer":{"verdict":"lower latency"}}
 ]
 JSON
 
@@ -40,8 +40,9 @@ if spinner status >/dev/null 2>&1; then
 fi
 spinner patch "$cell/patch.json" >/dev/null
 spinner status --render json | jq -e '. != null' >/dev/null
-spinner read faster --detail full | grep -Fq 'Measured fixture'
-spinner read program --review --detail full | grep -Fq 'Assess latency'
+spinner read --work 'faster#1' --detail full | grep -Fq 'Measured fixture'
+spinner read --work program --detail full | grep -Fq 'Assess latency'
+spinner schema | grep -Fq 'definition ='
 spinner history --seq 1 --detail full | grep -Fq 'Runtime acceptance'
 "$binary" health --render json | jq -e '. != null' >/dev/null
 

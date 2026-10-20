@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::{
     fmt,
-    num::{NonZeroU64, NonZeroUsize, ParseIntError},
+    num::{NonZeroUsize, ParseIntError},
     str::FromStr,
 };
 
@@ -43,7 +43,6 @@ macro_rules! number {
 }
 
 number!(RegimeNumber, usize, NonZeroUsize);
-number!(EpochNumber, u64, NonZeroU64);
 
 impl RegimeNumber {
     pub(crate) const fn index(self) -> usize {

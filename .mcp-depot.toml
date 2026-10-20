@@ -7,6 +7,6 @@ gate = ["./check.py", "check"]
 
 [state]
 mode = "versioned"
-# Epoch 20 is the old implementation's per-project layout; this release neither reads nor modifies it.
-readable = [20, 21]
-writable = 21
+# Epoch 21 is FS 3's store; the first writer translates it in place to 22.
+readable = [21, 22]
+writable = 22

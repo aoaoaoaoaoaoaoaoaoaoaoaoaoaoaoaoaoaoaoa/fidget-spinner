@@ -6,12 +6,13 @@
 use std::{
     error::Error,
     io::{self, BufReader},
-    process::{Child, ChildStdin, ChildStdout, Command, Stdio},
+    process::{Child, ChildStdin, ChildStdout, Command, Output, Stdio},
 };
 
 use libmcp::{FrameLimit, FrameReadOutcome, read_frame_blocking, write_frame_blocking};
 use libmcp_testkit::TestCell;
 use serde_json::{Value, json};
+use trebuchet::ledger::rusqlite::{Connection, params};
 
 type Result<T = ()> = std::result::Result<T, Box<dyn Error>>;
 
@@ -110,6 +111,14 @@ impl Session {
     }
 }
 
+fn cli(cell: &TestCell, args: &[&str]) -> io::Result<Output> {
+    Command::new(env!("CARGO_BIN_EXE_fidget-spinner"))
+        .args(args)
+        .env("XDG_STATE_HOME", cell.path())
+        .current_dir(cell.path())
+        .output()
+}
+
 #[test]
 fn wire_rendering_is_exclusive() -> Result {
     let mut session = Session::new()?;
@@ -122,8 +131,9 @@ fn wire_rendering_is_exclusive() -> Result {
     Ok(())
 }
 
-// Nested evidence appears across packets, summaries and list views. The wire
-// renderer must preserve those facts without leaking structural JSON into cells.
+// Nested facts appear across packets, summaries and list views. Porcelain must
+// keep them without leaking structural JSON into table cells; only data and
+// answers render as compact JSON.
 #[test]
 fn porcelain_cells_are_not_json() -> Result {
     let mut session = Session::new()?;
@@ -131,25 +141,28 @@ fn porcelain_cells_are_not_json() -> Result {
         {"op":"frontier","objective":"fixture"},
         {"op":"regime","contract":"fixture protocol","metrics":[{"key":"elapsed","unit":"s","better":"lower","kpi":true,"refs":{"target":1}}]},
         {"op":"baseline","slug":"initial","artifacts":["commit","evidence"],"readings":{"elapsed":10}},
-        {"op":"accept","baseline":"initial","rationale":"starting point"},
-        {"op":"hypothesis","slug":"cache","title":"Cache","mechanism":"reuse","claim":"less work"},
-        {"op":"trial","hypothesis":"cache","note":"fixture result","readings":{"elapsed":8},"artifacts":["trial evidence","{\"nested\":true}"]},
-        {"op":"accept","hypothesis":"cache","rationale":"fixture rationale"},
-        {"op":"hypothesis","slug":"ready","title":"Next"},
-        {"op":"edge","from":"cache","to":"ready","carries":"evidence"},
-        {"op":"review","slug":"program","title":"Program","charter":"fixture charter","members":["cache","ready"]},
-        {"op":"lesson","review":"program","text":"fixture lesson"},
+        {"op":"elect","baseline":"initial","rationale":"starting point"},
+        {"op":"define","schema":"question","definition":{"carrier":"iset",
+            "data":{"question":{"type":"text","presence":"required","show":"headline"}},
+            "answer":{"verdict":{"type":{"enum":["holds","fails"]},"presence":"required","show":"badge"},"why":{"type":"text","presence":"optional"}}}},
+        {"op":"iset","slug":"cache","schema":"question","data":{"question":"Does a cache help?"}},
+        {"op":"plan","into":["cache"],"data":{"change":"memoize"}},
+        {"op":"report","trial":"cache#1","readings":{"elapsed":8},"artifacts":["trial evidence","{\"nested\":true}"],
+            "data":{"note":"fixture result","see":{"$fs":"ref","kind":"baseline","id":"initial"}}},
+        {"op":"judge","iset":"cache","answer":{"verdict":"holds","why":"fixture rationale"}},
+        {"op":"iset","slug":"ready","data":{"question":"Next"},"after":["cache"]},
+        {"op":"iset","slug":"program","data":{"charter":"fixture charter"},"members":["cache","ready"]},
         {"op":"regime","contract":"new fixture protocol","reason":"new fixture","metrics":[{"key":"elapsed","unit":"s","better":"lower","kpi":true}]}
     ]}))?;
     for detail in ["concise", "full"] {
         let mut calls = Vec::new();
         for view in [
             "summary",
-            "hypotheses",
-            "reviews",
+            "isets",
             "trials",
             "baselines",
             "regimes",
+            "schemas",
             "findings",
             "frontiers",
         ] {
@@ -160,15 +173,12 @@ fn porcelain_cells_are_not_json() -> Result {
                 "frontier.status",
                 json!({"scope":"project","filter":{"text":"fixture"},"detail":detail}),
             ),
-            (
-                "hypothesis.read",
-                json!({"hypothesis":"cache","detail":detail}),
-            ),
-            (
-                "hypothesis.read",
-                json!({"hypothesis":"ready","detail":detail}),
-            ),
-            ("review.read", json!({"review":"program","detail":detail})),
+            ("record.read", json!({"work":"cache","detail":detail})),
+            ("record.read", json!({"work":"cache#1","detail":detail})),
+            ("record.read", json!({"work":"program","detail":detail})),
+            ("record.read", json!({"baseline":"initial","detail":detail})),
+            ("schema.read", json!({"schema":"question","detail":detail})),
+            ("schema.read", json!({"detail":detail})),
             ("frontier.history", json!({"detail":detail})),
             ("system.health", json!({"detail":detail})),
         ]);
@@ -188,8 +198,20 @@ fn porcelain_cells_are_not_json() -> Result {
                     "{name}: {text}"
                 );
             }
-            for line in text.lines().filter(|line| line.contains(" | ")) {
-                for cell in line.split(" | ") {
+            let mut header: Option<Vec<&str>> = None;
+            for line in text.lines() {
+                if !line.contains(" | ") {
+                    header = None;
+                    continue;
+                }
+                let Some(columns) = &header else {
+                    header = Some(line.split(" | ").collect());
+                    continue;
+                };
+                for (column, cell) in columns.iter().zip(line.split(" | ")) {
+                    if matches!(*column, "data" | "answer") {
+                        continue;
+                    }
                     if let Ok(value) = serde_json::from_str::<Value>(cell.trim()) {
                         assert!(!value.is_array() && !value.is_object(), "{name}: {line}");
                     }
@@ -209,38 +231,39 @@ fn mcp_inquiry_session() -> Result {
         {"op":"frontier","objective":"Reduce latency without changing behavior"},
         {"op":"regime","contract":"one worker; fixed cases","metrics":[{"key":"elapsed","unit":"ms","better":"lower","kpi":true}]},
         {"op":"baseline","slug":"initial","readings":{"elapsed":10}},
-        {"op":"accept","baseline":"initial","rationale":"Measured starting point"}
+        {"op":"elect","baseline":"initial","rationale":"Measured starting point"}
     ]}))?;
     assert_eq!(receipt["seq"], 1);
     let patched=session.json("frontier.patch",json!({"frontier":"latency","ops":[
-        {"op":"hypothesis","slug":"parse.cache","title":"Cache parsing","claim":"Reduce repeated work"},
-        {"op":"trial","hypothesis":"parse.cache","note":"Identical outputs; 20% faster","readings":{"elapsed":8}},
-        {"op":"hypothesis","slug":"discarded","title":"Secret removed title"},
-        {"op":"rename","hypothesis":"discarded","to":"renamed"},
-        {"op":"remove","hypothesis":"renamed"},
-        {"op":"hypothesis","slug":"renamed","title":"A distinct record"}
+        {"op":"iset","slug":"parse.cache","data":{"title":"Cache parsing"}},
+        {"op":"plan","into":["parse.cache"]},
+        {"op":"report","trial":"parse.cache#1","readings":{"elapsed":8},"data":{"note":"Identical outputs; 20% faster"}},
+        {"op":"iset","slug":"discarded","data":{"title":"Secret removed title"}},
+        {"op":"rename","work":"discarded","to":"renamed"},
+        {"op":"remove","work":"renamed"},
+        {"op":"iset","slug":"renamed","data":{"title":"A distinct record"}}
     ]}))?;
-    assert_eq!(patched["changes"]["tested"]["after"], 1);
+    assert_eq!(patched["changes"]["iset tested"]["after"], 1);
+    assert_eq!(patched["created"][1]["trial"], "parse.cache#1");
+    let refused = session.call(
+        "frontier.patch",
+        json!({"frontier":"latency","ops":[{"op":"judge","iset":"parse.cache","answer":{},"seen":1}]}),
+    )?;
+    assert_eq!(refused["isError"], true);
     let status = session.json("frontier.status", json!({}))?;
     assert_eq!(status["frontier"], "latency");
-    assert_eq!(status["counts"]["tested"], 1);
+    assert_eq!(status["counts"]["isets"]["tested"], 1);
     assert_eq!(status["incumbent_baseline"]["slug"], "initial");
     let packet = session.json(
-        "hypothesis.read",
-        json!({"hypothesis":"parse.cache","sections":["trials"]}),
+        "record.read",
+        json!({"work":"parse.cache#1","sections":["report"]}),
     )?;
-    assert_eq!(
-        packet["trials"]["items"][0]["comparisons"]["elapsed"]["ratio"],
-        0.8
-    );
+    assert_eq!(packet["report"]["comparisons"]["elapsed"]["ratio"], 0.8);
     let history = session.json("frontier.history", json!({"seq":2,"detail":"full"}))?;
     assert!(!history.to_string().contains("Secret removed title"));
-    assert_eq!(
-        history["items"][2],
-        json!({"op":"hypothesis","kind":"hypothesis"})
-    );
-    assert_eq!(history["items"][5]["title"], "A distinct record");
-    let page = session.json("frontier.status", json!({"view":"hypotheses","limit":1}))?;
+    assert_eq!(history["items"][3], json!({"op":"iset","kind":"iset"}));
+    assert_eq!(history["items"][6]["data"]["title"], "A distinct record");
+    let page = session.json("frontier.status", json!({"view":"isets","limit":1}))?;
     let cursor = page["next_cursor"]
         .as_str()
         .ok_or("missing status cursor")?;
@@ -250,11 +273,11 @@ fn mcp_inquiry_session() -> Result {
         .ok_or("missing history cursor")?;
     session.json(
         "frontier.patch",
-        json!({"frontier":"latency","ops":[{"op":"remove","hypothesis":"renamed"}]}),
+        json!({"frontier":"latency","ops":[{"op":"remove","work":"renamed"}]}),
     )?;
     let stale = session.call(
         "frontier.status",
-        json!({"view":"hypotheses","limit":1,"cursor":cursor}),
+        json!({"view":"isets","limit":1,"cursor":cursor}),
     )?;
     assert_eq!(stale["isError"], true);
     assert!(
@@ -270,10 +293,14 @@ fn mcp_inquiry_session() -> Result {
     session.json("frontier.patch",json!({"frontier":"latency","ops":[{"op":"conclude","lesson":"Cache parsing avoids repeated work"}]}))?;
     let search = session.json(
         "frontier.status",
-        json!({"scope":"project","filter":{"text":"Cache"}}),
+        json!({"scope":"project","filter":{"text":"Cache parsing"}}),
     )?;
-    assert_eq!(search["items"][0]["frontier"], "latency");
-    assert_eq!(search["items"][0]["record"], "parse.cache");
+    let rows = search["items"].as_array().ok_or("missing search rows")?;
+    assert!(
+        rows.iter()
+            .any(|row| row["frontier"] == "latency" && row["record"] == "parse.cache"),
+        "{search}"
+    );
     Ok(())
 }
 
@@ -281,29 +308,21 @@ fn mcp_inquiry_session() -> Result {
 fn timestamped_jsonl_import() -> Result {
     let cell = TestCell::new("spinner-import")?;
     let file = cell.join("patches.jsonl");
+    let path = file.to_str().ok_or("non-UTF-8 path")?;
     std::fs::write(
         &file,
         concat!(
             "{\"at\":\"2025-01-01T00:00:00Z\",\"ops\":[{\"op\":\"frontier\",\"objective\":\"Synthetic inquiry\"}]}\n",
-            "{\"at\":\"2025-01-02T00:00:00Z\",\"ops\":[{\"op\":\"hypothesis\",\"slug\":\"cache\",\"title\":\"Cache\"}]}\n",
+            "{\"at\":\"2025-01-02T00:00:00Z\",\"ops\":[{\"op\":\"iset\",\"slug\":\"cache\"}]}\n",
         ),
     )?;
-    let import = || {
-        Command::new(env!("CARGO_BIN_EXE_fidget-spinner"))
-            .args(["import", "--frontier", "imported"])
-            .arg(&file)
-            .env("XDG_STATE_HOME", cell.path())
-            .current_dir(cell.path())
-            .output()
-    };
-    let output = import()?;
+    let output = cli(&cell, &["import", "--frontier", "imported", path])?;
     assert!(
         output.status.success(),
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
-    let path = cell.join("fidget-spinner/ledger.sqlite3");
-    let store = fidget_spinner::store::open(&path)?;
+    let store = fidget_spinner::store::open(&cell.join("fidget-spinner/ledger.sqlite3"))?;
     let address = fidget_spinner::store::Address {
         project: fidget_spinner::store::project_root(cell.path())?,
         slug: "imported".parse()?,
@@ -316,20 +335,116 @@ fn timestamped_jsonl_import() -> Result {
         0,
         20,
     )?;
-    assert_eq!(history.len(), 2);
-    assert_eq!(
-        history[0]
-            .at
-            .format(&time::format_description::well_known::Rfc3339)?,
-        "2025-01-02T00:00:00Z"
+    let times = history
+        .iter()
+        .map(|entry| {
+            entry
+                .at
+                .format(&time::format_description::well_known::Rfc3339)
+        })
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    assert_eq!(times, ["2025-01-02T00:00:00Z", "2025-01-01T00:00:00Z"]);
+    assert_eq!(ledger.state().work().len(), 1);
+    assert!(
+        !cli(&cell, &["import", "--frontier", "imported", path])?
+            .status
+            .success()
     );
-    assert_eq!(
-        history[1]
-            .at
-            .format(&time::format_description::well_known::Rfc3339)?,
-        "2025-01-01T00:00:00Z"
+    std::fs::write(
+        &file,
+        "{\"at\":\"2025-01-01T00:00:00Z\",\"ops\":[{\"op\":\"frontier\",\"objective\":\"o\",\"legacy_through\":1}]}\n",
+    )?;
+    assert!(
+        !cli(&cell, &["import", "--frontier", "forged", path])?
+            .status
+            .success()
     );
-    assert_eq!(ledger.state().hypotheses().len(), 1);
-    assert!(!import()?.status.success());
+    Ok(())
+}
+
+/// A format-21 store holding one FS 3 frontier.
+fn fs3_store(cell: &TestCell, patches: &[Value]) -> Result<Connection> {
+    let path = cell.join("fidget-spinner/ledger.sqlite3");
+    std::fs::create_dir_all(path.parent().ok_or("store path has no parent")?)?;
+    let connection = Connection::open(&path)?;
+    connection.execute_batch(
+        "CREATE TABLE frontiers (id INTEGER PRIMARY KEY, project TEXT NOT NULL, slug TEXT NOT NULL, UNIQUE(project,slug));
+         CREATE TABLE patches (seq INTEGER PRIMARY KEY, frontier_id INTEGER NOT NULL REFERENCES frontiers(id), at TEXT NOT NULL, ops TEXT NOT NULL);
+         CREATE INDEX patches_frontier_seq ON patches(frontier_id,seq);
+         PRAGMA user_version = 21;",
+    )?;
+    let project = fidget_spinner::store::project_root(cell.path())?;
+    connection.execute(
+        "INSERT INTO frontiers VALUES (1, ?1, 'legacy')",
+        [project.as_path().to_str().ok_or("non-UTF-8 project")?],
+    )?;
+    for (seq, patch) in (1_i64..).zip(patches) {
+        connection.execute(
+            "INSERT INTO patches VALUES (?1, 1, ?2, ?3)",
+            params![seq, format!("2026-01-0{seq}T00:00:00Z"), patch.to_string()],
+        )?;
+    }
+    Ok(connection)
+}
+
+fn version(connection: &Connection) -> Result<i64> {
+    Ok(connection.query_row("PRAGMA user_version", [], |row| row.get(0))?)
+}
+
+#[test]
+fn fs3_store_migrates_in_place() -> Result {
+    let legacy = [
+        json!([
+            {"op":"frontier","objective":"legacy"},
+            {"op":"hypothesis","slug":"h","title":"H","claim":"c"},
+            {"op":"trial","hypothesis":"h","note":"first"},
+            {"op":"accept","hypothesis":"h","rationale":"held"}
+        ]),
+        json!([
+            {"op":"trial","hypothesis":"h","note":"second"},
+            {"op":"reject","hypothesis":"h","rationale":"overturned"}
+        ]),
+    ];
+    let cell = TestCell::new("spinner-fs3")?;
+    let connection = fs3_store(&cell, &legacy)?;
+    let output = cli(
+        &cell,
+        &[
+            "read",
+            "--frontier",
+            "legacy",
+            "--work",
+            "h",
+            "--render",
+            "json",
+        ],
+    )?;
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let packet: Value = serde_json::from_slice(&output.stdout)?;
+    assert_eq!(version(&connection)?, 22);
+    assert!(
+        packet["head"]["schema"]
+            .as_str()
+            .is_some_and(|s| s.starts_with("fs3.hypothesis@"))
+    );
+    assert_eq!(packet["judgment"]["answer"]["disposition"], "rejected");
+    assert_eq!(packet["judgment"]["superseded"]["total"], 1);
+    assert_eq!(packet["members"]["total"], 2);
+    // An FS 3 operation the migration does not know refuses it whole.
+    let cell = TestCell::new("spinner-fs3-refused")?;
+    let mut refused = legacy.to_vec();
+    refused.push(json!([{"op":"waive","finding":"unbacked/h","note":"n"}]));
+    let connection = fs3_store(&cell, &refused)?;
+    let output = cli(&cell, &["status", "--frontier", "legacy"])?;
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("FS 3 patch 3"));
+    assert_eq!(version(&connection)?, 21);
+    let first: String =
+        connection.query_row("SELECT ops FROM patches WHERE seq=1", [], |row| row.get(0))?;
+    assert_eq!(serde_json::from_str::<Value>(&first)?, legacy[0]);
     Ok(())
 }

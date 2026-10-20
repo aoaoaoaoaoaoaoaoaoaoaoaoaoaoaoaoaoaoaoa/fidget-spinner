@@ -1,19 +1,28 @@
+//! Porcelain: the model-facing text rendering of tool projections.
+
 use serde_json::{Map, Value};
 use std::fmt::Write as _;
 
-/// Raw operations preserve explicit empty assignments; projections omit absence.
+/// Keys holding FS data. Projections keep data exactly, and porcelain renders
+/// it as compact JSON with references as `@kind:name` atoms.
+const DATA: [&str; 2] = ["data", "answer"];
+
+/// Raw operations and data preserve explicit empty values; projections omit absence.
 pub fn project(value: Value) -> Result<Value, serde_json::Error> {
-    Ok(clean(value)?.unwrap_or_else(|| Value::Object(Map::new())))
+    Ok(clean(value, "")?.unwrap_or_else(|| Value::Object(Map::new())))
 }
 
-fn clean(value: Value) -> Result<Option<Value>, serde_json::Error> {
+fn clean(value: Value, key: &str) -> Result<Option<Value>, serde_json::Error> {
+    if DATA.contains(&key) {
+        return Ok(Some(value));
+    }
     Ok(match value {
         Value::Null => None,
         Value::Object(fields) if fields.contains_key("op") => Some(Value::Object(fields)),
         Value::Object(fields) => {
             let mut present = Map::new();
             for (key, value) in fields {
-                if let Some(value) = clean(value)? {
+                if let Some(value) = clean(value, &key)? {
                     present.insert(key, value);
                 }
             }
@@ -22,7 +31,7 @@ fn clean(value: Value) -> Result<Option<Value>, serde_json::Error> {
         Value::Array(values) => {
             let mut present = Vec::new();
             for value in values {
-                if let Some(value) = clean(value)? {
+                if let Some(value) = clean(value, key)? {
                     present.push(value);
                 }
             }
@@ -46,25 +55,26 @@ pub fn render(value: &Value) -> String {
             value.get("scope_total").unwrap_or(&Value::from(0))
         ));
     }
-    mark_trials(&mut value);
     let context: Map<_, _> = ["frontier", "project"]
         .iter()
         .filter_map(|key| value.get(*key).map(|v| ((*key).to_owned(), v.clone())))
         .collect();
     implied_routes(&mut value, &context);
     let value = thin(value, "").unwrap_or_else(|| Value::Object(Map::new()));
-    if value.as_object().is_some_and(|fields| {
+    let bare = value.as_object().is_some_and(|fields| {
         fields.contains_key("frontier")
             && fields.contains_key("seq")
             && fields
                 .keys()
                 .all(|key| matches!(key.as_str(), "frontier" | "seq" | "project"))
-    }) || value.get("created").is_some()
-        || value.get("changes").is_some()
+    });
+    if bare
         || value["rehearsed"] == true
-        || value.get("warnings").is_some()
-        || value.get("raised").is_some()
-        || value.get("cleared").is_some()
+        || [
+            "created", "changes", "warnings", "raised", "cleared", "ready", "voided",
+        ]
+        .iter()
+        .any(|key| value.get(*key).is_some())
     {
         return receipt(&value);
     }
@@ -101,9 +111,15 @@ fn field(out: &mut String, key: &str, value: &Value) {
     {
         let _ = write!(out, "incumbent baseline {}", scalar(&value["slug"]));
         for (key, value) in fields.iter().filter(|(key, _)| key.as_str() != "slug") {
-            let _ = write!(out, " · {key} {}", scalar(value));
+            let _ = write!(out, " · {key} {}", cell(key, value));
         }
         routes(out, value);
+        return;
+    }
+    if key == "grammar"
+        && let Some(text) = value.as_str()
+    {
+        let _ = write!(out, "grammar:\n{text}");
         return;
     }
     if key == "matches" {
@@ -124,7 +140,9 @@ fn field(out: &mut String, key: &str, value: &Value) {
         );
         return;
     }
-    if let Some(page) = value.as_object() {
+    if !DATA.contains(&key)
+        && let Some(page) = value.as_object()
+    {
         if let Some(rows) = page.get("items").and_then(Value::as_array) {
             table(out, key, rows, page);
             return;
@@ -138,7 +156,7 @@ fn field(out: &mut String, key: &str, value: &Value) {
             return;
         }
     }
-    let _ = write!(out, "{key}: {}", scalar(value));
+    let _ = write!(out, "{key}: {}", cell(key, value));
     routes(out, value);
 }
 fn table(out: &mut String, key: &str, rows: &[Value], page: &Map<String, Value>) {
@@ -163,20 +181,6 @@ fn table(out: &mut String, key: &str, rows: &[Value], page: &Map<String, Value>)
             }
         }
     }
-    if key == "members" && columns.iter().any(|name| name == "slug") {
-        for name in ["disposition", "rationale"] {
-            if !columns.iter().any(|column| column == name) {
-                columns.push(name.into());
-            }
-        }
-    }
-    if rows
-        .first()
-        .is_some_and(|row| row.get("statement").is_some())
-        && !columns.iter().any(|name| name == "waiver")
-    {
-        columns.push("waiver".into());
-    }
     if !columns.is_empty() {
         let _ = write!(out, "\n{}", columns.join(" | "));
     }
@@ -184,7 +188,7 @@ fn table(out: &mut String, key: &str, rows: &[Value], page: &Map<String, Value>)
         let line = if let Some(row) = row.as_object() {
             columns
                 .iter()
-                .map(|name| row.get(name).map_or_else(|| "—".into(), scalar))
+                .map(|name| row.get(name).map_or_else(|| "—".into(), |v| cell(name, v)))
                 .collect::<Vec<_>>()
                 .join(" | ")
         } else {
@@ -287,28 +291,11 @@ fn implied_routes(value: &mut Value, context: &Map<String, Value>) {
         _ => {}
     }
 }
-fn mark_trials(value: &mut Value) {
-    match value {
-        Value::Object(fields) => {
-            if let Some(regime) = fields.shift_remove("trials_regime")
-                && let Some(trials) = fields.get_mut("trials")
-            {
-                *trials = Value::String(format!("{} (regime {})", scalar(trials), scalar(&regime)));
-            }
-            for value in fields.values_mut() {
-                mark_trials(value);
-            }
-        }
-        Value::Array(values) => {
-            for value in values {
-                mark_trials(value);
-            }
-        }
-        _ => {}
-    }
-}
 
 fn thin(value: Value, key: &str) -> Option<Value> {
+    if DATA.contains(&key) {
+        return Some(value);
+    }
     match value {
         Value::Object(fields) if fields.contains_key("op") => Some(Value::Object(fields)),
         Value::Object(fields) => {
@@ -366,16 +353,15 @@ fn receipt(value: &Value) -> String {
     if let Some(project) = value.get("project") {
         let _ = write!(out, " · project {}", scalar(project));
     }
-    if let Some(warnings) = value["warnings"]["items"].as_array() {
-        for warning in warnings {
-            let mut warning = warning.clone();
-            let index = warning
-                .as_object_mut()
-                .and_then(|w| w.shift_remove("index"));
-            if let Some(index) = index {
-                let _ = write!(out, "\nop {}: {}", scalar(&index), porcelain(&warning));
-            }
-        }
+    for warning in value["warnings"]["items"].as_array().into_iter().flatten() {
+        let text = |key: &str| warning[key].as_str().unwrap_or_default().replace('\n', " ");
+        let _ = write!(
+            out,
+            "\nop {}: {}: {}",
+            scalar(&warning["index"]),
+            text("subject"),
+            text("message")
+        );
     }
     if let Some(created) = value.get("created") {
         let _ = write!(out, "\ncreated: {}", scalar(created));
@@ -403,6 +389,18 @@ fn receipt(value: &Value) -> String {
             out.push_str(&line);
         }
     }
+    if let Some(ready) = value.get("ready") {
+        let _ = write!(out, "\nready: {}", scalar(ready));
+    }
+    for voided in value["voided"].as_array().into_iter().flatten() {
+        let _ = write!(out, "\nvoided {}", scalar(&voided["void"]));
+        if let Some(consumers) = voided.get("consumers") {
+            let _ = write!(out, " · rests on it: {}", scalar(consumers));
+        }
+        if let Some(waiting) = voided.get("waiting") {
+            let _ = write!(out, " · waiting on it: {}", scalar(waiting));
+        }
+    }
     out
 }
 
@@ -420,11 +418,6 @@ fn atom(fields: &Map<String, Value>) -> Option<String> {
     {
         return None;
     }
-    if let (Some(settled), Some(total)) = (fields.get("settled"), fields.get("total"))
-        && fields.len() == 2
-    {
-        return Some(format!("settled {settled}/{total}"));
-    }
     if fields.len() == 2
         && let (Some(value), Some(unit)) = (fields.get("value"), fields.get("unit"))
     {
@@ -439,7 +432,7 @@ fn atom(fields: &Map<String, Value>) -> Option<String> {
         return Some(
             fields
                 .iter()
-                .map(|(key, value)| format!("{key} {}", scalar(value)))
+                .map(|(key, value)| format!("{key} {}", cell(key, value)))
                 .collect::<Vec<_>>()
                 .join(" · "),
         );
@@ -489,6 +482,48 @@ fn atom(fields: &Map<String, Value>) -> Option<String> {
     None
 }
 
+/// A value under its key: data compactly, anything else as a scalar.
+fn cell(key: &str, value: &Value) -> String {
+    if DATA.contains(&key) {
+        compact(value).replace('|', "\\u007c")
+    } else {
+        scalar(value)
+    }
+}
+
+/// Compact JSON with references as `@kind:name`, or `@kind:-` once removed.
+fn compact(value: &Value) -> String {
+    match value {
+        Value::Object(fields) => {
+            if fields.get("$fs").and_then(Value::as_str) == Some("ref") {
+                let kind = fields
+                    .get("kind")
+                    .and_then(Value::as_str)
+                    .unwrap_or("record");
+                let id = fields.get("id").and_then(Value::as_str).unwrap_or("-");
+                return format!("@{kind}:{id}");
+            }
+            if let (Some(Value::String(preview)), Some(route)) =
+                (fields.get("preview"), fields.get("full_read"))
+                && route.get("tool").is_some()
+            {
+                return format!("{preview}…");
+            }
+            let body = fields
+                .iter()
+                .map(|(key, value)| format!("{}:{}", Value::String(key.clone()), compact(value)))
+                .collect::<Vec<_>>()
+                .join(",");
+            format!("{{{body}}}")
+        }
+        Value::Array(items) => format!(
+            "[{}]",
+            items.iter().map(compact).collect::<Vec<_>>().join(",")
+        ),
+        value => value.to_string(),
+    }
+}
+
 fn scalar(value: &Value) -> String {
     match value {
         Value::Null => "null".into(),
@@ -502,7 +537,7 @@ fn scalar(value: &Value) -> String {
                     text.as_str(),
                     "null" | "true" | "false" | "—" | "empty list" | "empty object"
                 )
-                || text.starts_with(['[', '{', '"'])
+                || text.starts_with(['[', '{', '"', '@'])
                 || text.contains([';', '·', '\\', '\n', '\r']);
             if ambiguous {
                 Value::String(text.clone())
@@ -523,6 +558,9 @@ fn scalar(value: &Value) -> String {
             if fields.is_empty() {
                 return "empty object".into();
             }
+            if fields.get("$fs").and_then(Value::as_str) == Some("ref") {
+                return compact(value);
+            }
             if let Some(preview) = fields.get("preview") {
                 return format!("{}…", scalar(preview));
             }
@@ -539,12 +577,18 @@ fn scalar(value: &Value) -> String {
                     .unwrap_or_default();
                 return format!("{} {arguments}", scalar(tool));
             }
+            // Groups of fields separate with semicolons, fields within a group with dots.
+            let separator = if fields.values().any(Value::is_object) {
+                "; "
+            } else {
+                " · "
+            };
             atom(fields).unwrap_or_else(|| {
                 fields
                     .iter()
-                    .map(|(key, value)| format!("{key} {}", scalar(value)))
+                    .map(|(key, value)| format!("{key} {}", cell(key, value)))
                     .collect::<Vec<_>>()
-                    .join(" · ")
+                    .join(separator)
             })
         }
         _ => value.to_string(),

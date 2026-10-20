@@ -1,12 +1,15 @@
-//! KPI charts: incumbent baselines as steps across epochs, trials as dots
-//! coloured by livery, reference lines dashed.
-use super::{A, C, Livery, Selection, T, record, url};
-use crate::{inspect::stamp, mcp::Fault};
+//! KPI charts: elected baselines as steps across epochs, reported trials as
+//! dots, reference lines dashed.
+
+use std::{collections::BTreeMap, fmt::Write as _};
+
 use fidget_spinner_core::{
-    Assay, Direction, Frontier, MetricKey, Reading, RecordedReadings, RegimeNumber, Unit,
+    Direction, Frontier, MetricKey, Reading, RecordedReadings, RegimeNumber, Unit,
 };
-use std::fmt::Write as _;
 use time::OffsetDateTime;
+
+use super::{A, C, T, anchor};
+use crate::{inspect::stamp, mcp::Fault};
 
 const WIDTH: f64 = 340.0;
 const HEIGHT: f64 = 118.0;
@@ -47,18 +50,16 @@ struct Point {
 /// unlisted, absent from its gauge, or of another quantity.
 fn value(
     f: &Frontier,
-    regime: RegimeNumber,
+    regime: Option<RegimeNumber>,
     key: &MetricKey,
     readings: &RecordedReadings,
     unit: &Unit,
 ) -> Result<Option<f64>, Fault> {
-    let Some(Reading::Listed { value }) = readings.get(key) else {
+    let Some(Reading::Listed(value)) = readings.get(key) else {
         return Ok(None);
     };
-    let Some(metric) = f
-        .regimes()
-        .iter()
-        .find(|r| r.number == regime)
+    let Some(metric) = regime
+        .and_then(|r| f.regime(r))
         .and_then(|r| r.gauge.metrics.get(key))
     else {
         return Ok(None);
@@ -108,9 +109,12 @@ fn day(at: OffsetDateTime) -> String {
     let at = at.to_offset(time::UtcOffset::UTC);
     format!("{:02}-{:02}", u8::from(at.month()), at.day())
 }
+fn baseline_name(f: &Frontier, id: fidget_spinner_core::Id) -> String {
+    f.name_of(id).unwrap_or_else(|| "removed baseline".into())
+}
 
 /// One tile per KPI of the current regime.
-pub(super) fn charts(f: &Frontier, a: &Assay, s: &Selection) -> Result<Vec<C>, Fault> {
+pub(super) fn charts(f: &Frontier, url: &str) -> Result<Vec<C>, Fault> {
     let Some(regime) = f.current_regime() else {
         return Ok(Vec::new());
     };
@@ -123,21 +127,18 @@ pub(super) fn charts(f: &Frontier, a: &Assay, s: &Selection) -> Result<Vec<C>, F
     {
         let unit = &metric.unit;
         let mut baselines = Vec::new();
-        for epoch in f.epochs() {
-            if let Some(b) = f
-                .baselines()
-                .get(&epoch.baseline)
-                .filter(|b| b.void.is_none())
+        for e in f.elections() {
+            if let Some(b) = f.baselines().get(&e.baseline).filter(|b| b.void.is_none())
                 && let Some(value) = value(f, b.regime, key, &b.readings, unit)?
             {
                 baselines.push(Point {
-                    at: epoch.at,
+                    at: e.at.time,
                     value,
-                    record: record("baseline", &epoch.baseline).to_string(),
+                    record: anchor("baseline", e.baseline).to_string(),
                     title: format!(
                         "Epoch of {} · since {} · {} {unit}",
-                        epoch.baseline,
-                        stamp(epoch.at, false),
+                        b.slug,
+                        stamp(e.at.time, false),
                         significant(value),
                     ),
                     class: "baseline",
@@ -145,28 +146,26 @@ pub(super) fn charts(f: &Frontier, a: &Assay, s: &Selection) -> Result<Vec<C>, F
             }
         }
         let mut trials = Vec::new();
-        for (slug, h) in f.hypotheses() {
-            let livery = Livery::of(h, a.hypotheses[slug]);
-            for (n, t) in h.trials.iter().filter(|(_, t)| t.void.is_none()) {
-                if let Some(value) = value(f, t.regime, key, &t.readings, unit)? {
-                    trials.push(Point {
-                        at: t.at,
-                        value,
-                        record: format!("trial.{slug}.{n}"),
-                        title: format!(
-                            "{slug}#{n} · {} · {} {unit}",
-                            livery.name(),
-                            significant(value)
-                        ),
-                        class: livery.name(),
-                    });
-                }
+        for (id, work) in f.work().iter().filter(|(_, w)| w.void.is_none()) {
+            let Some(trial) = work.trial() else {
+                continue;
+            };
+            let Some(report) = &trial.report else {
+                continue;
+            };
+            if let Some(value) = value(f, trial.regime, key, &report.readings, unit)? {
+                trials.push(Point {
+                    at: report.at.time,
+                    value,
+                    record: anchor("work", *id).to_string(),
+                    title: format!("{} · {} {unit}", work.name, significant(value)),
+                    class: "reported",
+                });
             }
         }
-        let incumbent = a
-            .incumbent_baseline
-            .as_ref()
-            .and_then(|slug| f.baselines().get(slug))
+        let incumbent = f
+            .incumbent()
+            .and_then(|(_, id)| f.baselines().get(&id))
             .and_then(|b| value(f, b.regime, key, &b.readings, unit).transpose())
             .transpose()?;
         let (arrow, better) = match metric.better {
@@ -203,7 +202,7 @@ pub(super) fn charts(f: &Frontier, a: &Assay, s: &Selection) -> Result<Vec<C>, F
         let mut tile = vec![C::classed(T::Div, "head", head)];
         // One reading has no history to draw.
         if baselines.len() + trials.len() > 1 {
-            tile.push(plot(f, s, &baselines, &trials, &metric.refs, unit));
+            tile.push(plot(f, url, &baselines, &trials, &metric.refs, unit));
         } else {
             let mut notes = metric
                 .refs
@@ -222,10 +221,10 @@ pub(super) fn charts(f: &Frontier, a: &Assay, s: &Selection) -> Result<Vec<C>, F
 
 fn plot(
     f: &Frontier,
-    s: &Selection,
+    url: &str,
     baselines: &[Point],
     trials: &[Point],
-    refs: &std::collections::BTreeMap<String, f64>,
+    refs: &BTreeMap<String, f64>,
     unit: &Unit,
 ) -> C {
     let points = || baselines.iter().chain(trials);
@@ -275,8 +274,13 @@ fn plot(
         ));
     }
     let mut label_end = f64::NEG_INFINITY;
-    for epoch in f.epochs().iter().filter(|e| e.at >= first && e.at <= last) {
-        let at = x(epoch.at);
+    for e in f
+        .elections()
+        .iter()
+        .filter(|e| e.at.time >= first && e.at.time <= last)
+    {
+        let at = x(e.at.time);
+        let label = baseline_name(f, e.baseline);
         drawing.push(element(
             T::G,
             vec![(A::Class, "epoch".into())],
@@ -284,19 +288,11 @@ fn plot(
                 element(
                     T::Title,
                     Vec::new(),
-                    vec![
-                        format!(
-                            "Epoch of {} · since {}",
-                            epoch.baseline,
-                            stamp(epoch.at, false)
-                        )
-                        .into(),
-                    ],
+                    vec![format!("Epoch of {label} · since {}", stamp(e.at.time, false)).into()],
                 ),
                 rule("epoch", (at, TOP - 2.0), (at, HEIGHT - BOTTOM)),
             ],
         ));
-        let label = epoch.baseline.to_string();
         #[expect(
             clippy::cast_precision_loss,
             reason = "slug lengths are far below 2^52"
@@ -324,15 +320,15 @@ fn plot(
     let mut steps = String::new();
     for (index, b) in baselines.iter().enumerate() {
         let next = f
-            .epochs()
+            .elections()
             .iter()
-            .find(|epoch| epoch.at > b.at)
-            .map_or(last, |epoch| epoch.at.min(last));
+            .find(|e| e.at.time > b.at)
+            .map_or(last, |e| e.at.time.min(last));
         let break_at = f
             .regimes()
             .iter()
-            .filter(|r| r.bridge.is_none() && r.at > b.at && r.at <= next)
-            .map(|r| r.at)
+            .filter(|r| r.bridge.is_none() && r.at.time > b.at && r.at.time <= next)
+            .map(|r| r.at.time)
             .min();
         let end = break_at.unwrap_or(next).max(b.at);
         let _ = write!(steps, "M{:.1} {:.1}H{:.1}", x(b.at), y(b.value), x(end));
@@ -352,7 +348,7 @@ fn plot(
     for p in trials.iter().chain(baselines) {
         drawing.push(element(
             T::A,
-            vec![(A::Href, format!("{}#{}", url(s), p.record))],
+            vec![(A::Href, format!("{url}#{}", p.record))],
             vec![
                 element(T::Title, Vec::new(), vec![p.title.clone().into()]),
                 element(

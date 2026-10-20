@@ -1,241 +1,104 @@
-use std::collections::{BTreeMap, BTreeSet};
+//! History redaction. Operations naming a removed record keep only their
+//! operation name and the record's kind; data references to removed records
+//! render as removed. Redaction follows incarnations, not names: a rename keeps
+//! one, and a name reused after removal is another.
 
-use fidget_spinner_core::Op;
+use std::collections::BTreeMap;
+
+use fidget_spinner_core::{Frontier, Id, Op, Refusal, Removed, Stamp, Trace};
 use serde_json::{Value, json};
 use trebuchet::ledger::Entry;
 
-type Key = (&'static str, String);
-
-#[derive(Default)]
-struct Lineage {
-    live: BTreeMap<Key, usize>,
-    dead: BTreeSet<usize>,
-    trials: BTreeMap<usize, u64>,
-    next: usize,
-}
-
-impl Lineage {
-    fn key(&mut self, kind: &'static str, name: &str, create: bool) -> Option<usize> {
-        let key = (kind, name.to_owned());
-        if create && !self.live.contains_key(&key) {
-            let id = self.next;
-            self.next += 1;
-            self.live.insert(key.clone(), id);
-        }
-        self.live.get(&key).copied()
-    }
-
-    fn remove(&mut self, kind: &'static str, name: &str) {
-        if let Some(id) = self.live.remove(&(kind, name.to_owned())) {
-            self.dead.insert(id);
-        }
-        if kind == "hypothesis" {
-            let prefix = format!("{name}#");
-            let keys: Vec<_> = self
-                .live
-                .keys()
-                .filter(|(k, s)| *k == "trial" && s.starts_with(&prefix))
-                .cloned()
-                .collect();
-            for key in keys {
-                if let Some(id) = self.live.remove(&key) {
-                    self.dead.insert(id);
-                }
-            }
-        }
-    }
-
-    fn rename(&mut self, kind: &'static str, from: &str, to: &str) {
-        if let Some(id) = self.live.remove(&(kind, from.to_owned())) {
-            self.live.insert((kind, to.to_owned()), id);
-        }
-        if kind == "hypothesis" {
-            let prefix = format!("{from}#");
-            let keys: Vec<_> = self
-                .live
-                .keys()
-                .filter(|(k, s)| *k == "trial" && s.starts_with(&prefix))
-                .cloned()
-                .collect();
-            for key in keys {
-                if let Some(id) = self.live.remove(&key) {
-                    let suffix = &key.1[from.len()..];
-                    self.live.insert(("trial", format!("{to}{suffix}")), id);
-                }
-            }
-        }
-    }
-
-    fn operation(&mut self, op: &Value) -> Vec<(usize, &'static str)> {
-        let name = op["op"].as_str().unwrap_or_default();
-        let mut refs = Vec::new();
-        for kind in ["hypothesis", "review", "baseline", "trial"] {
-            if let Some(slug) = op[kind].as_str()
-                && let Some(id) = self.key(kind, slug, false)
-            {
-                refs.push((id, kind));
-            }
-        }
-        let creation = match name {
-            "hypothesis" | "review" | "baseline" => Some(name),
-            _ => None,
-        };
-        if let Some(kind) = creation {
-            let kind = match kind {
-                "hypothesis" => "hypothesis",
-                "review" => "review",
-                _ => "baseline",
-            };
-            if let Some(slug) = op["slug"].as_str()
-                && let Some(id) = self.key(kind, slug, true)
-            {
-                refs.push((id, kind));
-            }
-        }
-        if name == "regime"
-            && let Some(slug) = op["bridge"]["slug"].as_str()
-            && let Some(id) = self.key("baseline", slug, true)
-        {
-            refs.push((id, "baseline"));
-        }
-        for (field, kind) in [
-            ("after", "hypothesis"),
-            ("adopts", "hypothesis"),
-            ("members", "hypothesis"),
-            ("add", "hypothesis"),
-            ("drop", "hypothesis"),
-            ("docket", "hypothesis"),
-            ("reviews", "review"),
-        ] {
-            if let Some(values) = op[field].as_array() {
-                for slug in values.iter().filter_map(Value::as_str) {
-                    if let Some(id) = self.key(kind, slug, false) {
-                        refs.push((id, kind));
-                    }
-                }
-            }
-        }
-        for (field, kind) in [
-            ("from", "hypothesis"),
-            ("to", "hypothesis"),
-            ("against", "baseline"),
-        ] {
-            if name != "rename"
-                && let Some(slug) = op[field].as_str()
-                && let Some(id) = self.key(kind, slug, false)
-            {
-                refs.push((id, kind));
-            }
-        }
-        if let Some(finding) = op["finding"].as_str() {
-            let mut parts = finding.split('/');
-            match parts.next() {
-                Some("unbacked") => {
-                    if let Some(slug) = parts.next()
-                        && let Some(id) = self.key("hypothesis", slug, false)
-                    {
-                        refs.push((id, "hypothesis"));
-                    }
-                }
-                Some("unread" | "unaccepted") => {
-                    if let Some(slug) = parts.next()
-                        && let Some(id) = self.key("baseline", slug, false)
-                    {
-                        refs.push((id, "baseline"));
-                    }
-                    if finding.starts_with("unaccepted/")
-                        && let Some(slug) = parts.next()
-                        && let Some(id) = self.key("hypothesis", slug, false)
-                    {
-                        refs.push((id, "hypothesis"));
-                    }
-                }
-                _ => {}
-            }
-        }
-        if name == "trial"
-            && let Some(h) = op["hypothesis"].as_str()
-            && let Some(id) = self.key("hypothesis", h, false)
-        {
-            let n = self.trials.entry(id).or_default();
-            *n += 1;
-            let slug = format!("{h}#{n}");
-            if let Some(id) = self.key("trial", &slug, true) {
-                refs.push((id, "trial"));
-            }
-        }
-        if name == "remove" {
-            for kind in ["hypothesis", "review", "baseline", "trial"] {
-                if let Some(slug) = op[kind].as_str() {
-                    self.remove(kind, slug);
-                }
-            }
-        }
-        if name == "rename"
-            && let Some(to) = op["to"].as_str()
-        {
-            for kind in ["hypothesis", "review", "baseline"] {
-                if let Some(from) = op[kind].as_str() {
-                    self.rename(kind, from, to);
-                }
-            }
-        }
-        refs
-    }
-}
-
-/// Redaction follows record lifetimes, not slugs: rename keeps a lifetime, while
-/// removal and recreation create distinct ones. Current removal also applies
-/// to history continued from an older snapshot.
-pub fn redacted(entries: &[Entry<Op>]) -> Result<BTreeMap<i64, Vec<Value>>, serde_json::Error> {
-    let mut lineage = Lineage::default();
-    let mut operations = Vec::new();
+/// Replay newest-first `entries` from the frontier's first patch and redact
+/// each operation against the final state's removals.
+pub fn redacted(entries: &[Entry<Op>]) -> Result<BTreeMap<i64, Vec<Value>>, Refusal> {
+    let mut frontier = Frontier::default();
+    let mut traced = Vec::with_capacity(entries.len());
     for entry in entries.iter().rev() {
-        let mut rows = Vec::new();
-        for op in &entry.ops {
-            let value = serde_json::to_value(op)?;
-            let refs = lineage.operation(&value);
-            rows.push((value, refs));
-        }
-        operations.push((entry.seq, rows));
+        let stamp = Stamp {
+            seq: entry.seq,
+            time: entry.at,
+        };
+        traced.push((entry, frontier.trace(&entry.ops, stamp)?));
     }
-    Ok(operations
+    let removed = frontier.removed();
+    Ok(traced
         .into_iter()
-        .map(|(seq, rows)| {
-            (
-                seq,
-                rows.into_iter()
-                    .map(|(op, refs)| {
-                        if let Some((_, kind)) =
-                            refs.iter().find(|(id, _)| lineage.dead.contains(id))
-                        {
-                            json!({"op":op["op"],"kind":kind})
-                        } else {
-                            op
-                        }
-                    })
-                    .collect(),
-            )
+        .map(|(entry, traces)| {
+            let ops = entry
+                .ops
+                .iter()
+                .zip(traces)
+                .map(|(op, trace)| redact(op, &trace, removed))
+                .collect();
+            (entry.seq, ops)
         })
         .collect())
 }
 
-pub fn targets(op: &Value) -> Value {
-    if op.get("kind").is_some() {
-        return json!({"op":op["op"],"kind":op["kind"]});
+fn redact(op: &Op, trace: &Trace, removed: &BTreeMap<Id, Removed>) -> Value {
+    let named = trace.named.iter().map(|(_, id)| id);
+    if let Some(gone) = trace
+        .created
+        .iter()
+        .chain(named)
+        .find_map(|id| removed.get(id))
+    {
+        return json!({"op": op.name(), "kind": gone.kind.as_str()});
     }
-    let mut target = json!({"op":op["op"]});
-    for field in [
-        "slug",
-        "hypothesis",
-        "review",
-        "baseline",
-        "trial",
-        "from",
-        "to",
-    ] {
-        if let Some(value) = op.get(field) {
-            target[field] = value.clone();
+    let mut raw = op.raw().clone();
+    let gone: Vec<&str> = trace
+        .refs
+        .iter()
+        .filter(|(_, id)| removed.contains_key(id))
+        .map(|(name, _)| name.as_str())
+        .collect();
+    if !gone.is_empty() {
+        unname(&mut raw, &gone);
+    }
+    raw
+}
+
+/// Render data references to removed records as removed, as reads do.
+fn unname(value: &mut Value, gone: &[&str]) {
+    match value {
+        Value::Object(fields) => {
+            if fields.get("$fs").and_then(Value::as_str) == Some("ref")
+                && fields.get("kind").and_then(Value::as_str) != Some("metric")
+                && fields
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .is_some_and(|id| gone.contains(&id))
+            {
+                fields.shift_remove("id");
+                fields.insert("removed".into(), Value::Bool(true));
+                return;
+            }
+            for value in fields.values_mut() {
+                unname(value, gone);
+            }
+        }
+        Value::Array(values) => {
+            for value in values {
+                unname(value, gone);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// A history row's summary of one operation: its name and the fields that
+/// name its subject.
+pub fn targets(op: &Value) -> Value {
+    let mut target = json!({"op": op["op"]});
+    let subjects: &[&str] = if op["op"] == "define" {
+        &["schema"]
+    } else {
+        &["kind", "slug", "work", "trial", "iset", "baseline", "to"]
+    };
+    for field in subjects {
+        if let Some(value) = op.get(*field).filter(|v| v.is_string()) {
+            target[*field] = value.clone();
         }
     }
     target

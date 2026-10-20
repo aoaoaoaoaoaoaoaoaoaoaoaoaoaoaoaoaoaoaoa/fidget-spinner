@@ -3,13 +3,15 @@
     reason = "The library target owns the server dependencies."
 )]
 
-use std::path::Path;
-
-use std::{io::Read as _, path::PathBuf, process::ExitCode};
+use std::{
+    io::Read as _,
+    path::{Path, PathBuf},
+    process::ExitCode,
+};
 
 use clap::{Args, Parser, Subcommand};
 use fidget_spinner::{
-    inspect::{DecisionName, Section, View},
+    inspect::{Section, StateName, View},
     mcp::{Fault, Server, Tool},
     store::{self, Address},
 };
@@ -19,7 +21,7 @@ use trebuchet::Slug;
 #[derive(Parser)]
 #[command(
     version,
-    about = "Frontier ledger, MCP server and command-line inspection"
+    about = "Inquiry ledger, MCP server and command-line inspection"
 )]
 struct Cli {
     #[command(subcommand)]
@@ -60,41 +62,30 @@ impl Window {
 }
 
 #[derive(Args)]
-struct Lens {
-    #[arg(long,conflicts_with_all=["review","docket","scope"])]
-    under: Option<Slug>,
-    #[arg(long,conflicts_with_all=["under","docket","scope"])]
-    review: Option<Slug>,
-    #[arg(long,conflicts_with_all=["under","review","scope"])]
-    docket: Option<Slug>,
-    #[arg(long,value_parser=["project"],conflicts_with_all=["under","review","docket"])]
+struct Selectors {
+    /// Search every frontier of the project; requires --text, or --view frontiers.
+    #[arg(long, value_parser = ["project"])]
     scope: Option<String>,
-    #[arg(long,value_delimiter=',',value_parser=["waiting","ready","running","tested","settled","completed"])]
-    state: Option<Vec<String>>,
+    /// Members of this iset at any depth.
+    #[arg(long)]
+    under: Option<String>,
+    #[arg(long)]
+    lane: Option<String>,
     #[arg(long, value_enum, value_delimiter = ',')]
-    disposition: Option<Vec<DecisionName>>,
+    state: Option<Vec<StateName>>,
     #[arg(long)]
     owner: Option<String>,
     #[arg(long)]
-    lane: Option<String>,
+    schema: Option<String>,
     #[arg(long)]
     text: Option<String>,
 }
 
-impl Lens {
+impl Selectors {
     fn insert(self, args: &mut Value) {
-        if self.scope.is_some()
-            || self.under.is_some()
-            || self.review.is_some()
-            || self.docket.is_some()
-        {
-            args["scope"] = self.scope.map_or_else(
-                || json!({"under":self.under,"review":self.review,"docket":self.docket}),
-                Value::String,
-            );
-        }
-        args["filter"] = json!({"state":self.state,"disposition":self.disposition,
-            "owner":self.owner,"lane":self.lane,"text":self.text});
+        args["scope"] = json!(self.scope);
+        args["filter"] = json!({"under":self.under,"lane":self.lane,"state":self.state,
+            "owner":self.owner,"schema":self.schema,"text":self.text});
     }
 }
 
@@ -121,19 +112,33 @@ enum Command {
         #[arg(long, value_enum, default_value = "summary")]
         view: View,
         #[command(flatten)]
-        lens: Lens,
+        selectors: Selectors,
         #[command(flatten)]
         window: Window,
     },
-    /// Read a hypothesis packet; --review selects a review packet.
+    /// Read one trial or iset (--work) or baseline (--baseline).
     Read {
         #[command(flatten)]
         target: Target,
-        record: Slug,
+        #[arg(
+            long,
+            conflicts_with = "baseline",
+            required_unless_present = "baseline"
+        )]
+        work: Option<String>,
         #[arg(long)]
-        review: bool,
+        baseline: Option<String>,
         #[arg(long, value_enum, value_delimiter = ',')]
         sections: Option<Vec<Section>>,
+        #[command(flatten)]
+        window: Window,
+    },
+    /// Read a schema id's definitions and bound work, or the definition grammar.
+    Schema {
+        #[command(flatten)]
+        target: Target,
+        #[arg(long)]
+        schema: Option<String>,
         #[command(flatten)]
         window: Window,
     },
@@ -203,8 +208,7 @@ fn run(cli: Cli) -> Result<(), Fault> {
             dry_run,
             file,
         } => {
-            let source = source(file)?;
-            let patch: Value = serde_json::from_str(&source)?;
+            let patch: Value = serde_json::from_str(&source(file)?)?;
             let mut args = target.arguments();
             match patch {
                 Value::Array(ops) => {
@@ -233,34 +237,38 @@ fn run(cli: Cli) -> Result<(), Fault> {
         Command::Status {
             target,
             view,
-            lens,
+            selectors,
             window,
         } => {
             let mut args = target.arguments();
             args["view"] = json!(view);
-            lens.insert(&mut args);
+            selectors.insert(&mut args);
             window.insert(&mut args);
             (Tool::Status, args)
         }
         Command::Read {
             target,
-            record,
-            review,
+            work,
+            baseline,
             sections,
             window,
         } => {
             let mut args = target.arguments();
-            args[if review { "review" } else { "hypothesis" }] = json!(record);
+            args["work"] = json!(work);
+            args["baseline"] = json!(baseline);
             args["sections"] = json!(sections);
             window.insert(&mut args);
-            (
-                if review {
-                    Tool::Review
-                } else {
-                    Tool::Hypothesis
-                },
-                args,
-            )
+            (Tool::Read, args)
+        }
+        Command::Schema {
+            target,
+            schema,
+            window,
+        } => {
+            let mut args = target.arguments();
+            args["schema"] = json!(schema);
+            window.insert(&mut args);
+            (Tool::Schema, args)
         }
         Command::History {
             target,

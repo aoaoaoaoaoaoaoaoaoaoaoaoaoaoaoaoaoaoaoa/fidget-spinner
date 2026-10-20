@@ -1,330 +1,424 @@
-use crate::*;
+//! Acceptance witnesses for the ledger's law: finality, void, guards, data,
+//! structure and the FS 3 migration. Every scenario ends by proving that a
+//! replay from nothing reproduces the incrementally patched state.
+
 use std::error::Error;
-use time::OffsetDateTime;
 
-fn patch(frontier: &mut Frontier, json: &str) -> Result<Patched, Box<dyn Error>> {
-    let ops = serde_json::from_str::<Vec<Op>>(json)?;
-    assert_eq!(
-        serde_json::from_str::<Vec<Op>>(&serde_json::to_string(&ops)?)?,
-        ops
-    );
-    let patched = frontier.patched(&ops, OffsetDateTime::UNIX_EPOCH)?;
-    *frontier = patched.frontier.clone();
-    Ok(patched)
+use serde_json::{Value, json};
+use time::{Duration, OffsetDateTime};
+
+use crate::*;
+
+type Result<T = ()> = std::result::Result<T, Box<dyn Error>>;
+
+fn stamp(seq: Seq) -> Stamp {
+    Stamp {
+        seq,
+        time: OffsetDateTime::UNIX_EPOCH + Duration::minutes(seq),
+    }
 }
 
-#[test]
-fn unit_conversion_table() -> Result<(), Box<dyn Error>> {
-    let rows = [
-        ("ns", "s", 1e-9),
-        ("µs", "s", 1e-6),
-        ("us", "µs", 1.0),
-        ("ms", "s", 1e-3),
-        ("s", "s", 1.0),
-        ("min", "s", 60.0),
-        ("h", "s", 3600.0),
-        ("B", "B", 1.0),
-        ("kB", "B", 1e3),
-        ("MB", "B", 1e6),
-        ("GB", "B", 1e9),
-        ("TB", "B", 1e12),
-        ("KiB", "B", 1024.0),
-        ("MiB", "B", 1_048_576.0),
-        ("GiB", "B", 1_073_741_824.0),
-        ("TiB", "B", 1_099_511_627_776.0),
-        ("%", "1", 0.01),
-        ("1", "%", 100.0),
-        ("cases", "cases", 1.0),
-    ];
-    for (from, to, expected) in rows {
-        let (from, to) = (from.parse::<Unit>()?, to.parse::<Unit>()?);
-        let actual = from.convert(1.0, &to)?;
-        assert!((actual - expected).abs() <= expected * 1e-12);
-        assert!((to.convert(actual, &from)? - 1.0).abs() < 1e-12);
-    }
-    for (from, to) in [("cases", "items"), ("ms", "MB"), ("%", "cases")] {
-        assert!(from.parse::<Unit>()?.convert(1.0, &to.parse()?).is_err());
-    }
-    for invalid in ["", "MS", "case_count", "2", "mb/s"] {
-        assert!(invalid.parse::<Unit>().is_err());
-    }
-    Ok(())
-}
-
-#[test]
-fn inquiry_across_epochs_and_regimes() -> Result<(), Box<dyn Error>> {
-    let mut f = Frontier::default();
-    patch(
-        &mut f,
-        r#"[
-        {"op":"frontier","objective":"Reduce latency"},
-        {"op":"regime","contract":"Fixed machine and cohort","metrics":[{"key":"latency","unit":"ms","better":"lower","kpi":true}]},
-        {"op":"hypothesis","slug":"a","title":"Claim without evidence"},
-        {"op":"hypothesis","slug":"b","title":"Measured change","after":["a"]},
-        {"op":"hypothesis","slug":"c","title":"Future work"},
-        {"op":"review","slug":"audit","title":"Audit","charter":"Which changes help?","members":["a","b"]},
-        {"op":"baseline","slug":"old","readings":{"latency":100},"artifacts":["commit:old"],"docket":["b","c"]},
-        {"op":"accept","baseline":"old","rationale":"Reference"},
-        {"op":"accept","hypothesis":"a","rationale":"Asserted"},
-        {"op":"trial","hypothesis":"b","note":"Measured","readings":{"latency":"0.05 s"},"against":null,"artifacts":null},
-        {"op":"accept","hypothesis":"b","rationale":"Twice as fast"}
-    ]"#,
-    )?;
-    let assay = Assay::new(&f);
-    let comparison = &assay.comparisons[&"b#1".parse()?][&"latency".parse()?];
-    assert_eq!(comparison.movement, Some(Movement::Better));
-    assert!(comparison.ratio.is_some_and(|r| (r - 0.5).abs() < 1e-12));
-    assert_eq!(assay.reviews[&"audit".parse()?], ReviewState::Ready);
-    let receipt = patch(
-        &mut f,
-        r#"[
-        {"op":"baseline","slug":"next","readings":{"latency":40}},
-        {"op":"accept","baseline":"next","rationale":"Measured improvement"},
-        {"op":"reject","baseline":"next","rationale":"Artifacts were wrong"}
-    ]"#,
-    )?;
-    assert!(receipt.warnings[&1].iter().any(|w| matches!(w, Warning::DocketMoved { hypotheses, .. } if hypotheses.len() == 1 && hypotheses[0].as_str() == "c")));
-    assert_eq!(f.incumbent_baseline(), Some(&"old".parse()?));
-    assert_eq!(f.epochs().len(), 2);
-    assert_eq!(f.epochs()[1].number.get(), 2);
-    assert_eq!(
-        f.hypotheses()[&"c".parse()?].docket.as_ref(),
-        Some(&"next".parse()?)
-    );
-    assert!(
-        Assay::new(&f).dockets[&"next".parse()?]
-            .members
-            .contains(&"c".parse()?)
-    );
-    let receipt = patch(
-        &mut f,
-        r#"[
-        {"op":"docket","baseline":"old","add":["c"]},
-        {"op":"regime","contract":"New protocol","reason":"Measure a new cohort","metrics":[{"key":"latency","unit":"s","better":"lower","kpi":true}],"bridge":{"slug":"bridge","readings":{"latency":"100 ms"}}},
-        {"op":"trial","hypothesis":"c","against":"old","note":"Cross-regime evidence"},
-        {"op":"regime","contract":"Third protocol","reason":"Changed envelope","metrics":[{"key":"latency","unit":"ms","better":"lower","kpi":true}]},
-        {"op":"baseline","slug":"third","adopts":["c"]},
-        {"op":"accept","baseline":"third","rationale":"New reference"},
-        {"op":"trial","hypothesis":"c","note":"First reading","readings":{"latncy":"10 ms"}},
-        {"op":"trial","hypothesis":"c","note":"Second reading","readings":{"latncy":10}},
-        {"op":"trial","hypothesis":"c","note":"Third reading","readings":{"latncy":10}},
-        {"op":"waive","finding":"unbacked/a","note":"Known assumption"},
-        {"op":"lesson","review":"audit","text":"The measured change helped"},
-        {"op":"conclude","lesson":"Protocol changes prevent a single comparison"}
-    ]"#,
-    )?;
-    assert!(
-        receipt.warnings[&1]
-            .iter()
-            .any(|w| matches!(w, Warning::DocketMoved { .. }))
-    );
-    assert!(
-        receipt.warnings[&2]
-            .iter()
-            .any(|w| matches!(w, Warning::CrossRegimeTrial { .. }))
-    );
-    assert!(receipt.warnings[&6].iter().any(|w| matches!(w, Warning::UnlistedReading { closest: Some(key), subject, .. } if key.as_str() == "latency" && subject == "c#2")));
-    let assay = Assay::new(&f);
-    assert_eq!(f.baselines()[&"bridge".parse()?].artifacts, ["commit:old"]);
-    serde_json::to_value(&f)?;
-    assert_eq!(assay.findings.len(), 5);
-    for id in [
-        "unbacked/a",
-        "unbridged/3",
-        "unlisted/3/latncy",
-        "unread/third/latency",
-        "unaccepted/third/c",
-    ] {
-        let identity = id.parse::<FindingId>()?;
-        assert_eq!(identity.to_string(), id);
-        assert!(assay.findings.contains_key(&identity));
-    }
-    assert_eq!(
-        assay.findings[&"unbacked/a".parse()?].as_deref(),
-        Some("Known assumption")
-    );
-    assert!(!assay.comparisons.contains_key(&"c#1".parse()?));
-    let receipt = patch(
-        &mut f,
-        r#"[{"op":"void","trial":"c#2","reason":"Invalid sample"}]"#,
-    )?;
-    assert!(receipt.cleared.contains_key(&"unlisted/3/latncy".parse()?));
-    assert!(receipt.warnings[&0].contains(&Warning::ReopenedFrontier));
-    let receipt = patch(&mut f, r#"[{"op":"unvoid","trial":"c#2"}]"#)?;
-    assert!(receipt.raised.contains_key(&"unlisted/3/latncy".parse()?));
-    // Waivers and historical acceptance baselines follow record identity,
-    // not a reusable slug. Removal must not manufacture an unbacked claim.
-    patch(
-        &mut f,
-        r#"[
-        {"op":"waive","finding":"unread/third/latency","note":"Pending remeasurement"},
-        {"op":"waive","finding":"unaccepted/third/c","note":"Provisional adoption"},
-        {"op":"rename","hypothesis":"a","to":"renamed.a"},
-        {"op":"rename","hypothesis":"c","to":"renamed.c"},
-        {"op":"rename","baseline":"third","to":"final"},
-        {"op":"rename","review":"audit","to":"audit.final"}
-    ]"#,
-    )?;
-    for identity in [
-        "unbacked/renamed.a",
-        "unread/final/latency",
-        "unaccepted/final/renamed.c",
-    ] {
-        assert!(f.waivers().contains_key(&identity.parse()?));
-    }
-    assert!(
-        f.reviews()[&"audit.final".parse()?]
-            .members
-            .contains(&"renamed.a".parse()?)
-    );
-    patch(
-        &mut f,
-        r#"[
-        {"op":"remove","hypothesis":"renamed.a"},
-        {"op":"remove","hypothesis":"renamed.c"},
-        {"op":"remove","baseline":"old"},
-        {"op":"remove","baseline":"bridge"},
-        {"op":"remove","baseline":"final"}
-    ]"#,
-    )?;
-    assert!(f.waivers().is_empty());
-    let b = &f.hypotheses()[&"b".parse()?];
-    assert!(b.trials[&1].against.is_none());
-    assert!(matches!(
-        b.disposition.as_ref().map(|d| &d.decision),
-        Some(HypothesisDecision::Accepted { against: None })
-    ));
-    let assay = Assay::new(&f);
-    assert!(!assay.findings.contains_key(&"unbacked/b".parse()?));
-    assert!(assay.findings.contains_key(&"unbridged/2".parse()?));
-    assert_eq!(f.epochs().len(), 1);
-    patch(
-        &mut f,
-        r#"[
-        {"op":"baseline","slug":"fresh","readings":{"latency":5}},
-        {"op":"accept","baseline":"fresh","rationale":"New measurement"},
-        {"op":"remove","review":"audit.final"},
-        {"op":"remove","trial":"b#1"}
-    ]"#,
-    )?;
-    assert_eq!(
-        f.baselines()[&"fresh".parse()?].epoch.map(EpochNumber::get),
-        Some(5)
-    );
-    assert!(Assay::new(&f).findings.contains_key(&"unbacked/b".parse()?));
-    Ok(())
-}
-
-#[test]
-fn refused_patches_are_atomic() -> Result<(), Box<dyn Error>> {
-    let mut f = Frontier::default();
-    patch(
-        &mut f,
-        r#"[{"op":"frontier","objective":"Original"},{"op":"hypothesis","slug":"x","title":"Existing"}]"#,
-    )?;
-    let original = f.clone();
-    // Every failure position follows real mutations, including a newly created record.
-    for count in 0..24 {
-        let mut ops = Vec::new();
-        for n in 0..count {
-            ops.push(Op::Frontier {
-                objective: format!("Replacement {n}"),
-            });
-        }
-        ops.push(serde_json::from_str(
-            r#"{"op":"hypothesis","slug":"new","title":"Temporary"}"#,
-        )?);
-        ops.push(serde_json::from_str(
-            r#"{"op":"accept","hypothesis":"absent","rationale":"Refused"}"#,
-        )?);
-        assert!(f.patched(&ops, OffsetDateTime::UNIX_EPOCH).is_err());
-        assert!(f.replay(&ops, OffsetDateTime::UNIX_EPOCH).is_err());
-        assert_eq!(f, original);
-    }
-    for malformed in [
-        r#"{"op":"accept","hypothesis":"x","baseline":"x","rationale":"No"}"#,
-        r#"{"op":"accept","rationale":"No"}"#,
-        r#"{"op":"trial","hypothesis":"x","note":"No","unexpected":true}"#,
-        r#"{"op":"void","trial":"x#0","reason":"No"}"#,
-        r#"{"op":"waive","finding":"unbridged/0","note":"No"}"#,
-        r#"{"op":"waive","finding":"unlisted/2/key/extra","note":"No"}"#,
-    ] {
-        assert!(serde_json::from_str::<Op>(malformed).is_err());
-    }
-    Ok(())
-}
-
-#[test]
-fn cycles_refuse_the_whole_patch() -> Result<(), Box<dyn Error>> {
-    let mut f = Frontier::default();
-    patch(
-        &mut f,
-        r#"[
-        {"op":"frontier","objective":"Acyclic inquiry"},
-        {"op":"hypothesis","slug":"a","title":"A"},
-        {"op":"hypothesis","slug":"b","title":"B","after":["a"]},
-        {"op":"hypothesis","slug":"c","title":"C","after":["b"]}
-    ]"#,
-    )?;
-    for json in [
-        r#"[{"op":"edge","from":"c","to":"a"}]"#,
-        r#"[{"op":"edge","from":"a","to":"a"}]"#,
-    ] {
-        let ops = serde_json::from_str::<Vec<Op>>(json)?;
-        let result = f.patched(&ops, OffsetDateTime::UNIX_EPOCH);
-        assert!(
-            matches!(result, Err(Refusal::Cycle { index: 0, path, .. }) if path.first() == path.last() && path.len() >= 2)
-        );
-    }
-    Ok(())
-}
-
-// An archived frontier refuses every operation but unarchive, ahead of the
-// reopening that would discard its archive; conclude, archive and unarchive
-// never reopen a frontier.
-#[test]
-fn archive_refuses_writes_until_unarchived() -> Result<(), Box<dyn Error>> {
-    let refusal = |f: &Frontier, ops: &str| -> Result<Option<OpRefusal>, Box<dyn Error>> {
-        let ops = serde_json::from_str::<Vec<Op>>(ops)?;
-        Ok(match f.patched(&ops, OffsetDateTime::UNIX_EPOCH) {
-            Err(Refusal::Operation { cause, .. }) => Some(*cause),
-            _ => None,
-        })
+fn ops(patch: Value) -> Result<Vec<Op>> {
+    let Value::Array(items) = patch else {
+        return Err("a patch is an array".into());
     };
-    let mut f = Frontier::default();
-    patch(
-        &mut f,
-        r#"[{"op":"frontier","objective":"Archivable inquiry"}]"#,
-    )?;
-    assert_eq!(
-        refusal(&f, r#"[{"op":"archive"}]"#)?,
-        Some(OpRefusal::PrematureArchive)
-    );
-    patch(&mut f, r#"[{"op":"conclude","lesson":"First"}]"#)?;
-    assert!(patch(&mut f, r#"[{"op":"archive"}]"#)?.warnings.is_empty());
-    for ops in [
-        r#"[{"op":"conclude","lesson":"Revised"}]"#,
-        r#"[{"op":"hypothesis","slug":"x","title":"More"}]"#,
-    ] {
-        assert_eq!(refusal(&f, ops)?, Some(OpRefusal::Archived));
+    Ok(items
+        .into_iter()
+        .map(Op::parse)
+        .collect::<std::result::Result<_, _>>()?)
+}
+
+/// A frontier and the patches committed to it.
+#[derive(Default)]
+struct Ledger {
+    frontier: Frontier,
+    patches: Vec<(Vec<Op>, Stamp)>,
+}
+
+impl Ledger {
+    fn next(&self) -> Result<Stamp> {
+        Ok(stamp(Seq::try_from(self.patches.len())? + 1))
     }
-    let unarchive = serde_json::from_str::<Vec<Op>>(r#"[{"op":"unarchive"}]"#)?;
-    assert!(bar_owner_acts(&unarchive).is_err());
+    fn commit(&mut self, patch: Value) -> Result<Patched> {
+        let ops = ops(patch)?;
+        let stamp = self.next()?;
+        let patched = self.frontier.patched(&ops, stamp)?;
+        self.frontier = patched.frontier.clone();
+        self.patches.push((ops, stamp));
+        Ok(patched)
+    }
+    fn refuse(&self, patch: Value) -> Result<Refusal> {
+        match self.frontier.patched(&ops(patch)?, self.next()?) {
+            Ok(_) => Err("the patch was accepted".into()),
+            Err(refusal) => Ok(refusal),
+        }
+    }
+    fn fault(&self, patch: Value) -> Result<Fault> {
+        Ok(self.refuse(patch)?.refusal.fault)
+    }
+    fn id(&self, name: &str) -> Result<Id> {
+        Ok(self
+            .frontier
+            .named(&name.parse()?)
+            .ok_or_else(|| format!("no work {name}"))?
+            .0)
+    }
+    fn rev(&self, name: &str) -> Result<String> {
+        Ok(self.frontier.work()[&self.id(name)?].rev.to_string())
+    }
+    fn judgment(&self, name: &str) -> Result<&Judgment> {
+        Ok(self.frontier.work()[&self.id(name)?]
+            .iset()
+            .and_then(|i| i.judgment.as_ref())
+            .ok_or_else(|| format!("{name} is unjudged"))?)
+    }
+    fn replays(&self) -> Result {
+        let mut replayed = Frontier::default();
+        for (ops, stamp) in &self.patches {
+            replayed.replay(ops, *stamp)?;
+        }
+        assert_eq!(format!("{replayed:?}"), format!("{:?}", self.frontier));
+        Ok(())
+    }
+}
+
+#[test]
+fn resolution_is_final() -> Result {
+    let mut l = Ledger::default();
+    l.commit(json!([
+        {"op":"frontier","objective":"o"},
+        {"op":"regime","contract":"c","metrics":[{"key":"elapsed","unit":"ms","better":"lower","kpi":true}]},
+        {"op":"baseline","slug":"b0","readings":{"elapsed":10}},
+        {"op":"elect","baseline":"b0","rationale":"start"},
+        {"op":"iset","slug":"q"},
+        {"op":"plan","into":["q"]}
+    ]))?;
+    let (q, t) = (l.id("q")?, l.id("q#1")?);
+    assert_eq!(l.frontier.state(t), Some(State::Ready));
+    assert_eq!(l.frontier.state(q), Some(State::Waiting));
+    l.commit(json!([{"op":"report","trial":"q#1","readings":{"elapsed":"8 ms"}}]))?;
+    assert_eq!(l.frontier.state(q), Some(State::Tested));
+    // The report consumed its defaulted control's readings, which froze.
+    assert_eq!(
+        l.fault(json!([{"op":"baseline","slug":"b0","readings":{"elapsed":9}}]))?,
+        Fault::Frozen
+    );
+    l.commit(json!([{"op":"judge","iset":"q","answer":{"holds":true}}]))?;
+    let rev = l.rev("q")?;
+    for write in [
+        json!([{"op":"report","trial":"q#1","readings":{"elapsed":7}}]),
+        json!([{"op":"judge","iset":"q","answer":{"holds":false}}]),
+        json!([{"op":"edit","work":"q","rev":rev,"data":{"x":1}}]),
+        json!([{"op":"plan","into":["q"]}]),
+    ] {
+        assert_eq!(l.fault(write)?, Fault::Resolved);
+    }
+    // A later answer is a new iset; its judgment stops at resolved work.
+    l.commit(json!([
+        {"op":"iset","slug":"q2","members":["q"]},
+        {"op":"report","trial":"t2","into":["q2"]},
+        {"op":"judge","iset":"q2","answer":{"holds":false}}
+    ]))?;
+    assert_eq!(
+        l.judgment("q2")?.consumes,
+        [q, l.id("t2")?].into_iter().collect()
+    );
+    l.replays()
+}
+
+#[test]
+fn void_marks_one_hop_and_stays() -> Result {
+    let mut l = Ledger::default();
+    l.commit(json!([
+        {"op":"frontier","objective":"o"},
+        {"op":"iset","slug":"a"},
+        {"op":"report","trial":"t","into":["a"]},
+        {"op":"judge","iset":"a","answer":{}},
+        {"op":"iset","slug":"b","members":["a"]},
+        {"op":"judge","iset":"b","answer":{}}
+    ]))?;
+    let (a, t) = (l.id("a")?, l.id("t")?);
+    let voided = l.commit(json!([{"op":"void","work":"t","reason":"broken harness"}]))?;
+    assert_eq!(voided.voided[0].consumers, [Consumer::Judgment(a)]);
+    assert!(l.frontier.invalidated(t));
+    assert_eq!(l.frontier.void_sources(&l.judgment("a")?.consumes), [t]);
     assert!(
-        patch(&mut f, r#"[{"op":"unarchive"}]"#)?
-            .warnings
+        l.frontier
+            .void_sources(&l.judgment("b")?.consumes)
             .is_empty()
     );
+    assert_eq!(
+        l.fault(json!([{"op":"void","work":"t","reason":"again"}]))?,
+        Fault::Void
+    );
+    // A reassessment over the marked answer leaves its mark in place.
+    l.commit(json!([
+        {"op":"iset","slug":"again","members":["a"]},
+        {"op":"report","trial":"t2","into":["again"]},
+        {"op":"judge","iset":"again","answer":{}}
+    ]))?;
+    assert_eq!(l.frontier.void_sources(&l.judgment("a")?.consumes), [t]);
+    // A consumer of an already-void source rests on it from birth.
+    l.commit(json!([
+        {"op":"baseline","slug":"bv"},
+        {"op":"void","baseline":"bv","reason":"misbuilt"}
+    ]))?;
+    let born = l.commit(json!([{"op":"report","trial":"t3","control":"bv"}]))?;
+    assert!(born.warnings.contains_key(&0));
+    let bv = l.frontier.baseline_named(&"bv".parse()?).ok_or("no bv")?.0;
+    let report = l.frontier.work()[&l.id("t3")?]
+        .trial()
+        .and_then(|t| t.report.as_ref())
+        .ok_or("unreported")?;
+    assert_eq!(l.frontier.void_sources(&report.consumes), [bv]);
+    // Removing a consumed source marks its consumer.
+    l.commit(json!([{"op":"remove","work":"t2"}]))?;
+    assert!(l.frontier.removed_source(&l.judgment("again")?.consumes));
+    l.replays()
+}
+
+#[test]
+fn judgment_guard_sees_implicit_resolution() -> Result {
+    let mut l = Ledger::default();
+    l.commit(json!([
+        {"op":"frontier","objective":"o"},
+        {"op":"regime","contract":"c","metrics":[{"key":"m","unit":"s"}]},
+        {"op":"baseline","slug":"b0"},
+        {"op":"elect","baseline":"b0","rationale":"start"},
+        {"op":"iset","slug":"q"},
+        {"op":"plan","trial":"t","into":["q"]}
+    ]))?;
+    l.commit(json!([{"op":"report","trial":"t"}]))?;
+    l.commit(json!([{"op":"iset","slug":"elsewhere"}]))?;
+    l.commit(json!([
+        {"op":"baseline","slug":"b1"},
+        {"op":"elect","baseline":"b1","rationale":"better"}
+    ]))?;
+    // A defaulted control resolves to the incumbent elected after seq 2.
+    let refusal = l.refuse(json!([
+        {"op":"report","trial":"late","into":["q"]},
+        {"op":"judge","iset":"q","answer":{},"seen":2}
+    ]))?;
+    assert_eq!((refusal.index, refusal.refusal.fault), (1, Fault::Guard));
+    let rev = l.rev("q")?;
+    l.commit(json!([{"op":"edit","work":"q","rev":rev,"data":{"note":"reframed"}}]))?;
+    assert_eq!(
+        l.fault(json!([{"op":"judge","iset":"q","answer":{},"seen":4}]))?,
+        Fault::Guard
+    );
+    // An explicit control and the unrelated iset leave the guard intact.
+    l.commit(json!([
+        {"op":"report","trial":"late","into":["q"],"control":"b0"},
+        {"op":"judge","iset":"q","answer":{},"seen":5}
+    ]))?;
+    assert_eq!(l.judgment("q")?.seen, Some(5));
+    l.replays()
+}
+
+#[test]
+fn data_conforms_or_warns() -> Result {
+    let mut l = Ledger::default();
+    l.commit(json!([{"op":"frontier","objective":"o"}]))?;
+    assert_eq!(
+        l.fault(json!([{"op":"define","schema":"q","definition":
+            {"carrier":"iset","data":{"x":{"type":"text"}},"answer":{}}}]))?,
+        Fault::Grammar
+    );
+    let patched = l.commit(json!([
+        {"op":"define","schema":"q","definition":{"carrier":"iset",
+            "data":{"question":{"type":"text","presence":"required"}},
+            "answer":{"verdict":{"type":{"enum":["holds","fails"]},"presence":"required"}}}},
+        {"op":"iset","slug":"good","schema":"q","data":{"question":"why?"}},
+        {"op":"iset","slug":"bad","schema":"q","data":{"question":3,"extra":true}},
+        {"op":"iset","slug":"pending","schema":"later"},
+        {"op":"iset","slug":"cites","data":{"see":{"$fs":"ref","kind":"iset","id":"good"}}}
+    ]))?;
+    assert!(patched.warnings.contains_key(&2) && !patched.warnings.contains_key(&1));
+    let findings = l.frontier.findings();
+    assert!(findings.contains(&Finding::Nonconforming(l.id("bad")?)));
+    assert!(findings.contains(&Finding::Unvalidated(l.id("pending")?)));
+    assert!(!findings.contains(&Finding::Nonconforming(l.id("good")?)));
+    let dangling = l.refuse(json!([{"op":"iset","slug":"dangling",
+        "data":{"see":{"$fs":"ref","kind":"iset","id":"absent"}}}]))?;
+    assert!(dangling.to_string().contains("absent"), "{dangling}");
+    // References follow renames.
+    l.commit(json!([{"op":"rename","work":"good","to":"better"}]))?;
+    let cites = l.frontier.work()[&l.id("cites")?].data().ok_or("no data")?;
+    assert_eq!(
+        cites.compact(&|r| l.frontier.ref_name(r)),
+        r#"{"see":@iset:better}"#
+    );
+    // Edits change paths simultaneously; overlapping paths refuse.
+    let rev = l.rev("cites")?;
+    assert_eq!(
+        l.fault(json!([{"op":"edit","work":"cites","rev":rev,
+            "set":[{"path":["a"],"value":{}},{"path":["a","b"],"value":1}]}]))?,
+        Fault::Malformed
+    );
+    l.commit(json!([{"op":"edit","work":"cites","rev":rev,
+        "set":[{"path":["n"],"value":1}],"delete":[["see"]]}]))?;
+    assert_eq!(
+        l.frontier.work()[&l.id("cites")?]
+            .data()
+            .ok_or("no data")?
+            .compact(&|r| l.frontier.ref_name(r)),
+        r#"{"n":1}"#
+    );
+    // An answer outside the binding is stored, with a warning.
+    let judged = l.commit(json!([{"op":"judge","iset":"better","answer":{"verdict":"maybe"}}]))?;
+    assert!(judged.warnings.contains_key(&0));
     assert!(
-        f.conclusion()
-            .is_some_and(|c| !c.archived && c.lesson.text == "First")
+        l.frontier
+            .findings()
+            .contains(&Finding::Nonconforming(l.id("better")?))
+    );
+    l.replays()
+}
+
+#[test]
+fn structure_stays_acyclic() -> Result {
+    let mut l = Ledger::default();
+    l.commit(json!([
+        {"op":"frontier","objective":"o"},
+        {"op":"iset","slug":"a"},
+        {"op":"iset","slug":"b","into":["a"]},
+        {"op":"iset","slug":"c","into":["a"]},
+        {"op":"plan","trial":"t","into":["b","c"]}
+    ]))?;
+    let [a, b, c, t] = [l.id("a")?, l.id("b")?, l.id("c")?, l.id("t")?];
+    assert_eq!(l.frontier.below(a), [b, c, t].into_iter().collect());
+    assert_eq!(
+        l.fault(json!([{"op":"member","iset":"b","add":["a"]}]))?,
+        Fault::Cycle
+    );
+    // Work waiting on an iset that holds it closes a cycle; the refusal names it.
+    let refusal = l.refuse(json!([{"op":"after","work":"t","add":["b"]}]))?;
+    assert_eq!(refusal.refusal.fault, Fault::Cycle);
+    assert!(refusal.refusal.message.contains('b') && refusal.refusal.message.contains('t'));
+    // Waiting on one's own member is redundant, not cyclic.
+    l.commit(json!([{"op":"after","work":"a","add":["t"]}]))?;
+    // A judgment reaches through open isets to done work.
+    l.commit(json!([{"op":"report","trial":"t"},{"op":"judge","iset":"a","answer":{}}]))?;
+    let judgment = l.judgment("a")?;
+    assert_eq!(judgment.consumes, [t].into_iter().collect());
+    assert_eq!(judgment.passed, [b, c].into_iter().collect());
+    l.replays()
+}
+
+#[test]
+fn guards_check_the_pre_patch_state() -> Result {
+    let mut l = Ledger::default();
+    l.commit(json!([
+        {"op":"frontier","objective":"o"},
+        {"op":"iset","slug":"q","data":{"n":1}}
+    ]))?;
+    let first = l.rev("q")?;
+    assert_eq!(
+        l.fault(json!([{"op":"edit","work":"q","data":{"n":2}}]))?,
+        Fault::Guard
+    );
+    l.commit(json!([{"op":"edit","work":"q","rev":first,"data":{"n":2}}]))?;
+    assert_eq!(
+        l.fault(json!([{"op":"edit","work":"q","rev":first,"data":{"n":3}}]))?,
+        Fault::Guard
+    );
+    // A patch's own writes never invalidate its guards, but they must agree.
+    let second = l.rev("q")?;
+    l.commit(json!([
+        {"op":"edit","work":"q","rev":second,"set":[{"path":["n"],"value":3}]},
+        {"op":"edit","work":"q","rev":second,"set":[{"path":["m"],"value":1}]}
+    ]))?;
+    let third = l.rev("q")?;
+    assert_eq!(
+        l.fault(json!([
+            {"op":"edit","work":"q","rev":third,"set":[{"path":["n"],"value":4}]},
+            {"op":"edit","work":"q","rev":second,"set":[{"path":["m"],"value":2}]}
+        ]))?,
+        Fault::Guard
+    );
+    // Work created earlier in the patch needs no guard.
+    l.commit(json!([
+        {"op":"iset","slug":"r"},
+        {"op":"edit","work":"r","data":{"fresh":true}}
+    ]))?;
+    assert_eq!(l.fault(json!([{"op":"guard","head":1}]))?, Fault::Guard);
+    l.commit(json!([{"op":"guard","head":4},{"op":"iset","slug":"s"}]))?;
+    assert!(Op::parse(json!({"op":"guard","head":9_007_199_254_740_992_u64})).is_err());
+    l.replays()
+}
+
+#[test]
+fn fs3_history_replays_under_legacy_law() -> Result {
+    let history = [
+        json!([
+            {"op":"frontier","objective":"legacy"},
+            {"op":"regime","contract":"c","metrics":[{"key":"elapsed","unit":"ms","better":"lower","kpi":true}]},
+            {"op":"baseline","slug":"b0","readings":{"elapsed":10}},
+            {"op":"accept","baseline":"b0","rationale":"start"},
+            {"op":"hypothesis","slug":"h","title":"H","claim":"c"},
+            {"op":"hypothesis","slug":"g","title":"G"},
+            {"op":"edge","from":"h","to":"g","carries":"why"}
+        ]),
+        json!([
+            {"op":"trial","hypothesis":"h","note":"first","readings":{"elapsed":8}},
+            {"op":"accept","hypothesis":"h","rationale":"faster"}
+        ]),
+        json!([
+            {"op":"trial","hypothesis":"h","note":"second","readings":{"elapsed":9}},
+            {"op":"reject","hypothesis":"h","rationale":"regressed"}
+        ]),
+        json!([
+            {"op":"review","slug":"r","title":"R","charter":"c","members":["h","g"]},
+            {"op":"lesson","review":"r","text":"learned"},
+            {"op":"reopen","hypothesis":"h"},
+            {"op":"void","trial":"h#2","reason":"bad"}
+        ]),
+        json!([
+            {"op":"baseline","slug":"b1","readings":{"elapsed":7},"adopts":["h"]},
+            {"op":"accept","baseline":"b1","rationale":"better"}
+        ]),
+    ];
+    let mut translator = legacy::Translator::new(5);
+    let mut l = Ledger::default();
+    for patch in history {
+        let Value::Array(raw) = patch else {
+            return Err("a patch is an array".into());
+        };
+        let ops = ops(Value::Array(translator.patch(&raw)?))?;
+        let stamp = l.next()?;
+        l.frontier.replay(&ops, stamp)?;
+        l.patches.push((ops, stamp));
+    }
+    let f = &l.frontier;
+    let (h, g) = (l.id("h")?, l.id("g")?);
+    let hypothesis = f.work()[&h].iset().ok_or("h is no iset")?;
+    assert!(hypothesis.judgment.is_none());
+    assert_eq!(hypothesis.superseded.len(), 2);
+    assert!(f.is_void(l.id("h#2")?) && !f.is_void(l.id("h#1")?));
+    assert!(f.work()[&g].inputs.contains(&h));
+    assert_eq!(
+        f.work()[&g].data().and_then(|d| d.text("title")).as_deref(),
+        Some("G")
     );
     assert_eq!(
-        refusal(&f, r#"[{"op":"unarchive"}]"#)?,
-        Some(OpRefusal::NotArchived)
+        l.judgment("r")?.answer.text("lesson").as_deref(),
+        Some("learned")
     );
-    let reopened = patch(&mut f, r#"[{"op":"hypothesis","slug":"x","title":"More"}]"#)?;
-    assert_eq!(reopened.warnings[&0], vec![Warning::ReopenedFrontier]);
-    assert!(f.conclusion().is_none());
-    Ok(())
+    assert!(
+        f.elections()
+            .last()
+            .is_some_and(|e| e.adopts.contains_key(&h))
+    );
+    // Current law follows the migrated history.
+    l.commit(
+        json!([{"op":"judge","iset":"g","answer":{"disposition":"accepted","rationale":"r"}}]),
+    )?;
+    assert_eq!(
+        l.fault(
+            json!([{"op":"judge","iset":"g","answer":{"disposition":"rejected","rationale":"r"}}])
+        )?,
+        Fault::Resolved
+    );
+    assert!(bar_reserved(&ops(json!([{"op":"reopen","iset":"g"}]))?).is_err());
+    l.replays()
 }

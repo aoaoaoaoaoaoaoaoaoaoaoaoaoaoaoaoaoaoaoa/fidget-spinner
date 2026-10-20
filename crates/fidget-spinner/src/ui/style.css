@@ -1,17 +1,16 @@
-:root { --reject-line: #a8322b; --reject-fill: #f1dcd6; --reject-bar: #d49a90; --test-line: #2a6cb0; }
-@media (prefers-color-scheme: dark) { :root { --reject-line: #f0857c; --reject-fill: #3a2523; --reject-bar: #8f4f47; --test-line: #6fb0ea; } }
+:root { --void-line: #a8322b; --test-line: #2a6cb0; }
+@media (prefers-color-scheme: dark) { :root { --void-line: #f0857c; --test-line: #6fb0ea; } }
 
-/* Hypothesis liveries beyond the shared done, running and ready skins. */
-.accepted { --state-fill: var(--done); --state-line: var(--done-line); }
-.rejected { --state-fill: var(--reject-fill); --state-line: var(--reject-line); }
-.shelved { --state-line: var(--wait-line); }
+/* States beyond the shared done, running and ready skins. */
+.settled { --state-fill: var(--done); --state-line: var(--done-line); }
+.reported { --state-line: var(--done-line); --state-weight: 2; }
 .tested { --state-fill: var(--ready); --state-line: var(--test-line); --state-weight: 2; }
-.count.shelved::before, .cell.shelved .box { stroke-dasharray: 3 2; border-style: dashed; }
-/* Rejections stay lighter than acceptances, so the bar reads without hue. */
-.bar .fill.rejected { background: var(--reject-bar); }
-.bar .fill.shelved { background: var(--wait-line); }
-.cell.shelved { opacity: .6; }
-.cell.waiting text, .cell.shelved text { fill: var(--muted); }
+.void { --state-line: var(--wait-line); }
+.count.void::before, .cell.void .box { stroke-dasharray: 3 2; border-style: dashed; }
+.cell.void { opacity: .6; }
+.cell.waiting text, .cell.void text { fill: var(--muted); }
+/* Resting on void, a removed source, or an unvalidated or nonconforming binding. */
+.cell.marked .box { stroke: var(--void-line); }
 
 .separator.epoch polyline { stroke-width: 1; stroke-dasharray: none; stroke-opacity: .6; }
 .separator.regime polyline { stroke: var(--test-line); stroke-width: 2.5; stroke-dasharray: none; }
@@ -19,11 +18,11 @@
 
 .stats .prose { margin: 2px 0; max-width: 120ch; color: var(--muted); overflow: hidden; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; }
 .stats .prose b { color: var(--fg); font-weight: 600; }
-.stats a.review { text-decoration: none; font-size: 12px; }
-.stats a.review:hover { text-decoration: underline; }
-.stats a.review::before { content: ""; display: inline-block; width: 8px; height: 8px; margin-right: 5px; border-radius: 50%; vertical-align: 0;
+.stats a.set { text-decoration: none; font-size: 12px; }
+.stats a.set:hover { text-decoration: underline; }
+.stats a.set::before { content: ""; display: inline-block; width: 8px; height: 8px; margin-right: 5px; border-radius: 50%; vertical-align: 0;
   border: 1.5px solid var(--set, var(--wait-line)); }
-.stats a.review.completed::before { background: var(--set, var(--wait-line)); }
+.stats a.set.settled::before { background: var(--set, var(--wait-line)); }
 
 .kpi { padding: 4px 0 2px; }
 .kpi .head { display: flex; gap: 6px; align-items: baseline; font: 12px var(--mono); }
@@ -47,14 +46,19 @@
 .sheet .record .field div { white-space: pre-wrap; }
 .reading { display: block; font: 11px var(--mono); }
 .reading.better { color: var(--done-line); }
-.reading.worse { color: var(--reject-line); }
+.reading.worse { color: var(--void-line); }
 .reading.unlisted { color: var(--muted); }
 .note { display: block; }
 table.trials { border-collapse: collapse; background: var(--box); border: 1px solid var(--line); box-shadow: 3px 3px 0 rgba(0, 0, 0, .18); max-width: min(1200px, 100%); }
 table.trials th { padding: 5px 10px; text-align: left; font-size: 9.5px; letter-spacing: .12em; text-transform: uppercase; color: var(--strip-fg); background: var(--strip); }
 table.trials td { padding: 5px 10px; vertical-align: top; border-top: 1px solid var(--rule); max-width: 38em; overflow-wrap: anywhere; }
-table.trials td:first-child, table.trials td:nth-child(2) { font: 11px var(--mono); white-space: nowrap; }
+table.trials td:first-child, table.trials td:nth-child(3) { font: 11px var(--mono); white-space: nowrap; }
 table.trials tr.selected { background: var(--ready); }
 table.trials tr.void { color: var(--muted); }
 table.trials tr.void td:first-child { text-decoration: line-through; }
 table.trials .artifact { display: block; font: 11px var(--mono); color: var(--muted); }
+
+.outline, .outline ul { list-style: none; margin: 2px 0; padding-left: 18px; font-size: 13px; }
+.outline li::before { content: ""; display: inline-block; width: 8px; height: 8px; margin-right: 6px; vertical-align: -1px;
+  border: 1px solid var(--state-line, var(--wait-line)); background: var(--state-fill, var(--box)); }
+.outline .state { color: var(--muted); }
