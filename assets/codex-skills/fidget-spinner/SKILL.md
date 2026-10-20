@@ -79,9 +79,10 @@ before it ran:
   names its `rev`, which reads show; a stale `rev` is refused with the actual revision.
 - `start` and `stop` assert execution. `assign` binds an owner to the work's current revision; a later write raises
   `stale` until the work is reassigned.
-- `report` resolves a trial once with readings, artifacts (commit and evidence path) and data. Reporting a name that
-  names no trial records a retrospective trial. Name the plan revision executed when it is not the current one, or
-  `"unknown"`.
+- `report` resolves a trial once with readings, artifacts (commit and evidence path) and data. Supply
+  `control_readings` when the control ran alongside; without them, comparisons use the control baseline's recorded
+  readings, which then freeze. Reporting a name that names no trial records a retrospective trial. Name the plan
+  revision executed when it is not the current one, or `"unknown"`.
 - `judge` answers an iset once, over the done work its membership reaches. Pass `seen` with the seq you read: the
   judgment is refused if anything it consumes changed since, and reads show it as guarded. Judging while members are
   open draws a warning.
@@ -93,11 +94,13 @@ before it ran:
 ## Correct and sweep
 
 Nothing resolved is rewritten. A misrecorded report takes a new trial whose data cites its predecessor, as in
-`{"$fs":"ref","kind":"trial","id":"cache.templates#1"}`; new understanding takes a new iset containing the old answer
-and the new evidence. Void invalid evidence with a reason: the receipt lists the resolutions resting on it and the work
-waiting on it. Whoever voids sweeps, by judging a successor iset over the survivors or voiding what falls. A marked
-answer that still holds is not voided: judge a reassessment iset containing it that says why, and the mark stays. A void
-reaches one hop and its marks never clear. Remove only mistakes; history redacts removed records.
+`{"$fs":"ref","kind":"trial","id":"cache.templates#1"}`. Its retrospective report would default its control to today's
+incumbent, so name the original execution's `control`, `treatment` and `control_readings`; it also belongs to the
+current regime, so readings taken under an earlier regime go in its data. New understanding takes a new iset containing
+the old answer and the new evidence. Void invalid evidence with a reason: the receipt lists the resolutions resting on
+it and the work waiting on it. Whoever voids sweeps, by judging a successor iset over the survivors or voiding what
+falls. A marked answer that still holds is not voided: judge a reassessment iset containing it that says why, and the
+mark stays. A void reaches one hop and its marks never clear. Remove only mistakes; history redacts removed records.
 
 ## Baselines and regimes
 
