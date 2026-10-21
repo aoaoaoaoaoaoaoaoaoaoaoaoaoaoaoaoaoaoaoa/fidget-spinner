@@ -83,11 +83,14 @@ pub struct Work {
     pub name: Name,
     pub created: Moment,
     pub rev: Pos,
+    /// The last change to what the work asks: its data or plan, binding or inputs.
+    pub specified: Pos,
     pub binding: Option<Binding>,
     pub inputs: BTreeSet<Id>,
     pub owner: Option<Owner>,
     pub running: Option<Moment>,
     pub void: Option<Void>,
+    pub annotations: Vec<Annotation>,
     pub body: Body,
 }
 
@@ -142,7 +145,8 @@ pub struct Iset {
     pub data: Data,
     pub members: BTreeSet<Id>,
     pub judgment: Option<Judgment>,
-    pub superseded: Vec<Judgment>,
+    /// FS 3 judgments replaced by a later judgment or withdrawn by reopen.
+    pub prior: Vec<Judgment>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -158,6 +162,7 @@ pub struct Judgment {
 pub struct Owner {
     pub name: String,
     pub instructions: Option<String>,
+    /// The work's specification revision when it was assigned.
     pub bound: Pos,
 }
 
@@ -165,6 +170,13 @@ pub struct Owner {
 pub struct Void {
     pub at: Moment,
     pub reason: String,
+}
+
+/// A dated remark appended by annotate; it changes nothing the record says.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Annotation {
+    pub at: Moment,
+    pub text: String,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -179,6 +191,7 @@ pub struct Baseline {
     pub identity_frozen: Option<Pos>,
     pub readings_frozen: Option<Pos>,
     pub void: Option<Void>,
+    pub annotations: Vec<Annotation>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -254,6 +267,15 @@ impl Work {
             Body::Trial(trial) => trial.report.is_some(),
             Body::Iset(iset) => iset.judgment.is_some(),
         }
+    }
+    /// Open, non-void work whose specification changed after its assignment was bound.
+    pub fn stale(&self) -> bool {
+        self.void.is_none()
+            && !self.resolved()
+            && self
+                .owner
+                .as_ref()
+                .is_some_and(|owner| owner.bound < self.specified)
     }
     /// The data a view headlines: an iset's data or a trial's current plan.
     pub fn data(&self) -> Option<&Data> {

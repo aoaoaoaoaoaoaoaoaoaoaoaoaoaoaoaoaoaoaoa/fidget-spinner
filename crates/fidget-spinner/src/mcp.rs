@@ -29,7 +29,7 @@ use crate::{
 const FRAME_LIMIT: usize = 16 << 20;
 const PROTOCOL_VERSION: &str = "2025-11-25";
 const VERSIONS: [&str; 4] = ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"];
-const INSTRUCTIONS: &str = "Fidget Spinner keeps an inquiry's record across sessions: open questions, attempts, judgments over evidence, supervision and optional measurement. It never runs experiments or verifies evidence. Each call takes optional project (default: the server's working directory; linked worktrees resolve to their main checkout) and frontier; frontier.patch requires frontier, and reads may omit it only when exactly one frontier is unconcluded. Work is trials and isets. A trial is an attempt: planned, amended by edit, and reported once against a control baseline. An iset (integration set) poses a question over member work and is judged once; its answer may land either way. Inputs order work; membership is not dependency. Every record resolves at most once and is voided at most once: a later answer is a new iset, and whoever voids sweeps what rests on the void. Schemas type data; baselines are comparison states, and elections choose the incumbent. A patch is atomic; warnings and findings never block. Read through frontier.status and record.read. Render selects representation, detail selects text completeness, and cursors freeze the ledger sequence. Removed records are redacted even in old history.";
+const INSTRUCTIONS: &str = "Fidget Spinner keeps an inquiry's record across sessions: open questions, attempts, judgments over evidence, supervision and optional measurement. It never runs experiments or verifies evidence. Each call takes optional project (default: the server's working directory; linked worktrees resolve to their main checkout) and frontier; frontier.patch requires frontier, and reads may omit it only when exactly one frontier is unconcluded. Work is trials and isets. A trial is an attempt: planned, amended by edit, and reported once against a control baseline. An iset (integration set) poses a question over member work and is judged once; its answer may land either way. Inputs order work; membership is not dependency. Every record resolves at most once and is voided at most once: a later answer is a new iset, and whoever voids sweeps what rests on the void. An annotation is a dated remark of at most 100 words on any record, resolved or void included; it changes nothing the record says. Schemas type data; baselines are comparison states, and elections choose the incumbent. A patch is atomic; warnings and findings never block. Read through frontier.status and record.read. Render selects representation, detail selects text completeness, and cursors freeze the ledger sequence. Removed records are redacted even in old history.";
 pub const OPS_GRAMMAR: &str = r#"Apply ordered ops atomically; dry_run rehearses. Each op is an object with op and fields; work names a trial or iset, and work|baseline means exactly one of those keys.
 frontier {objective}; conclude {lesson}; guard {head:seq}
 regime {contract,metrics:[metric],reason?,bridge?:{slug,readings,note?}}
@@ -43,10 +43,11 @@ member {iset,add?:[work],drop?:[work]}; after {work,add?:[work],drop?:[work]}
 judge {iset,answer,seen?:seq}
 baseline {slug,artifacts?:[text],readings?,note?}; elect {baseline,rationale,adopts?:[iset]}
 void {work|baseline,reason}; remove {work|baseline}; rename {work|baseline,to}
+annotate {work|baseline,text}: one hyper-terse fact in at most 100 words; it changes nothing the record says, even resolved or void
 assign {work,owner,instructions?}; release/start/stop {work}
 metric={key,unit,better?:lower|higher,kpi?:bool,about?,refs?:{label:number}}; readings={key:number|'number unit'}; treatment={baseline:slug}|{identity:text}; path=[key,…]; schema=id|id@rev.
 Units: ns/µs/us/ms/s/min/h (time); B/kB/MB/GB/TB/KiB/MiB/GiB/TiB (memory); 1/% (dimensionless); other lowercase words are count labels.
-data and answer are JSON; {"$fs":"ref","kind":"trial|iset|baseline|metric","id":name|key@regime} references a record by current name. A trial without a name joins its first into iset and is named slug#n. report naming no trial creates a retrospective trial. A trial reports once and an iset is judged once; resolved and void work is frozen, though it may still join open isets. edit of work that predates the patch names its rev; edit of a trial amends its plan. judge with seen=S refuses if anything the judgment consumes changed after S. An unknown frontier requires first op frontier. A concluded frontier accepts only void, remove and rename. Archive is the owner's, in the navigator."#;
+data and answer are JSON; {"$fs":"ref","kind":"trial|iset|baseline|metric","id":name|key@regime} references a record by current name. A trial without a name joins its first into iset and is named slug#n. report naming no trial creates a retrospective trial. A trial reports once and an iset is judged once; resolved and void work is frozen, though it may still join open isets. edit of work that predates the patch names its rev; edit of a trial amends its plan. judge with seen=S refuses if anything the judgment consumes changed after S. An unknown frontier requires first op frontier. A concluded frontier accepts only void, remove, rename and annotate. Archive is the owner's, in the navigator."#;
 pub const SCHEMA_GRAMMAR: &str = r#"definition = {carrier:"iset",data:fields,answer:fields,title?,description?} | {carrier:"trial",plan:fields,report:fields,title?,description?}
 fields = {name:field,…}
 field = {type,presence:"required"|"optional",title?,description?,show?:"headline"|"badge"|"card"|"section"|"hidden"}
@@ -112,10 +113,10 @@ impl Tool {
                 "Summary, or paged isets, trials, baselines, regimes, schemas, findings and project frontiers. filter selects rows: under (an iset's members at any depth), lane, state (or void), owner, schema, text. scope=project with filter.text searches every frontier of the project, concluded included: frontier | record | field | excerpt. Regimes are newest first. Inapplicable selectors warn and are ignored. Counts and states derive from the whole frontier."
             }
             Self::Read => {
-                "One trial or iset (work) or baseline, by section: head, data, plans, report, members, judgment, elections, isets, inputs, dependents, owner, as applicable. Own text is exact; related text previews with full-read routes. Collections page independently."
+                "One trial or iset (work) or baseline, by section: head, data, plans, report, members, judgment, elections, isets, inputs, dependents, owner, annotations; a section the record lacks is ignored with a warning. Own text is exact; related text previews with full-read routes. Collections page independently."
             }
             Self::Schema => {
-                "One schema id's definitions newest first, each with its revision, and the work bound to it; without schema, the definition grammar with an example of each carrier."
+                "One schema id's definitions newest first, each with its revision, a line per variant or ref field showing a value to write, and the work bound to it; without schema, the definition grammar with an example of each carrier."
             }
             Self::History => {
                 "Patch metadata newest first. seq with detail=full reads that patch's operations as written, paged. Operations naming removed records expose only the operation name and record kind."
@@ -147,7 +148,7 @@ impl Tool {
             ),
             Self::Read => (
                 json!({"work":string,"baseline":string,"sections":{"type":"array","minItems":1,"uniqueItems":true,
-                "items":{"type":"string","enum":["head","data","plans","report","members","judgment","elections","isets","inputs","dependents","owner"]}},
+                "items":{"type":"string","enum":["head","data","plans","report","members","judgment","elections","isets","inputs","dependents","owner","annotations"]}},
                 "limit":limit,"cursor":string}),
                 vec![],
             ),

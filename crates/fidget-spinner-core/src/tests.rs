@@ -1,5 +1,5 @@
 //! Acceptance witnesses for the ledger's law: finality, void, guards, data,
-//! structure and the FS 3 migration. Every scenario ends by proving that a
+//! structure, supervision and annotation, and the FS 3 migration. Every scenario ends by proving that a
 //! replay from nothing reproduces the incrementally patched state.
 
 use std::error::Error;
@@ -393,7 +393,7 @@ fn fs3_history_replays_under_legacy_law() -> Result {
     let (h, g) = (l.id("h")?, l.id("g")?);
     let hypothesis = f.work()[&h].iset().ok_or("h is no iset")?;
     assert!(hypothesis.judgment.is_none());
-    assert_eq!(hypothesis.superseded.len(), 2);
+    assert_eq!(hypothesis.prior.len(), 2);
     assert!(f.is_void(l.id("h#2")?) && !f.is_void(l.id("h#1")?));
     assert!(f.work()[&g].inputs.contains(&h));
     assert_eq!(
@@ -421,4 +421,55 @@ fn fs3_history_replays_under_legacy_law() -> Result {
     );
     assert!(bar_reserved(&ops(json!([{"op":"reopen","iset":"g"}]))?).is_err());
     l.replays()
+}
+
+/// Only a change to what work asks stales its assignment. Annotations, which any
+/// record takes, resolved, void or concluded, change no revision and trip no guard.
+#[test]
+fn only_specification_stales_an_assignment() -> Result {
+    let stale = |ledger: &Ledger| -> Vec<Finding> {
+        ledger
+            .frontier
+            .findings()
+            .into_iter()
+            .filter(|f| matches!(f, Finding::Stale(_)))
+            .collect()
+    };
+    let mut ledger = Ledger::default();
+    ledger.commit(json!([
+        {"op":"frontier","objective":"o"},
+        {"op":"iset","slug":"q"},
+        {"op":"plan","trial":"t","into":["q"]},
+        {"op":"plan","trial":"u"},
+        {"op":"assign","work":"q","owner":"w"},
+        {"op":"assign","work":"t","owner":"w"}
+    ]))?;
+    let rev = ledger.rev("t")?;
+    ledger.commit(json!([
+        {"op":"member","iset":"q","add":["u"]},
+        {"op":"annotate","work":"t","text":"Blocked on the cache fix."},
+        {"op":"start","work":"t"}
+    ]))?;
+    assert!(stale(&ledger).is_empty());
+    assert_eq!(ledger.rev("t")?, rev);
+    ledger.commit(json!([{"op":"edit","work":"t","rev":rev,"data":{"change":"narrower"}}]))?;
+    assert_eq!(stale(&ledger), [Finding::Stale(ledger.id("t")?)]);
+    ledger.commit(json!([{"op":"report","trial":"t"},{"op":"report","trial":"u"}]))?;
+    ledger.commit(json!([{"op":"annotate","work":"t","text":"Second run only."}]))?;
+    ledger.commit(json!([{"op":"judge","iset":"q","answer":{},"seen":4}]))?;
+    let long = vec!["word"; 101].join(" ");
+    assert_eq!(
+        ledger.fault(json!([{"op":"annotate","work":"q","text":long}]))?,
+        Fault::Malformed
+    );
+    ledger.commit(json!([
+        {"op":"void","work":"u","reason":"flaky harness"},
+        {"op":"conclude","lesson":"l"},
+        {"op":"annotate","work":"u","text":"Harness fixed in b2."}
+    ]))?;
+    assert_eq!(
+        ledger.fault(json!([{"op":"plan","trial":"v"}]))?,
+        Fault::Concluded
+    );
+    ledger.replays()
 }

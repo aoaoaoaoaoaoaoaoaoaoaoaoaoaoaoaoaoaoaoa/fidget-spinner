@@ -378,20 +378,15 @@ impl Frontier {
             {
                 out.insert(Finding::Unsettled(id));
             }
-            if !work.resolved() {
-                if work
-                    .owner
-                    .as_ref()
-                    .is_some_and(|owner| owner.bound < work.rev)
-                {
-                    out.insert(Finding::Stale(id));
-                }
-                if let Some(control) = work.trial().and_then(|t| t.plan()).and_then(|p| p.control)
-                    && control.defaulted
-                    && incumbent.map(|(_, b)| b) != Some(control.baseline)
-                {
-                    out.insert(Finding::Superseded(id));
-                }
+            if work.stale() {
+                out.insert(Finding::Stale(id));
+            }
+            if !work.resolved()
+                && let Some(control) = work.trial().and_then(|t| t.plan()).and_then(|p| p.control)
+                && control.defaulted
+                && incumbent.map(|(_, b)| b) != Some(control.baseline)
+            {
+                out.insert(Finding::Superseded(id));
             }
         }
         if let Some((index, baseline)) = incumbent {

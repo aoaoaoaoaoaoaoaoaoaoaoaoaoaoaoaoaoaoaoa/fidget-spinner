@@ -299,6 +299,12 @@ fn mcp_inquiry_session() -> Result {
     )?;
     let read = session.json("schema.read", json!({"schema":"attempt"}))?;
     assert_eq!(read["definitions"][0]["definition"], definition);
+    assert_eq!(
+        read["writing"],
+        json!([
+            r#"plan.kind: {"tag":"confirmation","value":{"alpha":0.5}} or {"tag":"guard","value":{}}"#
+        ])
+    );
     let text = session.call("schema.read", json!({"schema":"attempt"}))?;
     assert!(
         text["content"][0]["text"]
@@ -307,6 +313,22 @@ fn mcp_inquiry_session() -> Result {
         "{text}"
     );
     session.json("frontier.patch",json!({"frontier":"latency","ops":[{"op":"conclude","lesson":"Cache parsing avoids repeated work"}]}))?;
+    // A concluded frontier still takes annotations; an inapplicable section is ignored, named.
+    session.json("frontier.patch",json!({"frontier":"latency","ops":[{"op":"annotate","work":"parse.cache#1","text":"Outputs diffed byte for byte."}]}))?;
+    let packet = session.json(
+        "record.read",
+        json!({"frontier":"latency","work":"parse.cache#1","sections":["annotations","members"]}),
+    )?;
+    assert_eq!(
+        packet["annotations"]["items"][0]["text"],
+        "Outputs diffed byte for byte."
+    );
+    assert!(
+        packet["ignored"][0]
+            .as_str()
+            .is_some_and(|w| w.contains("members")),
+        "{packet}"
+    );
     let search = session.json(
         "frontier.status",
         json!({"scope":"project","filter":{"text":"Cache parsing"}}),
@@ -441,14 +463,14 @@ fn fs3_store_migrates_in_place() -> Result {
         String::from_utf8_lossy(&output.stderr)
     );
     let packet: Value = serde_json::from_slice(&output.stdout)?;
-    assert_eq!(version(&connection)?, 22);
+    assert_eq!(version(&connection)?, 23);
     assert!(
         packet["head"]["schema"]
             .as_str()
             .is_some_and(|s| s.starts_with("fs3.hypothesis@"))
     );
     assert_eq!(packet["judgment"]["answer"]["disposition"], "rejected");
-    assert_eq!(packet["judgment"]["superseded"]["total"], 1);
+    assert_eq!(packet["prior_judgments"]["total"], 1);
     assert_eq!(packet["members"]["total"], 2);
     // An FS 3 operation the migration does not know refuses it whole.
     let cell = TestCell::new("spinner-fs3-refused")?;

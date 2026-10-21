@@ -60,6 +60,9 @@ reference to a removed record, whether consumption, control, treatment, adoption
 and is never retargeted, and a resolution that consumed it carries the mark `source removed`. The store keeps removed
 records' operations; history redacts them (§17).
 
+`annotate` appends a dated **annotation** of at most 100 words to a record, whether open, resolved or void.
+Annotations accumulate and are never edited; they change no data, revision, consumption, freeze, finding or guard.
+
 ## 4. Data and schemas
 
 **Data** is a JSON value: null, boolean, number, text, list, object, or a **reference**
@@ -172,8 +175,10 @@ States inform views and never prohibit early execution, reporting or judgment.
 
 ### Supervision
 
-`assign` names work's owner, with optional instructions, and binds the assignment to the work's current revision;
-`release` clears it. `start` asserts execution and `stop` retracts the assertion. A trial has one assignment however many
+`assign` names work's owner, with optional instructions, and binds the assignment to the work's
+**specification**: an iset's data, a trial's plan, and either's binding and inputs. A later change to the specification
+makes the assignment `stale` (§11) until the work is reassigned; membership, execution assertions and annotations never
+do. `release` clears it. `start` asserts execution and `stop` retracts the assertion. A trial has one assignment however many
 isets share it. Owners are free-form names, not accounts.
 
 ## 7. Void
@@ -251,7 +256,7 @@ never blocks, and clears when its condition ends. Receipts list the findings a p
 | `unjudged/<baseline>/<iset>` | The incumbent baseline's election adopted an iset that is neither judged nor void. |
 | `nonconforming/<work>` | Data, a plan, a report or an answer violates its binding. |
 | `unvalidated/<work>` | Work's binding requests a definition that does not exist. |
-| `stale/<work>` | Open work was written after its assignment was bound. |
+| `stale/<work>` | Open work's specification changed after its assignment was bound (§6). |
 | `superseded/<trial>` | An open trial's defaulted control is no longer the incumbent baseline. |
 | `unbridged/<k>` | Regime k ≥ 2 has no bridge. |
 | `unlisted/<k>/<key>` | Three or more non-void trials of regime k carry an unlisted reading for the key. |
@@ -267,8 +272,8 @@ member or an input that is not done, and an election adopting an unjudged iset.
 ## 13. Conclusion and archive
 
 `conclude` records a frontier's lesson once and consumes its done work. A concluded frontier refuses every operation but
-`void`, `remove` and `rename`; a later void marks the conclusion. Continuing means a new frontier. A conclusion's view
-shows what it consumed and the open work left at conclusion.
+`void`, `remove`, `rename` and `annotate`; a later void marks the conclusion. Continuing means a new frontier. A conclusion's
+view shows what it consumed and the open work left at conclusion.
 
 **Archive** is the owner's administrative end state, taken only in the navigator and only on a concluded frontier.
 An archived frontier refuses every operation, naming the archive, until he unarchives it, and its reads stay
@@ -278,7 +283,8 @@ complete. A patch carrying `archive` or `unarchive` is refused.
 
 A patch is refused, naming the operation index and field, for:
 
-- malformed operations, unknown fields, invalid names, keys, units, values or paths, and empty required text;
+- malformed operations, unknown fields, invalid names, keys, units, values or paths, empty required text, and an
+  annotation over 100 words;
 - references that do not resolve, name collisions, and membership or input cycles;
 - a unit of the wrong kind, and a change of a metric's meaning after its first reading;
 - definitions outside the grammar;
@@ -286,7 +292,8 @@ A patch is refused, naming the operation index and field, for:
 - writes to resolved or void records, a second report or judgment, a second void, and changes to frozen parts of a
   baseline;
 - an election of a void baseline or one outside the current regime, and a bridge without an incumbent baseline;
-- operations other than `void`, `remove` and `rename` on a concluded frontier, and every operation on an archived one;
+- operations other than `void`, `remove`, `rename` and `annotate` on a concluded frontier, and every operation on an
+  archived one;
 - `archive`, `unarchive` and the migration's operations (§19).
 
 A patch to an unknown frontier creates it when its first operation is `frontier`, and is refused otherwise.
@@ -316,6 +323,7 @@ elect    {baseline, rationale, adopts?: [iset]}
 void     {work | baseline, reason}
 remove   {work | baseline}
 rename   {work | baseline, to}
+annotate {work | baseline, text}
 assign   {work, owner, instructions?}
 release  {work}
 start    {work}
@@ -340,6 +348,8 @@ path      = [key, …]
   `set` replaces one whole value and lists are replaced whole; `delete` removes one present member. The resulting data
   is then checked against the resulting binding.
 - `baseline` creates or updates: `artifacts` replace, `readings` merge by key, `note` replaces.
+- `annotate` appends `text`, at most 100 words, to the record's annotations (§3); it applies to resolved and void
+  records and on a concluded frontier.
 - `member` and `after` add and drop. `gauge.metrics` adds metrics or updates existing ones.
 - `judge.seen` and `guard.head` are seqs (§10).
 
@@ -378,7 +388,8 @@ Every read follows TOKEN_POLICY: `render` is `porcelain` (default) or `json` and
 same seq and is refused, asking for a rerun, after a removal or a mismatch. Porcelain renders data as compact JSON
 with references as `@kind:name` (`@kind:-` when removed), uniform rows as tables with a header once, and never
 indented JSON; previews of long text are marked and name the read that returns them whole. Porcelain and JSON carry
-the same information.
+the same information. A selector or section that does not apply to its view or record is ignored with a warning naming
+it; a read none of whose sections applies is refused, naming the record's sections.
 
 ### Status
 
@@ -400,28 +411,32 @@ with a route to the full list.
 | `frontiers` | the project's frontiers: slug, standing, counts by state, objective preview |
 
 Selectors: `under` (an iset's members at any depth), `lane`, `state` (a state or `void`), `owner`, `schema` and `text`. `text`
-is a case-insensitive substring over all names, data, answers, plans, reports, notes, rationales and lessons, and over
-data field paths; with `scope: "project"` it searches every frontier of the project, and its rows are
-`frontier | record | field | excerpt`. An inapplicable selector is ignored with a warning naming it.
+is a case-insensitive substring over all names, data, answers, plans, reports, notes, annotations, rationales and lessons, and
+over data field paths; with `scope: "project"` it searches every frontier of the project, and its rows are `frontier | record
+| field | excerpt`.
 
 ### Packets
 
 `record.read` names `work` or `baseline` and optional `sections`:
 
-- trial: `head` (name, state or void, regime, binding, validity and conformance to the current definition, marks,
-  revision), `plans` (every revision, with the executed one marked), `report` (readings, control readings,
-  comparisons, artifacts, data, consumed sources), `isets`, `inputs`, `dependents`, `owner`;
+- trial: `head` (name, state or void, regime, binding, validity and conformance to the current definition, marks, revision,
+  annotation count), `plans` (every revision, with the executed one marked), `report` (readings, control readings,
+  comparisons, artifacts, data, consumed sources, or `none yet`), `isets`, `inputs`, `dependents`, `owner` (with the bound
+  specification revision and, when stale, the revision that changed it), `annotations` (newest first);
 - iset: `head` (as a trial's, without regime), `data`, `members` (with states), `judgment` (answer, guard, consumed and
-  passed over; superseded FS 3 judgments, §19), `isets`, `inputs`, `dependents`, `owner`;
-- baseline: `head` (regime, artifacts, readings, note, frozen parts, void), `elections` (with adoptions), `dependents`.
+  passed over, or `none yet`; FS 3 judgments it replaced follow as `prior_judgments`, §19), `isets`, `inputs`,
+  `dependents`, `owner`, `annotations`;
+- baseline: `head` (regime, artifacts, readings, note, frozen parts, void, annotation count), `elections` (with
+  adoptions), `dependents`, `annotations`.
 
 Void records show withdrawn or invalidated and the reason; records resting on void name the void source and its
 reason.
 
 ### Schemas
 
-`schema.read` with `schema` returns the id's definitions, newest first, each with its revision, and the work bound to it;
-without `schema` it returns the definition grammar with an example of each carrier.
+`schema.read` with `schema` returns the id's definitions, newest first, each with its revision; `writing`, one line per
+variant or ref field of the newest definition showing a value to write, with placeholders; and the work bound to it.
+Without `schema` it returns the definition grammar with an example of each carrier.
 
 ### History
 
@@ -447,20 +462,21 @@ The Settled control keeps judgments since the latest epoch or the last 2, 3 or 5
 the last 2; open work always remains visible. `?under=<iset>` scopes the board to an iset's members at any depth, and a
 scope nested deeper than two set levels is listed as an outline.
 
-Above the board, the frontier's counts, regime and incumbent baseline lead its objective, conclusion, one tile per KPI
-and its sets in their board colours. A tile names the KPI, its direction, its unit and the incumbent baseline's value;
-from two readings on it charts baseline readings as steps across epochs and reported trials as dots coloured by
-state, reference lines dashed, every point a link to its record. A dot describes its trial, never a containing iset's
-answer. Epochs are named by baseline and time, never by ordinal. Hovering a cell shows its state, headline and badge
-fields, answer preview, latest report and neighbours; clicking opens a foreground with the whole record.
+Above the board, the frontier's counts, regime and incumbent baseline lead its objective, conclusion, one tile per KPI and its
+sets in their board colours. A tile names the KPI, its direction, its unit and the incumbent baseline's value; from two
+readings on it charts baseline readings as steps across epochs and reported trials as dots coloured by state, reference lines
+dashed, every point a link to its record. A dot describes its trial, never a containing iset's answer. Epochs are named by
+baseline and time, never by ordinal. Hovering a cell shows its state, headline and badge fields, answer preview, latest report
+and neighbours; clicking opens a foreground with the whole record, its annotations included.
 
 ## 19. Store and migration
 
-One SQLite store at `$XDG_STATE_HOME/fidget-spinner/ledger.sqlite3` holds every project's frontiers in store format 22. A
-format-21 store (FS 3) is migrated when a writer first opens it, in one transaction: each operation is translated in
-place, preserving seqs, times, patch boundaries and the order of operations within each patch.
+One SQLite store at `$XDG_STATE_HOME/fidget-spinner/ledger.sqlite3` holds every project's frontiers in store format 23. A
+format-22 store (FS 4.0) lacks only `annotate` and is promoted unchanged when a writer first opens it; a format-21 store (FS
+3) is migrated then, in one transaction: each operation is translated in place, preserving seqs, times, patch boundaries and
+the order of operations within each patch.
 
-| FS 3 | Format 22 |
+| FS 3 | Format 23 |
 |---|---|
 | `frontier {objective}` | `frontier {objective, legacy_through}`, then `define` of `fs3.hypothesis`, `fs3.review` and `fs3.trial` |
 | `hypothesis {slug, title, mechanism?, claim?}` | `iset {slug, schema: "fs3.hypothesis", data: {title, mechanism?, claim?, carries: {}}}` |
@@ -480,8 +496,8 @@ The three `fs3` schemas define a hypothesis (data: title, mechanism, claim, and 
 disposition and rationale), a review (data: title and charter; answer: lesson) and a trial (report: note). FS 3
 operations absent from the store refuse the migration. A translated legacy trial has no plan and no execution
 assertion; a legacy disposition or lesson is a judgment with `read not recorded`. Patches through `legacy_through` replay
-under FS 3 law: writes to resolved or void records are accepted, a judgment of a judged iset supersedes its current
-judgment, and `reopen` returns an iset's current judgment to its superseded history. Superseded judgments stay readable.
+under FS 3 law: writes to resolved or void records are accepted, a judgment of a judged iset replaces its current
+judgment, and `reopen` withdraws it; a replaced or withdrawn judgment stays readable as a prior judgment.
 Later patches follow this specification. `legacy_through` and `reopen` exist only in migrated history.
 
 Tests use isolated stores, never the live one. The CLI mirrors the tools: `fidget-spinner mcp serve`, `patch`, `status`,

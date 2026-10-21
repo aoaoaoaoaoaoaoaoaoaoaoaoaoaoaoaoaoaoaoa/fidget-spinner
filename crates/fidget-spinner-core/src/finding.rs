@@ -68,7 +68,10 @@ impl Finding {
                 "{} requests a schema definition that does not exist",
                 name(id)
             ),
-            Self::Stale(id) => format!("{} changed after its assignment was bound", name(id)),
+            Self::Stale(id) => format!(
+                "{}'s specification changed after its assignment was bound",
+                name(id)
+            ),
             Self::Superseded(id) => format!(
                 "{}'s defaulted control is no longer the incumbent baseline",
                 name(id)

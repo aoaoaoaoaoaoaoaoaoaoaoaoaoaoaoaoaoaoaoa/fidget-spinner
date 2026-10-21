@@ -7,6 +7,7 @@ gate = ["./check.py", "check"]
 
 [state]
 mode = "versioned"
-# Epoch 21 is FS 3's store; the first writer translates it in place to 22.
-readable = [21, 22]
-writable = 22
+# Epoch 21 is FS 3's store, which the first writer translates in place; epoch 22
+# (FS 4.0) lacks only annotate and promotes unchanged.
+readable = [21, 22, 23]
+writable = 23

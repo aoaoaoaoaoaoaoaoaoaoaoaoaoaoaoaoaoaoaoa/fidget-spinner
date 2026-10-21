@@ -11,8 +11,8 @@ use std::{
 };
 
 use fidget_spinner_core::{
-    Baseline, Body, Data, Frontier, Id, Name, Op, Reading, RecordedReadings, RegimeNumber, Shown,
-    Slug, Trial, Work, schema::Show,
+    Annotation, Baseline, Body, Data, Frontier, Id, Name, Op, Reading, RecordedReadings,
+    RegimeNumber, Shown, Slug, Trial, Work, schema::Show,
 };
 use libmcp::DetailLevel;
 use serde_json::{Value as Json, json};
@@ -554,6 +554,16 @@ fn controls(s: &Selection) -> Vec<C> {
         form,
     )]
 }
+/// Annotations newest first, one per line after its time.
+fn annotation_lines(annotations: &[Annotation]) -> String {
+    annotations
+        .iter()
+        .rev()
+        .map(|a| format!("{} · {}", stamp(a.at.time, false), a.text))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 fn sheet_record(card: &Card) -> C {
     C::classed(T::Section, format!("record {}", card.class), card.content())
 }
@@ -1006,6 +1016,12 @@ impl<'f> Board<'f> {
                     .map_or_else(|| owner.name.clone(), |i| format!("{}\n{}", owner.name, i)),
             ));
         }
+        if matches!(depth, Depth::Sheet) && !work.annotations.is_empty() {
+            fields.push(Field::text(
+                "annotations",
+                annotation_lines(&work.annotations),
+            ));
+        }
         let within: Vec<_> = f
             .containers(id)
             .into_iter()
@@ -1338,6 +1354,9 @@ impl<'f> Board<'f> {
         }];
         if let Some(note) = &b.note {
             fields.push(Field::text("note", note.clone()));
+        }
+        if !b.annotations.is_empty() {
+            fields.push(Field::text("annotations", annotation_lines(&b.annotations)));
         }
         if let Some(void) = &b.void {
             fields.push(Field::text("void because", void.reason.clone()));

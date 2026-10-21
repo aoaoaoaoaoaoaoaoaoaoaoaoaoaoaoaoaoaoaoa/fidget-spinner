@@ -7,7 +7,7 @@ fidget-spinner: local inquiry ledger, MCP server and navigator; trebuchet owns s
 ## invariants
 - Keep `crates/fidget-spinner-core` pure; I/O and transport belong in `crates/fidget-spinner`
 - Ledger ops replay forever: never change an existing op's meaning; new meaning needs new op or new store format with migration
-- Store format 22 at `$XDG_STATE_HOME/fidget-spinner/ledger.sqlite3`; tests use isolated stores, never live state
+- Store format 23 at `$XDG_STATE_HOME/fidget-spinner/ledger.sqlite3`; tests use isolated stores, never live state
 - Pin trebuchet by Git rev in `Cargo.toml`; keep shared mechanisms out of Spinner's domain core
 
 ## routes

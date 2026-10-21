@@ -22,7 +22,9 @@ pub use trebuchet::ledger::{
 use crate::mcp::Fault;
 
 /// The store format this build writes.
-pub const FORMAT: i64 = 22;
+pub const FORMAT: i64 = 23;
+/// FS 4.0's format, which lacks only annotate and so promotes unchanged.
+const UNANNOTATED: i64 = 22;
 /// FS 3's format, translated in place when a writer first opens it.
 const FS3: i64 = 21;
 const FRONTIERS: &str = "frontiers";
@@ -76,9 +78,9 @@ fn names() -> Result<SqlNames, FormatError> {
     SqlNames::new(FRONTIERS, PATCHES, FRONTIER, "patches_frontier_seq")
 }
 
-/// The writer's format: reads FS 3 and format 22, writes 22.
+/// The writer's format: reads FS 3, format 22 and format 23, writes 23.
 pub fn format() -> Result<StoreFormat, FormatError> {
-    Ok(StoreFormat::new(names()?, vec![FS3, FORMAT], FORMAT)?.with_migration(migrate))
+    Ok(StoreFormat::new(names()?, vec![FS3, UNANNOTATED, FORMAT], FORMAT)?.with_migration(migrate))
 }
 
 /// Open the store for writing, migrating an FS 3 store first.
@@ -93,13 +95,17 @@ pub fn open(path: &Path) -> Result<Store, Fault> {
 pub fn read_only(path: &Path) -> Result<Option<Store>, Fault> {
     Ok(Store::open_read_only(
         path,
-        StoreFormat::new(names()?, vec![FORMAT], FORMAT)?,
+        StoreFormat::new(names()?, vec![UNANNOTATED, FORMAT], FORMAT)?,
     )?)
 }
 
-/// Translate every FS 3 patch in place, preserving seqs, times, patch
+/// Promote format 22 unchanged, since 23 only adds annotate. Translate every
+/// FS 3 patch in place, preserving seqs, times, patch
 /// boundaries and operation order, and prove that the result replays.
 fn migrate(tx: &Transaction<'_>, from: i64, to: i64) -> rusqlite::Result<()> {
+    if (from, to) == (UNANNOTATED, FORMAT) {
+        return Ok(());
+    }
     if (from, to) != (FS3, FORMAT) {
         return Err(failure(format!(
             "no migration from store format {from} to {to}"

@@ -24,6 +24,7 @@ pub const COLLECTIONS: &[&str] = &[
     "bound",
     "ops",
     "history",
+    "annotations",
 ];
 /// The collections a record packet pages.
 pub const READ_COLLECTIONS: &[&str] = &[
@@ -33,6 +34,7 @@ pub const READ_COLLECTIONS: &[&str] = &[
     "isets",
     "inputs",
     "dependents",
+    "annotations",
 ];
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, ValueEnum, PartialEq, Eq)]
@@ -171,6 +173,7 @@ pub enum Section {
     Inputs,
     Dependents,
     Owner,
+    Annotations,
 }
 
 impl Part for Section {
@@ -187,6 +190,7 @@ impl Part for Section {
             Self::Inputs => "inputs",
             Self::Dependents => "dependents",
             Self::Owner => "owner",
+            Self::Annotations => "annotations",
         }
     }
     fn paged(self) -> bool {
@@ -198,6 +202,7 @@ impl Part for Section {
                 | Self::Isets
                 | Self::Inputs
                 | Self::Dependents
+                | Self::Annotations
         )
     }
 }
@@ -210,6 +215,7 @@ const TRIAL_SECTIONS: &[Section] = &[
     Section::Inputs,
     Section::Dependents,
     Section::Owner,
+    Section::Annotations,
 ];
 const ISET_SECTIONS: &[Section] = &[
     Section::Head,
@@ -220,8 +226,14 @@ const ISET_SECTIONS: &[Section] = &[
     Section::Inputs,
     Section::Dependents,
     Section::Owner,
+    Section::Annotations,
 ];
-const BASELINE_SECTIONS: &[Section] = &[Section::Head, Section::Elections, Section::Dependents];
+const BASELINE_SECTIONS: &[Section] = &[
+    Section::Head,
+    Section::Elections,
+    Section::Dependents,
+    Section::Annotations,
+];
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -308,6 +320,14 @@ pub fn excerpt(body: &str, query: &str) -> Option<String> {
 
 pub fn carrier_name(carrier: Carrier) -> &'static str {
     carrier.as_str()
+}
+
+/// The newest annotation containing the query, as an excerpt.
+fn annotation_excerpt(annotations: &[Annotation], query: &str) -> Option<String> {
+    annotations
+        .iter()
+        .rev()
+        .find_map(|a| excerpt(&a.text, query))
 }
 
 fn bounded(mut items: Vec<Json>, limit: usize, read: Option<Route>) -> Json {
@@ -714,14 +734,12 @@ impl<'a> Lens<'a> {
             && filter.schema.as_ref().is_none_or(|schema| {
                 matches!(&work.binding, Some(Binding::Exact { id, .. } | Binding::Requested { id, .. }) if id == schema)
             })
-            && filter.text.as_ref().is_none_or(|q| self.work_text(id, work, q).is_some())
+            && filter.text.as_ref().is_none_or(|q| Self::work_text(work, q).is_some())
     }
 
     /// The first field of a work record containing the query, with its excerpt.
-    fn work_text(&self, id: Id, work: &Work, query: &str) -> Option<(String, String)> {
+    fn work_text(work: &Work, query: &str) -> Option<(String, String)> {
         let q = query.to_lowercase();
-        let name = |r: &Ref| self.frontier.ref_name(r);
-        let _ = name;
         if contains(&work.name.to_string(), &q) {
             return Some(("name".into(), work.name.to_string()));
         }
@@ -732,8 +750,8 @@ impl<'a> Lens<'a> {
                 if let Some(j) = &iset.judgment {
                     slots.push(("answer".into(), &j.answer));
                 }
-                for j in &iset.superseded {
-                    slots.push(("superseded answer".into(), &j.answer));
+                for j in &iset.prior {
+                    slots.push(("prior answer".into(), &j.answer));
                 }
             }
             Body::Trial(trial) => {
@@ -756,7 +774,6 @@ impl<'a> Lens<'a> {
                 return Some((field, excerpt(&body, query).unwrap_or(body)));
             }
         }
-        let _ = id;
         work.void
             .as_ref()
             .and_then(|v| excerpt(&v.reason, query).map(|e| ("void".into(), e)))
@@ -765,6 +782,9 @@ impl<'a> Lens<'a> {
                     .as_ref()
                     .and_then(|o| o.instructions.as_deref())
                     .and_then(|i| excerpt(i, query).map(|e| ("instructions".into(), e)))
+            })
+            .or_else(|| {
+                annotation_excerpt(&work.annotations, query).map(|e| ("annotations".into(), e))
             })
     }
 
@@ -786,8 +806,8 @@ impl<'a> Lens<'a> {
         {
             row(json!("frontier"), "lesson", e);
         }
-        for (id, work) in self.frontier.work() {
-            if let Some((field, e)) = self.work_text(*id, work, query) {
+        for work in self.frontier.work().values() {
+            if let Some((field, e)) = Self::work_text(work, query) {
                 row(json!(work.name), &field, e);
             }
         }
@@ -805,7 +825,8 @@ impl<'a> Lens<'a> {
                         .iter()
                         .find_map(|a| excerpt(a, query))
                         .map(|e| ("artifacts", e))
-                });
+                })
+                .or_else(|| annotation_excerpt(&b.annotations, query).map(|e| ("annotations", e)));
             if let Some((field, e)) = hit {
                 row(json!(b.slug), field, e);
             }
@@ -1093,15 +1114,15 @@ impl<'a> Lens<'a> {
 
     pub fn read(&self, args: &ReadArgs, paging: &Paging<'_>) -> Result<Json, String> {
         let f = self.frontier;
-        let (id, defaults, query) = match (&args.work, &args.baseline) {
+        let (id, kind, defaults, query) = match (&args.work, &args.baseline) {
             (Some(name), None) => {
                 let (id, work) = f.named(name).ok_or_else(|| self.unknown_work(name))?;
-                let defaults = if work.iset().is_some() {
-                    ISET_SECTIONS
+                let (kind, defaults) = if work.iset().is_some() {
+                    ("iset", ISET_SECTIONS)
                 } else {
-                    TRIAL_SECTIONS
+                    ("trial", TRIAL_SECTIONS)
                 };
-                (id, defaults, json!({"work":name}))
+                (id, kind, defaults, json!({"work":name}))
             }
             (None, Some(slug)) => {
                 let (id, _) = f.baseline_named(slug).ok_or_else(|| {
@@ -1111,34 +1132,56 @@ impl<'a> Lens<'a> {
                         &slug::nearest(slug.as_str(), names),
                     )
                 })?;
-                (id, BASELINE_SECTIONS, json!({"baseline":slug}))
+                (id, "baseline", BASELINE_SECTIONS, json!({"baseline":slug}))
             }
             _ => return Err("record.read names exactly one of work and baseline".into()),
         };
-        if let Some(sections) = &args.sections
-            && let Some(wrong) = sections.iter().find(|s| !defaults.contains(s))
-        {
-            return Err(format!(
-                "section {} does not apply to this record",
-                wrong.name()
-            ));
+        let mut ignored = Vec::new();
+        let mut requested = args.sections.clone();
+        if let Some(sections) = &mut requested {
+            sections.retain(|section| {
+                let applies = defaults.contains(section);
+                if !applies {
+                    ignored.push(format!(
+                        "section {} does not apply to a {kind}; ignored",
+                        section.name()
+                    ));
+                }
+                applies
+            });
+            if sections.is_empty() {
+                let names: Vec<&str> = defaults.iter().map(|s| s.name()).collect();
+                return Err(format!(
+                    "no requested section applies to a {kind}; its sections are {}",
+                    names.join(", ")
+                ));
+            }
         }
         let mut window = args.window.clone();
-        window.sections(args.sections.as_ref())?;
-        let sections = parts(args.sections.as_ref(), defaults, &window, COLLECTIONS)?;
+        window.sections(requested.as_ref())?;
+        let sections = parts(requested.as_ref(), defaults, &window, COLLECTIONS)?;
         let mut out = json!({});
+        if !ignored.is_empty() {
+            out["ignored"] = json!(ignored);
+        }
         for section in sections {
             let page = |rows: Vec<Json>| -> Result<Json, String> {
                 let page = paging.page(rows, &query, section.name(), &window, 20, |r| r)?;
                 Ok(json!({"items":page.items,"total":page.total,"next_cursor":page.next_cursor}))
             };
-            out[section.name()] = match section {
+            let value = match section {
                 Section::Head => self.head(id),
                 Section::Data => self.data_section(id),
                 Section::Plans => page(self.plans(id))?,
                 Section::Report => self.report(id),
                 Section::Members => page(self.members(id))?,
-                Section::Judgment => self.judgment(id),
+                Section::Judgment => {
+                    let (current, prior) = self.judgment(id);
+                    if let Some(prior) = prior {
+                        out["prior_judgments"] = prior;
+                    }
+                    current
+                }
                 Section::Elections => page(self.elections(id))?,
                 Section::Isets => page(f.containers(id).into_iter().map(|i| json!({"name":self.name(i),"state":self.shown(i)})).collect())?,
                 Section::Inputs => page(
@@ -1149,7 +1192,9 @@ impl<'a> Lens<'a> {
                 )?,
                 Section::Dependents => page(self.dependents(id))?,
                 Section::Owner => self.owner_section(id),
+                Section::Annotations => page(self.annotations(id))?,
             };
+            out[section.name()] = value;
         }
         Ok(out)
     }
@@ -1160,6 +1205,9 @@ impl<'a> Lens<'a> {
             let mut row = self.baseline_row(id, b);
             row["void"] = b.void.as_ref().map_or(Json::Null, |v| self.void(id, v));
             row["rev"] = json!(b.rev.to_string());
+            if !b.annotations.is_empty() {
+                row["annotations"] = json!(b.annotations.len());
+            }
             return row;
         }
         let Some(work) = f.work().get(&id) else {
@@ -1171,7 +1219,8 @@ impl<'a> Lens<'a> {
             "regime":work.trial().and_then(|t| t.regime),
             "schema":self.binding(work.binding.as_ref()),"violations":validity["violations"],"current":validity["current"],
             "headline":self.headline_json(id),"badges":self.badges(work),
-            "created":stamp(work.created.time,self.full),"rev":work.rev.to_string(),"marks":self.marks(id)})
+            "created":stamp(work.created.time,self.full),"rev":work.rev.to_string(),"marks":self.marks(id),
+            "annotations":(!work.annotations.is_empty()).then_some(work.annotations.len())})
     }
 
     fn void(&self, id: Id, void: &Void) -> Json {
@@ -1239,7 +1288,7 @@ impl<'a> Lens<'a> {
             return Json::Null;
         };
         let Some(report) = &trial.report else {
-            return json!({"reported":false,"plan":if trial.plans.is_empty() {"no plan recorded"} else {"planned"}});
+            return json!("none yet");
         };
         let executed = report
             .plan
@@ -1304,13 +1353,14 @@ impl<'a> Lens<'a> {
             .collect()
     }
 
-    fn judgment(&self, id: Id) -> Json {
+    /// The current judgment, or none yet, and the FS 3 judgments it replaced, newest first.
+    fn judgment(&self, id: Id) -> (Json, Option<Json>) {
         let f = self.frontier;
         let Some(work) = f.work().get(&id) else {
-            return Json::Null;
+            return (Json::Null, None);
         };
         let Some(iset) = work.iset() else {
-            return Json::Null;
+            return (Json::Null, None);
         };
         let one = |j: &Judgment| {
             let void = f.void_sources(&j.consumes);
@@ -1320,15 +1370,14 @@ impl<'a> Lens<'a> {
                 "rests_on_void":(!void.is_empty()).then(|| void.iter().map(|v| json!({"record":self.name(*v),"reason":self.void_reason(*v)})).collect::<Vec<_>>()),
                 "source_removed":f.removed_source(&j.consumes).then_some(true)})
         };
-        let mut out = iset
+        let current = iset
             .judgment
             .as_ref()
-            .map_or_else(|| json!({"judged":false}), one);
-        if !iset.superseded.is_empty() {
-            out["superseded"] = json!({"total":iset.superseded.len(),
-                "items":iset.superseded.iter().rev().map(one).collect::<Vec<_>>()});
-        }
-        out
+            .map_or_else(|| json!("none yet"), one);
+        let prior = (!iset.prior.is_empty()).then(|| {
+            json!({"total":iset.prior.len(),"items":iset.prior.iter().rev().map(one).collect::<Vec<_>>()})
+        });
+        (current, prior)
     }
 
     fn elections(&self, id: Id) -> Vec<Json> {
@@ -1392,8 +1441,23 @@ impl<'a> Lens<'a> {
         };
         json!({"owner":work.owner.as_ref().map(|o| json!({"name":o.name,
                 "instructions":o.instructions.as_deref().map(|i| self.text(i,"record.read",self.read_route(id,"owner"))),
-                "bound":o.bound.to_string(),"stale":(o.bound < work.rev && !work.resolved()).then_some(true)})),
+                "bound":o.bound.to_string(),"stale":work.stale().then(|| format!("specification changed at {}", work.specified))})),
             "running":work.running.map(|m| stamp(m.time,self.full))})
+    }
+
+    /// A record's annotations, newest first.
+    fn annotations(&self, id: Id) -> Vec<Json> {
+        let f = self.frontier;
+        let annotations: &[Annotation] = match (f.work().get(&id), f.baselines().get(&id)) {
+            (Some(work), _) => &work.annotations,
+            (None, Some(baseline)) => &baseline.annotations,
+            (None, None) => &[],
+        };
+        annotations
+            .iter()
+            .rev()
+            .map(|a| json!({"at":stamp(a.at.time,self.full),"text":a.text}))
+            .collect()
     }
 
     pub fn schema(&self, args: &SchemaArgs, paging: &Paging<'_>) -> Result<Json, String> {
@@ -1426,7 +1490,7 @@ impl<'a> Lens<'a> {
             |r| r,
         )?;
         Ok(
-            json!({"schema":id,"definitions":definitions.iter().rev().map(|d| json!({"rev":d.at.pos.to_string(),"at":stamp(d.at.time,self.full),"definition":d.schema.json()})).collect::<Vec<_>>(),
+            json!({"schema":id,"writing":definitions.last().map(|d| d.schema.writing()),"definitions":definitions.iter().rev().map(|d| json!({"rev":d.at.pos.to_string(),"at":stamp(d.at.time,self.full),"definition":d.schema.json()})).collect::<Vec<_>>(),
             "bound":{"items":page.items,"total":page.total,"next_cursor":page.next_cursor}}),
         )
     }

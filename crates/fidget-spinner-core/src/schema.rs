@@ -214,9 +214,75 @@ impl Schema {
         }
         Value::Object(map)
     }
+
+    /// One line per variant or ref field, by data path, showing a value to write.
+    pub fn writing(&self) -> Vec<String> {
+        let mut lines = Vec::new();
+        let slots = match &self.shape {
+            Shape::Iset { data, answer } => [("data", data), ("answer", answer)],
+            Shape::Trial { plan, report } => [("plan", plan), ("report", report)],
+        };
+        for (slot, fields) in slots {
+            inscribe_fields(slot, fields, &mut lines);
+        }
+        lines
+    }
 }
 
 impl Type {
+    /// Append how to write this type at path when it is, or holds, a variant or ref.
+    fn inscribe(&self, path: &str, lines: &mut Vec<String>) {
+        match self {
+            Self::List(item) => item.inscribe(&format!("{path}[]"), lines),
+            Self::Map(item) => item.inscribe(&format!("{path}.*"), lines),
+            Self::Record(fields) => inscribe_fields(path, fields, lines),
+            Self::Variant(tags) => {
+                let forms: Vec<String> = tags
+                    .iter()
+                    .map(|(tag, fields)| tagged(tag, fields).to_string())
+                    .collect();
+                lines.push(format!("{path}: {}", forms.join(" or ")));
+                for fields in tags.values() {
+                    inscribe_fields(&format!("{path}.value"), fields, lines);
+                }
+            }
+            Self::Ref(_) => lines.push(format!("{path}: {}", self.example())),
+            Self::Bool | Self::Text | Self::Int | Self::Float | Self::Enum(_) => {}
+        }
+    }
+
+    /// A placeholder value of this type.
+    fn example(&self) -> Value {
+        match self {
+            Self::Bool => false.into(),
+            Self::Text => "…".into(),
+            Self::Int => 0.into(),
+            Self::Float => 0.5.into(),
+            Self::Enum(options) => options.first().cloned().unwrap_or_default().into(),
+            Self::List(item) => Value::Array(vec![item.example()]),
+            Self::Map(item) => {
+                Value::Object([("key".to_owned(), item.example())].into_iter().collect())
+            }
+            Self::Record(fields) => example(fields),
+            Self::Variant(tags) => tags
+                .iter()
+                .next()
+                .map_or(Value::Null, |(tag, fields)| tagged(tag, fields)),
+            Self::Ref(kind) => {
+                let id = match kind {
+                    RefKind::Trial | RefKind::Iset => "<name>",
+                    RefKind::Baseline => "<slug>",
+                    RefKind::Metric => "<key>@<regime>",
+                };
+                let mut map = Map::new();
+                map.insert("$fs".into(), "ref".into());
+                map.insert("kind".into(), kind.as_str().into());
+                map.insert("id".into(), id.into());
+                Value::Object(map)
+            }
+        }
+    }
+
     fn describe(&self) -> String {
         match self {
             Self::Bool => "bool".into(),
@@ -260,6 +326,32 @@ impl Type {
             Self::Ref(kind) => one("ref", kind.as_str().into()),
         }
     }
+}
+
+/// Append how to write each variant and ref among fields, by data path.
+fn inscribe_fields(path: &str, fields: &Fields, lines: &mut Vec<String>) {
+    for (name, field) in fields {
+        field.ty.inscribe(&format!("{path}.{name}"), lines);
+    }
+}
+
+/// A variant value of tag holding its required fields.
+fn tagged(tag: &str, fields: &Fields) -> Value {
+    let mut map = Map::new();
+    map.insert("tag".into(), tag.into());
+    map.insert("value".into(), example(fields));
+    Value::Object(map)
+}
+
+/// An object of the required fields with placeholder values.
+fn example(fields: &Fields) -> Value {
+    Value::Object(
+        fields
+            .iter()
+            .filter(|(_, field)| field.required)
+            .map(|(name, field)| (name.clone(), field.ty.example()))
+            .collect(),
+    )
 }
 
 fn fields_json(fields: &Fields) -> Value {

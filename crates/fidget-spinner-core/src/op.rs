@@ -263,6 +263,7 @@ operations! {
     "void" => Void { #[serde(flatten)] target: Target, reason: String },
     "remove" => Remove { #[serde(flatten)] target: Target },
     "rename" => Rename { #[serde(flatten)] target: Target, to: Name },
+    "annotate" => Annotate { #[serde(flatten)] target: Target, text: String },
     "assign" => Assign { work: Name, owner: String, instructions: Option<String> },
     "release" => Release { work: Name },
     "start" => Start { work: Name },
@@ -273,7 +274,7 @@ operations! {
 impl Operation {
     fn targets(name: &str) -> &'static [&'static str] {
         match name {
-            "void" | "remove" | "rename" => &["work", "baseline"],
+            "void" | "remove" | "rename" | "annotate" => &["work", "baseline"],
             _ => &[],
         }
     }

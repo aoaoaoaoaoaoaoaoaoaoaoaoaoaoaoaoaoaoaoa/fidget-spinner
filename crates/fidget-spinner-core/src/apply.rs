@@ -6,6 +6,9 @@ use crate::{
 use serde_json::Value as Json;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
+/// The most words an annotation may hold.
+const ANNOTATION_WORDS: usize = 100;
+
 /// Why an operation was refused.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Fault {
@@ -427,7 +430,7 @@ impl Frontier {
                         data,
                         members: BTreeSet::new(),
                         judgment: None,
-                        superseded: Vec::new(),
+                        prior: Vec::new(),
                     }),
                     ctx,
                 )?;
@@ -622,7 +625,7 @@ impl Frontier {
                     if !removed {
                         return Err(refuse(Fault::Unknown, path, "not an input"));
                     }
-                    self.touch(id, ctx);
+                    self.specify(id, ctx);
                 }
             }
             Operation::Judge { iset, answer, seen } => {
@@ -653,6 +656,7 @@ impl Frontier {
             Operation::Void { target, reason } => self.void(target, reason, ctx)?,
             Operation::Remove { target } => self.remove(target, ctx)?,
             Operation::Rename { target, to } => self.rename(target, to, ctx)?,
+            Operation::Annotate { target, text } => self.annotate(target, text, ctx)?,
             Operation::Assign {
                 work,
                 owner,
@@ -668,7 +672,7 @@ impl Frontier {
                     work.owner = Some(Owner {
                         name,
                         instructions,
-                        bound: work.rev,
+                        bound: work.specified,
                     });
                 }
             }
@@ -703,7 +707,7 @@ impl Frontier {
                 if let Some(Body::Iset(iset)) = self.work.get_mut(&id).map(|w| &mut w.body)
                     && let Some(judgment) = iset.judgment.take()
                 {
-                    iset.superseded.push(judgment);
+                    iset.prior.push(judgment);
                 }
                 self.touch(id, ctx);
             }
@@ -716,7 +720,7 @@ impl Frontier {
             Err(refuse(
                 Fault::Concluded,
                 "frontier",
-                "the frontier is concluded; only void, remove and rename apply",
+                "the frontier is concluded; only void, remove, rename and annotate apply",
             ))
         } else {
             Ok(())
@@ -851,11 +855,13 @@ impl Frontier {
                 name,
                 created: ctx.moment(),
                 rev: ctx.pos,
+                specified: ctx.pos,
                 binding,
                 inputs: BTreeSet::new(),
                 owner: None,
                 running: None,
                 void: None,
+                annotations: Vec::new(),
                 body,
             },
         );
@@ -872,6 +878,14 @@ impl Frontier {
             work.rev = ctx.pos;
             let dep = ctx.implicit.entry(id).or_insert(0);
             *dep = (*dep).max(ctx.dep);
+        }
+    }
+
+    /// Record a change to what the work asks, which stales its assignment.
+    fn specify(&mut self, id: Id, ctx: &mut Ctx) {
+        self.touch(id, ctx);
+        if let Some(work) = self.work.get_mut(&id) {
+            work.specified = ctx.pos;
         }
     }
 
@@ -1031,7 +1045,7 @@ impl Frontier {
         if let Some(w) = self.work.get_mut(&work) {
             w.inputs.insert(input);
         }
-        self.touch(work, ctx);
+        self.specify(work, ctx);
         Ok(())
     }
 
@@ -1486,7 +1500,7 @@ impl Frontier {
         if let Some(binding) = binding {
             work.binding = binding;
         }
-        self.touch(id, ctx);
+        self.specify(id, ctx);
         self.conform(id, ctx);
         Ok(())
     }
@@ -1570,7 +1584,7 @@ impl Frontier {
         if let Some(Body::Iset(iset)) = self.work.get_mut(&id).map(|w| &mut w.body)
             && let Some(current) = iset.judgment.replace(judgment)
         {
-            iset.superseded.push(current);
+            iset.prior.push(current);
         }
         self.touch(id, ctx);
         self.conform(id, ctx);
@@ -1698,6 +1712,7 @@ impl Frontier {
                     identity_frozen: None,
                     readings_frozen: None,
                     void: None,
+                    annotations: Vec::new(),
                 },
             );
             ctx.trace.created.push(id);
@@ -1808,6 +1823,41 @@ impl Frontier {
         Ok(())
     }
 
+    /// Append a dated remark. It changes no revision, so no guard, judgment or
+    /// assignment notices it.
+    fn annotate(&mut self, target: &Target, text: &str, ctx: &mut Ctx) -> Result<(), OpRefusal> {
+        let text = required(text, "text")?;
+        let words = text.split_whitespace().count();
+        if words > ANNOTATION_WORDS {
+            return Err(refuse(
+                Fault::Malformed,
+                "text",
+                format!(
+                    "{words} words; an annotation is one hyper-terse fact in at most {ANNOTATION_WORDS} words"
+                ),
+            ));
+        }
+        let annotation = Annotation {
+            at: ctx.moment(),
+            text,
+        };
+        match target {
+            Target::Work(name) => {
+                let id = self.resolve(name, "work", ctx)?;
+                if let Some(work) = self.work.get_mut(&id) {
+                    work.annotations.push(annotation);
+                }
+            }
+            Target::Baseline(slug) => {
+                let id = self.resolve_baseline(slug, "baseline", ctx)?;
+                if let Some(baseline) = self.baselines.get_mut(&id) {
+                    baseline.annotations.push(annotation);
+                }
+            }
+        }
+        Ok(())
+    }
+
     fn remove(&mut self, target: &Target, ctx: &mut Ctx) -> Result<(), OpRefusal> {
         match target {
             Target::Work(name) => {
@@ -1822,7 +1872,7 @@ impl Frontier {
                     if let Some(w) = self.work.get_mut(&work) {
                         w.inputs.remove(&id);
                     }
-                    self.touch(work, ctx);
+                    self.specify(work, ctx);
                 }
                 if let Some(work) = self.work.remove(&id) {
                     self.names.remove(&work.name);
@@ -2107,6 +2157,7 @@ impl Frontier {
                     identity_frozen: None,
                     readings_frozen: None,
                     void: None,
+                    annotations: Vec::new(),
                 },
             );
             ctx.log.created.push(Created::Baseline(id));

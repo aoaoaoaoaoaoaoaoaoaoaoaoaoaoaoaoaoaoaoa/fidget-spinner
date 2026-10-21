@@ -15,7 +15,8 @@ baseline. An iset (integration set) poses a question over member work and is jud
 way. Inputs (`after`) order work; membership is not dependency. Every record resolves at most once and is voided at
 most once: nothing is reopened, corrected or unvoided, and a later answer is a new iset.
 
-The tool descriptions define the operations; `schema.read` without `schema` gives the definition grammar.
+The tool descriptions define the operations; `schema.read` without `schema` gives the definition grammar, and with
+`schema` shows a value to write for each variant and ref field.
 `frontier.patch` requires a frontier slug; every tool accepts an explicit project path. Porcelain is the default;
 request `render: "json"` only for structured input.
 
@@ -77,8 +78,9 @@ before it ran:
   `treatment` may name what ran: a baseline or an opaque identity such as a commit.
 - `edit` amends an open trial's plan, and every revision stays readable. Editing work that existed before the patch
   names its `rev`, which reads show; a stale `rev` is refused with the actual revision.
-- `start` and `stop` assert execution. `assign` binds an owner to the work's current revision; a later write raises
-  `stale` until the work is reassigned.
+- `start` and `stop` assert execution. `assign` binds an owner to the work's specification: an iset's data, a trial's
+  plan, binding and inputs. Changing any of them raises `stale` until the work is reassigned; membership, `start`,
+  `stop` and annotations never do.
 - `report` resolves a trial once with readings, artifacts (commit and evidence path) and data. Supply
   `control_readings` when the control ran alongside; without them, comparisons use the control baseline's recorded
   readings, which then freeze. Name the plan revision executed when it is not the current one, or `"unknown"`.
@@ -95,14 +97,32 @@ before it ran:
 
 ## Correct and sweep
 
-Nothing resolved is rewritten. A misrecorded report takes a new trial whose data cites its predecessor, as in
-`{"$fs":"ref","kind":"trial","id":"cache.templates#1"}`. Its retrospective report would default its control to today's
-incumbent, so name the original execution's `control`, `treatment` and `control_readings`; it also belongs to the
-current regime, so readings taken under an earlier regime go in its data. New understanding takes a new iset containing
-the old answer and the new evidence. Void invalid evidence with a reason: the receipt lists the resolutions resting on
-it and the work waiting on it. Whoever voids sweeps, by judging a successor iset over the survivors or voiding what
-falls. A marked answer that still holds is not voided: judge a reassessment iset containing it that says why, and the
-mark stays. A void reaches one hop and its marks never clear. Remove only mistakes; history redacts removed records.
+Nothing resolved is rewritten; a later fact that changes no conclusion is an annotation. A misrecorded report takes a
+new trial whose data cites its predecessor, as in `{"$fs":"ref","kind":"trial","id":"cache.templates#1"}`. Its
+retrospective report would default its control to today's incumbent, so name the original execution's `control`,
+`treatment` and `control_readings`; it also belongs to the current regime, so readings taken under an earlier regime go
+in its data. New understanding takes a new iset containing the old answer and the new evidence. Void invalid evidence
+with a reason: the receipt lists the resolutions resting on it and the work waiting on it. Whoever voids sweeps, by
+judging a successor iset over the survivors or voiding what falls. A marked answer that still holds is not voided: judge
+a reassessment iset containing it that says why, and the mark stays. A void reaches one hop and its marks never clear.
+Remove only mistakes; history redacts removed records.
+
+## Annotate
+
+`annotate` appends a dated remark to any record, open, resolved or void, even on a concluded frontier, and changes
+nothing the record says: no data, revision, guard, finding or consumption. Use it for a fact a later reader needs that
+no field holds: a caveat found after a report, where evidence moved, why work stalled. Schemas need no notes field.
+
+An annotation holds at most 100 words; aim for one line. Be hyper-terse:
+
+- one fact per annotation; a second fact is a second annotation;
+- never restate the record's name, data or state, and never narrate the session;
+- a correction names the field it corrects and the right value;
+- never a verdict, plan or result: those are `judge`, `edit` and `report`.
+
+```json
+{"op":"annotate","work":"cache.templates#1","text":"Ran on a warm page cache; cold-start p50 unmeasured."}
+```
 
 ## Baselines and regimes
 
@@ -122,6 +142,6 @@ assignments, superseded defaulted controls, unbridged regimes, recurring unliste
 KPI reading. They never block and clear when their condition ends; resolve one by recording what it reports missing,
 or let an intended exception stand.
 
-`conclude` records the frontier's lesson once; afterwards only `void`, `remove` and `rename` apply. Archiving is the
-owner's, in the navigator at http://127.0.0.1:8913/, which draws each frontier's isets and trials, its epochs and
-regimes, and one chart per KPI.
+`conclude` records the frontier's lesson once; afterwards only `void`, `remove`, `rename` and `annotate` apply.
+Archiving is the owner's, in the navigator at http://127.0.0.1:8913/, which draws each frontier's isets and trials, its
+epochs and regimes, and one chart per KPI.
