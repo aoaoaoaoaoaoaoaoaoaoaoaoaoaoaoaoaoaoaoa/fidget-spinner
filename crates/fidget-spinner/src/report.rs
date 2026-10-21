@@ -3,9 +3,10 @@
 use serde_json::{Map, Value};
 use std::fmt::Write as _;
 
-/// Keys holding FS data. Projections keep data exactly, and porcelain renders
-/// it as compact JSON with references as `@kind:name` atoms.
-const DATA: [&str; 2] = ["data", "answer"];
+/// Keys holding FS data and schema definitions, where an empty object or list
+/// is content, not absence. Projections keep them exactly, and porcelain renders
+/// them as compact JSON with references as `@kind:name` atoms.
+const DATA: [&str; 3] = ["data", "answer", "definition"];
 
 /// Raw operations and data preserve explicit empty values; projections omit absence.
 pub fn project(value: Value) -> Result<Value, serde_json::Error> {

@@ -1197,7 +1197,7 @@ impl<'a> Lens<'a> {
                 Slot::Plan
             };
             let against = current.schema.check(slot, &data);
-            out["current"] = json!({"definition":format!("{schema}@{}", current.at.pos),
+            out["current"] = json!({"schema":format!("{schema}@{}", current.at.pos),
                 "conforms":against.is_empty(),"violations":(!against.is_empty()).then_some(against)});
         }
         out

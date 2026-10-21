@@ -209,7 +209,7 @@ fn porcelain_cells_are_not_json() -> Result {
                     continue;
                 };
                 for (column, cell) in columns.iter().zip(line.split(" | ")) {
-                    if matches!(*column, "data" | "answer") {
+                    if matches!(*column, "data" | "answer" | "definition") {
                         continue;
                     }
                     if let Ok(value) = serde_json::from_str::<Value>(cell.trim()) {
@@ -290,6 +290,22 @@ fn mcp_inquiry_session() -> Result {
         json!({"limit":1,"cursor":history_cursor}),
     )?;
     assert_eq!(old_history["items"][0]["seq"], 1);
+    // Schema readback is lossless: a variant tag without fields is content.
+    let definition = json!({"carrier":"trial","report":{},"plan":{"kind":{"presence":"required",
+        "type":{"variant":{"guard":{},"confirmation":{"alpha":{"type":"float","presence":"required"}}}}}}});
+    session.json(
+        "frontier.patch",
+        json!({"frontier":"latency","ops":[{"op":"define","schema":"attempt","definition":definition}]}),
+    )?;
+    let read = session.json("schema.read", json!({"schema":"attempt"}))?;
+    assert_eq!(read["definitions"][0]["definition"], definition);
+    let text = session.call("schema.read", json!({"schema":"attempt"}))?;
+    assert!(
+        text["content"][0]["text"]
+            .as_str()
+            .is_some_and(|text| text.contains(r#""guard":{}"#) && text.contains(r#""report":{}"#)),
+        "{text}"
+    );
     session.json("frontier.patch",json!({"frontier":"latency","ops":[{"op":"conclude","lesson":"Cache parsing avoids repeated work"}]}))?;
     let search = session.json(
         "frontier.status",
