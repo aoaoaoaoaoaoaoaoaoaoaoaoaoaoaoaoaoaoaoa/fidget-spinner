@@ -516,7 +516,8 @@ impl Frontier {
                             return Err(refuse(
                                 Fault::Malformed,
                                 field,
-                                "applies only when the report creates its trial",
+                                "applies only when the report creates its trial; an existing trial \
+                                 reports under its own plan, binding, isets and inputs",
                             ));
                         }
                     }

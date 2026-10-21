@@ -81,8 +81,10 @@ before it ran:
   `stale` until the work is reassigned.
 - `report` resolves a trial once with readings, artifacts (commit and evidence path) and data. Supply
   `control_readings` when the control ran alongside; without them, comparisons use the control baseline's recorded
-  readings, which then freeze. Reporting a name that names no trial records a retrospective trial. Name the plan
-  revision executed when it is not the current one, or `"unknown"`.
+  readings, which then freeze. Name the plan revision executed when it is not the current one, or `"unknown"`.
+- An existing trial reports under its own plan, binding, isets and inputs: `schema`, `control`, `treatment`, `into`
+  and `after` apply only when the report names no trial and so records a retrospective one. What actually ran, when
+  the plan could not name it, goes in artifacts or data.
 - `judge` answers an iset once, over the done work its membership reaches. Pass `seen` with the seq you read: the
   judgment is refused if anything it consumes changed since, and reads show it as guarded. Judging while members are
   open draws a warning.

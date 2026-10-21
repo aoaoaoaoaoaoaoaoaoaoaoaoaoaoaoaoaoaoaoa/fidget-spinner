@@ -37,7 +37,7 @@ gauge {contract?,metrics?:[metric],retire?:[key],restore?:[key]}
 define {schema,definition,rev?}; the definition grammar is schema.read without schema
 iset {slug,schema?,data?,members?:[work],into?:[iset],after?:[work]}
 plan {trial?,schema?,data?,control?:baseline,treatment?,into?:[iset],after?:[work]}
-report {trial?,plan?:rev|"unknown",readings?,control_readings?,artifacts?:[text],data?,schema?,control?,treatment?,into?:[iset],after?:[work]}
+report {trial?,plan?:rev|"unknown",readings?,control_readings?,artifacts?:[text],data?}, plus {schema?,control?,treatment?,into?:[iset],after?:[work]} only when it creates its trial
 edit {work,rev?,data?,set?:[{path,value}],delete?:[path],schema?,unbind?:true,control?,treatment?}
 member {iset,add?:[work],drop?:[work]}; after {work,add?:[work],drop?:[work]}
 judge {iset,answer,seen?:seq}
