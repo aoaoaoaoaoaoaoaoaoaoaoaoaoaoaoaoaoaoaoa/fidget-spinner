@@ -1,4 +1,4 @@
-//! Acceptance witnesses for the ledger's law: finality, void, guards, data,
+//! Acceptance witnesses for the ledger's law: finality, void, guards, data, display text,
 //! structure, supervision and annotation, and the FS 3 migration. Every scenario ends by proving that a
 //! replay from nothing reproduces the incrementally patched state.
 
@@ -82,6 +82,44 @@ impl Ledger {
     }
 }
 
+/// New work carries its display text, one short line, which may change in
+/// any state; history without it replays.
+#[test]
+fn new_work_carries_display_text() -> Result {
+    let mut l = Ledger::default();
+    l.commit(json!([{"op":"frontier","objective":"o"}]))?;
+    let untitled = l.refuse(json!([{"op":"iset","slug":"q"}]))?;
+    assert_eq!(
+        (untitled.index, untitled.refusal.path.as_str()),
+        (0, "title")
+    );
+    let bare = l.refuse(json!([
+        {"op":"iset","slug":"q","title":"Cache warmth"},
+        {"op":"plan","into":["q"]}
+    ]))?;
+    assert_eq!((bare.index, bare.refusal.path.as_str()), (1, "synopsis"));
+    let long = "x".repeat(41);
+    assert_eq!(
+        l.fault(json!([{"op":"iset","slug":"q","title":long}]))?,
+        Fault::Malformed
+    );
+    l.commit(json!([
+        {"op":"iset","slug":"q","title":"Cache"},
+        {"op":"report","trial":"t","synopsis":"Warm the cache","into":["q"]},
+        {"op":"judge","iset":"q","answer":{}}
+    ]))?;
+    l.commit(json!([
+        {"op":"title","iset":"q","text":"Cache warmth"},
+        {"op":"synopsis","trial":"t","text":"Warm the cache once, then measure"}
+    ]))?;
+    let q = &l.frontier.work()[&l.id("q")?];
+    assert_eq!(
+        q.iset().and_then(|i| i.title.as_deref()),
+        Some("Cache warmth")
+    );
+    l.replays()
+}
+
 #[test]
 fn resolution_is_final() -> Result {
     let mut l = Ledger::default();
@@ -90,8 +128,8 @@ fn resolution_is_final() -> Result {
         {"op":"regime","contract":"c","metrics":[{"key":"elapsed","unit":"ms","better":"lower","kpi":true}]},
         {"op":"baseline","slug":"b0","readings":{"elapsed":10}},
         {"op":"elect","baseline":"b0","rationale":"start"},
-        {"op":"iset","slug":"q"},
-        {"op":"plan","into":["q"]}
+        {"op":"iset", "title": "T","slug":"q"},
+        {"op":"plan", "synopsis": "S","into":["q"]}
     ]))?;
     let (q, t) = (l.id("q")?, l.id("q#1")?);
     assert_eq!(l.frontier.state(t), Some(State::Ready));
@@ -109,14 +147,14 @@ fn resolution_is_final() -> Result {
         json!([{"op":"report","trial":"q#1","readings":{"elapsed":7}}]),
         json!([{"op":"judge","iset":"q","answer":{"holds":false}}]),
         json!([{"op":"edit","work":"q","rev":rev,"data":{"x":1}}]),
-        json!([{"op":"plan","into":["q"]}]),
+        json!([{"op":"plan", "synopsis": "S","into":["q"]}]),
     ] {
         assert_eq!(l.fault(write)?, Fault::Resolved);
     }
     // A later answer is a new iset; its judgment stops at resolved work.
     l.commit(json!([
-        {"op":"iset","slug":"q2","members":["q"]},
-        {"op":"report","trial":"t2","into":["q2"]},
+        {"op":"iset", "title": "T","slug":"q2","members":["q"]},
+        {"op":"report","trial":"t2","synopsis":"S","into":["q2"]},
         {"op":"judge","iset":"q2","answer":{"holds":false}}
     ]))?;
     assert_eq!(
@@ -131,10 +169,10 @@ fn void_marks_one_hop_and_stays() -> Result {
     let mut l = Ledger::default();
     l.commit(json!([
         {"op":"frontier","objective":"o"},
-        {"op":"iset","slug":"a"},
-        {"op":"report","trial":"t","into":["a"]},
+        {"op":"iset", "title": "T","slug":"a"},
+        {"op":"report","trial":"t","synopsis":"S","into":["a"]},
         {"op":"judge","iset":"a","answer":{}},
-        {"op":"iset","slug":"b","members":["a"]},
+        {"op":"iset", "title": "T","slug":"b","members":["a"]},
         {"op":"judge","iset":"b","answer":{}}
     ]))?;
     let (a, t) = (l.id("a")?, l.id("t")?);
@@ -153,8 +191,8 @@ fn void_marks_one_hop_and_stays() -> Result {
     );
     // A reassessment over the marked answer leaves its mark in place.
     l.commit(json!([
-        {"op":"iset","slug":"again","members":["a"]},
-        {"op":"report","trial":"t2","into":["again"]},
+        {"op":"iset", "title": "T","slug":"again","members":["a"]},
+        {"op":"report","trial":"t2","synopsis":"S","into":["again"]},
         {"op":"judge","iset":"again","answer":{}}
     ]))?;
     assert_eq!(l.frontier.void_sources(&l.judgment("a")?.consumes), [t]);
@@ -163,7 +201,7 @@ fn void_marks_one_hop_and_stays() -> Result {
         {"op":"baseline","slug":"bv"},
         {"op":"void","baseline":"bv","reason":"misbuilt"}
     ]))?;
-    let born = l.commit(json!([{"op":"report","trial":"t3","control":"bv"}]))?;
+    let born = l.commit(json!([{"op":"report","trial":"t3","synopsis":"S","control":"bv"}]))?;
     assert!(born.warnings.contains_key(&0));
     let bv = l.frontier.baseline_named(&"bv".parse()?).ok_or("no bv")?.0;
     let report = l.frontier.work()[&l.id("t3")?]
@@ -185,18 +223,18 @@ fn judgment_guard_sees_implicit_resolution() -> Result {
         {"op":"regime","contract":"c","metrics":[{"key":"m","unit":"s"}]},
         {"op":"baseline","slug":"b0"},
         {"op":"elect","baseline":"b0","rationale":"start"},
-        {"op":"iset","slug":"q"},
-        {"op":"plan","trial":"t","into":["q"]}
+        {"op":"iset", "title": "T","slug":"q"},
+        {"op":"plan", "synopsis": "S","trial":"t","into":["q"]}
     ]))?;
     l.commit(json!([{"op":"report","trial":"t"}]))?;
-    l.commit(json!([{"op":"iset","slug":"elsewhere"}]))?;
+    l.commit(json!([{"op":"iset", "title": "T","slug":"elsewhere"}]))?;
     l.commit(json!([
         {"op":"baseline","slug":"b1"},
         {"op":"elect","baseline":"b1","rationale":"better"}
     ]))?;
     // A defaulted control resolves to the incumbent elected after seq 2.
     let refusal = l.refuse(json!([
-        {"op":"report","trial":"late","into":["q"]},
+        {"op":"report","trial":"late","synopsis":"S","into":["q"]},
         {"op":"judge","iset":"q","answer":{},"seen":2}
     ]))?;
     assert_eq!((refusal.index, refusal.refusal.fault), (1, Fault::Guard));
@@ -208,7 +246,7 @@ fn judgment_guard_sees_implicit_resolution() -> Result {
     );
     // An explicit control and the unrelated iset leave the guard intact.
     l.commit(json!([
-        {"op":"report","trial":"late","into":["q"],"control":"b0"},
+        {"op":"report","trial":"late","synopsis":"S","into":["q"],"control":"b0"},
         {"op":"judge","iset":"q","answer":{},"seen":5}
     ]))?;
     assert_eq!(l.judgment("q")?.seen, Some(5));
@@ -228,17 +266,17 @@ fn data_conforms_or_warns() -> Result {
         {"op":"define","schema":"q","definition":{"carrier":"iset",
             "data":{"question":{"type":"text","presence":"required"}},
             "answer":{"verdict":{"type":{"enum":["holds","fails"]},"presence":"required"}}}},
-        {"op":"iset","slug":"good","schema":"q","data":{"question":"why?"}},
-        {"op":"iset","slug":"bad","schema":"q","data":{"question":3,"extra":true}},
-        {"op":"iset","slug":"pending","schema":"later"},
-        {"op":"iset","slug":"cites","data":{"see":{"$fs":"ref","kind":"iset","id":"good"}}}
+        {"op":"iset", "title": "T","slug":"good","schema":"q","data":{"question":"why?"}},
+        {"op":"iset", "title": "T","slug":"bad","schema":"q","data":{"question":3,"extra":true}},
+        {"op":"iset", "title": "T","slug":"pending","schema":"later"},
+        {"op":"iset", "title": "T","slug":"cites","data":{"see":{"$fs":"ref","kind":"iset","id":"good"}}}
     ]))?;
     assert!(patched.warnings.contains_key(&2) && !patched.warnings.contains_key(&1));
     let findings = l.frontier.findings();
     assert!(findings.contains(&Finding::Nonconforming(l.id("bad")?)));
     assert!(findings.contains(&Finding::Unvalidated(l.id("pending")?)));
     assert!(!findings.contains(&Finding::Nonconforming(l.id("good")?)));
-    let dangling = l.refuse(json!([{"op":"iset","slug":"dangling",
+    let dangling = l.refuse(json!([{"op":"iset", "title": "T","slug":"dangling",
         "data":{"see":{"$fs":"ref","kind":"iset","id":"absent"}}}]))?;
     assert!(dangling.to_string().contains("absent"), "{dangling}");
     // References follow renames.
@@ -280,10 +318,10 @@ fn structure_stays_acyclic() -> Result {
     let mut l = Ledger::default();
     l.commit(json!([
         {"op":"frontier","objective":"o"},
-        {"op":"iset","slug":"a"},
-        {"op":"iset","slug":"b","into":["a"]},
-        {"op":"iset","slug":"c","into":["a"]},
-        {"op":"plan","trial":"t","into":["b","c"]}
+        {"op":"iset", "title": "T","slug":"a"},
+        {"op":"iset", "title": "T","slug":"b","into":["a"]},
+        {"op":"iset", "title": "T","slug":"c","into":["a"]},
+        {"op":"plan", "synopsis": "S","trial":"t","into":["b","c"]}
     ]))?;
     let [a, b, c, t] = [l.id("a")?, l.id("b")?, l.id("c")?, l.id("t")?];
     assert_eq!(l.frontier.below(a), [b, c, t].into_iter().collect());
@@ -310,7 +348,7 @@ fn guards_check_the_pre_patch_state() -> Result {
     let mut l = Ledger::default();
     l.commit(json!([
         {"op":"frontier","objective":"o"},
-        {"op":"iset","slug":"q","data":{"n":1}}
+        {"op":"iset", "title": "T","slug":"q","data":{"n":1}}
     ]))?;
     let first = l.rev("q")?;
     assert_eq!(
@@ -338,11 +376,11 @@ fn guards_check_the_pre_patch_state() -> Result {
     );
     // Work created earlier in the patch needs no guard.
     l.commit(json!([
-        {"op":"iset","slug":"r"},
+        {"op":"iset", "title": "T","slug":"r"},
         {"op":"edit","work":"r","data":{"fresh":true}}
     ]))?;
     assert_eq!(l.fault(json!([{"op":"guard","head":1}]))?, Fault::Guard);
-    l.commit(json!([{"op":"guard","head":4},{"op":"iset","slug":"s"}]))?;
+    l.commit(json!([{"op":"guard","head":4},{"op":"iset", "title": "T","slug":"s"}]))?;
     assert!(Op::parse(json!({"op":"guard","head":9_007_199_254_740_992_u64})).is_err());
     l.replays()
 }
@@ -438,9 +476,9 @@ fn only_specification_stales_an_assignment() -> Result {
     let mut ledger = Ledger::default();
     ledger.commit(json!([
         {"op":"frontier","objective":"o"},
-        {"op":"iset","slug":"q"},
-        {"op":"plan","trial":"t","into":["q"]},
-        {"op":"plan","trial":"u"},
+        {"op":"iset", "title": "T","slug":"q"},
+        {"op":"plan", "synopsis": "S","trial":"t","into":["q"]},
+        {"op":"plan", "synopsis": "S","trial":"u"},
         {"op":"assign","work":"q","owner":"w"},
         {"op":"assign","work":"t","owner":"w"}
     ]))?;
@@ -468,7 +506,7 @@ fn only_specification_stales_an_assignment() -> Result {
         {"op":"annotate","work":"u","text":"Harness fixed in b2."}
     ]))?;
     assert_eq!(
-        ledger.fault(json!([{"op":"plan","trial":"v"}]))?,
+        ledger.fault(json!([{"op":"plan", "synopsis": "S","trial":"v"}]))?,
         Fault::Concluded
     );
     ledger.replays()

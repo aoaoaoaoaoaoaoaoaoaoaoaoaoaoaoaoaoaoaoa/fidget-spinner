@@ -8,6 +8,10 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 /// The most words an annotation may hold.
 const ANNOTATION_WORDS: usize = 100;
+/// The longest iset title, in characters.
+pub const TITLE_CHARS: usize = 40;
+/// The longest trial synopsis, in characters.
+pub const SYNOPSIS_CHARS: usize = 120;
 
 /// Why an operation was refused.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -114,6 +118,23 @@ fn refuse(fault: Fault, path: impl Into<String>, message: impl Into<String>) -> 
     }
 }
 
+/// Display text: one trimmed line of at most `limit` characters.
+fn display(text: &str, field: &str, limit: usize) -> Result<String, OpRefusal> {
+    let text = required(text, field)?;
+    if text.contains(char::is_control) {
+        return Err(refuse(Fault::Malformed, field, "must be one line"));
+    }
+    let length = text.chars().count();
+    if length > limit {
+        return Err(refuse(
+            Fault::Malformed,
+            field,
+            format!("{length} characters; at most {limit}"),
+        ));
+    }
+    Ok(text)
+}
+
 fn required(text: &str, field: &str) -> Result<String, OpRefusal> {
     let text = text.trim();
     if text.is_empty() {
@@ -183,7 +204,36 @@ impl Frontier {
     pub fn patched(&self, ops: &[Op], stamp: Stamp) -> Result<Patched, Refusal> {
         let mut next = self.clone();
         let log = next.run(ops, stamp)?;
+        next.entitled(ops, &log)?;
         Ok(self.diagnose(next, log))
+    }
+
+    /// A written patch leaves the isets it creates titled and the trials it
+    /// creates with a synopsis; replay spares history written before either existed.
+    fn entitled(&self, ops: &[Op], log: &Log) -> Result<(), Refusal> {
+        for (index, trace) in log.traces.iter().enumerate() {
+            for id in &trace.created {
+                let missing = match self.work.get(id).map(|w| &w.body) {
+                    Some(Body::Iset(iset)) if iset.title.is_none() => Some((
+                        "title",
+                        format!("an iset needs a title of at most {TITLE_CHARS} characters"),
+                    )),
+                    Some(Body::Trial(trial)) if trial.synopsis.is_none() => Some((
+                        "synopsis",
+                        format!("a trial needs a synopsis of at most {SYNOPSIS_CHARS} characters"),
+                    )),
+                    _ => None,
+                };
+                if let Some((field, message)) = missing {
+                    return Err(Refusal {
+                        index,
+                        op: ops[index].name(),
+                        refusal: refuse(Fault::Malformed, field, message),
+                    });
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Replay a committed patch.
@@ -412,6 +462,7 @@ impl Frontier {
             } => self.define(schema, definition, *rev, ctx)?,
             Operation::Iset {
                 slug,
+                title,
                 schema,
                 data,
                 members,
@@ -421,12 +472,17 @@ impl Frontier {
                 self.live()?;
                 let name = Name::Slug(slug.clone());
                 self.free(&name, "slug")?;
+                let title = title
+                    .as_deref()
+                    .map(|text| display(text, "title", TITLE_CHARS))
+                    .transpose()?;
                 let binding = self.bind(schema.as_ref(), slug.as_str(), ctx);
                 let data = self.data(data.as_ref(), "data", ctx)?;
                 let id = self.create(
                     name,
                     binding,
                     Body::Iset(Iset {
+                        title,
                         data,
                         members: BTreeSet::new(),
                         judgment: None,
@@ -444,6 +500,7 @@ impl Frontier {
             }
             Operation::Plan {
                 trial,
+                synopsis,
                 schema,
                 data,
                 control,
@@ -452,6 +509,10 @@ impl Frontier {
                 after,
             } => {
                 self.live()?;
+                let synopsis = synopsis
+                    .as_deref()
+                    .map(|text| display(text, "synopsis", SYNOPSIS_CHARS))
+                    .transpose()?;
                 let isets = self.isets(into.as_deref(), ctx)?;
                 let name = self.trial_name(trial.as_ref(), &isets)?;
                 let subject = name.to_string();
@@ -471,6 +532,7 @@ impl Frontier {
                     binding,
                     Body::Trial(Trial {
                         regime,
+                        synopsis,
                         plans: vec![plan],
                         report: None,
                     }),
@@ -487,6 +549,7 @@ impl Frontier {
                 control_readings,
                 artifacts,
                 data,
+                synopsis,
                 schema,
                 control,
                 treatment,
@@ -494,6 +557,10 @@ impl Frontier {
                 after,
             } => {
                 self.live()?;
+                let synopsis = synopsis
+                    .as_deref()
+                    .map(|text| display(text, "synopsis", SYNOPSIS_CHARS))
+                    .transpose()?;
                 let existing = trial
                     .as_ref()
                     .and_then(|name| self.names.get(name))
@@ -509,6 +576,7 @@ impl Frontier {
                         ));
                     }
                     for (field, given) in [
+                        ("synopsis", synopsis.is_some()),
                         ("schema", schema.is_some()),
                         ("control", control.is_some()),
                         ("treatment", treatment.is_some()),
@@ -539,6 +607,7 @@ impl Frontier {
                         binding,
                         Body::Trial(Trial {
                             regime,
+                            synopsis,
                             plans: Vec::new(),
                             report: None,
                         }),
@@ -657,6 +726,21 @@ impl Frontier {
             Operation::Remove { target } => self.remove(target, ctx)?,
             Operation::Rename { target, to } => self.rename(target, to, ctx)?,
             Operation::Annotate { target, text } => self.annotate(target, text, ctx)?,
+            Operation::Title { iset, text } => {
+                let id = self.resolve_iset(iset, "iset", ctx)?;
+                let text = display(text, "text", TITLE_CHARS)?;
+                if let Some(Body::Iset(iset)) = self.work.get_mut(&id).map(|w| &mut w.body) {
+                    iset.title = Some(text);
+                }
+            }
+            Operation::Synopsis { trial, text } => {
+                let id = self.resolve(trial, "trial", ctx)?;
+                let text = display(text, "text", SYNOPSIS_CHARS)?;
+                match self.work.get_mut(&id).map(|w| &mut w.body) {
+                    Some(Body::Trial(trial)) => trial.synopsis = Some(text),
+                    _ => return Err(refuse(Fault::Unknown, "trial", "names an iset")),
+                }
+            }
             Operation::Assign {
                 work,
                 owner,

@@ -432,6 +432,11 @@ impl<'a> Lens<'a> {
 
     /// A schema's headline field, else a `title` or `note` text field.
     pub fn headline(&self, id: Id) -> Option<String> {
+        self.headline_field(id).map(|(_, text)| text)
+    }
+
+    /// The headline's field name and text.
+    pub fn headline_field(&self, id: Id) -> Option<(String, String)> {
         let work = self.frontier.work().get(&id)?;
         let data = match &work.body {
             Body::Iset(iset) => Some(&iset.data),
@@ -454,7 +459,22 @@ impl<'a> Lens<'a> {
             .iter()
             .map(String::as_str)
             .chain(["title", "note", "question", "statement"])
-            .find_map(|field| data.text(field))
+            .find_map(|field| data.text(field).map(|text| (field.to_owned(), text)))
+    }
+
+    /// A row with its record's title, for an iset, or synopsis, for a trial, when it has one.
+    fn captioned(&self, id: Id, mut row: Json) -> Json {
+        match self.frontier.work().get(&id).map(|w| &w.body) {
+            Some(Body::Iset(Iset {
+                title: Some(title), ..
+            })) => row["title"] = json!(title),
+            Some(Body::Trial(Trial {
+                synopsis: Some(synopsis),
+                ..
+            })) => row["synopsis"] = json!(synopsis),
+            _ => {}
+        }
+        row
     }
 
     fn headline_json(&self, id: Id) -> Json {
@@ -464,17 +484,43 @@ impl<'a> Lens<'a> {
         })
     }
 
+    /// Badge fields of a record's own slot and of its resolution, as shown:
+    /// enum and text values, variant tags, and the titles of true flags.
     pub fn badges(&self, work: &Work) -> Json {
         let Some(schema) = self.schema_of(work) else {
             return Json::Null;
         };
-        let Some(data) = work.data() else {
-            return Json::Null;
+        let slots = match &work.body {
+            Body::Iset(iset) => [
+                (Slot::Data, Some(&iset.data)),
+                (Slot::Answer, iset.judgment.as_ref().map(|j| &j.answer)),
+            ],
+            Body::Trial(trial) => [
+                (Slot::Plan, trial.plan().map(|p| &p.data)),
+                (Slot::Report, trial.report.as_ref().map(|r| &r.data)),
+            ],
         };
-        let badges: Map<String, Json> = schema
-            .shown(Show::Badge)
+        let badges: Map<String, Json> = slots
             .into_iter()
-            .filter_map(|field| data.text(field).map(|text| (field.to_owned(), json!(text))))
+            .filter_map(|(slot, data)| Some((schema.fields(slot)?, data?.fields()?)))
+            .flat_map(|(fields, values)| {
+                fields
+                    .iter()
+                    .filter(|(_, field)| field.show == Some(Show::Badge))
+                    .filter_map(move |(name, field)| {
+                        let text = match values.get(name)? {
+                            Data::Text(text) => text.clone(),
+                            Data::Number(n) => n.to_string(),
+                            Data::Bool(true) => field.title.clone().unwrap_or_else(|| name.clone()),
+                            Data::Map(variant) => match variant.get("tag")? {
+                                Data::Text(tag) => tag.clone(),
+                                _ => return None,
+                            },
+                            _ => return None,
+                        };
+                        Some((name.clone(), json!(text)))
+                    })
+            })
             .collect();
         if badges.is_empty() {
             Json::Null
@@ -645,9 +691,9 @@ impl<'a> Lens<'a> {
                 *counts.entry(shown.as_str()).or_default() += 1;
             }
         }
-        json!({"name":work.name,"state":self.shown(id),"owner":Self::owner(work),"members":counts,
+        self.captioned(id, json!({"name":work.name,"state":self.shown(id),"owner":Self::owner(work),"members":counts,
             "schema":work.binding.as_ref().map(|b| self.binding(Some(b))),"headline":self.headline_json(id),
-            "badges":self.badges(work),"marks":self.marks(id)})
+            "badges":self.badges(work),"marks":self.marks(id)}))
     }
 
     pub fn trial_row(&self, id: Id, work: &Work, trial: &Trial) -> Json {
@@ -655,12 +701,12 @@ impl<'a> Lens<'a> {
             .report
             .as_ref()
             .map_or_else(|| trial.plan().and_then(|p| p.control), |r| r.control);
-        json!({"name":work.name,"state":self.shown(id),"owner":Self::owner(work),"regime":trial.regime,
+        self.captioned(id, json!({"name":work.name,"state":self.shown(id),"owner":Self::owner(work),"regime":trial.regime,
             "control":self.control(control),
             "readings":trial.report.as_ref().map(|r| self.readings(trial.regime,&r.readings,!self.full)),
             "comparisons":self.comparisons(trial,!self.full),
             "schema":work.binding.as_ref().map(|b| self.binding(Some(b))),"headline":self.headline_json(id),
-            "marks":self.marks(id)})
+            "marks":self.marks(id)}))
     }
 
     pub fn baseline_row(&self, id: Id, b: &Baseline) -> Json {
@@ -1037,7 +1083,7 @@ impl<'a> Lens<'a> {
         };
         let running: Vec<Json> = rows(Shown::State(State::Running))
             .into_iter()
-            .map(|(id, w)| json!({"name":w.name,"carrier":w.carrier().as_str(),"owner":Self::owner(w),"headline":self.headline_json(id)}))
+            .map(|(id, w)| self.captioned(id, json!({"name":w.name,"carrier":w.carrier().as_str(),"owner":Self::owner(w),"headline":self.headline_json(id)})))
             .collect();
         result["running"] = bounded(
             running,
@@ -1049,7 +1095,9 @@ impl<'a> Lens<'a> {
         );
         let tested: Vec<Json> = rows(Shown::State(State::Tested))
             .into_iter()
-            .map(|(id, w)| json!({"name":w.name,"headline":self.headline_json(id)}))
+            .map(|(id, w)| {
+                self.captioned(id, json!({"name":w.name,"headline":self.headline_json(id)}))
+            })
             .collect();
         result["tested"] = bounded(
             tested,
@@ -1061,7 +1109,7 @@ impl<'a> Lens<'a> {
         );
         let ready: Vec<Json> = rows(Shown::State(State::Ready))
             .into_iter()
-            .map(|(id, w)| json!({"name":w.name,"carrier":w.carrier().as_str(),"headline":self.headline_json(id)}))
+            .map(|(id, w)| self.captioned(id, json!({"name":w.name,"carrier":w.carrier().as_str(),"headline":self.headline_json(id)})))
             .collect();
         result["ready"] = bounded(
             ready,
@@ -1214,13 +1262,13 @@ impl<'a> Lens<'a> {
             return Json::Null;
         };
         let validity = self.validity(id, work);
-        json!({"name":work.name,"carrier":work.carrier().as_str(),"state":self.shown(id),
+        self.captioned(id, json!({"name":work.name,"carrier":work.carrier().as_str(),"state":self.shown(id),
             "void":work.void.as_ref().map(|v| self.void(id, v)),
             "regime":work.trial().and_then(|t| t.regime),
             "schema":self.binding(work.binding.as_ref()),"violations":validity["violations"],"current":validity["current"],
             "headline":self.headline_json(id),"badges":self.badges(work),
             "created":stamp(work.created.time,self.full),"rev":work.rev.to_string(),"marks":self.marks(id),
-            "annotations":(!work.annotations.is_empty()).then_some(work.annotations.len())})
+            "annotations":(!work.annotations.is_empty()).then_some(work.annotations.len())}))
     }
 
     fn void(&self, id: Id, void: &Void) -> Json {
@@ -1348,7 +1396,7 @@ impl<'a> Lens<'a> {
             .members(id)
             .map(|m| {
                 let carrier = self.frontier.work().get(m).map(|w| w.carrier().as_str());
-                json!({"name":self.name(*m),"carrier":carrier,"state":self.shown(*m),"headline":self.headline_json(*m),"marks":self.marks(*m)})
+                self.captioned(*m, json!({"name":self.name(*m),"carrier":carrier,"state":self.shown(*m),"headline":self.headline_json(*m),"marks":self.marks(*m)}))
             })
             .collect()
     }

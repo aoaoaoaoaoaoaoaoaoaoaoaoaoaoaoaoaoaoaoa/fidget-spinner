@@ -10,7 +10,7 @@ keywords = ["mcp", "inquiry", "frontier", "trials", "ledger"]
 license = "MIT"
 repository = "https://github.com/aoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoa/fidget-spinner"
 rust-version = "1.98.1"
-version = "4.1.0"
+version = "4.2.0"
 
 [workspace.dependencies]
 clap = { version = "4.5", features = ["derive"] }
@@ -20,7 +20,7 @@ libmcp-testkit = { git = "https://github.com/aoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoa
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1"
 serde_path_to_error = "0.1"
-trebuchet = { git = "file:///home/main/programming/projects/mcps/trebuchet", rev = "fec7530", features = ["ledger", "inspect", "board"] }
+trebuchet = { git = "file:///home/main/programming/projects/mcps/trebuchet", rev = "9fca64e", features = ["ledger", "inspect", "board"] }
 thiserror = "2"
 time = { version = "0.3", features = ["formatting", "macros", "parsing", "serde"] }
 tokio = { version = "1", features = ["net", "rt-multi-thread"] }

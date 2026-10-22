@@ -22,9 +22,9 @@ cat >"$cell/patch.json" <<'JSON'
   {"op":"regime","contract":"Isolated CLI fixture","metrics":[{"key":"latency","unit":"ms","better":"lower","kpi":true}]},
   {"op":"baseline","slug":"base","readings":{"latency":10}},
   {"op":"elect","baseline":"base","rationale":"Initial comparison"},
-  {"op":"iset","slug":"faster","data":{"question":"Does the change reduce latency?"}},
-  {"op":"iset","slug":"program","data":{"charter":"Assess latency"},"members":["faster"]},
-  {"op":"report","into":["faster"],"data":{"note":"Measured fixture"},"readings":{"latency":"9 ms"}},
+  {"op":"iset","slug":"faster","title":"Faster fixture","data":{"question":"Does the change reduce latency?"}},
+  {"op":"iset","slug":"program","title":"Latency program","data":{"charter":"Assess latency"},"members":["faster"]},
+  {"op":"report","into":["faster"],"synopsis":"Measure the fixture once","data":{"note":"Measured fixture"},"readings":{"latency":"9 ms"}},
   {"op":"judge","iset":"faster","answer":{"verdict":"lower latency"}}
 ]
 JSON

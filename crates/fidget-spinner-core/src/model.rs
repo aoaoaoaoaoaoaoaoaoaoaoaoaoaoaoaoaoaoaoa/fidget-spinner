@@ -103,6 +103,8 @@ pub enum Body {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Trial {
     pub regime: Option<RegimeNumber>,
+    /// The attempt in one line, for cards; FS 4.1 trials have none.
+    pub synopsis: Option<String>,
     pub plans: Vec<Plan>,
     pub report: Option<Report>,
 }
@@ -142,6 +144,8 @@ pub struct Report {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Iset {
+    /// The question in a few words, for labels; FS 4.1 isets have none.
+    pub title: Option<String>,
     pub data: Data,
     pub members: BTreeSet<Id>,
     pub judgment: Option<Judgment>,

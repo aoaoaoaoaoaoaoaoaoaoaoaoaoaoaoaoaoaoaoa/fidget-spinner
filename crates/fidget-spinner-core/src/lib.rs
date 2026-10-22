@@ -12,7 +12,8 @@ pub mod slug;
 pub mod units;
 
 pub use apply::{
-    Created, Fault, OpRefusal, Patched, Refusal, Trace, Voided, Warning, bar_reserved,
+    Created, Fault, OpRefusal, Patched, Refusal, SYNOPSIS_CHARS, TITLE_CHARS, Trace, Voided,
+    Warning, bar_reserved,
 };
 pub use data::{Data, Ref, RefKind};
 pub use derive::{Consumer, Counts, Shown, State};

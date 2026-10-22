@@ -12,7 +12,7 @@ use super::{A, C, T, anchor};
 use crate::{inspect::stamp, mcp::Fault};
 
 const WIDTH: f64 = 340.0;
-const HEIGHT: f64 = 118.0;
+const HEIGHT: f64 = 96.0;
 /// Plot margins: value labels on the left, epoch labels above, dates below.
 const LEFT: f64 = 44.0;
 const RIGHT: f64 = 10.0;
@@ -258,6 +258,17 @@ fn plot(
     };
     let y = |value: f64| HEIGHT - BOTTOM - (value - low) / (high - low) * (HEIGHT - TOP - BOTTOM);
     let mut drawing = vec![
+        element(
+            T::Rect,
+            vec![
+                (A::Class, "plot".into()),
+                (A::X, format!("{LEFT}")),
+                (A::Y, format!("{}", TOP - 2.0)),
+                (A::Width, format!("{}", WIDTH - LEFT - RIGHT)),
+                (A::Height, format!("{}", HEIGHT - TOP - BOTTOM + 2.0)),
+            ],
+            Vec::new(),
+        ),
         rule("frame", (LEFT, y(hi)), (WIDTH - RIGHT, y(hi))),
         rule("frame", (LEFT, y(lo)), (WIDTH - RIGHT, y(lo))),
         text_at(LEFT - 4.0, y(hi) + 3.5, "end", "tick", significant(hi)),

@@ -23,7 +23,7 @@ use trebuchet::{
         Content as C, Field, Fold, IndexRow, IndexScene, Marker, Place, Query, RouteTarget,
         SetStyle, StatusCode, Tag as T, Theme, button, count, meter, stats,
     },
-    layout::{Cell, CellSet, LayoutInput, Occupant, Separator, elide, focused, foreground},
+    layout::{Cell, CellSet, Occupant, Separator, elide, focused, foreground},
 };
 
 use crate::{
@@ -40,8 +40,6 @@ const CARD_TEXT: usize = 320;
 const CARD_LINKS: usize = 12;
 /// Resolutions since the second-latest epoch began.
 const HORIZON: Horizon = Horizon::Epochs(2);
-/// Set levels a scoped board draws; deeper scopes are listed as outlines.
-const SET_LEVELS: usize = 2;
 /// Work states in display order, then void.
 const SHOWN: [&str; 7] = [
     "waiting", "ready", "running", "tested", "reported", "settled", "void",
@@ -410,29 +408,10 @@ impl BoardSource for Navigator {
         scene.place = place(&listing);
         scene.controls = controls(s);
         scene.above = board.overview()?;
-        scene.empty = "No work within this horizon.".into();
-        match board.scope() {
-            Scope::Frontier => {
-                scene.input = focused(&scene.input, &board.visible(None));
-            }
-            Scope::Missing(slug) => {
-                scene.input = LayoutInput::default();
-                scene.empty = format!("No iset named {slug}.");
-            }
-            Scope::Drawn(id) => {
-                scene.input = focused(&scene.input, &board.visible(Some(id)));
-            }
-            Scope::Outline(id) => {
-                scene.input = LayoutInput::default();
-                scene.empty = String::new();
-                let mut seen = BTreeSet::from([id]);
-                scene.below = vec![C::classed(
-                    T::Ul,
-                    "outline",
-                    vec![board.outline(id, &mut seen)],
-                )];
-            }
-        }
+        scene.empty = match &board.scope {
+            Scope::Missing(slug) => format!("No iset named {slug}."),
+            Scope::Frontier | Scope::Under(_) => "No work within this horizon.".into(),
+        };
         Ok(Some(scene))
     }
     fn foreground(
@@ -455,22 +434,19 @@ impl BoardSource for Navigator {
         };
         match kind {
             "work" if f.work().contains_key(&id) => {
-                if let Some(&cell) = board.index.get(&id) {
-                    let shown = board.scoped();
-                    scene.input = foreground(
+                scene.input = if let Some(&cell) = board.index.get(&id) {
+                    foreground(
                         &scene.input,
                         cell,
-                        |v| v == cell || shown.contains(&v),
-                        |v| Some(board.lane(v)),
-                        |n| format!("{n} resolved records"),
+                        |_| true,
+                        |_| None::<()>,
+                        |n| plural(n, "record"),
                     )
-                    .unwrap_or_else(|| unreachable!("a selected cell is always shown"));
-                    board.aggregates(&mut scene);
-                } else if board.sets.contains(&id) {
-                    scene.input = focused(&scene.input, &board.cells_below(id));
+                    .unwrap_or_else(|| unreachable!("a drawn cell is always shown"))
                 } else {
-                    scene.input = LayoutInput::default();
-                }
+                    let homes = board.homes(id);
+                    focused(&scene.input, &homes.into_iter().collect())
+                };
                 (scene.above, scene.below) = board.sheet(id);
             }
             "baseline" => {
@@ -484,14 +460,9 @@ impl BoardSource for Navigator {
                     .flat_map(|e| e.adopts.keys())
                     .flat_map(|iset| board.homes(*iset))
                     .collect();
-                scene.input = focused(
-                    &scene.input,
-                    &if adopted.is_empty() {
-                        board.scoped()
-                    } else {
-                        adopted
-                    },
-                );
+                if !adopted.is_empty() {
+                    scene.input = focused(&scene.input, &adopted);
+                }
                 scene.above = vec![sheet_record(&board.baseline(id, b))];
             }
             _ => return Ok(None),
@@ -568,110 +539,100 @@ fn sheet_record(card: &Card) -> C {
     C::classed(T::Section, format!("record {}", card.class), card.content())
 }
 
-/// How a board's scope draws.
+/// What a board draws.
 enum Scope {
     /// The whole frontier.
     Frontier,
     /// An unknown iset name.
     Missing(Slug),
-    /// An iset's members at any depth, drawn.
-    Drawn(Id),
-    /// An iset nesting more set levels than a board draws, listed.
-    Outline(Id),
+    /// An iset and its records at any depth.
+    Under(Id),
 }
 
-/// A frontier as a board: cells are isets without iset members and trials in
-/// no such iset; isets with iset members are sets drawn around their cells.
+/// A frontier as a board. Every trial within the horizon is a cell; an iset
+/// is a wall around the cells below it, or a cell itself while none of them
+/// is drawn.
 struct Board<'f> {
     f: &'f Frontier,
     lens: Lens<'f>,
-    s: &'f Selection,
     url: String,
-    /// Cell work in creation order; a cell's index is its global identity.
+    scope: Scope,
+    /// Drawn records in creation order; a cell's index is its identity.
     cells: Vec<Id>,
     index: BTreeMap<Id, usize>,
-    sets: Vec<Id>,
+    /// Walled isets in creation order, with the cells below them.
+    walls: Vec<(Id, BTreeSet<usize>)>,
+    /// Line style rank of each iset schema title, the commonest solid.
+    kinds: BTreeMap<&'f str, usize>,
+}
+
+/// The isets holding a record that hold none of its other isets.
+fn innermost(f: &Frontier, id: Id) -> Vec<Id> {
+    let containers = f.containers(id);
+    containers
+        .iter()
+        .filter(|&&c| {
+            !containers
+                .iter()
+                .any(|&d| d != c && f.below(c).contains(&d))
+        })
+        .copied()
+        .collect()
+}
+
+/// The title of a work record's schema.
+fn schema_title<'f>(f: &'f Frontier, work: &Work) -> Option<&'f str> {
+    work.binding
+        .as_ref()
+        .and_then(|b| f.definition(b))
+        .and_then(|d| d.schema.title.as_deref())
+}
+
+/// A line sample for the kinds legend.
+fn sample() -> C {
+    C::element(
+        T::Svg,
+        vec![
+            (A::Width, "24".into()),
+            (A::Height, "8".into()),
+            (A::ViewBox, "0 0 24 8".into()),
+        ],
+        vec![C::element(
+            T::Line,
+            vec![
+                (A::X1, "0".into()),
+                (A::Y1, "4".into()),
+                (A::X2, "24".into()),
+                (A::Y2, "4".into()),
+            ],
+            Vec::new(),
+        )],
+    )
 }
 
 impl<'f> Board<'f> {
-    fn new(f: &'f Frontier, s: &'f Selection) -> Self {
-        let is_set = |id: &Id| {
-            f.members(*id)
-                .any(|m| f.work().get(m).is_some_and(|w| w.iset().is_some()))
+    fn new(f: &'f Frontier, s: &Selection) -> Self {
+        let scope = match &s.under {
+            None => Scope::Frontier,
+            Some(slug) => match f.named(&Name::Slug(slug.clone())) {
+                Some((id, work)) if work.iset().is_some() => Scope::Under(id),
+                _ => Scope::Missing(slug.clone()),
+            },
         };
-        let mut cells = Vec::new();
-        let mut sets = Vec::new();
-        for (id, work) in f.work() {
-            match &work.body {
-                Body::Iset(_) if is_set(id) => sets.push(*id),
-                Body::Iset(_) => cells.push(*id),
-                Body::Trial(_) => {
-                    if !f.containers(*id).iter().any(|c| !is_set(c)) {
-                        cells.push(*id);
-                    }
-                }
+        let within = match &scope {
+            Scope::Frontier => None,
+            Scope::Missing(_) => Some(BTreeSet::new()),
+            Scope::Under(id) => {
+                let mut below = f.below(*id);
+                below.insert(*id);
+                Some(below)
             }
-        }
-        Self {
-            f,
-            lens: Lens::new(f, json!({}), DetailLevel::Full),
-            s,
-            url: url(s),
-            index: cells.iter().enumerate().map(|(c, id)| (*id, c)).collect(),
-            cells,
-            sets,
-        }
-    }
-
-    fn scope(&self) -> Scope {
-        let Some(slug) = &self.s.under else {
-            return Scope::Frontier;
         };
-        match self.f.named(&Name::Slug(slug.clone())) {
-            Some((id, work)) if work.iset().is_some() => {
-                if self.levels(id) > SET_LEVELS {
-                    Scope::Outline(id)
-                } else {
-                    Scope::Drawn(id)
-                }
-            }
-            _ => Scope::Missing(slug.clone()),
-        }
-    }
-
-    /// Set levels at and below an iset: none for a cell.
-    fn levels(&self, id: Id) -> usize {
-        if !self.sets.contains(&id) {
-            return 0;
-        }
-        1 + self
-            .f
-            .members(id)
-            .map(|m| self.levels(*m))
-            .max()
-            .unwrap_or(0)
-    }
-
-    /// Cells within the horizon and the selection's scope.
-    fn scoped(&self) -> BTreeSet<usize> {
-        match self.scope() {
-            Scope::Drawn(id) | Scope::Outline(id) => self.visible(Some(id)),
-            Scope::Frontier | Scope::Missing(_) => self.visible(None),
-        }
-    }
-
-    /// Cells within the horizon, and under a scope: open work always shows.
-    fn visible(&self, under: Option<Id>) -> BTreeSet<usize> {
-        let scope = under.map(|id| {
-            let mut below = self.f.below(id);
-            below.insert(id);
-            below
-        });
-        let shows = |at: OffsetDateTime| match self.s.horizon {
+        let in_scope = |id: &Id| within.as_ref().is_none_or(|w| w.contains(id));
+        let shows = |at: OffsetDateTime| match s.horizon {
             Horizon::All => true,
             Horizon::Epochs(0) => false,
-            Horizon::Epochs(n) => self
-                .f
+            Horizon::Epochs(n) => f
                 .elections()
                 .iter()
                 .rev()
@@ -679,39 +640,94 @@ impl<'f> Board<'f> {
                 .next_back()
                 .is_none_or(|e| at >= e.at.time),
         };
-        self.cells
+        // Open, or closed within the horizon.
+        let live = |id: &Id| closed_at(&f.work()[id]).is_none_or(shows);
+        // A trial lives with its innermost isets; one in none, by itself.
+        let mut drawn = f
+            .work()
+            .iter()
+            .filter(|(id, work)| work.trial().is_some() && in_scope(id))
+            .filter(|(id, _)| {
+                let homes = innermost(f, **id);
+                if homes.is_empty() {
+                    live(id)
+                } else {
+                    homes.iter().any(live)
+                }
+            })
+            .map(|(id, _)| *id)
+            .collect::<BTreeSet<_>>();
+        // Fewer records below first: a live iset with nothing drawn below is drawn itself.
+        let mut isets = f
+            .work()
+            .iter()
+            .filter(|(id, work)| work.iset().is_some() && in_scope(id))
+            .map(|(id, _)| (*id, f.below(*id)))
+            .collect::<Vec<_>>();
+        isets.sort_by_key(|(id, below)| (below.len(), *id));
+        for (id, below) in &isets {
+            if live(id) && below.is_disjoint(&drawn) {
+                drawn.insert(*id);
+            }
+        }
+        let cells = drawn.into_iter().collect::<Vec<_>>();
+        let index = cells
             .iter()
             .enumerate()
-            .filter(|(_, id)| {
-                scope.as_ref().is_none_or(|s| s.contains(id))
-                    && closed_at(&self.f.work()[id]).is_none_or(shows)
+            .map(|(c, id)| (*id, c))
+            .collect::<BTreeMap<_, _>>();
+        let mut walls = isets
+            .iter()
+            .filter_map(|(id, below)| {
+                let members = below
+                    .iter()
+                    .filter_map(|m| index.get(m).copied())
+                    .collect::<BTreeSet<_>>();
+                (!members.is_empty()).then_some((*id, members))
             })
-            .map(|(c, _)| c)
-            .collect()
-    }
-
-    fn lane(&self, cell: usize) -> &'f str {
-        self.f.work()[&self.cells[cell]].name.lane()
-    }
-
-    /// The cells drawing a record: its own, or those of the isets holding it.
-    fn homes(&self, id: Id) -> Vec<usize> {
-        if let Some(cell) = self.index.get(&id) {
-            return vec![*cell];
+            .collect::<Vec<_>>();
+        walls.sort_by_key(|(id, _)| *id);
+        let mut counts = BTreeMap::<&str, usize>::new();
+        for work in f.work().values().filter(|w| w.iset().is_some()) {
+            if let Some(title) = schema_title(f, work) {
+                *counts.entry(title).or_default() += 1;
+            }
         }
-        self.f
-            .containers(id)
-            .iter()
-            .filter_map(|c| self.index.get(c).copied())
-            .collect()
+        let mut ranked = counts.into_iter().collect::<Vec<_>>();
+        ranked.sort_by_key(|&(title, count)| (Reverse(count), title));
+        Self {
+            f,
+            lens: Lens::new(f, json!({}), DetailLevel::Full),
+            url: url(s),
+            scope,
+            cells,
+            index,
+            walls,
+            kinds: ranked
+                .into_iter()
+                .enumerate()
+                .map(|(rank, (title, _))| (title, rank))
+                .collect(),
+        }
     }
 
-    fn cells_below(&self, id: Id) -> BTreeSet<usize> {
-        self.f
-            .below(id)
+    /// The class giving an iset its kind's line style.
+    fn kind(&self, id: Id) -> String {
+        schema_title(self.f, &self.f.work()[&id])
+            .and_then(|title| self.kinds.get(title))
+            .map_or_else(String::new, |rank| format!("kind{rank}"))
+    }
+
+    /// The cells drawing a record: its own, or those its wall holds.
+    fn homes(&self, id: Id) -> Vec<usize> {
+        if let Some(&cell) = self.index.get(&id) {
+            return vec![cell];
+        }
+        self.walls
             .iter()
-            .filter_map(|m| self.index.get(m).copied())
-            .collect()
+            .find(|(wall, _)| *wall == id)
+            .map(|(_, members)| members.iter().copied().collect())
+            .unwrap_or_default()
     }
 
     fn trials(&self, id: Id) -> Vec<Id> {
@@ -726,14 +742,41 @@ impl<'f> Board<'f> {
         self.f.name_of(id).unwrap_or_else(|| "removed".into())
     }
 
-    /// Headline or name, then badge values.
+    /// The record's own display text: an iset's title or a trial's synopsis.
+    fn given(&self, id: Id) -> Option<&'f str> {
+        match &self.f.work()[&id].body {
+            Body::Iset(iset) => iset.title.as_deref(),
+            Body::Trial(trial) => trial.synopsis.as_deref(),
+        }
+    }
+
+    /// The board's words for a record: its display text, else its headline or name.
+    fn label(&self, id: Id) -> String {
+        self.given(id).map_or_else(
+            || {
+                self.lens
+                    .headline(id)
+                    .unwrap_or_else(|| self.f.work()[&id].name.to_string())
+            },
+            str::to_owned,
+        )
+    }
+
+    /// A cell's words: a trial's synopsis fills its card alone; otherwise the title.
+    fn face(&self, id: Id) -> String {
+        match &self.f.work()[&id].body {
+            Body::Trial(Trial {
+                synopsis: Some(synopsis),
+                ..
+            }) => synopsis.clone(),
+            _ => self.title(id),
+        }
+    }
+
+    /// The board's words for a record, then badge values.
     fn title(&self, id: Id) -> String {
-        let work = &self.f.work()[&id];
-        let mut title = self
-            .lens
-            .headline(id)
-            .unwrap_or_else(|| work.name.to_string());
-        if let Json::Object(badges) = self.lens.badges(work) {
+        let mut title = self.label(id);
+        if let Json::Object(badges) = self.lens.badges(&self.f.work()[&id]) {
             for value in badges.values().filter_map(Json::as_str) {
                 title.push_str(" · ");
                 title.push_str(value);
@@ -742,23 +785,32 @@ impl<'f> Board<'f> {
         title
     }
 
-    /// Inputs as precedences between cells, skipping any that would close a cycle.
-    fn edges(&self) -> Vec<(usize, usize)> {
+    /// Inputs as precedences between cells, a walled iset standing for its
+    /// earliest cell as a target and its latest as a source; skips any that
+    /// would close a cycle.
+    fn edges(&self, rank: &[u64]) -> Vec<(usize, usize)> {
+        let reach = |id: &Id, latest: bool| {
+            let homes = self.homes(*id).into_iter();
+            if latest {
+                homes.max_by_key(|&c| rank[c])
+            } else {
+                homes.min_by_key(|&c| rank[c])
+            }
+        };
         let mut successors = vec![BTreeSet::new(); self.cells.len()];
         let mut edges = Vec::new();
         for (id, work) in self.f.work() {
-            let targets = self.homes(*id);
+            let Some(to) = reach(id, false) else {
+                continue;
+            };
             for input in &work.inputs {
-                for from in self.homes(*input) {
-                    for &to in &targets {
-                        if from != to
-                            && !successors[from].contains(&to)
-                            && !reaches(&successors, to, from)
-                        {
-                            successors[from].insert(to);
-                            edges.push((from, to));
-                        }
-                    }
+                if let Some(from) = reach(input, true)
+                    && from != to
+                    && !successors[from].contains(&to)
+                    && !reaches(&successors, to, from)
+                {
+                    successors[from].insert(to);
+                    edges.push((from, to));
                 }
             }
         }
@@ -768,69 +820,127 @@ impl<'f> Board<'f> {
     fn geometry(&self) -> BoardScene {
         let f = self.f;
         let mut scene = BoardScene::default();
-        let mut order: Vec<usize> = (0..self.cells.len()).collect();
-        order.sort_by_key(|&c| (placed_at(&f.work()[&self.cells[c]]), c));
-        scene.input.rank = vec![0; self.cells.len()];
+        let n = self.cells.len();
+        let own = |c: usize| placed_at(&f.work()[&self.cells[c]]);
+        // Cells sharing walls form a group, placed at its latest record's time.
+        let mut parent = (0..n).collect::<Vec<_>>();
+        let root = |parent: &[usize], mut c: usize| {
+            while parent[c] != c {
+                c = parent[c];
+            }
+            c
+        };
+        for (_, members) in &self.walls {
+            let mut members = members.iter().copied();
+            if let Some(first) = members.next() {
+                for other in members {
+                    let (a, b) = (root(&parent, first), root(&parent, other));
+                    parent[a.max(b)] = a.min(b);
+                }
+            }
+        }
+        let groups = (0..n).map(|c| root(&parent, c)).collect::<Vec<_>>();
+        let mut latest = BTreeMap::<usize, OffsetDateTime>::new();
+        for (c, &group) in groups.iter().enumerate() {
+            let at = own(c);
+            latest
+                .entry(group)
+                .and_modify(|t| *t = (*t).max(at))
+                .or_insert(at);
+        }
+        let time = |c: usize| latest[&groups[c]];
+        // Within a group a cell follows its innermost wall, and walls their first record.
+        let innermost = (0..n)
+            .map(|c| {
+                self.walls
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, (_, members))| members.contains(&c))
+                    .min_by_key(|(w, (_, members))| (members.len(), *w))
+                    .map(|(w, _)| w)
+            })
+            .collect::<Vec<_>>();
+        let opened = self
+            .walls
+            .iter()
+            .map(|(_, members)| members.iter().map(|&c| own(c)).min())
+            .collect::<Vec<_>>();
+        let mut order = (0..n).collect::<Vec<_>>();
+        order.sort_by_key(|&c| {
+            let wall = innermost[c];
+            (
+                time(c),
+                groups[c],
+                wall.and_then(|w| opened[w]),
+                wall,
+                own(c),
+                c,
+            )
+        });
+        scene.input.rank = vec![0; n];
         for (rank, &c) in order.iter().enumerate() {
             scene.input.rank[c] = u64::try_from(rank).unwrap_or(u64::MAX);
         }
         let mut lanes = BTreeMap::<&str, Vec<usize>>::new();
         for (c, id) in self.cells.iter().enumerate() {
-            lanes.entry(self.lane(c)).or_default().push(c);
+            let work = &f.work()[id];
+            lanes.entry(work.name.lane()).or_default().push(c);
+            let card = self.card(*id, Depth::Hover);
+            let (class, size) = if work.iset().is_some() {
+                (
+                    format!("{} iset {}", card.class, self.kind(*id)),
+                    self.trials(*id).len(),
+                )
+            } else {
+                (card.class.clone(), 0)
+            };
             scene.input.cells.push(Cell {
                 key: anchor("work", *id),
                 occupant: Occupant::Cell(c),
-                title: self.title(*id),
-                size: u32::try_from(self.trials(*id).len()).unwrap_or(u32::MAX),
+                title: self.face(*id),
+                size: u32::try_from(size).unwrap_or(u32::MAX),
             });
-            let card = self.card(*id, Depth::Hover);
-            scene.cell_classes.insert(c, card.class.clone());
+            scene.cell_classes.insert(c, class);
             scene.cards.insert(c, card);
         }
         scene.input.lanes = lanes.into_values().collect();
-        scene.input.precedence = self.edges();
+        scene.input.precedence = self.edges(&scene.input.rank);
         scene.input.drawn_edges.clone_from(&scene.input.precedence);
-        for set in &self.sets {
-            let key = anchor("work", *set);
-            let settled = f.work()[set].resolved();
-            scene.input.sets.push(CellSet {
-                key: key.clone(),
-                members: self.cells_below(*set),
-            });
+        for (id, members) in &self.walls {
+            let key = anchor("work", *id);
+            let card = self.card(*id, Depth::Hover);
             scene.set_styles.insert(
-                key,
+                key.clone(),
                 SetStyle {
-                    class: if settled { "set settled" } else { "set" }.into(),
-                    marker: if settled {
-                        Marker::Circle
-                    } else {
-                        Marker::HollowCircle
-                    },
+                    class: format!("{} {}", card.class, self.kind(*id)),
+                    marker: Marker::default(),
                 },
             );
+            scene.input.sets.push(CellSet {
+                key: key.clone(),
+                members: members.clone(),
+                label: Some(self.label(*id)),
+            });
+            scene.set_cards.insert(key, card);
         }
-        self.separators(&mut scene);
+        self.separators(&mut scene, time);
         scene
     }
 
-    fn placed_within(&self, from: OffsetDateTime, until: Option<OffsetDateTime>) -> Vec<usize> {
-        self.cells
-            .iter()
-            .enumerate()
-            .filter(|(_, id)| {
-                let at = placed_at(&self.f.work()[id]);
-                at >= from && until.is_none_or(|until| at < until)
-            })
-            .map(|(c, _)| c)
-            .collect()
-    }
-
     /// Elections draw thin separators; regime changes draw thick ones.
-    fn separators(&self, scene: &mut BoardScene) {
+    fn separators(&self, scene: &mut BoardScene, time: impl Fn(usize) -> OffsetDateTime) {
         let f = self.f;
+        let within = |from: OffsetDateTime, until: Option<OffsetDateTime>| {
+            (0..self.cells.len())
+                .filter(|&c| {
+                    let at = time(c);
+                    at >= from && until.is_none_or(|until| at < until)
+                })
+                .collect::<Vec<_>>()
+        };
         let elections = f.elections();
         for (n, e) in elections.iter().enumerate() {
-            let holds = self.placed_within(e.at.time, elections.get(n + 1).map(|e| e.at.time));
+            let holds = within(e.at.time, elections.get(n + 1).map(|e| e.at.time));
             scene.input.separators.push(Separator {
                 index: scene.input.separators.len(),
                 holds,
@@ -845,7 +955,7 @@ impl<'f> Board<'f> {
         // A lone regime marks no boundary.
         let regimes = f.regimes();
         for (n, r) in regimes.iter().enumerate().filter(|_| regimes.len() > 1) {
-            let holds = self.placed_within(r.at.time, regimes.get(n + 1).map(|r| r.at.time));
+            let holds = within(r.at.time, regimes.get(n + 1).map(|r| r.at.time));
             let index = scene.input.separators.len();
             let bridge = if r.bridge.is_some() {
                 "bridged"
@@ -870,25 +980,8 @@ impl<'f> Board<'f> {
         }
     }
 
-    /// Lists the records an aggregate block stands for.
-    fn aggregates(&self, scene: &mut BoardScene) {
-        for cell in &scene.input.cells {
-            if let Occupant::Aggregate(members) = &cell.occupant {
-                let mut tip = members
-                    .iter()
-                    .take(CARD_LINKS)
-                    .map(|&c| self.name(self.cells[c]))
-                    .collect::<Vec<_>>();
-                if members.len() > CARD_LINKS {
-                    tip.push(format!("+{} more", members.len() - CARD_LINKS));
-                }
-                scene.cell_tooltips.insert(members[0], tip.join("\n"));
-            }
-        }
-    }
-
-    /// Counts, regime and incumbent baseline, then objective, conclusion, KPI
-    /// tiles and the sets in their board colours.
+    /// Counts, regime, incumbent baseline and the iset kinds drawn, then
+    /// objective, conclusion and KPI tiles.
     fn overview(&self) -> Result<Vec<C>, Fault> {
         let f = self.f;
         let tally = Tally::new(f);
@@ -903,6 +996,31 @@ impl<'f> Board<'f> {
                 self.name(baseline),
                 stamp(f.elections()[election].at.time, false)
             )));
+        }
+        let kinds = self
+            .walls
+            .iter()
+            .map(|(id, _)| *id)
+            .chain(
+                self.cells
+                    .iter()
+                    .copied()
+                    .filter(|id| f.work()[id].iset().is_some()),
+            )
+            .filter_map(|id| schema_title(f, &f.work()[&id]))
+            .filter_map(|title| Some((*self.kinds.get(title)?, title)))
+            .collect::<BTreeSet<_>>();
+        if kinds.len() > 1 {
+            summary.push(C::classed(
+                T::Span,
+                "kinds",
+                kinds
+                    .into_iter()
+                    .map(|(rank, title)| {
+                        C::classed(T::Span, format!("kind{rank}"), vec![sample(), title.into()])
+                    })
+                    .collect(),
+            ));
         }
         let mut lines = vec![summary];
         let prose = |lead: String, text: &str| {
@@ -924,32 +1042,6 @@ impl<'f> Board<'f> {
         let charts = charts::charts(f, &self.url)?;
         if !charts.is_empty() {
             lines.push(charts);
-        }
-        let mut sets: Vec<Id> = self.sets.clone();
-        sets.sort_by_key(|id| f.work()[id].resolved());
-        if !sets.is_empty() {
-            let mut legend = vec![C::element(T::B, Vec::new(), vec!["Sets".into()])];
-            legend.extend(sets.into_iter().map(|id| C::Palette {
-                key: anchor("work", id),
-                content: Box::new(C::element(
-                    T::A,
-                    vec![
-                        (
-                            A::Class,
-                            if f.work()[&id].resolved() {
-                                "set settled"
-                            } else {
-                                "set"
-                            }
-                            .into(),
-                        ),
-                        (A::Href, format!("{}#{}", self.url, anchor("work", id))),
-                        (A::Title, self.name(id)),
-                    ],
-                    vec![self.title(id).into()],
-                )),
-            }));
-            lines.push(legend);
         }
         Ok(vec![stats(lines)])
     }
@@ -974,6 +1066,11 @@ impl<'f> Board<'f> {
         let mut fields = Vec::new();
         if let Some(void) = &work.void {
             fields.push(Field::text("void because", depth.text(&void.reason)));
+        }
+        if let (Depth::Hover, Some(_), Some((field, text))) =
+            (depth, self.given(id), self.lens.headline_field(id))
+        {
+            fields.push(Field::text(field, depth.text(&text)));
         }
         match (&work.body, depth) {
             (Body::Iset(iset), Depth::Sheet) => {
@@ -1022,20 +1119,11 @@ impl<'f> Board<'f> {
                 annotation_lines(&work.annotations),
             ));
         }
-        let within: Vec<_> = f
-            .containers(id)
-            .into_iter()
-            .map(|c| {
-                (
-                    anchor("work", c),
-                    C::classed(T::Li, "set", vec![self.title(c).into()]),
-                )
-            })
-            .collect();
+        let within = f.containers(id);
         if !within.is_empty() {
             fields.push(Field {
                 label: "in".into(),
-                body: vec![C::element(T::Ul, Vec::new(), vec![C::PaletteList(within)])],
+                body: vec![self.links(&within)],
             });
         }
         let after: Vec<Id> = work.inputs.iter().copied().collect();
@@ -1207,13 +1295,7 @@ impl<'f> Board<'f> {
         let (holder, selected) = if work.iset().is_some() {
             (Some(id), None)
         } else {
-            (
-                self.f
-                    .containers(id)
-                    .into_iter()
-                    .find(|c| self.index.contains_key(c)),
-                Some(id),
-            )
+            (innermost(self.f, id).into_iter().next(), Some(id))
         };
         let Some(holder) = holder else {
             return (head, Vec::new());
@@ -1382,31 +1464,6 @@ impl<'f> Board<'f> {
             state: state.join(" · "),
             fields,
         }
-    }
-
-    /// An iset and its members at any depth, each linked to its sheet.
-    fn outline(&self, id: Id, seen: &mut BTreeSet<Id>) -> C {
-        let mut children = vec![
-            C::link(
-                format!("{}#{}", self.url, anchor("work", id)),
-                vec![self.title(id).into()],
-            ),
-            C::classed(
-                T::Span,
-                "state",
-                vec![format!(" · {}", shown(self.f, id)).into()],
-            ),
-        ];
-        let mut nested = Vec::new();
-        for member in self.f.members(id) {
-            if seen.insert(*member) {
-                nested.push(self.outline(*member, seen));
-            }
-        }
-        if !nested.is_empty() {
-            children.push(C::element(T::Ul, Vec::new(), nested));
-        }
-        C::classed(T::Li, shown(self.f, id), children)
     }
 }
 

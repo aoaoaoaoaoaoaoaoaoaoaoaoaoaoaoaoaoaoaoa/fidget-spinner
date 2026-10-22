@@ -18,11 +18,6 @@
 
 .stats .prose { margin: 2px 0; max-width: 120ch; color: var(--muted); overflow: hidden; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; }
 .stats .prose b { color: var(--fg); font-weight: 600; }
-.stats a.set { text-decoration: none; font-size: 12px; }
-.stats a.set:hover { text-decoration: underline; }
-.stats a.set::before { content: ""; display: inline-block; width: 8px; height: 8px; margin-right: 5px; border-radius: 50%; vertical-align: 0;
-  border: 1.5px solid var(--set, var(--wait-line)); }
-.stats a.set.settled::before { background: var(--set, var(--wait-line)); }
 
 .kpi { padding: 4px 0 2px; }
 .kpi .head { display: flex; gap: 6px; align-items: baseline; font: 12px var(--mono); }
@@ -58,7 +53,13 @@ table.trials tr.void { color: var(--muted); }
 table.trials tr.void td:first-child { text-decoration: line-through; }
 table.trials .artifact { display: block; font: 11px var(--mono); color: var(--muted); }
 
-.outline, .outline ul { list-style: none; margin: 2px 0; padding-left: 18px; font-size: 13px; }
-.outline li::before { content: ""; display: inline-block; width: 8px; height: 8px; margin-right: 6px; vertical-align: -1px;
-  border: 1px solid var(--state-line, var(--wait-line)); background: var(--state-fill, var(--box)); }
-.outline .state { color: var(--muted); }
+/* Iset kinds by line style, the commonest solid. */
+.kind1 { --dash: 6 3; }
+.kind2 { --dash: 1.5 2.5; }
+.kind3 { --dash: 8 3 1.5 3; }
+.stats .kinds { margin-left: auto; display: flex; gap: 14px; align-items: center; font-size: 12px; }
+.stats .kinds svg { margin-right: 5px; vertical-align: middle; }
+.stats .kinds line { stroke: var(--fg); stroke-width: 1.5; stroke-dasharray: var(--dash, none); }
+/* An iset drawn as a cell stands hollow for the trials it holds. */
+.cell.iset .box { fill: var(--bg); stroke-width: 1.5; stroke-dasharray: var(--dash, none); }
+.kpi .plot { fill: var(--box); }

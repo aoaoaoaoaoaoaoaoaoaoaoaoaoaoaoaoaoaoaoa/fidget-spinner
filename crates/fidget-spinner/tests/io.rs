@@ -145,13 +145,13 @@ fn porcelain_cells_are_not_json() -> Result {
         {"op":"define","schema":"question","definition":{"carrier":"iset",
             "data":{"question":{"type":"text","presence":"required","show":"headline"}},
             "answer":{"verdict":{"type":{"enum":["holds","fails"]},"presence":"required","show":"badge"},"why":{"type":"text","presence":"optional"}}}},
-        {"op":"iset","slug":"cache","schema":"question","data":{"question":"Does a cache help?"}},
-        {"op":"plan","into":["cache"],"data":{"change":"memoize"}},
+        {"op":"iset", "title": "T","slug":"cache","schema":"question","data":{"question":"Does a cache help?"}},
+        {"op":"plan", "synopsis": "S","into":["cache"],"data":{"change":"memoize"}},
         {"op":"report","trial":"cache#1","readings":{"elapsed":8},"artifacts":["trial evidence","{\"nested\":true}"],
             "data":{"note":"fixture result","see":{"$fs":"ref","kind":"baseline","id":"initial"}}},
         {"op":"judge","iset":"cache","answer":{"verdict":"holds","why":"fixture rationale"}},
-        {"op":"iset","slug":"ready","data":{"question":"Next"},"after":["cache"]},
-        {"op":"iset","slug":"program","data":{"charter":"fixture charter"},"members":["cache","ready"]},
+        {"op":"iset", "title": "T","slug":"ready","data":{"question":"Next"},"after":["cache"]},
+        {"op":"iset", "title": "T","slug":"program","data":{"charter":"fixture charter"},"members":["cache","ready"]},
         {"op":"regime","contract":"new fixture protocol","reason":"new fixture","metrics":[{"key":"elapsed","unit":"s","better":"lower","kpi":true}]}
     ]}))?;
     for detail in ["concise", "full"] {
@@ -235,13 +235,13 @@ fn mcp_inquiry_session() -> Result {
     ]}))?;
     assert_eq!(receipt["seq"], 1);
     let patched=session.json("frontier.patch",json!({"frontier":"latency","ops":[
-        {"op":"iset","slug":"parse.cache","data":{"title":"Cache parsing"}},
-        {"op":"plan","into":["parse.cache"]},
+        {"op":"iset", "title": "T","slug":"parse.cache","data":{"title":"Cache parsing"}},
+        {"op":"plan", "synopsis": "S","into":["parse.cache"]},
         {"op":"report","trial":"parse.cache#1","readings":{"elapsed":8},"data":{"note":"Identical outputs; 20% faster"}},
-        {"op":"iset","slug":"discarded","data":{"title":"Secret removed title"}},
+        {"op":"iset", "title": "T","slug":"discarded","data":{"title":"Secret removed title"}},
         {"op":"rename","work":"discarded","to":"renamed"},
         {"op":"remove","work":"renamed"},
-        {"op":"iset","slug":"renamed","data":{"title":"A distinct record"}}
+        {"op":"iset", "title": "T","slug":"renamed","data":{"title":"A distinct record"}}
     ]}))?;
     assert_eq!(patched["changes"]["iset tested"]["after"], 1);
     assert_eq!(patched["created"][1]["trial"], "parse.cache#1");
@@ -351,7 +351,7 @@ fn timestamped_jsonl_import() -> Result {
         &file,
         concat!(
             "{\"at\":\"2025-01-01T00:00:00Z\",\"ops\":[{\"op\":\"frontier\",\"objective\":\"Synthetic inquiry\"}]}\n",
-            "{\"at\":\"2025-01-02T00:00:00Z\",\"ops\":[{\"op\":\"iset\",\"slug\":\"cache\"}]}\n",
+            "{\"at\":\"2025-01-02T00:00:00Z\",\"ops\":[{\"op\":\"iset\",\"title\":\"T\",\"slug\":\"cache\"}]}\n",
         ),
     )?;
     let output = cli(&cell, &["import", "--frontier", "imported", path])?;
@@ -463,7 +463,7 @@ fn fs3_store_migrates_in_place() -> Result {
         String::from_utf8_lossy(&output.stderr)
     );
     let packet: Value = serde_json::from_slice(&output.stdout)?;
-    assert_eq!(version(&connection)?, 23);
+    assert_eq!(version(&connection)?, 24);
     assert!(
         packet["head"]["schema"]
             .as_str()

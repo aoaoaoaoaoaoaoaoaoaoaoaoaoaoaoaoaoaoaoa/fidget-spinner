@@ -15,6 +15,11 @@ baseline. An iset (integration set) poses a question over member work and is jud
 way. Inputs (`after`) order work; membership is not dependency. Every record resolves at most once and is voided at
 most once: nothing is reopened, corrected or unvoided, and a later answer is a new iset.
 
+Every iset carries a `title` naming its question in at most 40 characters, and every trial a `synopsis` telling its
+attempt in at most 120, each one line: the navigator's wall labels and cards show them, so write them for someone
+scanning the board, never as a truncated claim. Creating work without them is refused; `title {iset,text}` and
+`synopsis {trial,text}` replace them in any state.
+
 The tool descriptions define the operations; `schema.read` without `schema` gives the definition grammar, and with
 `schema` shows a value to write for each variant and ref field.
 `frontier.patch` requires a frontier slug; every tool accepts an explicit project path. Porcelain is the default;
@@ -64,8 +69,8 @@ before it ran:
 
 ```json
 [
-{"op":"iset","slug":"cache.templates","schema":"hypothesis","data":{"claim":"Caching parsed templates cuts p50 latency without changing responses."}},
-{"op":"plan","into":["cache.templates"],"schema":"attempt","data":{"change":"Memoize template parsing per worker."}},
+{"op":"iset","slug":"cache.templates","title":"Template parse caching","schema":"hypothesis","data":{"claim":"Caching parsed templates cuts p50 latency without changing responses."}},
+{"op":"plan","into":["cache.templates"],"synopsis":"Memoize template parsing per worker; measure p50 on requests-v1","schema":"attempt","data":{"change":"Memoize template parsing per worker."}},
 {"op":"assign","work":"cache.templates#1","owner":"worker-2","instructions":"Run the requests-v1 protocol; report p50_latency and any response diffs."}
 ]
 ```
@@ -84,8 +89,9 @@ before it ran:
 - `report` resolves a trial once with readings, artifacts (commit and evidence path) and data. Supply
   `control_readings` when the control ran alongside; without them, comparisons use the control baseline's recorded
   readings, which then freeze. Name the plan revision executed when it is not the current one, or `"unknown"`.
-- An existing trial reports under its own plan, binding, isets and inputs: `schema`, `control`, `treatment`, `into`
-  and `after` apply only when the report names no trial and so records a retrospective one. What actually ran, when
+- An existing trial reports under its own plan, binding, isets and inputs: `synopsis`, `schema`, `control`,
+  `treatment`, `into` and `after` apply only when the report names no trial and so records a retrospective one, which
+  needs its `synopsis`. What actually ran, when
   the plan could not name it, goes in artifacts or data.
 - `judge` answers an iset once, over the done work its membership reaches. Pass `seen` with the seq you read: the
   judgment is refused if anything it consumes changed since, and reads show it as guarded. Judging while members are
@@ -142,6 +148,6 @@ assignments, superseded defaulted controls, unbridged regimes, recurring unliste
 KPI reading. They never block and clear when their condition ends; resolve one by recording what it reports missing,
 or let an intended exception stand.
 
-`conclude` records the frontier's lesson once; afterwards only `void`, `remove`, `rename` and `annotate` apply.
-Archiving is the owner's, in the navigator at http://127.0.0.1:8913/, which draws each frontier's isets and trials, its
-epochs and regimes, and one chart per KPI.
+`conclude` records the frontier's lesson once; afterwards only `void`, `remove`, `rename`, `annotate`, `title` and
+`synopsis` apply. Archiving is the owner's, in the navigator at http://127.0.0.1:8913/, which draws each frontier's
+trials as cards walled in by their isets, its epochs and regimes, and one chart per KPI.

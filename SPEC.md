@@ -134,6 +134,12 @@ Work is a trial or an iset. **Membership** places work in isets; work may belong
 empty. **Inputs** order work: work waits for its inputs, and an input constrains only its target, never the target's
 members. Membership and inputs together stay acyclic, and a refusal names the cycle. Membership is not dependency.
 
+An iset's **title** names its question in at most 40 characters, and a trial's **synopsis** tells its attempt in at most
+120; each is one line, and the navigator's labels and cards show them. Creating work requires its display text: a
+written patch that leaves an iset it created untitled, or a trial it created without a synopsis, is refused, while
+history written before FS 4.2 replays without them. `title` and `synopsis` replace it in any state, even on a concluded
+frontier, and like annotations change no data, revision, consumption, freeze, finding or guard.
+
 Work is **open** until it **resolves**, a trial when reported and an iset when judged, or is voided. Work is **done**
 when resolved and not void. Open work's data, plan, binding, inputs and assignment, and an open iset's membership, may
 change; resolution and void freeze them. Finished work may still join open isets.
@@ -310,10 +316,10 @@ guard    {head}
 regime   {contract, metrics: [metric], reason?, bridge?: {slug, readings, note?}}
 gauge    {contract?, metrics?: [metric], retire?: [key], restore?: [key]}
 define   {schema, definition, rev?}
-iset     {slug, schema?, data?, members?: [work], into?: [iset], after?: [work]}
-plan     {trial?, schema?, data?, control?, treatment?, into?: [iset], after?: [work]}
+iset     {slug, title, schema?, data?, members?: [work], into?: [iset], after?: [work]}
+plan     {trial?, synopsis, schema?, data?, control?, treatment?, into?: [iset], after?: [work]}
 report   {trial?, plan?, readings?, control_readings?, artifacts?: [text], data?,
-          schema?, control?, treatment?, into?: [iset], after?: [work]}
+          synopsis?, schema?, control?, treatment?, into?: [iset], after?: [work]}
 edit     {work, rev?, data?, set?: [{path, value}], delete?: [path], schema?, unbind?, control?, treatment?}
 member   {iset, add?: [work], drop?: [work]}
 after    {work, add?: [work], drop?: [work]}
@@ -324,6 +330,8 @@ void     {work | baseline, reason}
 remove   {work | baseline}
 rename   {work | baseline, to}
 annotate {work | baseline, text}
+title    {iset, text}
+synopsis {trial, text}
 assign   {work, owner, instructions?}
 release  {work}
 start    {work}
@@ -339,8 +347,8 @@ path      = [key, …]
 - `iset.members` places existing work in the new iset; `into` places the new record in existing isets; `after` gives its
   inputs.
 - `plan.trial` names the trial; without it, `into` is required and supplies the name (§3).
-- `report` names an existing open trial, or creates a retrospective one; `schema`, `control`, `treatment`, `into` and
-  `after` apply only to creation. `plan` is a revision of the trial's plan or `"unknown"`.
+- `report` names an existing open trial, or creates a retrospective one; `synopsis`, `schema`, `control`, `treatment`,
+  `into` and `after` apply only to creation, which requires `synopsis`. `plan` is a revision of the trial's plan or `"unknown"`.
 - `edit` replaces the data object whole with `data`, or edits it by `set` and `delete`; `schema` rebinds and `unbind: true`
   removes the binding; `control` and `treatment` apply to trials. Paths are literal arrays of object keys relative to
   the data object: the empty path, array indexes and implicit parent creation are refused, and parents must exist and
@@ -402,8 +410,8 @@ with a route to the full list.
 
 | View | Rows |
 |---|---|
-| `isets` | name, state, owner, members by state, schema, headline |
-| `trials` | name, state, regime, control, KPI readings with ratios, schema, headline |
+| `isets` | name, title, state, owner, members by state, schema, headline |
+| `trials` | name, synopsis, state, regime, control, KPI readings with ratios, schema, headline |
 | `baselines` | slug, regime, elections, frozen parts, artifacts, KPI readings |
 | `regimes` | number, reason, bridge, contract, metrics; newest first |
 | `schemas` | id, carrier, definitions, current revision, bound, unvalidated and nonconforming counts |
@@ -453,30 +461,34 @@ when it is. Archived frontiers fold under a closed Archived disclosure, each wit
 keep their addresses. An archive or unarchive POST requires a matching Origin and appends that operation through the
 transactional writer.
 
-A frontier's board draws work through the shared layout engine. Cells are isets without iset members and trials in no
-such iset, grouped by lane and titled by their headline field or name; a cell shows its state or void, rests-on-void and
-validity marks, its trial count and its badge fields. Isets with iset members are coloured sets drawn around their
-members' cells, and inputs are drawn as edges. Elections draw thin separators labelled with their baseline and time;
-regime changes draw thick separators marked bridged or unbridged. A settled iset belongs to the epoch of its judgment.
-The Settled control keeps judgments since the latest epoch or the last 2, 3 or 5 epochs began, none or all, by default
-the last 2; open work always remains visible. `?under=<iset>` scopes the board to an iset's members at any depth, and a
-scope nested deeper than two set levels is listed as an outline.
+A frontier's board draws work through the shared layout engine. Every trial is a cell showing its synopsis, else its
+headline or name, then its badge fields, coloured by its state or void, with rests-on-void and validity marks. An iset is
+a wall around the cells below it at any depth, packed together: its line takes the iset's state colour and the line style
+of its schema's title, the commonest solid, and a tab on its top edge shows its title, else its headline. An iset with
+no cell below it is a hollow cell of its own, its trial count in its strip. Inputs are drawn as edges, an iset's from its
+latest cell and to its earliest. Elections draw thin separators labelled with their baseline and time; regime changes
+draw thick separators marked bridged or unbridged. Cells joined by walls sit in the epoch of their latest record. A
+trial shows while an innermost iset holding it is open or was judged within the Settled horizon, a trial in no iset by
+its own resolution; the control keeps judgments since the latest epoch or the last 2, 3 or 5 epochs began, none or all,
+by default the last 2, and open work always remains visible. `?under=<iset>` scopes the board to an iset and its
+records at any depth.
 
-Above the board, the frontier's counts, regime and incumbent baseline lead its objective, conclusion, one tile per KPI and its
-sets in their board colours. A tile names the KPI, its direction, its unit and the incumbent baseline's value; from two
+Above the board, the frontier's counts, regime and incumbent baseline lead, with the line styles of the iset kinds drawn at
+the right when there are several; then its objective, conclusion and one tile per KPI. A tile names the KPI, its direction,
+its unit and the incumbent baseline's value; from two
 readings on it charts baseline readings as steps across epochs and reported trials as dots coloured by state, reference lines
 dashed, every point a link to its record. A dot describes its trial, never a containing iset's answer. Epochs are named by
-baseline and time, never by ordinal. Hovering a cell shows its state, headline and badge fields, answer preview, latest report
-and neighbours; clicking opens a foreground with the whole record, its annotations included.
+baseline and time, never by ordinal. Hovering a cell or a wall's tab shows its state, headline and badge fields, answer
+preview, latest report and neighbours; clicking opens a foreground with the whole record, its annotations included.
 
 ## 19. Store and migration
 
-One SQLite store at `$XDG_STATE_HOME/fidget-spinner/ledger.sqlite3` holds every project's frontiers in store format 23. A
-format-22 store (FS 4.0) lacks only `annotate` and is promoted unchanged when a writer first opens it; a format-21 store (FS
-3) is migrated then, in one transaction: each operation is translated in place, preserving seqs, times, patch boundaries and
+One SQLite store at `$XDG_STATE_HOME/fidget-spinner/ledger.sqlite3` holds every project's frontiers in store format 24. A
+format-23 store (FS 4.1) lacks only titles and synopses, and a format-22 store (FS 4.0) also `annotate`; each is promoted
+unchanged when a writer first opens it. A format-21 store (FS 3) is migrated then, in one transaction: each operation is translated in place, preserving seqs, times, patch boundaries and
 the order of operations within each patch.
 
-| FS 3 | Format 23 |
+| FS 3 | Format 24 |
 |---|---|
 | `frontier {objective}` | `frontier {objective, legacy_through}`, then `define` of `fs3.hypothesis`, `fs3.review` and `fs3.trial` |
 | `hypothesis {slug, title, mechanism?, claim?}` | `iset {slug, schema: "fs3.hypothesis", data: {title, mechanism?, claim?, carries: {}}}` |

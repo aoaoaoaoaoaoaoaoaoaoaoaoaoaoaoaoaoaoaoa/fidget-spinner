@@ -35,19 +35,20 @@ frontier {objective}; conclude {lesson}; guard {head:seq}
 regime {contract,metrics:[metric],reason?,bridge?:{slug,readings,note?}}
 gauge {contract?,metrics?:[metric],retire?:[key],restore?:[key]}
 define {schema,definition,rev?}; the definition grammar is schema.read without schema
-iset {slug,schema?,data?,members?:[work],into?:[iset],after?:[work]}
-plan {trial?,schema?,data?,control?:baseline,treatment?,into?:[iset],after?:[work]}
-report {trial?,plan?:rev|"unknown",readings?,control_readings?,artifacts?:[text],data?}, plus {schema?,control?,treatment?,into?:[iset],after?:[work]} only when it creates its trial
+iset {slug,title,schema?,data?,members?:[work],into?:[iset],after?:[work]}
+plan {trial?,synopsis,schema?,data?,control?:baseline,treatment?,into?:[iset],after?:[work]}
+report {trial?,plan?:rev|"unknown",readings?,control_readings?,artifacts?:[text],data?}, plus {synopsis,schema?,control?,treatment?,into?:[iset],after?:[work]} only when it creates its trial
 edit {work,rev?,data?,set?:[{path,value}],delete?:[path],schema?,unbind?:true,control?,treatment?}
 member {iset,add?:[work],drop?:[work]}; after {work,add?:[work],drop?:[work]}
 judge {iset,answer,seen?:seq}
 baseline {slug,artifacts?:[text],readings?,note?}; elect {baseline,rationale,adopts?:[iset]}
 void {work|baseline,reason}; remove {work|baseline}; rename {work|baseline,to}
 annotate {work|baseline,text}: one hyper-terse fact in at most 100 words; it changes nothing the record says, even resolved or void
+title {iset,text}; synopsis {trial,text}: replace display text, even resolved or void. A title names the iset's question in at most 40 characters and a synopsis tells the trial's attempt in at most 120, each one line; the navigator's labels and cards show them, and creating an iset or trial requires them
 assign {work,owner,instructions?}; release/start/stop {work}
 metric={key,unit,better?:lower|higher,kpi?:bool,about?,refs?:{label:number}}; readings={key:number|'number unit'}; treatment={baseline:slug}|{identity:text}; path=[key,…]; schema=id|id@rev.
 Units: ns/µs/us/ms/s/min/h (time); B/kB/MB/GB/TB/KiB/MiB/GiB/TiB (memory); 1/% (dimensionless); other lowercase words are count labels.
-data and answer are JSON; {"$fs":"ref","kind":"trial|iset|baseline|metric","id":name|key@regime} references a record by current name. A trial without a name joins its first into iset and is named slug#n. report naming no trial creates a retrospective trial. A trial reports once and an iset is judged once; resolved and void work is frozen, though it may still join open isets. edit of work that predates the patch names its rev; edit of a trial amends its plan. judge with seen=S refuses if anything the judgment consumes changed after S. An unknown frontier requires first op frontier. A concluded frontier accepts only void, remove, rename and annotate. Archive is the owner's, in the navigator."#;
+data and answer are JSON; {"$fs":"ref","kind":"trial|iset|baseline|metric","id":name|key@regime} references a record by current name. A trial without a name joins its first into iset and is named slug#n. report naming no trial creates a retrospective trial. A trial reports once and an iset is judged once; resolved and void work is frozen, though it may still join open isets. edit of work that predates the patch names its rev; edit of a trial amends its plan. judge with seen=S refuses if anything the judgment consumes changed after S. An unknown frontier requires first op frontier. A concluded frontier accepts only void, remove, rename, annotate, title and synopsis. Archive is the owner's, in the navigator."#;
 pub const SCHEMA_GRAMMAR: &str = r#"definition = {carrier:"iset",data:fields,answer:fields,title?,description?} | {carrier:"trial",plan:fields,report:fields,title?,description?}
 fields = {name:field,…}
 field = {type,presence:"required"|"optional",title?,description?,show?:"headline"|"badge"|"card"|"section"|"hidden"}
