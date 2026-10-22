@@ -20,7 +20,7 @@ libmcp-testkit = { git = "https://github.com/aoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoaoa
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1"
 serde_path_to_error = "0.1"
-trebuchet = { git = "file:///home/main/programming/projects/mcps/trebuchet", rev = "9fca64e", features = ["ledger", "inspect", "board"] }
+trebuchet = { git = "file:///home/main/programming/projects/mcps/trebuchet", rev = "948a452", features = ["ledger", "inspect", "board"] }
 thiserror = "2"
 time = { version = "0.3", features = ["formatting", "macros", "parsing", "serde"] }
 tokio = { version = "1", features = ["net", "rt-multi-thread"] }

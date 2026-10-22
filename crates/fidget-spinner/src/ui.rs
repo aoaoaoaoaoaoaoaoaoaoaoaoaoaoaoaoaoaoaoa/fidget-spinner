@@ -914,6 +914,15 @@ impl<'f> Board<'f> {
                 SetStyle {
                     class: format!("{} {}", card.class, self.kind(*id)),
                     marker: Marker::default(),
+                    // Walls of isets that hold isets stand on a texture.
+                    hatched: self.f.work()[id].iset().is_some_and(|iset| {
+                        iset.members.iter().any(|member| {
+                            self.f
+                                .work()
+                                .get(member)
+                                .is_some_and(|work| work.iset().is_some())
+                        })
+                    }),
                 },
             );
             scene.input.sets.push(CellSet {

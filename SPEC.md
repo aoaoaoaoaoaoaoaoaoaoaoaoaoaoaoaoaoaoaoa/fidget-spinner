@@ -464,7 +464,8 @@ transactional writer.
 A frontier's board draws work through the shared layout engine. Every trial is a cell showing its synopsis, else its
 headline or name, then its badge fields, coloured by its state or void, with rests-on-void and validity marks. An iset is
 a wall around the cells below it at any depth, packed together: its line takes the iset's state colour and the line style
-of its schema's title, the commonest solid, and a tab on its top edge shows its title, else its headline. An iset with
+of its schema's title, the commonest solid, and a tab on its top edge shows its title, else its headline. An iset that holds isets grounds its wall in a faint
+texture, a different one for each such wall on the board, cycling through six. An iset with
 no cell below it is a hollow cell of its own, its trial count in its strip. Inputs are drawn as edges, an iset's from its
 latest cell and to its earliest. Elections draw thin separators labelled with their baseline and time; regime changes
 draw thick separators marked bridged or unbridged. Cells joined by walls sit in the epoch of their latest record. A

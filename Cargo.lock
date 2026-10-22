@@ -1370,7 +1370,7 @@ dependencies = [
 [[package]]
 name = "trebuchet"
 version = "0.1.0"
-source = "git+file:///home/main/programming/projects/mcps/trebuchet?rev=9fca64e#9fca64e439ea44dc4933ffc406c4cf59b361cdb1"
+source = "git+file:///home/main/programming/projects/mcps/trebuchet?rev=948a452#948a4527ccc2fb30d5e3f830af950ea9e09bab78"
 dependencies = [
  "axum",
  "base64",
