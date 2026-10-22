@@ -1383,7 +1383,7 @@ impl<'f> Board<'f> {
                     vec![(A::Class, classes.join(" "))],
                     columns
                         .iter()
-                        .map(|&column| C::element(T::Td, Vec::new(), row[column].clone()))
+                        .map(|&column| C::classed(T::Td, headings[column], row[column].clone()))
                         .collect(),
                 )
             })

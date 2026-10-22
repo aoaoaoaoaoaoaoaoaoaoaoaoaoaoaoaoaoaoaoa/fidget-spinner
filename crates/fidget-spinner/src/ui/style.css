@@ -1,9 +1,8 @@
 :root { --void-line: #a8322b; --test-line: #2a6cb0; }
 @media (prefers-color-scheme: dark) { :root { --void-line: #f0857c; --test-line: #6fb0ea; } }
 
-/* States beyond the shared done, running and ready skins. */
-.settled { --state-fill: var(--done); --state-line: var(--done-line); }
-.reported { --state-line: var(--done-line); --state-weight: 2; }
+/* States beyond the shared done, running and ready skins; settled isets and reported trials are done. */
+.settled, .reported { --state-fill: var(--done); --state-line: var(--done-line); }
 .tested { --state-fill: var(--ready); --state-line: var(--test-line); --state-weight: 2; }
 .void { --state-line: var(--wait-line); }
 .count.void::before, .cell.void .box { stroke-dasharray: 3 2; border-style: dashed; }
@@ -47,10 +46,11 @@
 table.trials { border-collapse: collapse; background: var(--box); border: 1px solid var(--line); box-shadow: 3px 3px 0 rgba(0, 0, 0, .18); max-width: min(1200px, 100%); }
 table.trials th { padding: 5px 10px; text-align: left; font-size: 9.5px; letter-spacing: .12em; text-transform: uppercase; color: var(--strip-fg); background: var(--strip); }
 table.trials td { padding: 5px 10px; vertical-align: top; border-top: 1px solid var(--rule); max-width: 38em; overflow-wrap: anywhere; }
-table.trials td:first-child, table.trials td:nth-child(3) { font: 11px var(--mono); white-space: nowrap; }
+table.trials td:is(.trial, .at) { font: 11px var(--mono); }
+table.trials td:is(.trial, .state, .at, .regime, .control) { white-space: nowrap; }
 table.trials tr.selected { background: var(--ready); }
 table.trials tr.void { color: var(--muted); }
-table.trials tr.void td:first-child { text-decoration: line-through; }
+table.trials tr.void td.trial { text-decoration: line-through; }
 table.trials .artifact { display: block; font: 11px var(--mono); color: var(--muted); }
 
 /* Iset kinds by line style, the commonest solid. */
