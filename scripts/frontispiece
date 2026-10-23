@@ -6,15 +6,16 @@
 """Develop Fidget Spinner's frontispiece from a private copy of the operator's ledger.
 
 Builds this checkout's navigator, serves it on loopback against an online backup of the
-live ledger, and photographs one frontier's board at 1440x920 in a headless Chromium
-holding no state but a private home, once the board is laid out for that frame. Prints
-the path of DIR/frontispiece.png. The live ledger is only ever opened read-only.
+live ledger, and photographs FRONTIER's board at 1440x920 in a headless Chromium holding
+no state but a private home, once the board is laid out for that frame and its fonts
+have loaded. Prints the path of DIR/frontispiece.png. The live ledger is only ever
+opened read-only.
 """
 
 import argparse
 import json
 import os
-import socket
+import re
 import sqlite3
 import subprocess
 import sys
@@ -33,8 +34,7 @@ SCALE = 1.25
 VIEWPORT: ViewportSize = {"width": 1152, "height": 736}
 # The fitted board replaces its "laying out…" placeholder with this canvas.
 LAID_OUT = "#board .canvas"
-# Open frontiers, most recently updated first; archived ones fold below.
-FIRST_OPEN = "table.boards:not(details.fold table) a"
+SHELL = [sys.executable, "-m", "playwright", "install", "--only-shell", "chromium"]
 
 
 def navigator() -> Path:
@@ -54,6 +54,16 @@ def navigator() -> Path:
     return Path(json.loads(metadata)["target_directory"]) / "debug/fidget-spinner"
 
 
+def chromium() -> None:
+    """Download Playwright's headless shell only when it is absent."""
+    plan = subprocess.run(
+        [*SHELL, "--dry-run"], check=True, capture_output=True, text=True
+    ).stdout
+    locations = re.findall(r"Install location:\s+(\S+)", plan)
+    if not all(Path(location).exists() for location in locations):
+        subprocess.run(SHELL, check=True, stdout=sys.stderr)
+
+
 def specimen(home: Path) -> dict[str, str]:
     """Back up the live ledger into home; return an environment seeing only the copy."""
     live = (
@@ -69,48 +79,46 @@ def specimen(home: Path) -> dict[str, str]:
     return {"PATH": os.environ["PATH"], "HOME": str(home), "XDG_STATE_HOME": str(state)}
 
 
-def listening(server: subprocess.Popen[bytes], port: int) -> None:
+def listening(server: subprocess.Popen[bytes]) -> int:
+    """Return the port the navigator bound once it accepts connections."""
+    bound = re.compile(rf"127\.0\.0\.1:(\d+)\s.*\bpid={server.pid},")
     deadline = time.monotonic() + 30
     while server.poll() is None and time.monotonic() < deadline:
-        try:
-            socket.create_connection(("127.0.0.1", port)).close()
-            return
-        except ConnectionRefusedError:
-            time.sleep(0.02)
-    raise SystemExit(f"navigator never listened on 127.0.0.1:{port}")
+        sockets = subprocess.run(
+            ["ss", "-Hltnp"], check=True, capture_output=True, text=True
+        ).stdout
+        if port := bound.search(sockets):
+            return int(port[1])
+        time.sleep(0.02)
+    raise SystemExit("the navigator never listened")
 
 
-def develop(binary: Path, frontier: int | None, still: Path) -> None:
+def develop(binary: Path, frontier: str, still: Path) -> None:
     with tempfile.TemporaryDirectory(prefix="fidget-spinner-frontispiece-") as cell:
         environment = specimen(Path(cell))
-        with socket.socket() as probe:
-            probe.bind(("127.0.0.1", 0))
-            port: int = probe.getsockname()[1]
-        origin = f"http://127.0.0.1:{port}"
         server = subprocess.Popen(
-            [binary, "ui", "serve", "--bind", f"127.0.0.1:{port}"],
+            [binary, "ui", "serve", "--bind", "127.0.0.1:0"],
             cwd=cell,
             env=environment,
             stdout=sys.stderr,
         )
         try:
-            listening(server, port)
+            origin = f"http://127.0.0.1:{listening(server)}"
             with sync_playwright() as driver:
                 browser = driver.chromium.launch(env={**environment})
                 page = browser.new_page(viewport=VIEWPORT, device_scale_factor=SCALE)
-                if frontier is None:
-                    page.goto(origin)
-                    first = page.locator(FIRST_OPEN)
-                    if not first.count():
-                        raise SystemExit("the ledger holds no open frontier")
-                    href = first.first.get_attribute("href")
-                    assert href is not None, "index rows always link their frontier"
-                    target = origin + href
-                else:
-                    target = f"{origin}/frontier/{frontier}"
-                page.goto(target)
+                page.goto(origin)
+                named = page.get_by_role("link", name=frontier, exact=True)
+                if (count := named.count()) != 1:
+                    raise SystemExit(
+                        f"the ledger holds {count} frontiers named {frontier}"
+                    )
+                href = named.get_attribute("href")
+                assert href is not None, "index rows always link their frontier"
+                page.goto(origin + href)
                 page.locator(LAID_OUT).wait_for()
-                page.screenshot(path=still)
+                page.evaluate("document.fonts.ready.then(() => true)")
+                page.screenshot(path=still, animations="disabled")
                 browser.close()
         finally:
             server.kill()
@@ -121,18 +129,11 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("dir", type=Path, help="directory receiving frontispiece.png")
     parser.add_argument(
-        "frontier",
-        type=int,
-        nargs="?",
-        help="frontier identity; default: the index's first open frontier",
+        "frontier", help="slug of the frontier whose board to photograph"
     )
     args = parser.parse_args()
     binary = navigator()
-    subprocess.run(
-        [sys.executable, "-m", "playwright", "install", "--only-shell", "chromium"],
-        check=True,
-        stdout=sys.stderr,
-    )
+    chromium()
     args.dir.mkdir(parents=True, exist_ok=True)
     still = args.dir / "frontispiece.png"
     develop(binary, args.frontier, still)
