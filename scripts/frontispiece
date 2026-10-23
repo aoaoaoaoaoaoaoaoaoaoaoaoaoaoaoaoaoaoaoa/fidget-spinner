@@ -1,0 +1,143 @@
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = ">=3.14"
+# dependencies = ["playwright==1.64.0"]
+# ///
+"""Develop Fidget Spinner's frontispiece from a private copy of the operator's ledger.
+
+Builds this checkout's navigator, serves it on loopback against an online backup of the
+live ledger, and photographs one frontier's board at 1440x920 in a headless Chromium
+holding no state but a private home, once the board is laid out for that frame. Prints
+the path of DIR/frontispiece.png. The live ledger is only ever opened read-only.
+"""
+
+import argparse
+import json
+import os
+import socket
+import sqlite3
+import subprocess
+import sys
+import tempfile
+import time
+from contextlib import closing
+from pathlib import Path
+
+from playwright.sync_api import ViewportSize, sync_playwright
+
+ROOT = Path(__file__).resolve().parent.parent
+LEDGER = Path("fidget-spinner/ledger.sqlite3")
+# Device pixels per CSS pixel: 1152x736 of layout fills the 1440x920 frame, keeping card
+# prose legible when the site shows the still at half size.
+SCALE = 1.25
+VIEWPORT: ViewportSize = {"width": 1152, "height": 736}
+# The fitted board replaces its "laying out…" placeholder with this canvas.
+LAID_OUT = "#board .canvas"
+# Open frontiers, most recently updated first; archived ones fold below.
+FIRST_OPEN = "table.boards:not(details.fold table) a"
+
+
+def navigator() -> Path:
+    subprocess.run(
+        ["cargo", "build", "--locked", "--package", "fidget-spinner"],
+        cwd=ROOT,
+        check=True,
+        stdout=sys.stderr,
+    )
+    metadata = subprocess.run(
+        ["cargo", "metadata", "--locked", "--format-version", "1", "--no-deps"],
+        cwd=ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+    return Path(json.loads(metadata)["target_directory"]) / "debug/fidget-spinner"
+
+
+def specimen(home: Path) -> dict[str, str]:
+    """Back up the live ledger into home; return an environment seeing only the copy."""
+    live = (
+        Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local/state") / LEDGER
+    )
+    state = home / "state"
+    (state / LEDGER).parent.mkdir(parents=True)
+    with (
+        closing(sqlite3.connect(f"{live.as_uri()}?mode=ro", uri=True)) as source,
+        closing(sqlite3.connect(state / LEDGER)) as copy,
+    ):
+        source.backup(copy)
+    return {"PATH": os.environ["PATH"], "HOME": str(home), "XDG_STATE_HOME": str(state)}
+
+
+def listening(server: subprocess.Popen[bytes], port: int) -> None:
+    deadline = time.monotonic() + 30
+    while server.poll() is None and time.monotonic() < deadline:
+        try:
+            socket.create_connection(("127.0.0.1", port)).close()
+            return
+        except ConnectionRefusedError:
+            time.sleep(0.02)
+    raise SystemExit(f"navigator never listened on 127.0.0.1:{port}")
+
+
+def develop(binary: Path, frontier: int | None, still: Path) -> None:
+    with tempfile.TemporaryDirectory(prefix="fidget-spinner-frontispiece-") as cell:
+        environment = specimen(Path(cell))
+        with socket.socket() as probe:
+            probe.bind(("127.0.0.1", 0))
+            port: int = probe.getsockname()[1]
+        origin = f"http://127.0.0.1:{port}"
+        server = subprocess.Popen(
+            [binary, "ui", "serve", "--bind", f"127.0.0.1:{port}"],
+            cwd=cell,
+            env=environment,
+            stdout=sys.stderr,
+        )
+        try:
+            listening(server, port)
+            with sync_playwright() as driver:
+                browser = driver.chromium.launch(env={**environment})
+                page = browser.new_page(viewport=VIEWPORT, device_scale_factor=SCALE)
+                if frontier is None:
+                    page.goto(origin)
+                    first = page.locator(FIRST_OPEN)
+                    if not first.count():
+                        raise SystemExit("the ledger holds no open frontier")
+                    href = first.first.get_attribute("href")
+                    assert href is not None, "index rows always link their frontier"
+                    target = origin + href
+                else:
+                    target = f"{origin}/frontier/{frontier}"
+                page.goto(target)
+                page.locator(LAID_OUT).wait_for()
+                page.screenshot(path=still)
+                browser.close()
+        finally:
+            server.kill()
+            server.wait()
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("dir", type=Path, help="directory receiving frontispiece.png")
+    parser.add_argument(
+        "frontier",
+        type=int,
+        nargs="?",
+        help="frontier identity; default: the index's first open frontier",
+    )
+    args = parser.parse_args()
+    binary = navigator()
+    subprocess.run(
+        [sys.executable, "-m", "playwright", "install", "--only-shell", "chromium"],
+        check=True,
+        stdout=sys.stderr,
+    )
+    args.dir.mkdir(parents=True, exist_ok=True)
+    still = args.dir / "frontispiece.png"
+    develop(binary, args.frontier, still)
+    print(still)
+
+
+if __name__ == "__main__":
+    main()
