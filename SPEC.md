@@ -478,7 +478,8 @@ Above the board, the frontier's counts, regime and incumbent baseline lead, with
 the right when there are several; then its objective, conclusion and one tile per KPI. A tile names the KPI, its direction,
 its unit and the incumbent baseline's value; from two
 readings on it charts baseline readings as steps across epochs and reported trials as dots coloured by state, reference lines
-dashed, every point a link to its record. A dot describes its trial, never a containing iset's answer. Epochs are named by
+dashed, every point a link to its record. A regime change draws a vertical rule that no step
+crosses; on a bridged change's rule an arrow runs from the outgoing level, a hollow point, to the bridge's reading. A dot describes its trial, never a containing iset's answer. Epochs are named by
 baseline and time, never by ordinal. Hovering a cell or a wall's tab shows its state, headline and badge fields, answer
 preview, latest report and neighbours; clicking opens a foreground with the whole record, its annotations included.
 

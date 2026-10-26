@@ -18,6 +18,8 @@ const LEFT: f64 = 44.0;
 const RIGHT: f64 = 10.0;
 const TOP: f64 = 16.0;
 const BOTTOM: f64 = 16.0;
+/// Length of a bridge arrow's head.
+const ARROW_HEAD: f64 = 5.0;
 /// Approximate advance of one 9px label character.
 const LABEL_ADVANCE: f64 = 5.6;
 
@@ -232,7 +234,18 @@ fn plot(
         .map(|p| p.at)
         .min()
         .unwrap_or_else(OffsetDateTime::now_utc);
-    let last = points().map(|p| p.at).max().unwrap_or(first);
+    // Regime changes after the first reading bound the readings, so the plot spans them.
+    let changes = f
+        .regimes()
+        .iter()
+        .skip(1)
+        .filter(|r| r.at.time > first)
+        .collect::<Vec<_>>();
+    let last = points()
+        .map(|p| p.at)
+        .chain(changes.iter().map(|r| r.at.time))
+        .max()
+        .unwrap_or(first);
     let span = (last - first).as_seconds_f64().max(1.0);
     let lo = points()
         .map(|p| p.value)
@@ -328,6 +341,33 @@ fn plot(
             format!("{label} {}", significant(*value)),
         ));
     }
+    for r in &changes {
+        let at = x(r.at.time);
+        let bridged = if r.bridge.is_some() {
+            "bridged"
+        } else {
+            "unbridged"
+        };
+        drawing.push(element(
+            T::G,
+            vec![(A::Class, "regime".into())],
+            vec![
+                element(
+                    T::Title,
+                    Vec::new(),
+                    vec![
+                        format!(
+                            "Regime {} · {bridged} · since {}",
+                            r.number,
+                            stamp(r.at.time, false)
+                        )
+                        .into(),
+                    ],
+                ),
+                rule("regime", (at, TOP - 2.0), (at, HEIGHT - BOTTOM)),
+            ],
+        ));
+    }
     let mut steps = String::new();
     for (index, b) in baselines.iter().enumerate() {
         let next = f
@@ -335,11 +375,11 @@ fn plot(
             .iter()
             .find(|e| e.at.time > b.at)
             .map_or(last, |e| e.at.time.min(last));
-        let break_at = f
-            .regimes()
+        // No step crosses a regime change, bridged or not.
+        let break_at = changes
             .iter()
-            .filter(|r| r.bridge.is_none() && r.at.time > b.at && r.at.time <= next)
             .map(|r| r.at.time)
+            .filter(|&at| at > b.at && at <= next)
             .min();
         let end = break_at.unwrap_or(next).max(b.at);
         let _ = write!(steps, "M{:.1} {:.1}H{:.1}", x(b.at), y(b.value), x(end));
@@ -369,6 +409,77 @@ fn plot(
                         (A::Cx, format!("{:.1}", x(p.at))),
                         (A::Cy, format!("{:.1}", y(p.value))),
                         (A::R, if p.class == "baseline" { "3.5" } else { "3" }.into()),
+                    ],
+                    Vec::new(),
+                ),
+            ],
+        ));
+    }
+    // On a bridged change's rule, an arrow runs from the outgoing level to the bridge's reading.
+    for r in &changes {
+        let Some(bridge) = r.bridge else {
+            continue;
+        };
+        let record = anchor("baseline", bridge).to_string();
+        let Some(after) = baselines.iter().find(|p| p.record == record) else {
+            continue;
+        };
+        let Some(before) = baselines.iter().rfind(|p| p.at < r.at.time).filter(|p| {
+            !changes
+                .iter()
+                .any(|c| c.at.time > p.at && c.at.time < r.at.time)
+        }) else {
+            continue;
+        };
+        let at = x(r.at.time);
+        let (from, to) = (y(before.value), y(after.value));
+        let toward = (to - from).signum();
+        let (start, tip) = (from + toward * 3.0, to - toward * 3.5);
+        if (tip - start) * toward >= ARROW_HEAD + 2.0 {
+            let neck = tip - toward * ARROW_HEAD;
+            drawing.push(element(
+                T::G,
+                vec![(A::Class, "bridge".into())],
+                vec![
+                    element(
+                        T::Path,
+                        vec![(A::D, format!("M{at:.1} {start:.1}V{neck:.1}"))],
+                        Vec::new(),
+                    ),
+                    element(
+                        T::Path,
+                        vec![
+                            (A::Class, "head".into()),
+                            (
+                                A::D,
+                                format!(
+                                    "M{:.1} {neck:.1}L{at:.1} {tip:.1}L{:.1} {neck:.1}Z",
+                                    at - 3.0,
+                                    at + 3.0
+                                ),
+                            ),
+                        ],
+                        Vec::new(),
+                    ),
+                ],
+            ));
+        }
+        drawing.push(element(
+            T::A,
+            vec![(A::Href, format!("{url}#{}", before.record))],
+            vec![
+                element(
+                    T::Title,
+                    Vec::new(),
+                    vec![format!("{} · before regime {}", before.title, r.number).into()],
+                ),
+                element(
+                    T::Circle,
+                    vec![
+                        (A::Class, "point outgoing".into()),
+                        (A::Cx, format!("{at:.1}")),
+                        (A::Cy, format!("{from:.1}")),
+                        (A::R, "3".into()),
                     ],
                     Vec::new(),
                 ),

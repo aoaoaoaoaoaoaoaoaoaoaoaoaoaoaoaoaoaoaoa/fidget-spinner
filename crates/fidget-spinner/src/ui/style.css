@@ -30,6 +30,10 @@
 .kpi line.frame { stroke: var(--rule); }
 .kpi line.epoch { stroke: var(--rule); stroke-dasharray: 2 2; }
 .kpi line.reference { stroke: var(--line); stroke-dasharray: 5 3; stroke-opacity: .6; }
+.kpi line.regime { stroke: var(--test-line); stroke-width: 2; }
+.kpi .bridge path { fill: none; stroke: var(--fg); stroke-width: 1.25; }
+.kpi .bridge .head { fill: var(--fg); stroke: none; }
+.kpi .point.outgoing { fill: var(--bg); stroke: var(--fg); stroke-width: 1.25; }
 .kpi .steps { fill: none; stroke: var(--fg); stroke-width: 2; }
 .kpi .point { fill: var(--state-line, var(--wait-line)); stroke: var(--bg); stroke-width: 1; }
 .kpi .point.baseline { fill: var(--fg); }
