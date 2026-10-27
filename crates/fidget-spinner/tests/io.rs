@@ -463,7 +463,7 @@ fn fs3_store_migrates_in_place() -> Result {
         String::from_utf8_lossy(&output.stderr)
     );
     let packet: Value = serde_json::from_slice(&output.stdout)?;
-    assert_eq!(version(&connection)?, 24);
+    assert_eq!(version(&connection)?, fidget_spinner::store::FORMAT);
     assert!(
         packet["head"]["schema"]
             .as_str()

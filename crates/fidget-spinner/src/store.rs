@@ -22,8 +22,10 @@ pub use trebuchet::ledger::{
 use crate::mcp::Fault;
 
 /// The store format this build writes.
-pub const FORMAT: i64 = 24;
-/// FS 4.1's format, which lacks only titles and synopses and so promotes unchanged.
+pub const FORMAT: i64 = 25;
+/// FS 4.2's format, which lacks only the late bridge and so promotes unchanged.
+const UNBRIDGEABLE: i64 = 24;
+/// FS 4.1's format, which also lacks titles and synopses.
 const UNTITLED: i64 = 23;
 /// FS 4.0's format, which also lacks annotate and so promotes unchanged.
 const UNANNOTATED: i64 = 22;
@@ -80,12 +82,14 @@ fn names() -> Result<SqlNames, FormatError> {
     SqlNames::new(FRONTIERS, PATCHES, FRONTIER, "patches_frontier_seq")
 }
 
-/// The writer's format: reads FS 3 and formats 22 to 24, writes 24.
+/// The writer's format: reads FS 3 and formats 22 to 25, writes 25.
 pub fn format() -> Result<StoreFormat, FormatError> {
-    Ok(
-        StoreFormat::new(names()?, vec![FS3, UNANNOTATED, UNTITLED, FORMAT], FORMAT)?
-            .with_migration(migrate),
-    )
+    Ok(StoreFormat::new(
+        names()?,
+        vec![FS3, UNANNOTATED, UNTITLED, UNBRIDGEABLE, FORMAT],
+        FORMAT,
+    )?
+    .with_migration(migrate))
 }
 
 /// Open the store for writing, migrating an FS 3 store first.
@@ -100,15 +104,19 @@ pub fn open(path: &Path) -> Result<Store, Fault> {
 pub fn read_only(path: &Path) -> Result<Option<Store>, Fault> {
     Ok(Store::open_read_only(
         path,
-        StoreFormat::new(names()?, vec![UNANNOTATED, UNTITLED, FORMAT], FORMAT)?,
+        StoreFormat::new(
+            names()?,
+            vec![UNANNOTATED, UNTITLED, UNBRIDGEABLE, FORMAT],
+            FORMAT,
+        )?,
     )?)
 }
 
-/// Promote formats 22 and 23 unchanged, since 24 only adds annotate, titles and
-/// synopses. Translate every FS 3 patch in place, preserving seqs, times, patch
+/// Promote formats 22 to 24 unchanged, since 25 only adds annotate, titles,
+/// synopses and the late bridge. Translate every FS 3 patch in place, preserving seqs, times, patch
 /// boundaries and operation order, and prove that the result replays.
 fn migrate(tx: &Transaction<'_>, from: i64, to: i64) -> rusqlite::Result<()> {
-    if matches!(from, UNANNOTATED | UNTITLED) && to == FORMAT {
+    if matches!(from, UNANNOTATED | UNTITLED | UNBRIDGEABLE) && to == FORMAT {
         return Ok(());
     }
     if (from, to) != (FS3, FORMAT) {

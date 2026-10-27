@@ -209,7 +209,10 @@ one without an epoch. An election records each adopted iset's judgment, or that 
 verdict.
 
 A regime change may name a **bridge**: a new baseline of the new regime with the outgoing incumbent baseline's
-artifacts and the given readings, elected with the regime change's reason. A bridge requires an outgoing incumbent.
+artifacts and the given readings, elected with the regime change's reason. A bridge requires an outgoing incumbent. A change made without one takes it
+later through `bridge` while the regime has no election: a new baseline as above, or an existing baseline of the regime
+whose artifacts are exactly the outgoing incumbent's, its readings merged by key; either is elected with the regime
+change's reason, so a bridge is always its regime's first election.
 
 ## 9. Consumption
 
@@ -297,7 +300,9 @@ A patch is refused, naming the operation index and field, for:
 - failed guards;
 - writes to resolved or void records, a second report or judgment, a second void, and changes to frozen parts of a
   baseline;
-- an election of a void baseline or one outside the current regime, and a bridge without an incumbent baseline;
+- an election of a void baseline or one outside the current regime; a bridge without an outgoing incumbent baseline,
+  and a late bridge of the first regime, of a regime already bridged or with an election, of a baseline of another
+  regime or with other artifacts, or without readings;
 - operations other than `void`, `remove`, `rename` and `annotate` on a concluded frontier, and every operation on an
   archived one;
 - `archive`, `unarchive` and the migration's operations (§19).
@@ -314,6 +319,7 @@ frontier {objective}
 conclude {lesson}
 guard    {head}
 regime   {contract, metrics: [metric], reason?, bridge?: {slug, readings, note?}}
+bridge   {slug, readings, note?}
 gauge    {contract?, metrics?: [metric], retire?: [key], restore?: [key]}
 define   {schema, definition, rev?}
 iset     {slug, title, schema?, data?, members?: [work], into?: [iset], after?: [work]}
@@ -356,6 +362,8 @@ path      = [key, …]
   `set` replaces one whole value and lists are replaced whole; `delete` removes one present member. The resulting data
   is then checked against the resulting binding.
 - `baseline` creates or updates: `artifacts` replace, `readings` merge by key, `note` replaces.
+- `bridge` bridges the current regime after its change (§8): `slug` names a new baseline or one of the regime,
+  `readings` merge by key, and `note` replaces.
 - `annotate` appends `text`, at most 100 words, to the record's annotations (§3); it applies to resolved and void
   records and on a concluded frontier.
 - `member` and `after` add and drop. `gauge.metrics` adds metrics or updates existing ones.
@@ -479,18 +487,19 @@ the right when there are several; then its objective, conclusion and one tile pe
 its unit and the incumbent baseline's value; from two
 readings on it charts baseline readings as steps across epochs and reported trials as dots coloured by state, reference lines
 dashed, every point a link to its record. A regime change draws a vertical rule that no step
-crosses; on a bridged change's rule an arrow runs from the outgoing level, a hollow point, to the bridge's reading. A dot describes its trial, never a containing iset's answer. Epochs are named by
+crosses; on a bridged change's rule an arrow runs from the outgoing level, a hollow point, to the bridge's reading, drawn on the rule
+even when the bridge was elected later. A dot describes its trial, never a containing iset's answer. Epochs are named by
 baseline and time, never by ordinal. Hovering a cell or a wall's tab shows its state, headline and badge fields, answer
 preview, latest report and neighbours; clicking opens a foreground with the whole record, its annotations included.
 
 ## 19. Store and migration
 
-One SQLite store at `$XDG_STATE_HOME/fidget-spinner/ledger.sqlite3` holds every project's frontiers in store format 24. A
-format-23 store (FS 4.1) lacks only titles and synopses, and a format-22 store (FS 4.0) also `annotate`; each is promoted
-unchanged when a writer first opens it. A format-21 store (FS 3) is migrated then, in one transaction: each operation is translated in place, preserving seqs, times, patch boundaries and
+One SQLite store at `$XDG_STATE_HOME/fidget-spinner/ledger.sqlite3` holds every project's frontiers in store format 25. A
+format-24 store (FS 4.2) lacks only `bridge`, a format-23 store (FS 4.1) also titles and synopses, and a format-22 store
+(FS 4.0) also `annotate`; each is promoted unchanged when a writer first opens it. A format-21 store (FS 3) is migrated then, in one transaction: each operation is translated in place, preserving seqs, times, patch boundaries and
 the order of operations within each patch.
 
-| FS 3 | Format 24 |
+| FS 3 | Format 25 |
 |---|---|
 | `frontier {objective}` | `frontier {objective, legacy_through}`, then `define` of `fs3.hypothesis`, `fs3.review` and `fs3.trial` |
 | `hypothesis {slug, title, mechanism?, claim?}` | `iset {slug, schema: "fs3.hypothesis", data: {title, mechanism?, claim?, carries: {}}}` |

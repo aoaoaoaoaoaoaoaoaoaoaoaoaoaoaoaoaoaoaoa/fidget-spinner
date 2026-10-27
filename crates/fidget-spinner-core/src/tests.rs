@@ -1,5 +1,5 @@
 //! Acceptance witnesses for the ledger's law: finality, void, guards, data, display text,
-//! structure, supervision and annotation, and the FS 3 migration. Every scenario ends by proving that a
+//! structure, supervision, annotation and late bridges, and the FS 3 migration. Every scenario ends by proving that a
 //! replay from nothing reproduces the incrementally patched state.
 
 use std::error::Error;
@@ -510,4 +510,42 @@ fn only_specification_stales_an_assignment() -> Result {
         Fault::Concluded
     );
     ledger.replays()
+}
+
+/// A regime changed without a bridge takes one later, on a baseline of the
+/// regime carrying the outgoing incumbent's exact artifacts, as its first
+/// election; the finding clears and a second bridge is refused.
+#[test]
+fn a_late_bridge_is_its_regimes_first_election() -> Result {
+    let mut l = Ledger::default();
+    let metrics = json!([{"key":"t","unit":"s","better":"lower","kpi":true}]);
+    l.commit(json!([
+        {"op":"frontier","objective":"o"},
+        {"op":"regime","contract":"one","metrics":metrics},
+        {"op":"baseline","slug":"b","artifacts":["abc"],"readings":{"t":2}},
+        {"op":"elect","baseline":"b","rationale":"start"},
+        {"op":"regime","contract":"two","metrics":metrics,"reason":"new harness"},
+        {"op":"baseline","slug":"other","artifacts":["abd"]},
+        {"op":"baseline","slug":"same","artifacts":["abc"]}
+    ]))?;
+    let unbridged = |l: &Ledger| {
+        l.frontier
+            .findings()
+            .iter()
+            .any(|f| f.rule() == "unbridged")
+    };
+    assert!(unbridged(&l));
+    let bridge = |slug: &str| json!([{"op":"bridge","slug":slug,"readings":{"t":3}}]);
+    assert_eq!(l.fault(bridge("other"))?, Fault::Bridge);
+    assert_eq!(
+        l.fault(json!([
+            {"op":"elect","baseline":"other","rationale":"early"},
+            {"op":"bridge","slug":"same","readings":{"t":3}}
+        ]))?,
+        Fault::Bridge
+    );
+    l.commit(bridge("same"))?;
+    assert!(!unbridged(&l));
+    assert_eq!(l.fault(bridge("fresh"))?, Fault::Bridge);
+    l.replays()
 }

@@ -138,8 +138,10 @@ freeze at its first election or first use as a report's control or treatment; it
 report's control without `control_readings`, consumes them. The note never freezes.
 
 When the measurement contract changes, whether its cohort, machine, limits, protocol or a metric's meaning, install a
-new regime with a reason and a bridge: the incumbent's artifacts remeasured under the new gauge. Adding a metric is a
-`gauge` edit, not a regime.
+new regime with a reason and a bridge: the incumbent's artifacts remeasured under the new gauge. When that remeasurement
+must run under the new regime, install it without a bridge, make a baseline of it with the incumbent's exact artifacts
+the measuring trial's control, report with `control_readings`, then `bridge` that baseline; elect nothing in the
+regime before its bridge. Adding a metric is a `gauge` edit, not a regime.
 
 ## Findings and conclusion
 

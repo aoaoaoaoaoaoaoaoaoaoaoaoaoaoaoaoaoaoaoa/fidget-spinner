@@ -249,6 +249,7 @@ operations! {
     "unarchive" => Unarchive {},
     "guard" => Guard { head: SafeSeq },
     "regime" => Regime { contract: String, metrics: Vec<MetricSpec>, reason: Option<String>, bridge: Option<Bridge> },
+    "bridge" => Bridge { slug: Slug, readings: Readings, note: Option<String> },
     "gauge" => Gauge { contract: Option<String>, metrics: Option<Vec<MetricSpec>>, retire: Option<Vec<MetricKey>>, restore: Option<Vec<MetricKey>> },
     "define" => Define { schema: Slug, definition: Json, rev: Option<Pos> },
     "iset" => Iset { slug: Slug, title: Option<String>, schema: Option<SchemaRef>, data: Option<Json>, members: Option<Vec<Name>>, into: Option<Vec<Slug>>, after: Option<Vec<Name>> },

@@ -33,6 +33,7 @@ const INSTRUCTIONS: &str = "Fidget Spinner keeps an inquiry's record across sess
 pub const OPS_GRAMMAR: &str = r#"Apply ordered ops atomically; dry_run rehearses. Each op is an object with op and fields; work names a trial or iset, and work|baseline means exactly one of those keys.
 frontier {objective}; conclude {lesson}; guard {head:seq}
 regime {contract,metrics:[metric],reason?,bridge?:{slug,readings,note?}}
+bridge {slug,readings,note?}: bridges the current regime after its change, as its first election; slug names a new baseline or one of the regime with the outgoing incumbent's exact artifacts
 gauge {contract?,metrics?:[metric],retire?:[key],restore?:[key]}
 define {schema,definition,rev?}; the definition grammar is schema.read without schema
 iset {slug,title,schema?,data?,members?:[work],into?:[iset],after?:[work]}

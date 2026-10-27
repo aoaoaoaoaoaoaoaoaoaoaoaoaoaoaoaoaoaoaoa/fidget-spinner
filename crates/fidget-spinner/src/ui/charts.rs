@@ -464,6 +464,30 @@ fn plot(
                 ],
             ));
         }
+        // A late bridge's own point sits at its election; its reading also marks the rule.
+        if after.at != r.at.time {
+            drawing.push(element(
+                T::A,
+                vec![(A::Href, format!("{url}#{}", after.record))],
+                vec![
+                    element(
+                        T::Title,
+                        Vec::new(),
+                        vec![format!("{} · bridge of regime {}", after.title, r.number).into()],
+                    ),
+                    element(
+                        T::Circle,
+                        vec![
+                            (A::Class, "point baseline".into()),
+                            (A::Cx, format!("{at:.1}")),
+                            (A::Cy, format!("{to:.1}")),
+                            (A::R, "3.5".into()),
+                        ],
+                        Vec::new(),
+                    ),
+                ],
+            ));
+        }
         drawing.push(element(
             T::A,
             vec![(A::Href, format!("{url}#{}", before.record))],

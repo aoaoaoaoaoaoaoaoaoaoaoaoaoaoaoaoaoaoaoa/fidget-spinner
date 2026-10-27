@@ -443,6 +443,11 @@ impl Frontier {
                 reason,
                 bridge,
             } => self.regime_change(contract, metrics, reason.as_deref(), bridge.as_ref(), ctx)?,
+            Operation::Bridge {
+                slug,
+                readings,
+                note,
+            } => self.bridge(slug, readings, note.as_deref(), ctx)?,
             Operation::Gauge {
                 contract,
                 metrics,
@@ -2251,6 +2256,99 @@ impl Frontier {
             self.elect(id, reason.unwrap_or_default(), None, ctx)?;
         }
         Ok(())
+    }
+
+    /// Bridges the current regime after its change: a baseline of the regime
+    /// carrying the outgoing incumbent's exact artifacts, new or existing, its
+    /// readings merged, elected with the change's reason as the regime's first
+    /// election.
+    fn bridge(
+        &mut self,
+        slug: &Slug,
+        readings: &Readings,
+        note: Option<&str>,
+        ctx: &mut Ctx,
+    ) -> Result<(), OpRefusal> {
+        self.live()?;
+        let [.., previous, current] = self.regimes.as_slice() else {
+            return Err(refuse(
+                Fault::Bridge,
+                "op",
+                "only a regime change has a bridge",
+            ));
+        };
+        let (previous, number) = (previous.number, current.number);
+        let reason = current.reason.clone().unwrap_or_default();
+        if current.bridge.is_some() {
+            return Err(refuse(
+                Fault::Bridge,
+                "op",
+                format!("regime {number} already has a bridge"),
+            ));
+        }
+        if self.elections.iter().any(|e| e.regime == Some(number)) {
+            return Err(refuse(
+                Fault::Bridge,
+                "op",
+                format!("regime {number} has an election, and a bridge must be its first"),
+            ));
+        }
+        let outgoing = self
+            .elections
+            .iter()
+            .rev()
+            .find(|e| {
+                e.regime == Some(previous)
+                    && self
+                        .baselines
+                        .get(&e.baseline)
+                        .is_some_and(|b| b.void.is_none())
+            })
+            .map(|e| e.baseline)
+            .ok_or_else(|| {
+                refuse(
+                    Fault::Bridge,
+                    "op",
+                    "a bridge needs an outgoing incumbent baseline",
+                )
+            })?;
+        let artifacts = self.baselines[&outgoing].artifacts.clone();
+        let existing = self
+            .baseline_names
+            .get(slug)
+            .map(|bound| &self.baselines[&bound.id]);
+        if let Some(baseline) = existing {
+            if baseline.regime != Some(number) {
+                return Err(refuse(
+                    Fault::Bridge,
+                    "slug",
+                    format!("{slug} is not of regime {number}"),
+                ));
+            }
+            if baseline.artifacts != artifacts {
+                return Err(refuse(
+                    Fault::Bridge,
+                    "slug",
+                    format!("{slug}'s artifacts are not the outgoing incumbent's"),
+                ));
+            }
+        }
+        if readings.is_empty() && existing.is_none_or(|b| b.readings.is_empty()) {
+            return Err(refuse(Fault::Bridge, "readings", "a bridge needs readings"));
+        }
+        let fresh = existing.is_none();
+        self.baseline(
+            slug,
+            fresh.then_some(artifacts.as_slice()),
+            Some(readings),
+            note,
+            ctx,
+        )?;
+        let id = self.baseline_names[slug].id;
+        if let Some(regime) = self.regimes.last_mut() {
+            regime.bridge = Some(id);
+        }
+        self.elect(id, reason, None, ctx)
     }
 
     fn gauge(
