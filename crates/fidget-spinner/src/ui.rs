@@ -961,9 +961,9 @@ impl<'f> Board<'f> {
                 class: "epoch".into(),
             });
         }
-        // A lone regime marks no boundary.
+        // Only a change of regime marks a boundary; the first regime has no bridge to lack.
         let regimes = f.regimes();
-        for (n, r) in regimes.iter().enumerate().filter(|_| regimes.len() > 1) {
+        for (n, r) in regimes.iter().enumerate().skip(1) {
             let holds = within(r.at.time, regimes.get(n + 1).map(|r| r.at.time));
             let index = scene.input.separators.len();
             let bridge = if r.bridge.is_some() {
